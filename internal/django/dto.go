@@ -35,8 +35,10 @@ type Product struct {
 	Translations map[string]Translation `json:"translations"`
 	Slug         string                 `json:"slug"`
 	Category     int64                  `json:"category"`
+	VariantGroup *int64                 `json:"variantGroup"`
 	BrandName    *string                `json:"brandName"`
 	Price        json.Number            `json:"price"`
+	VatValue     json.Number            `json:"vatValue"`
 	Stock        int                    `json:"stock"`
 	Active       bool                   `json:"active"`
 	Weight       *struct {

@@ -1,0 +1,88 @@
+{
+ "products": [
+  {
+   "id": "1",
+   "title": "Φορτιστής Κινητού",
+   "description": {
+    "plain": "Γρήγορη φόρτιση \u0026 ασφάλεια USB-C."
+   },
+   "url": "https://shop.example.test/products/1/fortistis-kinitou",
+   "media": [
+    {
+     "type": "image",
+     "url": "https://assets.shop.example.test/media_stream-image/media/uploads/products/%CF%86%CE%BF%CF%81%CF%84%CE%B9%CF%83%CF%84%CE%AE%CF%82.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
+    }
+   ],
+   "variants": [
+    {
+     "id": "1",
+     "title": "Φορτιστής Κινητού",
+     "url": "https://shop.example.test/products/1/fortistis-kinitou",
+     "price": {
+      "amount": 46468,
+      "currency": "EUR"
+     },
+     "list_price": {
+      "amount": 46468,
+      "currency": "EUR"
+     },
+     "availability": {
+      "available": true,
+      "status": "in_stock"
+     },
+     "condition": [
+      "new"
+     ],
+     "media": [
+      {
+       "type": "image",
+       "url": "https://assets.shop.example.test/media_stream-image/media/uploads/products/%CF%86%CE%BF%CF%81%CF%84%CE%B9%CF%83%CF%84%CE%AE%CF%82.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "2",
+   "title": "Θήκη Κινητού",
+   "description": {
+    "plain": "Θήκη Κινητού"
+   },
+   "url": "https://shop.example.test/products/2/thiki-kinitou",
+   "media": [
+    {
+     "type": "image",
+     "url": "https://assets.shop.example.test/media_stream-image/media/uploads/products/case.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
+    }
+   ],
+   "variants": [
+    {
+     "id": "2",
+     "title": "Θήκη Κινητού",
+     "url": "https://shop.example.test/products/2/thiki-kinitou",
+     "price": {
+      "amount": 2232,
+      "currency": "EUR"
+     },
+     "list_price": {
+      "amount": 2480,
+      "currency": "EUR"
+     },
+     "availability": {
+      "available": false,
+      "status": "out_of_stock"
+     },
+     "condition": [
+      "new"
+     ],
+     "media": [
+      {
+       "type": "image",
+       "url": "https://assets.shop.example.test/media_stream-image/media/uploads/products/case.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

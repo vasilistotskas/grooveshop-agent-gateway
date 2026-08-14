@@ -16,6 +16,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/chat"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/feeds"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcpsrv"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
@@ -59,6 +60,13 @@ func New(d Deps) http.Handler {
 		Version:          d.Version,
 	})
 	mux.Handle("/mcp", tenantMW(mcpsrv.Handler(mcpServer, d.Log)))
+
+	feedSvc := feeds.NewService(d.Django, d.Redis, d.Log,
+		d.Cfg.FeedImageURLTemplate, d.Cfg.FeedFreshTTL, d.Cfg.FeedStaleTTL)
+	mux.Handle("GET /feeds/google.xml", tenantMW(feedSvc.Handler(feeds.KindGoogle)))
+	mux.Handle("GET /feeds/meta.xml", tenantMW(feedSvc.Handler(feeds.KindMeta)))
+	mux.Handle("GET /feeds/tiktok.xml", tenantMW(feedSvc.Handler(feeds.KindTikTok)))
+	mux.Handle("GET /feeds/acp.json", tenantMW(feedSvc.Handler(feeds.KindACP)))
 
 	chatSvc := chat.New(d.Cfg,
 		mcpServer,

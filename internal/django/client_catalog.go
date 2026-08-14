@@ -170,6 +170,29 @@ func (c *Client) ListAllCategories(
 	return out, nil
 }
 
+// ListProductsPage fetches one page of the product catalog (feeds fan
+// pages out concurrently; 100 is the paginator maximum page size).
+func (c *Client) ListProductsPage(
+	ctx context.Context, host, lang string, page, pageSize int,
+) (*Page[Product], error) {
+	q := url.Values{
+		"page":     {strconv.Itoa(page)},
+		"pageSize": {strconv.Itoa(pageSize)},
+	}
+	var out Page[Product]
+	err := c.get(ctx, request{
+		path:     "/product",
+		host:     host,
+		language: lang,
+		query:    q,
+		out:      &out,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // PayWays lists active payment methods, optionally filtered by carrier
 // compatibility (providerCode + kind), mirroring the storefront checkout.
 func (c *Client) PayWays(

@@ -43,6 +43,13 @@ type Config struct {
 	RateLimitPerMin int
 	RateLimitBurst  int
 
+	// FeedImageURLTemplate builds feed image URLs — Meta/TikTok require
+	// >=500x500 JPEG/PNG (never WebP), hence a separate template from
+	// MediaURLTemplate. Same placeholders.
+	FeedImageURLTemplate string
+	FeedFreshTTL         time.Duration
+	FeedStaleTTL         time.Duration
+
 	// Chat (first-party shopping assistant). An empty AnthropicAPIKey
 	// disables the /chat surface entirely.
 	AnthropicAPIKey   string
@@ -74,6 +81,9 @@ func Load() (Config, error) {
 		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
 		ChatModel:       envOr("CHAT_MODEL", "claude-sonnet-5"),
 		ChatEffort:      envOr("CHAT_EFFORT", "medium"),
+		FeedImageURLTemplate: envOr("FEED_IMAGE_URL_TEMPLATE",
+			"https://assets.{domain}/media_stream-image/{path}"+
+				"/1000/1000/contain/center/FFFFFF/5/85.jpeg"),
 	}
 
 	var err error
@@ -111,6 +121,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.ConversationTTL, err = durationOr("CHAT_CONVERSATION_TTL", 24*time.Hour); err != nil {
+		return Config{}, err
+	}
+	if cfg.FeedFreshTTL, err = durationOr("FEED_FRESH_TTL", 6*time.Hour); err != nil {
+		return Config{}, err
+	}
+	if cfg.FeedStaleTTL, err = durationOr("FEED_STALE_TTL", 24*time.Hour); err != nil {
 		return Config{}, err
 	}
 

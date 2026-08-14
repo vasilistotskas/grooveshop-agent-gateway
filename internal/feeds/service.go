@@ -1,0 +1,260 @@
+package feeds
+
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"golang.org/x/sync/singleflight"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
+)
+
+// Kinds served under /feeds/.
+const (
+	KindGoogle = "google"
+	KindMeta   = "meta"
+	KindTikTok = "tiktok"
+	KindACP    = "acp"
+)
+
+var kinds = []string{KindGoogle, KindMeta, KindTikTok, KindACP}
+
+// maxConcurrentGenerations bounds catalog sweeps per pod (memory guard).
+var generationSlots = make(chan struct{}, 2)
+
+type Meta struct {
+	ETag        string    `json:"etag"`
+	GeneratedAt time.Time `json:"generatedAt"`
+	Size        int       `json:"size"`
+}
+
+type Service struct {
+	dj       *django.Client
+	rdb      *redis.Client
+	log      *slog.Logger
+	imageTpl string
+	freshTTL time.Duration
+	staleTTL time.Duration
+	sf       singleflight.Group
+}
+
+func NewService(
+	dj *django.Client, rdb *redis.Client, log *slog.Logger,
+	imageTpl string, freshTTL, staleTTL time.Duration,
+) *Service {
+	return &Service{
+		dj: dj, rdb: rdb, log: log,
+		imageTpl: imageTpl, freshTTL: freshTTL, staleTTL: staleTTL,
+	}
+}
+
+func dataKey(schema, kind string) string {
+	return "ag:" + schema + ":feed:" + kind
+}
+
+func metaKey(schema, kind string) string {
+	return dataKey(schema, kind) + ":meta"
+}
+
+// Get returns the gzipped feed. Fresh cache serves directly; a stale entry
+// serves immediately while a background refresh runs; a miss generates
+// synchronously. One generation pass renders every kind.
+func (s *Service) Get(
+	ctx context.Context, t *tenant.Tenant, kind string,
+) ([]byte, Meta, error) {
+	gz, meta, ok := s.fromCache(ctx, t.SchemaName, kind)
+	if ok {
+		age := time.Since(meta.GeneratedAt)
+		if age < s.freshTTL {
+			return gz, meta, nil
+		}
+		s.refreshAsync(t)
+		return gz, meta, nil
+	}
+
+	if _, err, _ := s.sf.Do(t.SchemaName, func() (any, error) {
+		return nil, s.generate(ctx, t)
+	}); err != nil {
+		return nil, Meta{}, err
+	}
+	gz, meta, ok = s.fromCache(ctx, t.SchemaName, kind)
+	if !ok {
+		return nil, Meta{}, errors.New("feeds: generation produced no cache")
+	}
+	return gz, meta, nil
+}
+
+func (s *Service) fromCache(
+	ctx context.Context, schema, kind string,
+) ([]byte, Meta, bool) {
+	vals, err := s.rdb.MGet(ctx, dataKey(schema, kind), metaKey(schema, kind)).
+		Result()
+	if err != nil || len(vals) != 2 || vals[0] == nil || vals[1] == nil {
+		return nil, Meta{}, false
+	}
+	data, ok1 := vals[0].(string)
+	rawMeta, ok2 := vals[1].(string)
+	if !ok1 || !ok2 {
+		return nil, Meta{}, false
+	}
+	var meta Meta
+	if err := json.Unmarshal([]byte(rawMeta), &meta); err != nil {
+		return nil, Meta{}, false
+	}
+	return []byte(data), meta, true
+}
+
+// refreshAsync regenerates in the background, decoupled from the request
+// context; singleflight collapses concurrent refreshes per tenant.
+func (s *Service) refreshAsync(t *tenant.Tenant) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		_, _, _ = s.sf.Do(t.SchemaName, func() (any, error) {
+			return nil, s.generate(ctx, t)
+		})
+	}()
+}
+
+// generate sweeps the catalog once, rendering all kinds, and stores them
+// gzipped with the stale TTL as the Redis expiry.
+func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
+	generationSlots <- struct{}{}
+	defer func() { <-generationSlots }()
+
+	start := time.Now()
+	fctx := &feedContext{
+		StoreName:        storeName(t),
+		Domain:           t.Domain,
+		Schema:           t.SchemaName,
+		Currency:         t.DefaultCurrency,
+		Locale:           t.DefaultLocale,
+		ImageURLTemplate: s.imageTpl,
+		CategoryNames:    map[int64]string{},
+	}
+	cats, err := s.dj.ListAllCategories(ctx, t.Domain, t.DefaultLocale)
+	if err != nil {
+		return fmt.Errorf("feeds: categories: %w", err)
+	}
+	for _, c := range cats {
+		fctx.CategoryNames[c.ID] = c.Translations[t.DefaultLocale].Name
+	}
+
+	rss := map[string]*rssWriter{
+		KindGoogle: newRSSWriter(fctx),
+		KindMeta:   newRSSWriter(fctx),
+		KindTikTok: newRSSWriter(fctx),
+	}
+	acp := newACPWriter()
+
+	var skipped int
+	count, truncated, err := fetchAllProducts(
+		ctx, s.dj, t.Domain, t.DefaultLocale,
+		func(p django.Product) error {
+			if !p.Active {
+				return nil
+			}
+			item := newFeedItem(&p, fctx)
+			if item == nil {
+				skipped++
+				return nil
+			}
+			for _, w := range rss {
+				w.Item(item)
+			}
+			finalCents, err := minorUnits(p.FinalPrice.String())
+			if err != nil {
+				return err
+			}
+			priceCents, err := minorUnits(p.Price.String())
+			if err != nil {
+				return err
+			}
+			vatCents, err := minorUnits(p.VatValue.String())
+			if err != nil {
+				return err
+			}
+			acp.Item(item, finalCents, priceCents+vatCents)
+			return nil
+		})
+	if err != nil {
+		return err
+	}
+	if truncated {
+		s.log.Warn("feed catalog sweep hit the page cap — feed truncated",
+			slog.String("tenant", t.SchemaName),
+			slog.Int("pages", maxPages))
+	}
+
+	outputs := make(map[string][]byte, len(kinds))
+	for kind, w := range rss {
+		outputs[kind] = w.Bytes()
+	}
+	if outputs[KindACP], err = acp.Bytes(); err != nil {
+		return fmt.Errorf("feeds: acp encode: %w", err)
+	}
+
+	pipe := s.rdb.Pipeline()
+	now := time.Now().UTC()
+	for _, kind := range kinds {
+		gz, err := gzipBytes(outputs[kind])
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(outputs[kind])
+		meta := Meta{
+			ETag:        `"` + hex.EncodeToString(sum[:16]) + `"`,
+			GeneratedAt: now,
+			Size:        len(outputs[kind]),
+		}
+		rawMeta, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+		pipe.Set(ctx, dataKey(t.SchemaName, kind), gz, s.staleTTL)
+		pipe.Set(ctx, metaKey(t.SchemaName, kind), rawMeta, s.staleTTL)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("feeds: cache write: %w", err)
+	}
+
+	s.log.Info("feeds generated",
+		slog.String("tenant", t.SchemaName),
+		slog.Int("products", count),
+		slog.Int("skipped_no_name_or_image", skipped),
+		slog.Int64("duration_ms", time.Since(start).Milliseconds()),
+	)
+	return nil
+}
+
+func storeName(t *tenant.Tenant) string {
+	if t.StoreName != "" {
+		return t.StoreName
+	}
+	return t.Name
+}
+
+func gzipBytes(b []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	zw, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := zw.Write(b); err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
