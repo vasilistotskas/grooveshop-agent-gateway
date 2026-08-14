@@ -59,6 +59,7 @@ func run() error {
 		Redis:    rdb,
 		Django:   dj,
 		Resolver: resolver,
+		Version:  version,
 	})
 
 	srv := &http.Server{

@@ -15,6 +15,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcpsrv"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -26,6 +27,7 @@ type Deps struct {
 	Redis    *redis.Client
 	Django   *django.Client
 	Resolver *tenant.Resolver
+	Version  string
 }
 
 func New(d Deps) http.Handler {
@@ -39,6 +41,18 @@ func New(d Deps) http.Handler {
 	mux.Handle("GET /metrics", promhttp.HandlerFor(
 		d.Metrics.Registry, promhttp.HandlerOpts{},
 	))
+
+	// Tenant-scoped surfaces. The tenant middleware wraps handlers inside
+	// routing so mux patterns stay visible to the metrics middleware.
+	tenantMW := tenant.Middleware(d.Resolver, d.Log)
+
+	mcpServer := mcpsrv.NewServer(mcpsrv.Deps{
+		Django:           d.Django,
+		MediaURLTemplate: d.Cfg.MediaURLTemplate,
+		Log:              d.Log,
+		Version:          d.Version,
+	})
+	mux.Handle("/mcp", tenantMW(mcpsrv.Handler(mcpServer, d.Log)))
 
 	// Global chain, outermost first. Metrics sits directly around the mux so
 	// r.Pattern (set during routing) is visible when it records.

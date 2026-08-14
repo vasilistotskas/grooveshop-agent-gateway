@@ -30,6 +30,12 @@ type Config struct {
 
 	RedisURL string
 
+	// MediaURLTemplate builds public product-image URLs. Placeholders:
+	// {domain} (tenant storefront domain), {schema} (tenant schema),
+	// {path} (relative mainImagePath). The full media-stream segment list
+	// lives in the template so the MT cutover is a config flip.
+	MediaURLTemplate string
+
 	TenantCacheTTL   time.Duration
 	NegativeCacheTTL time.Duration
 	UpstreamTimeout  time.Duration
@@ -49,6 +55,9 @@ func Load() (Config, error) {
 		DjangoPublicHost: os.Getenv("DJANGO_PUBLIC_HOST"),
 		InternalSecret:   os.Getenv("INTERNAL_EVENTS_SECRET"),
 		RedisURL:         os.Getenv("REDIS_URL"),
+		MediaURLTemplate: envOr("MEDIA_IMAGE_URL_TEMPLATE",
+			"https://assets.{domain}/media_stream-image/{path}"+
+				"/800/800/contain/entropy/transparent/5/80.webp"),
 	}
 
 	var err error
