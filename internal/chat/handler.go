@@ -196,7 +196,7 @@ func (s *Service) runTurn(
 	runner := s.client.Beta.Messages.NewToolRunnerStreaming(tools,
 		anthropic.BetaToolRunnerParams{
 			BetaMessageNewParams: anthropic.BetaMessageNewParams{
-				Model:     anthropic.Model(s.cfg.ChatModel),
+				Model:     s.cfg.ChatModel,
 				MaxTokens: int64(s.cfg.ChatMaxTokens),
 				System: []anthropic.BetaTextBlockParam{
 					{Text: systemPrompt(t, conv.CartID)},
@@ -252,7 +252,7 @@ func (s *sseWriter) event(name string, v any) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", name, raw)
+	_, _ = fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", name, raw)
 	s.f.Flush()
 }
 
