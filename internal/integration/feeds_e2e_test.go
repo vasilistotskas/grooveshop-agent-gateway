@@ -126,7 +126,7 @@ func TestFeedsEndToEnd(t *testing.T) {
 
 	t.Run("meta feed renders all pages", func(t *testing.T) {
 		resp := get("/feeds/meta.xml", map[string]string{"Accept-Encoding": "identity"})
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Contains(t, resp.Header.Get("Content-Type"), "application/xml")
 		assert.NotEmpty(t, resp.Header.Get("ETag"))
@@ -148,13 +148,13 @@ func TestFeedsEndToEnd(t *testing.T) {
 		resp := get("/feeds/meta.xml", map[string]string{
 			"Accept-Encoding": "identity", "If-None-Match": etag,
 		})
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assert.Equal(t, http.StatusNotModified, resp.StatusCode)
 	})
 
 	t.Run("gzip negotiated", func(t *testing.T) {
 		resp := get("/feeds/google.xml", map[string]string{"Accept-Encoding": "gzip"})
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
 		zr, err := gzip.NewReader(resp.Body)
@@ -167,7 +167,7 @@ func TestFeedsEndToEnd(t *testing.T) {
 
 	t.Run("acp feed serves json", func(t *testing.T) {
 		resp := get("/feeds/acp.json", map[string]string{"Accept-Encoding": "identity"})
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Contains(t, resp.Header.Get("Content-Type"), "application/json")
 		body, err := io.ReadAll(resp.Body)
