@@ -50,6 +50,11 @@ type Config struct {
 	FeedFreshTTL         time.Duration
 	FeedStaleTTL         time.Duration
 
+	// ACPBearerToken authenticates agentic-commerce platforms on the
+	// /acp/* REST surface (issued at platform enrollment). Empty disables
+	// the surface entirely.
+	ACPBearerToken string
+
 	// Chat (first-party shopping assistant). An empty AnthropicAPIKey
 	// disables the /chat surface entirely.
 	AnthropicAPIKey   string
@@ -78,6 +83,7 @@ func Load() (Config, error) {
 		MediaURLTemplate: envOr("MEDIA_IMAGE_URL_TEMPLATE",
 			"https://assets.{domain}/media_stream-image/{path}"+
 				"/800/800/contain/entropy/transparent/5/80.webp"),
+		ACPBearerToken:  os.Getenv("ACP_BEARER_TOKEN"),
 		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
 		ChatModel:       envOr("CHAT_MODEL", "claude-sonnet-5"),
 		ChatEffort:      envOr("CHAT_EFFORT", "medium"),

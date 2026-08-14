@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/acp"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/chat"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
@@ -82,6 +83,13 @@ func New(d Deps) http.Handler {
 	// the event body carries the schema.
 	mux.Handle("POST /internal/events/order-status", internalOrderEvents(
 		d.Cfg.InternalSecret, checkoutFlow, d.Dispatcher, d.Log))
+
+	if d.Cfg.ACPBearerToken != "" {
+		acp.NewHandler(d.Django, checkoutStore, checkoutFlow, d.Redis,
+			d.Cfg.ACPBearerToken, d.Log).Register(mux, tenantMW)
+	} else {
+		d.Log.Warn("acp surface disabled: ACP_BEARER_TOKEN is not set")
+	}
 
 	feedSvc := feeds.NewService(d.Django, d.Redis, d.Log,
 		d.Cfg.FeedImageURLTemplate, d.Cfg.FeedFreshTTL, d.Cfg.FeedStaleTTL)

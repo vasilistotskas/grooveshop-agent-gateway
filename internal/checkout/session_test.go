@@ -122,6 +122,15 @@ func TestRecompute(t *testing.T) {
 		assert.Contains(t, s.Missing()[0], "buyer")
 	})
 
+	t.Run("acp sessions are ready without a pay way", func(t *testing.T) {
+		s := NewSession("public", "shop.test", "acp", "cart-1")
+		s.Buyer = completeBuyer()
+		s.Fulfillment = homeDelivery()
+		s.Recompute()
+		assert.Equal(t, StatusReadyForComplete, s.Status)
+		assert.Empty(t, s.Missing())
+	})
+
 	t.Run("never leaves escalation or terminal states", func(t *testing.T) {
 		for _, status := range []Status{
 			StatusRequiresEscalation, StatusCompleteInProgress,

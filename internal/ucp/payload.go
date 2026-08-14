@@ -7,7 +7,6 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/media"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -109,9 +108,9 @@ func paymentHandlers(t *tenant.Tenant) map[string][]PaymentHandler {
 func (b *Builder) BuildCheckout(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
 ) (*Checkout, error) {
-	cart, err := b.dj.GetCart(ctx, t.Domain, t.DefaultLocale, s.CartID)
+	pricing, _, err := checkout.ComputePricing(ctx, b.dj, t, s)
 	if err != nil {
-		return nil, fmt.Errorf("ucp: cart fetch: %w", err)
+		return nil, fmt.Errorf("ucp: pricing: %w", err)
 	}
 
 	out := &Checkout{
@@ -142,51 +141,37 @@ func (b *Builder) BuildCheckout(
 		}
 	}
 
-	var itemsSubtotal int64
-	for _, it := range cart.Items {
-		tr := it.Product.Translations[t.DefaultLocale]
-		unit, err := money.MinorUnits(it.FinalPrice.String())
-		if err != nil {
-			return nil, err
-		}
-		lineTotal, err := money.MinorUnits(it.TotalPrice.String())
-		if err != nil {
-			return nil, err
-		}
-		itemsSubtotal += lineTotal
+	for _, line := range pricing.Lines {
 		out.LineItems = append(out.LineItems, LineItem{
-			ID: fmt.Sprintf("%d", it.ID),
+			ID: fmt.Sprintf("%d", line.CartItemID),
 			Item: Item{
-				ID:    fmt.Sprintf("%d", it.Product.ID),
-				Title: tr.Name,
-				Price: unit,
+				ID:    fmt.Sprintf("%d", line.ProductID),
+				Title: line.Title,
+				Price: line.UnitMinor,
 				ImageURL: media.ImageURL(b.mediaURLTemplate,
-					t.Domain, t.SchemaName, it.Product.MainImagePath),
+					t.Domain, t.SchemaName, line.ImagePath),
 			},
-			Quantity: it.Quantity,
+			Quantity: line.Quantity,
 			Totals: []LineItemTotal{
-				{Type: "subtotal", Amount: lineTotal},
-				{Type: "total", Amount: lineTotal},
+				{Type: "subtotal", Amount: line.TotalMinor},
+				{Type: "total", Amount: line.TotalMinor},
 			},
 		})
 	}
 
-	total := itemsSubtotal
 	out.Totals = append(out.Totals,
-		LineItemTotal{Type: "subtotal", Amount: itemsSubtotal})
-
-	if fee, ok, err := b.deliveryFee(ctx, t, s, cart); err == nil && ok {
+		LineItemTotal{Type: "subtotal", Amount: pricing.ItemsSubtotal})
+	if pricing.HasDelivery {
 		out.Totals = append(out.Totals,
-			LineItemTotal{Type: "fulfillment", Amount: fee})
-		total += fee
+			LineItemTotal{Type: "fulfillment", Amount: pricing.DeliveryFee})
 	}
-	if fee, ok, err := b.paymentFee(ctx, t, s, cart); err == nil && ok {
+	if pricing.HasPaymentFee {
 		out.Totals = append(out.Totals, LineItemTotal{
-			Type: "fee", DisplayText: "Payment method fee", Amount: fee})
-		total += fee
+			Type: "fee", DisplayText: "Payment method fee",
+			Amount: pricing.PaymentFee})
 	}
 	out.Totals = append(out.Totals,
-		LineItemTotal{Type: "total", Amount: total})
+		LineItemTotal{Type: "total", Amount: pricing.Total})
 
 	switch s.Status {
 	case checkout.StatusRequiresEscalation:
@@ -212,65 +197,4 @@ func (b *Builder) BuildCheckout(
 		}
 	}
 	return out, nil
-}
-
-// deliveryFee resolves the chosen shipping option's price.
-func (b *Builder) deliveryFee(
-	ctx context.Context, t *tenant.Tenant,
-	s *checkout.Session, cart *django.Cart,
-) (int64, bool, error) {
-	f := s.Fulfillment
-	if f.ProviderCode == "" || f.Kind == "" || f.CountryCode == "" {
-		return 0, false, nil
-	}
-	opts, err := b.dj.ShippingOptions(ctx, t.Domain, t.DefaultLocale,
-		django.ShippingQuery{
-			CountryCode:      f.CountryCode,
-			OrderValueAmount: cart.TotalPrice.String(),
-			Currency:         t.DefaultCurrency,
-		})
-	if err != nil {
-		return 0, false, err
-	}
-	for _, o := range opts {
-		if o.ProviderCode == f.ProviderCode && o.Kind == f.Kind {
-			fee, err := money.MinorUnits(o.Price.String())
-			return fee, err == nil, err
-		}
-	}
-	return 0, false, nil
-}
-
-// paymentFee resolves the chosen pay way's fee, waived above its free
-// threshold.
-func (b *Builder) paymentFee(
-	ctx context.Context, t *tenant.Tenant,
-	s *checkout.Session, cart *django.Cart,
-) (int64, bool, error) {
-	if s.PayWayID <= 0 {
-		return 0, false, nil
-	}
-	pw, err := b.dj.PayWayByID(ctx, t.Domain, t.DefaultLocale, s.PayWayID)
-	if err != nil {
-		return 0, false, err
-	}
-	cost, err := money.MinorUnits(pw.Cost.String())
-	if err != nil {
-		return 0, false, err
-	}
-	threshold, err := money.MinorUnits(pw.FreeThreshold.String())
-	if err != nil {
-		return 0, false, err
-	}
-	cartTotal, err := money.MinorUnits(cart.TotalPrice.String())
-	if err != nil {
-		return 0, false, err
-	}
-	if threshold > 0 && cartTotal >= threshold {
-		return 0, false, nil
-	}
-	if cost == 0 {
-		return 0, false, nil
-	}
-	return cost, true, nil
 }

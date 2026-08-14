@@ -113,6 +113,14 @@ func (s *Session) Terminal() bool {
 	return s.Status == StatusCompleted || s.Status == StatusCanceled
 }
 
+// payWaySelectionRequired reports whether readiness includes an explicit
+// payment-method choice. UCP agents pick a pay way before complete; on
+// ACP payment is the platform's concern — the merchant resolves the pay
+// way at completion time (delegated token, or cash on delivery).
+func (s *Session) payWaySelectionRequired() bool {
+	return s.Protocol != "acp"
+}
+
 // Recompute derives the pre-completion status from collected data. It
 // never leaves escalation or terminal states — those transitions belong
 // to the flow (order placed, payment confirmed, cancel).
@@ -122,7 +130,8 @@ func (s *Session) Recompute() {
 		StatusCompleted, StatusCanceled:
 		return
 	}
-	if s.Buyer.Complete() && s.Fulfillment.Complete() && s.PayWayID > 0 {
+	payReady := s.PayWayID > 0 || !s.payWaySelectionRequired()
+	if s.Buyer.Complete() && s.Fulfillment.Complete() && payReady {
 		s.Status = StatusReadyForComplete
 		return
 	}
@@ -141,7 +150,7 @@ func (s *Session) Missing() []string {
 			"city, zipcode, street; plus the pickup point ids for "+
 			"pickup_point deliveries)")
 	}
-	if s.PayWayID <= 0 {
+	if s.PayWayID <= 0 && s.payWaySelectionRequired() {
 		out = append(out, "payWayId (see get_payment_methods)")
 	}
 	return out
