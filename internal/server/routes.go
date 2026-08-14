@@ -9,9 +9,11 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/chat"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
@@ -28,6 +30,10 @@ type Deps struct {
 	Django   *django.Client
 	Resolver *tenant.Resolver
 	Version  string
+
+	// AnthropicOpts are extra Anthropic client options; the e2e suite
+	// injects a fake API base URL here.
+	AnthropicOpts []option.RequestOption
 }
 
 func New(d Deps) http.Handler {
@@ -53,6 +59,24 @@ func New(d Deps) http.Handler {
 		Version:          d.Version,
 	})
 	mux.Handle("/mcp", tenantMW(mcpsrv.Handler(mcpServer, d.Log)))
+
+	chatSvc := chat.New(d.Cfg,
+		mcpServer,
+		chat.NewStore(d.Redis, d.Cfg.ConversationTTL, d.Cfg.ChatMaxTurns),
+		d.Log,
+		d.AnthropicOpts...,
+	)
+	if chatSvc.Enabled() {
+		// The chat surface pays per token — it gets its own, stricter
+		// per-IP limiter on top of the global one.
+		chatLimiter := httpmw.NewRateLimiter(
+			d.Cfg.ChatRatePerMin, d.Cfg.ChatRateBurst, d.Metrics,
+		)
+		mux.Handle("POST /chat",
+			tenantMW(chatLimiter.Middleware()(chatSvc.Handler())))
+	} else {
+		d.Log.Warn("chat surface disabled: ANTHROPIC_API_KEY is not set")
+	}
 
 	// Global chain, outermost first. Metrics sits directly around the mux so
 	// r.Pattern (set during routing) is visible when it records.

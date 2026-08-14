@@ -42,6 +42,19 @@ type Config struct {
 
 	RateLimitPerMin int
 	RateLimitBurst  int
+
+	// Chat (first-party shopping assistant). An empty AnthropicAPIKey
+	// disables the /chat surface entirely.
+	AnthropicAPIKey   string
+	ChatModel         string
+	ChatEffort        string
+	ChatMaxTokens     int
+	ChatMaxTurns      int
+	ChatMaxIterations int
+	ChatRatePerMin    int
+	ChatRateBurst     int
+	ConversationTTL   time.Duration
+	ChatMaxMessageLen int
 }
 
 // Load reads the environment and fails fast on missing required values so
@@ -58,6 +71,9 @@ func Load() (Config, error) {
 		MediaURLTemplate: envOr("MEDIA_IMAGE_URL_TEMPLATE",
 			"https://assets.{domain}/media_stream-image/{path}"+
 				"/800/800/contain/entropy/transparent/5/80.webp"),
+		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
+		ChatModel:       envOr("CHAT_MODEL", "claude-sonnet-5"),
+		ChatEffort:      envOr("CHAT_EFFORT", "medium"),
 	}
 
 	var err error
@@ -74,6 +90,27 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.RateLimitBurst, err = intOr("RATE_LIMIT_BURST", 40); err != nil {
+		return Config{}, err
+	}
+	if cfg.ChatMaxTokens, err = intOr("CHAT_MAX_TOKENS", 2048); err != nil {
+		return Config{}, err
+	}
+	if cfg.ChatMaxTurns, err = intOr("CHAT_MAX_TURNS", 40); err != nil {
+		return Config{}, err
+	}
+	if cfg.ChatMaxIterations, err = intOr("CHAT_MAX_ITERATIONS", 6); err != nil {
+		return Config{}, err
+	}
+	if cfg.ChatRatePerMin, err = intOr("CHAT_RATE_LIMIT_PER_MIN", 20); err != nil {
+		return Config{}, err
+	}
+	if cfg.ChatRateBurst, err = intOr("CHAT_RATE_LIMIT_BURST", 5); err != nil {
+		return Config{}, err
+	}
+	if cfg.ChatMaxMessageLen, err = intOr("CHAT_MAX_MESSAGE_LEN", 2000); err != nil {
+		return Config{}, err
+	}
+	if cfg.ConversationTTL, err = durationOr("CHAT_CONVERSATION_TTL", 24*time.Hour); err != nil {
 		return Config{}, err
 	}
 
