@@ -10,12 +10,17 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
 // Deps are the shared dependencies for all tool handlers.
 type Deps struct {
 	Django           *django.Client
+	Checkout         *checkout.Store
+	Flow             *checkout.Flow
+	UCP              *ucp.Builder
 	MediaURLTemplate string
 	Log              *slog.Logger
 	Version          string
@@ -142,6 +147,31 @@ func NewServer(d Deps) *mcp.Server {
 			"target). Useful when a product is out of stock or too " +
 			"expensive right now.",
 	}, h.subscribeProductAlert)
+
+	// UCP checkout capability (dev.ucp.shopping.checkout, MCP transport
+	// binding). Structured output is the UCP checkout session object.
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "create_checkout",
+		Description: "UCP: start a checkout session from a cartId or a " +
+			"list of products. Collect buyer, fulfillment and payWayId " +
+			"(via update_checkout or inline) until status is " +
+			"ready_for_complete.",
+	}, h.createCheckout)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "update_checkout",
+		Description: "UCP: add or change buyer details, delivery " +
+			"(address or ACS/BOX NOW pickup point) and payment method " +
+			"on a checkout session.",
+	}, h.updateCheckout)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "complete_checkout",
+		Description: "UCP: place the order. Offline payment methods " +
+			"(e.g. cash on delivery) complete immediately; card payment " +
+			"via Viva returns continue_url where the buyer authorizes " +
+			"payment on the store's hosted page.",
+	}, h.completeCheckout)
 
 	return srv
 }

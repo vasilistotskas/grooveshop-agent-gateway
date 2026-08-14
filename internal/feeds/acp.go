@@ -3,7 +3,8 @@ package feeds
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
 )
 
 // ACP feed types mirror testdata/schemas/acp/2026-04-17/schema.feed.json.
@@ -106,25 +107,8 @@ func (w *acpWriter) Bytes() ([]byte, error) {
 	return json.MarshalIndent(w.feed, "", " ")
 }
 
-// minorUnits converts a dot-decimal amount to ISO 4217 minor units without
-// float rounding ("464.68" -> 46468).
+// minorUnits delegates to the shared converter (kept as a local name so
+// test call sites read naturally).
 func minorUnits(decimal string) (int64, error) {
-	whole, frac, _ := strings.Cut(decimal, ".")
-	if whole == "" {
-		whole = "0"
-	}
-	switch len(frac) {
-	case 0:
-		frac = "00"
-	case 1:
-		frac += "0"
-	case 2:
-	default:
-		frac = frac[:2]
-	}
-	var n int64
-	if _, err := fmt.Sscanf(whole+frac, "%d", &n); err != nil {
-		return 0, fmt.Errorf("feeds: bad amount %q: %w", decimal, err)
-	}
-	return n, nil
+	return money.MinorUnits(decimal)
 }

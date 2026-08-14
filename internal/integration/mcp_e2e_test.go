@@ -209,6 +209,7 @@ func TestMCPEndToEnd(t *testing.T) {
 			"get_payment_methods", "create_cart", "get_cart",
 			"add_to_cart", "update_cart_item", "remove_cart_item",
 			"get_checkout_link", "track_order", "subscribe_product_alert",
+			"create_checkout", "update_checkout", "complete_checkout",
 		}, names)
 	})
 

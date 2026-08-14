@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/chat"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/feeds"
@@ -21,6 +22,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcpsrv"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
 type Deps struct {
@@ -35,6 +37,11 @@ type Deps struct {
 	// AnthropicOpts are extra Anthropic client options; the e2e suite
 	// injects a fake API base URL here.
 	AnthropicOpts []option.RequestOption
+
+	// SigningKey signs UCP order webhooks and publishes in profiles.
+	SigningKey *ucp.SigningKey
+	// Dispatcher delivers queued order webhooks (Run started by main).
+	Dispatcher *ucp.Dispatcher
 }
 
 func New(d Deps) http.Handler {
@@ -53,13 +60,28 @@ func New(d Deps) http.Handler {
 	// routing so mux patterns stay visible to the metrics middleware.
 	tenantMW := tenant.Middleware(d.Resolver, d.Log)
 
+	checkoutStore := checkout.NewStore(d.Redis)
+	checkoutFlow := checkout.NewFlow(d.Django, checkoutStore, d.Log)
+	ucpBuilder := ucp.NewBuilder(d.Django, d.Cfg.MediaURLTemplate)
+
 	mcpServer := mcpsrv.NewServer(mcpsrv.Deps{
 		Django:           d.Django,
+		Checkout:         checkoutStore,
+		Flow:             checkoutFlow,
+		UCP:              ucpBuilder,
 		MediaURLTemplate: d.Cfg.MediaURLTemplate,
 		Log:              d.Log,
 		Version:          d.Version,
 	})
 	mux.Handle("/mcp", tenantMW(mcpsrv.Handler(mcpServer, d.Log)))
+
+	mux.Handle("GET /.well-known/ucp",
+		tenantMW(ucp.ProfileHandler(d.SigningKey)))
+
+	// Cluster-internal: Django's order-event push. Not tenant-scoped —
+	// the event body carries the schema.
+	mux.Handle("POST /internal/events/order-status", internalOrderEvents(
+		d.Cfg.InternalSecret, checkoutFlow, d.Dispatcher, d.Log))
 
 	feedSvc := feeds.NewService(d.Django, d.Redis, d.Log,
 		d.Cfg.FeedImageURLTemplate, d.Cfg.FeedFreshTTL, d.Cfg.FeedStaleTTL)

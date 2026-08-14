@@ -17,6 +17,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/server"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -52,14 +53,26 @@ func run() error {
 		dj, rdb, cfg.TenantCacheTTL, cfg.NegativeCacheTTL, log, metrics,
 	)
 
+	keyCtx, keyCancel := context.WithTimeout(
+		context.Background(), 10*time.Second,
+	)
+	signingKey, err := ucp.LoadOrCreateSigningKey(keyCtx, rdb)
+	keyCancel()
+	if err != nil {
+		return err
+	}
+	dispatcher := ucp.NewDispatcher(rdb, signingKey, log)
+
 	handler := server.New(server.Deps{
-		Cfg:      cfg,
-		Log:      log,
-		Metrics:  metrics,
-		Redis:    rdb,
-		Django:   dj,
-		Resolver: resolver,
-		Version:  version,
+		Cfg:        cfg,
+		Log:        log,
+		Metrics:    metrics,
+		Redis:      rdb,
+		Django:     dj,
+		Resolver:   resolver,
+		Version:    version,
+		SigningKey: signingKey,
+		Dispatcher: dispatcher,
 	})
 
 	srv := &http.Server{
@@ -74,6 +87,11 @@ func run() error {
 		context.Background(), os.Interrupt, syscall.SIGTERM,
 	)
 	defer stop()
+
+	// Order-webhook delivery worker; undelivered events reclaim on next
+	// boot, so exiting with the signal context is safe.
+	go dispatcher.Run(ctx)
+	defer dispatcher.Stop()
 
 	errCh := make(chan error, 1)
 	go func() {

@@ -104,3 +104,7 @@ func num(n json.Number) string {
 	}
 	return n.String()
 }
+
+func jsonMarshal(v any) ([]byte, error) {
+	return json.Marshal(v)
+}
