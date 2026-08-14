@@ -90,7 +90,7 @@ func (f *fakeDjango) setFail(v bool) {
 
 func (f *fakeDjango) client(t *testing.T) *django.Client {
 	t.Helper()
-	return django.New(f.srv.URL+"/api/v1", "api.example.test",
+	return django.New(f.srv.URL+"/api/v1", "api.example.test", "test-secret",
 		time.Second, testLogger(), nil)
 }
 

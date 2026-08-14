@@ -81,7 +81,7 @@ func TestResolverSharesRedisTierAcrossInstances(t *testing.T) {
 		}))
 	defer srv.Close()
 
-	dj := django.New(srv.URL+"/api/v1", "api.example.test",
+	dj := django.New(srv.URL+"/api/v1", "api.example.test", "test-secret",
 		time.Second, quietLogger(), nil)
 
 	// Two resolver instances simulate two gateway pods sharing Redis.

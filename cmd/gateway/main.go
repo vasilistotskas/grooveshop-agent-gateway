@@ -45,7 +45,7 @@ func run() error {
 	defer func() { _ = rdb.Close() }()
 
 	dj := django.New(
-		cfg.DjangoBaseURL, cfg.DjangoPublicHost,
+		cfg.DjangoBaseURL, cfg.DjangoPublicHost, cfg.InternalSecret,
 		cfg.UpstreamTimeout, log, metrics,
 	)
 	resolver := tenant.NewResolver(

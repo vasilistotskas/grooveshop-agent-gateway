@@ -22,15 +22,16 @@ import (
 // travels on X-Forwarded-Host (django-tenants resolves the schema from it),
 // so every tenant-scoped call passes the tenant's domain explicitly.
 type Client struct {
-	hc         *http.Client
-	baseURL    string
-	publicHost string
-	log        *slog.Logger
-	metrics    *obs.Metrics
+	hc             *http.Client
+	baseURL        string
+	publicHost     string
+	internalSecret string
+	log            *slog.Logger
+	metrics        *obs.Metrics
 }
 
 func New(
-	baseURL, publicHost string,
+	baseURL, publicHost, internalSecret string,
 	timeout time.Duration,
 	log *slog.Logger,
 	metrics *obs.Metrics,
@@ -41,11 +42,12 @@ func New(
 		IdleConnTimeout:     90 * time.Second,
 	}
 	return &Client{
-		hc:         &http.Client{Transport: transport, Timeout: timeout},
-		baseURL:    baseURL,
-		publicHost: publicHost,
-		log:        log,
-		metrics:    metrics,
+		hc:             &http.Client{Transport: transport, Timeout: timeout},
+		baseURL:        baseURL,
+		publicHost:     publicHost,
+		internalSecret: internalSecret,
+		log:            log,
+		metrics:        metrics,
 	}
 }
 

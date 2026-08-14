@@ -204,6 +204,81 @@ type Review struct {
 	} `json:"user"`
 }
 
+// CartItem is one cart line; Product is embedded in full by the API.
+type CartItem struct {
+	ID              int64       `json:"id"`
+	Product         Product     `json:"product"`
+	Quantity        int         `json:"quantity"`
+	FinalPrice      json.Number `json:"finalPrice"`
+	TotalPrice      json.Number `json:"totalPrice"`
+	DiscountPercent json.Number `json:"discountPercent"`
+}
+
+// Cart is identified by UUID; the API resolves it from the X-Cart-Id
+// header and auto-creates one on first GET.
+type Cart struct {
+	ID                 int64       `json:"id"`
+	UUID               string      `json:"uuid"`
+	Items              []CartItem  `json:"items"`
+	TotalPrice         json.Number `json:"totalPrice"`
+	TotalVatValue      json.Number `json:"totalVatValue"`
+	TotalDiscountValue json.Number `json:"totalDiscountValue"`
+	TotalItems         int         `json:"totalItems"`
+	TotalItemsUnique   int         `json:"totalItemsUnique"`
+	Currency           string      `json:"currency"`
+}
+
+type OrderItem struct {
+	Product    Product     `json:"product"`
+	Quantity   int         `json:"quantity"`
+	Price      json.Number `json:"price"`
+	TotalPrice json.Number `json:"totalPrice"`
+}
+
+type TrackingDetails struct {
+	TrackingNumber    string  `json:"trackingNumber"`
+	ShippingCarrier   string  `json:"shippingCarrier"`
+	HasTracking       bool    `json:"hasTracking"`
+	EstimatedDelivery *string `json:"estimatedDelivery"`
+	TrackingURL       string  `json:"trackingUrl"`
+}
+
+type PricingBreakdown struct {
+	ItemsSubtotal    json.Number `json:"itemsSubtotal"`
+	ShippingCost     json.Number `json:"shippingCost"`
+	PaymentMethodFee json.Number `json:"paymentMethodFee"`
+	GrandTotal       json.Number `json:"grandTotal"`
+	PaidAmount       json.Number `json:"paidAmount"`
+	Currency         string      `json:"currency"`
+}
+
+// Order decodes the guest-accessible detail shape. Recipient contact and
+// address fields are deliberately not decoded: possession of the UUID
+// authorizes status tracking, not PII retrieval.
+type Order struct {
+	ID                   int64            `json:"id"`
+	UUID                 string           `json:"uuid"`
+	Status               string           `json:"status"`
+	StatusDisplay        string           `json:"statusDisplay"`
+	PaymentStatus        string           `json:"paymentStatus"`
+	PaymentStatusDisplay string           `json:"paymentStatusDisplay"`
+	IsPaid               bool             `json:"isPaid"`
+	CanBeCanceled        bool             `json:"canBeCanceled"`
+	Items                []OrderItem      `json:"items"`
+	TrackingDetails      *TrackingDetails `json:"trackingDetails"`
+	PricingBreakdown     PricingBreakdown `json:"pricingBreakdown"`
+	CreatedAt            string           `json:"createdAt"`
+}
+
+type ProductAlert struct {
+	ID          int64        `json:"id"`
+	Kind        string       `json:"kind"`
+	Product     int64        `json:"product"`
+	Email       string       `json:"email"`
+	TargetPrice *json.Number `json:"targetPrice"`
+	IsActive    bool         `json:"isActive"`
+}
+
 // TenantConfig mirrors the tenant/resolve wire shape (camelCase, produced
 // by djangorestframework-camel-case from TenantConfigSerializer).
 type TenantConfig struct {

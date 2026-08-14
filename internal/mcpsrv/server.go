@@ -90,6 +90,59 @@ func NewServer(d Deps) *mcp.Server {
 			"provider/kind you plan to use.",
 	}, h.getPaymentMethods)
 
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "create_cart",
+		Description: "Create an empty shopping cart. Persist the returned " +
+			"cartId — every cart and checkout tool needs it. add_to_cart " +
+			"also creates a cart implicitly when called without one.",
+	}, h.createCart)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "get_cart",
+		Description: "Fetch a cart's current lines and totals by cartId.",
+	}, h.getCart)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "add_to_cart",
+		Description: "Add a product to the cart (increments the line if " +
+			"already present). Omit cartId on the first call to create " +
+			"the cart implicitly; persist the returned cartId.",
+	}, h.addToCart)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "update_cart_item",
+		Description: "Change a cart line's quantity.",
+	}, h.updateCartItem)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "remove_cart_item",
+		Description: "Remove a line from the cart.",
+	}, h.removeCartItem)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "get_checkout_link",
+		Description: "Get the URL where the shopper completes checkout in " +
+			"their browser — reviewing the cart, choosing delivery and " +
+			"paying (card via the store's payment provider, or cash on " +
+			"delivery). Payment always happens on the store's own pages, " +
+			"never in chat.",
+	}, h.getCheckoutLink)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "track_order",
+		Description: "Track an existing order by its UUID (found in the " +
+			"confirmation email): fulfilment status, payment status and " +
+			"the carrier tracking link once shipped.",
+	}, h.trackOrder)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "subscribe_product_alert",
+		Description: "Subscribe an email address to a product alert: " +
+			"restock (back in stock) or price_drop (price falls to a " +
+			"target). Useful when a product is out of stock or too " +
+			"expensive right now.",
+	}, h.subscribeProductAlert)
+
 	return srv
 }
 

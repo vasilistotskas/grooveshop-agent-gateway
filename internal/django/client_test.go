@@ -33,7 +33,7 @@ func fixture(t *testing.T, name string) []byte {
 
 func newTestClient(t *testing.T, srvURL string) *Client {
 	t.Helper()
-	return New(srvURL+"/api/v1", "api.example.test",
+	return New(srvURL+"/api/v1", "api.example.test", "test-secret",
 		2*time.Second, testLogger(), nil)
 }
 
@@ -135,7 +135,7 @@ func TestGetPersistentServerErrorWrapsUpstreamDown(t *testing.T) {
 }
 
 func TestConnectionRefusedWrapsUpstreamDown(t *testing.T) {
-	c := New("http://127.0.0.1:1/api/v1", "api.example.test",
+	c := New("http://127.0.0.1:1/api/v1", "api.example.test", "test-secret",
 		200*time.Millisecond, testLogger(), nil)
 	_, err := c.ResolveTenant(context.Background(), "shop.example.test")
 	require.Error(t, err)

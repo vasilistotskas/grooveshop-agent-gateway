@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -73,6 +74,39 @@ func fakeDjangoMux(t *testing.T) http.Handler {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"detail": "Not found."}`))
 		})
+
+	// Cart endpoints: an anonymous GET mints the empty cart; a GET with
+	// X-Cart-Id returns the populated one. Mutations return fixtures.
+	mux.HandleFunc("GET /api/v1/cart",
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("X-Cart-Id") == "" {
+				serveFixture(t, w, "cart_empty.json")
+				return
+			}
+			serveFixture(t, w, "cart_with_items.json")
+		})
+	route("POST /api/v1/cart/item", "cart_item_created.json")
+	route("PUT /api/v1/cart/item/410", "cart_item_created.json")
+	mux.HandleFunc("DELETE /api/v1/cart/item/410",
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})
+	route("GET /api/v1/order/uuid/b9be45e5-6062-4976-ae7b-2c31eb2ad689",
+		"order_by_uuid.json")
+
+	// Product alerts: first subscription succeeds, repeats conflict.
+	var alertSubscribed atomic.Bool
+	mux.HandleFunc("POST /api/v1/product/alert",
+		func(w http.ResponseWriter, _ *http.Request) {
+			if alertSubscribed.Swap(true) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(
+					`{"detail": "Alert already exists."}`))
+				return
+			}
+			serveFixture(t, w, "product_alert_created.json")
+		})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("fake django: unexpected call %s %s", r.Method, r.URL)
 		w.WriteHeader(http.StatusNotFound)
@@ -103,7 +137,7 @@ func startGateway(t *testing.T) *httptest.Server {
 		RateLimitPerMin:  6000,
 		RateLimitBurst:   1000,
 	}
-	dj := django.New(cfg.DjangoBaseURL, cfg.DjangoPublicHost,
+	dj := django.New(cfg.DjangoBaseURL, cfg.DjangoPublicHost, "test-secret",
 		cfg.UpstreamTimeout, log, metrics)
 	rdb := redis.NewClient(&redis.Options{
 		Addr: "127.0.0.1:1", DialTimeout: 20 * time.Millisecond,
@@ -172,7 +206,9 @@ func TestMCPEndToEnd(t *testing.T) {
 			"search_products", "get_product", "list_categories",
 			"get_trending_searches", "get_product_reviews",
 			"get_shipping_options", "find_pickup_points",
-			"get_payment_methods",
+			"get_payment_methods", "create_cart", "get_cart",
+			"add_to_cart", "update_cart_item", "remove_cart_item",
+			"get_checkout_link", "track_order", "subscribe_product_alert",
 		}, names)
 	})
 
@@ -249,6 +285,69 @@ func TestMCPEndToEnd(t *testing.T) {
 			methods[1].(map[string]any)["label"].(string),
 		}
 		assert.Contains(t, labels, "VIVA_WALLET")
+	})
+
+	t.Run("add_to_cart creates a cart implicitly", func(t *testing.T) {
+		res := callTool(t, session, "add_to_cart", map[string]any{
+			"productId": 1, "quantity": 2,
+		})
+		require.False(t, res.IsError)
+		out := structured(t, res)
+		assert.Equal(t, "29eb4495-e018-45e7-b59c-6646302bd4ef", out["cartId"])
+		assert.EqualValues(t, 2, out["totalItems"])
+		assert.Equal(t, "929.36", out["total"])
+		items := out["items"].([]any)
+		require.Len(t, items, 1)
+		line := items[0].(map[string]any)
+		assert.EqualValues(t, 410, line["itemId"])
+		assert.EqualValues(t, 1, line["productId"])
+	})
+
+	t.Run("get_checkout_link builds the claim URL", func(t *testing.T) {
+		res := callTool(t, session, "get_checkout_link", map[string]any{
+			"cartId": "29eb4495-e018-45e7-b59c-6646302bd4ef",
+		})
+		require.False(t, res.IsError)
+		out := structured(t, res)
+		assert.Contains(t, out["url"],
+			"/cart/claim?uuid=29eb4495-e018-45e7-b59c-6646302bd4ef")
+	})
+
+	t.Run("track_order reports status without recipient PII", func(t *testing.T) {
+		res := callTool(t, session, "track_order", map[string]any{
+			"orderUuid": "b9be45e5-6062-4976-ae7b-2c31eb2ad689",
+		})
+		require.False(t, res.IsError)
+		out := structured(t, res)
+		assert.Equal(t, "PROCESSING", out["status"])
+		tracking := out["tracking"].(map[string]any)
+		assert.Equal(t, "acs", tracking["carrier"])
+		assert.Contains(t, tracking["url"], "acscourier.net")
+
+		// The upstream payload carries the recipient's email, phone and
+		// address — none may survive the gateway.
+		raw, err := json.Marshal(res.StructuredContent)
+		require.NoError(t, err)
+		assert.NotContains(t, string(raw), "@example")
+		assert.NotContains(t, string(raw), "zipcode")
+	})
+
+	t.Run("subscribe_product_alert handles duplicates", func(t *testing.T) {
+		args := map[string]any{
+			"productId": 3, "kind": "restock",
+			"email": "shopper@example.com",
+		}
+		res := callTool(t, session, "subscribe_product_alert", args)
+		require.False(t, res.IsError)
+		out := structured(t, res)
+		assert.Equal(t, true, out["subscribed"])
+		assert.Equal(t, false, out["alreadySubscribed"])
+
+		res = callTool(t, session, "subscribe_product_alert", args)
+		require.False(t, res.IsError,
+			"a duplicate subscription is a satisfied outcome")
+		out = structured(t, res)
+		assert.Equal(t, true, out["alreadySubscribed"])
 	})
 
 	t.Run("reviews expose only first name", func(t *testing.T) {
