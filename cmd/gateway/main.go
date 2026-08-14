@@ -42,7 +42,7 @@ func run() error {
 		return err
 	}
 	rdb := redis.NewClient(redisOpts)
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	dj := django.New(
 		cfg.DjangoBaseURL, cfg.DjangoPublicHost,

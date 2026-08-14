@@ -175,13 +175,13 @@ func TestResolveErrorsWithoutStaleEntry(t *testing.T) {
 }
 
 func TestNormalizeHost(t *testing.T) {
-	cases := map[string]string{
-		"Shop.Example.Test":      "shop.example.test",
-		"shop.example.test:8443": "shop.example.test",
-		"  shop.example.test ":   "shop.example.test",
-		"":                       "",
+	cases := []struct{ in, want string }{
+		{"Shop.Example.Test", "shop.example.test"},
+		{"shop.example.test:8443", "shop.example.test"},
+		{"  shop.example.test ", "shop.example.test"},
+		{"", ""},
 	}
-	for in, want := range cases {
-		assert.Equal(t, want, NormalizeHost(in), "input %q", in)
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, NormalizeHost(tc.in), "input %q", tc.in)
 	}
 }
