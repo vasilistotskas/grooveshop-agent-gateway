@@ -1,6 +1,7 @@
 package django
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -48,36 +49,50 @@ func New(
 	}
 }
 
+// request describes one upstream call. Path is the templated path used for
+// metrics labels; query/body/headers are optional.
+type request struct {
+	method   string
+	path     string // templated, e.g. /product/{id}
+	rawPath  string // actual, e.g. /product/42; defaults to path
+	host     string // X-Forwarded-Host value
+	language string
+	query    url.Values
+	body     any
+	headers  map[string]string
+	out      any
+}
+
 // Ping reports Django reachability for /readyz's informational field.
 func (c *Client) Ping(ctx context.Context) error {
-	return c.get(ctx, c.publicHost, "", "/health/live", nil, nil)
+	return c.get(ctx, request{
+		path: "/health/live",
+		host: c.publicHost,
+	})
 }
 
 // ResolveTenant maps a storefront domain to its tenant configuration. It is
 // the only host-unscoped call: the platform API host satisfies Django's
 // ALLOWED_HOSTS check while the domain being resolved rides the query.
 func (c *Client) ResolveTenant(ctx context.Context, domain string) (*TenantConfig, error) {
-	q := url.Values{"domain": {domain}}
 	var out TenantConfig
-	if err := c.get(ctx, c.publicHost, "", "/tenant/resolve", q, &out); err != nil {
+	err := c.get(ctx, request{
+		path:  "/tenant/resolve",
+		host:  c.publicHost,
+		query: url.Values{"domain": {domain}},
+		out:   &out,
+	})
+	if err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// get performs a GET with tenant headers and bounded retries. Only GETs are
-// retried — mutations are not idempotent at the transport level; checkout
-// idempotency lives in the checkout package.
-func (c *Client) get(
-	ctx context.Context,
-	forwardedHost, language, path string,
-	query url.Values,
-	out any,
-) error {
-	u := c.baseURL + path
-	if len(query) > 0 {
-		u += "?" + query.Encode()
-	}
+// get performs a GET with bounded retries. Only GETs are retried —
+// mutations are not idempotent at the transport level; checkout idempotency
+// lives in the checkout package.
+func (c *Client) get(ctx context.Context, req request) error {
+	req.method = http.MethodGet
 
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -91,7 +106,7 @@ func (c *Client) get(
 			}
 		}
 
-		err := c.do(ctx, http.MethodGet, u, path, forwardedHost, language, out)
+		err := c.do(ctx, req)
 		if err == nil {
 			return nil
 		}
@@ -103,20 +118,46 @@ func (c *Client) get(
 	return lastErr
 }
 
-func (c *Client) do(
-	ctx context.Context,
-	method, fullURL, templatePath, forwardedHost, language string,
-	out any,
-) error {
-	req, err := http.NewRequestWithContext(ctx, method, fullURL, nil)
+// send performs a non-GET call exactly once.
+func (c *Client) send(ctx context.Context, method string, req request) error {
+	req.method = method
+	return c.do(ctx, req)
+}
+
+func (c *Client) do(ctx context.Context, r request) error {
+	path := r.rawPath
+	if path == "" {
+		path = r.path
+	}
+	u := c.baseURL + path
+	if len(r.query) > 0 {
+		u += "?" + r.query.Encode()
+	}
+
+	var body io.Reader
+	if r.body != nil {
+		raw, err := json.Marshal(r.body)
+		if err != nil {
+			return fmt.Errorf("django: encode body: %w", err)
+		}
+		body = bytes.NewReader(raw)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, r.method, u, body)
 	if err != nil {
 		return fmt.Errorf("django: build request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Forwarded-Proto", "https")
-	req.Header.Set("X-Forwarded-Host", forwardedHost)
-	if language != "" {
-		req.Header.Set("X-Language", language)
+	req.Header.Set("X-Forwarded-Host", r.host)
+	if r.language != "" {
+		req.Header.Set("X-Language", r.language)
+	}
+	if r.body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range r.headers {
+		req.Header.Set(k, v)
 	}
 
 	start := time.Now()
@@ -128,12 +169,12 @@ func (c *Client) do(
 		code = strconv.Itoa(resp.StatusCode)
 	}
 	if c.metrics != nil {
-		c.metrics.UpstreamRequests.WithLabelValues(templatePath, method, code).Inc()
-		c.metrics.UpstreamDuration.WithLabelValues(templatePath).Observe(elapsed.Seconds())
+		c.metrics.UpstreamRequests.WithLabelValues(r.path, r.method, code).Inc()
+		c.metrics.UpstreamDuration.WithLabelValues(r.path).Observe(elapsed.Seconds())
 	}
 	if err != nil {
 		c.log.WarnContext(ctx, "django request failed",
-			slog.String("upstream", templatePath),
+			slog.String("upstream", r.path),
 			slog.String("error", err.Error()),
 			slog.Int64("upstream_ms", elapsed.Milliseconds()),
 		)
@@ -144,14 +185,14 @@ func (c *Client) do(
 	if resp.StatusCode >= 400 {
 		return c.apiError(resp)
 	}
-	if out == nil {
+	if r.out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
 	dec := json.NewDecoder(resp.Body)
 	dec.UseNumber()
-	if err := dec.Decode(out); err != nil {
-		return fmt.Errorf("django: decode %s: %w", templatePath, err)
+	if err := dec.Decode(r.out); err != nil {
+		return fmt.Errorf("django: decode %s: %w", r.path, err)
 	}
 	return nil
 }

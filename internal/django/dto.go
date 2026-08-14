@@ -1,10 +1,208 @@
 package django
 
+import "encoding/json"
+
 // DTOs are hand-written and hold only the fields the gateway consumes —
 // unknown upstream fields are ignored by encoding/json. Drift against
 // grooveshop-django-api/schema.yml is guarded by fixture-decode tests in
 // dto_decode_test.go; refresh testdata/fixtures/django/ whenever a used
 // endpoint's schema changes.
+
+// Page is the DRF pagination envelope shared by every list endpoint.
+type Page[T any] struct {
+	Links struct {
+		Next     *string `json:"next"`
+		Previous *string `json:"previous"`
+	} `json:"links"`
+	Count      int64 `json:"count"`
+	TotalPages int   `json:"totalPages"`
+	PageSize   int   `json:"pageSize"`
+	Page       int   `json:"page"`
+	Results    []T   `json:"results"`
+}
+
+// Translation is the parler per-language payload for products/categories.
+type Translation struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// Product covers list and detail shapes; money and percentages stay
+// json.Number end to end (COERCE_DECIMAL_TO_STRING=False upstream) and are
+// formatted only at protocol edges. FinalPrice is VAT-inclusive.
+type Product struct {
+	ID           int64                  `json:"id"`
+	Translations map[string]Translation `json:"translations"`
+	Slug         string                 `json:"slug"`
+	Category     int64                  `json:"category"`
+	BrandName    *string                `json:"brandName"`
+	Price        json.Number            `json:"price"`
+	Stock        int                    `json:"stock"`
+	Active       bool                   `json:"active"`
+	Weight       *struct {
+		Unit  string      `json:"unit"`
+		Value json.Number `json:"value"`
+	} `json:"weight"`
+	DiscountPercent        json.Number `json:"discountPercent"`
+	VatPercent             json.Number `json:"vatPercent"`
+	FinalPrice             json.Number `json:"finalPrice"`
+	MainImagePath          string      `json:"mainImagePath"`
+	ReviewAverage          json.Number `json:"reviewAverage"`
+	ReviewCount            int         `json:"reviewCount"`
+	LikesCount             int         `json:"likesCount"`
+	ViewCount              int         `json:"viewCount"`
+	UUID                   string      `json:"uuid"`
+	PriceDropAlertsEnabled bool        `json:"priceDropAlertsEnabled"`
+}
+
+// ProductVariants is the /product/{id}/variants payload. Axes stay raw: the
+// gateway forwards them verbatim and the shape varies per variant group.
+type ProductVariants struct {
+	Axes     json.RawMessage `json:"axes"`
+	Variants []Product       `json:"variants"`
+}
+
+// SearchHit is one /search/product result (ProductTranslationSerializer).
+// The Meilisearch "formatted"/"matchesPosition" blobs are display sugar the
+// gateway does not consume.
+type SearchHit struct {
+	ID              int64       `json:"id"`
+	Slug            string      `json:"slug"`
+	LanguageCode    string      `json:"languageCode"`
+	Name            string      `json:"name"`
+	Description     string      `json:"description"`
+	Master          int64       `json:"master"`
+	MainImagePath   string      `json:"mainImagePath"`
+	ContentType     string      `json:"contentType"`
+	FinalPrice      json.Number `json:"finalPrice"`
+	Price           json.Number `json:"price"`
+	DiscountPercent json.Number `json:"discountPercent"`
+	Stock           int         `json:"stock"`
+	LikesCount      int         `json:"likesCount"`
+	ViewCount       int         `json:"viewCount"`
+	ReviewAverage   json.Number `json:"reviewAverage"`
+	VatPercent      json.Number `json:"vatPercent"`
+}
+
+type SearchProductResponse struct {
+	Limit              int                         `json:"limit"`
+	Offset             int                         `json:"offset"`
+	EstimatedTotalHits int64                       `json:"estimatedTotalHits"`
+	Results            []SearchHit                 `json:"results"`
+	FacetDistribution  map[string]map[string]int64 `json:"facetDistribution"`
+}
+
+type TrendingResponse struct {
+	WindowHours int    `json:"windowHours"`
+	ContentType string `json:"contentType"`
+	Results     []struct {
+		Query string `json:"query"`
+		Count int    `json:"count"`
+	} `json:"results"`
+}
+
+// Category is one node of the MPTT tree from /product/category/all.
+type Category struct {
+	ID           int64                  `json:"id"`
+	Translations map[string]Translation `json:"translations"`
+	Slug         string                 `json:"slug"`
+	Active       bool                   `json:"active"`
+	Parent       *int64                 `json:"parent"`
+	Level        int                    `json:"level"`
+	TreeID       int64                  `json:"treeId"`
+}
+
+// PayWayTranslation: name is an identifier-style label (e.g. VIVA_WALLET);
+// description/instructions are customer-facing copy.
+type PayWayTranslation struct {
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	Instructions string `json:"instructions"`
+}
+
+type PayWay struct {
+	ID                   int64                        `json:"id"`
+	Translations         map[string]PayWayTranslation `json:"translations"`
+	Active               bool                         `json:"active"`
+	Cost                 json.Number                  `json:"cost"`
+	FreeThreshold        json.Number                  `json:"freeThreshold"`
+	SortOrder            int                          `json:"sortOrder"`
+	ProviderCode         string                       `json:"providerCode"`
+	IsOnlinePayment      bool                         `json:"isOnlinePayment"`
+	RequiresConfirmation bool                         `json:"requiresConfirmation"`
+}
+
+type ShippingOption struct {
+	ProviderCode string          `json:"providerCode"`
+	ProviderName string          `json:"providerName"`
+	Kind         string          `json:"kind"`
+	Price        json.Number     `json:"price"`
+	Currency     string          `json:"currency"`
+	Priority     int             `json:"priority"`
+	Metadata     json.RawMessage `json:"metadata"`
+}
+
+type FreeShippingInfo struct {
+	Providers []struct {
+		ProviderCode string      `json:"providerCode"`
+		ProviderName string      `json:"providerName"`
+		Kind         string      `json:"kind"`
+		Threshold    json.Number `json:"threshold"`
+		Priority     int         `json:"priority"`
+	} `json:"providers"`
+	MinThreshold json.Number `json:"minThreshold"`
+	MaxThreshold json.Number `json:"maxThreshold"`
+	Currency     string      `json:"currency"`
+}
+
+// AcsStation: coordinates and weights arrive as strings from ACS.
+type AcsStation struct {
+	ID           int64  `json:"id"`
+	ExternalID   string `json:"externalId"`
+	BranchCode   string `json:"branchCode"`
+	ShopKind     int    `json:"shopKind"`
+	Name         string `json:"name"`
+	AddressLine1 string `json:"addressLine1"`
+	City         string `json:"city"`
+	PostalCode   string `json:"postalCode"`
+	CountryCode  string `json:"countryCode"`
+	Lat          string `json:"lat"`
+	Lng          string `json:"lng"`
+	MaxWeightKg  string `json:"maxWeightKg"`
+	WorkingHours string `json:"workingHours"`
+	IsActive     bool   `json:"isActive"`
+}
+
+// BoxNowLocker mirrors the boxnow lockers/nearest proxy response.
+type BoxNowLocker struct {
+	ID           string      `json:"id"`
+	Type         string      `json:"type"`
+	Lat          string      `json:"lat"`
+	Lng          string      `json:"lng"`
+	Title        string      `json:"title"`
+	Name         string      `json:"name"`
+	PostalCode   string      `json:"postalCode"`
+	Country      string      `json:"country"`
+	Note         string      `json:"note"`
+	AddressLine1 string      `json:"addressLine1"`
+	AddressLine2 string      `json:"addressLine2"`
+	Distance     json.Number `json:"distance"`
+}
+
+// Review deliberately decodes only the reviewer's first name: the upstream
+// serializer embeds the full account object (email, phone, address) on an
+// anonymous endpoint, and that data must never transit the gateway.
+type Review struct {
+	ID           int64 `json:"id"`
+	Rate         int   `json:"rate"`
+	Translations map[string]struct {
+		Comment string `json:"comment"`
+	} `json:"translations"`
+	CreatedAt string `json:"createdAt"`
+	User      struct {
+		FirstName string `json:"firstName"`
+	} `json:"user"`
+}
 
 // TenantConfig mirrors the tenant/resolve wire shape (camelCase, produced
 // by djangorestframework-camel-case from TenantConfigSerializer).

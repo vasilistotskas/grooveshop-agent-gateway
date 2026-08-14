@@ -1,0 +1,102 @@
+[
+ {
+  "id": 1,
+  "translations": {
+   "el": {
+    "name": "Bags & Luggage",
+    "description": "Her start popular our low perhaps by. Continue pass and fund difficult food expert.\nYour feeling western vote reach nothing government. Their safe statement answer risk economy.\nRecognize together owner analysis land draw. Door worker research word resource car area."
+   },
+   "en": {
+    "name": "Bags & Luggage",
+    "description": "Nor door Democrat early. Form say vote conference. Low hundred purpose player to.\nStyle score property few. Trade nature wait close offer. Suddenly stay writer physical drug second speech form.\nResponse family economy course. Build collection explain think whatever production late along."
+   },
+   "de": {
+    "name": "Pet Supplies",
+    "description": "Born husband executive past kitchen fear enough.\nOutside far into. Theory reach improve scientist identify week money.\nTv store my party. Degree organization describe you soldier ready strategy. Represent mother cell against.\nLeave our Mrs herself there."
+   }
+  },
+  "slug": "without-minute",
+  "active": true,
+  "parent": null,
+  "level": 0,
+  "treeId": 1,
+  "createdAt": "2026-01-30T21:13:05.238886+02:00",
+  "updatedAt": "2026-01-30T21:13:05.238896+02:00",
+  "uuid": "f9899b74-3c27-4a36-bb0c-1ad3cadf1a30"
+ },
+ {
+  "id": 2,
+  "translations": {
+   "el": {
+    "name": "Video Games",
+    "description": "Pick purpose surface. Next role science reason popular view and. Represent cultural lose family he. City Mr protect behavior great.\nTrouble course improve. Visit sign bar enter.\nMiddle hotel song specific. Support authority development capital treat training best."
+   },
+   "en": {
+    "name": "Watches",
+    "description": "Teach what tonight building. Hair receive say clearly interesting commercial science foreign. Tend what idea job nothing cultural section upon.\nHigh recent campaign fire which next. Stop out agreement across lead.\nLetter above low detail. Authority traditional cultural glass ago."
+   },
+   "de": {
+    "name": "Music & Instruments",
+    "description": "Wind when station notice. Down organization there stand else perhaps.\nStore myself join method statement office method. Experience Democrat your create wrong big. Seek term through.\nGarden laugh newspaper kid. Threat standard cut shoulder summer answer."
+   }
+  },
+  "slug": "national-realize",
+  "active": true,
+  "parent": null,
+  "level": 0,
+  "treeId": 2,
+  "createdAt": "2026-01-30T21:13:05.268370+02:00",
+  "updatedAt": "2026-01-30T21:13:05.268378+02:00",
+  "uuid": "ca56ac55-b374-439a-a203-613a1bd71d4c"
+ },
+ {
+  "id": 3,
+  "translations": {
+   "el": {
+    "name": "Party Supplies",
+    "description": "Matter case last carry draw do. If prepare project memory beat. Partner month paper never treat professional.\nColor financial black add someone also. Actually action star. Perform much member present.\nStatement strategy send minute thought agent peace. However young red window plan anyone with."
+   },
+   "en": {
+    "name": "Pet Supplies",
+    "description": "Your recognize system event well church. Foot method floor art Congress. Knowledge relate admit last person.\nColor include deep. Find break eye say many increase gas."
+   },
+   "de": {
+    "name": "Health & Wellness",
+    "description": "Data treatment different peace. Century firm beat far.\nAgency about enough free detail.\nRate lay he past likely. Pay wrong TV may. Concern capital have use rest director thousand rock. Agency standard wall system cell crime concern."
+   }
+  },
+  "slug": "themselves-add",
+  "active": true,
+  "parent": null,
+  "level": 0,
+  "treeId": 3,
+  "createdAt": "2026-01-30T21:13:05.297076+02:00",
+  "updatedAt": "2026-01-30T21:13:05.297085+02:00",
+  "uuid": "18f8d5bd-6f6e-4c54-a25a-7725223e3e56"
+ },
+ {
+  "id": 4,
+  "translations": {
+   "el": {
+    "name": "Seasonal",
+    "description": "Minute admit bad maybe as people. Indicate meeting trial.\nSimply energy test others. Development than answer almost.\nSend four suddenly computer two significant. Give cause exist energy may.\nFriend challenge then or offer card."
+   },
+   "en": {
+    "name": "Books",
+    "description": "Hold want other read our resource. Then free member small summer politics.\nCare certain customer law on. Contain win owner.\nFrom month news truth. Visit worker stuff enter. Near course stay travel his its."
+   },
+   "de": {
+    "name": "Toys & Games",
+    "description": "Effect traditional group. Exactly term part defense.\nTravel movie country sort traditional. Provide tend history toward concern society address. Final measure run according.\nOnly yourself despite each camera. Possible operation cost make century."
+   }
+  },
+  "slug": "truth-often-author",
+  "active": true,
+  "parent": null,
+  "level": 0,
+  "treeId": 4,
+  "createdAt": "2026-01-30T21:13:05.325581+02:00",
+  "updatedAt": "2026-01-30T21:13:05.325589+02:00",
+  "uuid": "7b0afaf0-44eb-4311-80c9-225657fddbfd"
+ }
+]
