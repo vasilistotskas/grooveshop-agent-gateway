@@ -91,7 +91,7 @@ func (c *Client) RemoveCartItem(
 }
 
 // OrderByUUID fetches an order through the guest flow: possession of the
-// UUID is the authorization (IsOwnerOrAdminOrGuest reads ?uuid=).
+// unguessable UUID in the path IS the authorization.
 func (c *Client) OrderByUUID(
 	ctx context.Context, host, lang, orderUUID string,
 ) (*Order, error) {
@@ -101,7 +101,6 @@ func (c *Client) OrderByUUID(
 		rawPath:  "/order/uuid/" + url.PathEscape(orderUUID),
 		host:     host,
 		language: lang,
-		query:    url.Values{"uuid": {orderUUID}},
 		out:      &out,
 	})
 	if err != nil {
