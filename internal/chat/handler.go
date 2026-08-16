@@ -138,6 +138,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		// The status line alone is undebuggable — surface the model
 		// API's error body and the failing request shape.
+		message := "Η συνομιλία διακόπηκε προσωρινά — δοκίμασε ξανά."
 		var apierr *openai.Error
 		if errors.As(err, &apierr) {
 			attrs = append(attrs,
@@ -150,11 +151,15 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 				slog.String("upstream_request", truncateStr(
 					redactAuth(string(apierr.DumpRequest(true))), 8192)),
 			)
+			// Rate limits are the one upstream failure the shopper can
+			// act on (wait) — don't present them as a generic outage.
+			if apierr.StatusCode == http.StatusTooManyRequests {
+				message = "Ο βοηθός δέχεται πολλές ερωτήσεις αυτή τη " +
+					"στιγμή — δοκίμασε ξανά σε λίγο."
+			}
 		}
 		s.log.ErrorContext(r.Context(), "chat turn failed", attrs...)
-		sse.event("error", map[string]string{
-			"message": "Η συνομιλία διακόπηκε προσωρινά — δοκίμασε ξανά.",
-		})
+		sse.event("error", map[string]string{"message": message})
 		return
 	}
 
