@@ -111,6 +111,7 @@ func fakeDjangoMux(t *testing.T) http.Handler {
 	agentRoute("GET /api/v1/agent/me", "agent_me.json")
 	agentRoute("GET /api/v1/agent/me/orders", "agent_orders.json")
 	agentRoute("GET /api/v1/agent/me/loyalty", "agent_loyalty.json")
+	agentRoute("GET /api/v1/agent/me/favourites", "agent_favourites.json")
 
 	// Product alerts: first subscription succeeds, repeats conflict.
 	var alertSubscribed atomic.Bool
@@ -228,7 +229,7 @@ func TestMCPEndToEnd(t *testing.T) {
 			"add_to_cart", "update_cart_item", "remove_cart_item",
 			"get_checkout_link", "track_order", "subscribe_product_alert",
 			"create_checkout", "update_checkout", "complete_checkout",
-			"my_orders", "my_loyalty_points",
+			"my_orders", "my_loyalty_points", "my_favourites",
 		}, names)
 	})
 
@@ -446,6 +447,19 @@ func TestMCPAccountTools(t *testing.T) {
 		assert.Equal(t, "b9be45e5-6062-4976-ae7b-2c31eb2ad689",
 			first["orderUuid"])
 		assert.Equal(t, "929.36", first["itemsTotal"])
+	})
+
+	t.Run("linked my_favourites returns the shopper's products", func(t *testing.T) {
+		session := connectMCPWithBearer(t, gw.URL, "linked-token")
+		res := callTool(t, session, "my_favourites", map[string]any{})
+		require.False(t, res.IsError)
+		out := structured(t, res)
+		favs := out["favourites"].([]any)
+		require.Len(t, favs, 2)
+		first := favs[0].(map[string]any)
+		assert.EqualValues(t, 6125, first["productId"])
+		assert.Equal(t, "476.35", first["finalPrice"])
+		assert.Equal(t, true, first["inStock"])
 	})
 
 	t.Run("linked my_loyalty_points localizes the tier", func(t *testing.T) {

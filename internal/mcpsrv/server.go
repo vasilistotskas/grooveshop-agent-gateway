@@ -168,6 +168,13 @@ func NewServer(d Deps) *mcp.Server {
 			"the loyalty:read scope).",
 	}, h.myLoyaltyPoints)
 
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "my_favourites",
+		Description: "The linked shopper's favourite products — the " +
+			"basis for personalised recommendations (requires a " +
+			"connected account with the favourites:read scope).",
+	}, h.myFavourites)
+
 	// UCP checkout capability (dev.ucp.shopping.checkout, MCP transport
 	// binding). Structured output is the UCP checkout session object.
 	mcp.AddTool(srv, &mcp.Tool{

@@ -142,3 +142,59 @@ func (h *handlers) myLoyaltyPoints(
 	summary += ")."
 	return textResult("%s", summary), out, nil
 }
+
+type MyFavouritesOut struct {
+	Favourites []MyFavourite `json:"favourites"`
+}
+
+type MyFavourite struct {
+	ProductID  int64  `json:"productId"`
+	Name       string `json:"name"`
+	FinalPrice string `json:"finalPrice"`
+	Currency   string `json:"currency"`
+	InStock    bool   `json:"inStock"`
+	AddedAt    string `json:"addedAt"`
+}
+
+func (h *handlers) myFavourites(
+	ctx context.Context, _ *mcp.CallToolRequest, _ struct{},
+) (*mcp.CallToolResult, MyFavouritesOut, error) {
+	var out MyFavouritesOut
+	t, err := h.tenantFor(ctx)
+	if err != nil {
+		return nil, out, err
+	}
+	linked, err := h.linkedFor(ctx, t)
+	if err != nil {
+		return nil, out, err
+	}
+
+	favourites, err := h.deps.Django.AgentFavourites(
+		ctx, t.Domain, t.DefaultLocale, linked.Bearer)
+	if err != nil {
+		if errors.Is(err, django.ErrForbidden) {
+			return nil, out, errors.New(
+				"the linked account's token is missing the " +
+					"favourites:read scope; re-authorize requesting it")
+		}
+		return nil, out, upstreamErr(err, "no favourites found")
+	}
+
+	out.Favourites = make([]MyFavourite, 0, len(favourites))
+	for _, f := range favourites {
+		out.Favourites = append(out.Favourites, MyFavourite{
+			ProductID:  f.ProductID,
+			Name:       f.Name,
+			FinalPrice: num(f.FinalPrice),
+			Currency:   f.Currency,
+			InStock:    f.InStock,
+			AddedAt:    f.AddedAt,
+		})
+	}
+
+	return textResult(
+		"The linked account has %d favourite products. Use them to "+
+			"personalise suggestions (get_product for details, "+
+			"add_to_cart to buy); prices are VAT-inclusive.",
+		len(out.Favourites)), out, nil
+}

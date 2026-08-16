@@ -101,3 +101,30 @@ func (c *Client) AgentLoyalty(
 	}
 	return &out, nil
 }
+
+// AgentFavourite is one favourited product (scope: favourites:read).
+type AgentFavourite struct {
+	ProductID  int64       `json:"productId"`
+	Name       string      `json:"name"`
+	FinalPrice json.Number `json:"finalPrice"`
+	Currency   string      `json:"currency"`
+	InStock    bool        `json:"inStock"`
+	AddedAt    string      `json:"addedAt"`
+}
+
+func (c *Client) AgentFavourites(
+	ctx context.Context, host, lang, token string,
+) ([]AgentFavourite, error) {
+	var out []AgentFavourite
+	err := c.get(ctx, request{
+		path:     "/agent/me/favourites",
+		host:     host,
+		language: lang,
+		headers:  bearerHeaders(token),
+		out:      &out,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}

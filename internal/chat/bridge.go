@@ -27,6 +27,7 @@ var cartTools = map[string]bool{
 var accountTools = map[string]bool{
 	"my_orders":         true,
 	"my_loyalty_points": true,
+	"my_favourites":     true,
 }
 
 // bridge is a per-turn in-process MCP client over the shared tool server.
