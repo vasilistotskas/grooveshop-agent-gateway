@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
@@ -36,9 +36,9 @@ type Deps struct {
 	Resolver *tenant.Resolver
 	Version  string
 
-	// AnthropicOpts are extra Anthropic client options; the e2e suite
+	// ChatOpts are extra chat-model client options; the e2e suite
 	// injects a fake API base URL here.
-	AnthropicOpts []option.RequestOption
+	ChatOpts []option.RequestOption
 
 	// SigningKey signs UCP order webhooks and publishes in profiles.
 	SigningKey *ucp.SigningKey
@@ -110,7 +110,7 @@ func New(d Deps) http.Handler {
 		mcpServer,
 		chat.NewStore(d.Redis, d.Cfg.ConversationTTL, d.Cfg.ChatMaxTurns),
 		d.Log,
-		d.AnthropicOpts...,
+		d.ChatOpts...,
 	)
 	if chatSvc.Enabled() {
 		// The chat surface pays per token — it gets its own, stricter
@@ -121,7 +121,7 @@ func New(d Deps) http.Handler {
 		mux.Handle("POST /chat",
 			tenantMW(chatLimiter.Middleware()(chatSvc.Handler())))
 	} else {
-		d.Log.Warn("chat surface disabled: ANTHROPIC_API_KEY is not set")
+		d.Log.Warn("chat surface disabled: CHAT_API_KEY is not set")
 	}
 
 	// Global chain, outermost first. Metrics sits directly around the mux so

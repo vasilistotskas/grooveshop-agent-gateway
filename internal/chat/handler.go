@@ -8,16 +8,18 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/shared"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
-// refusalMessage is shown when safety classifiers decline a request; the
-// widget audience is Greek-first.
+// refusalMessage is shown when the model declines a request; the widget
+// audience is Greek-first.
 const refusalMessage = "Λυπάμαι, δεν μπορώ να βοηθήσω με αυτό το αίτημα. " +
 	"Μπορώ όμως να σε βοηθήσω να βρεις προϊόντα, να δεις διαθεσιμότητα " +
 	"και να ολοκληρώσεις την παραγγελία σου!"
@@ -26,32 +28,35 @@ type Service struct {
 	cfg    config.Config
 	server *mcp.Server
 	store  *Store
-	client anthropic.Client
+	client openai.Client
 	log    *slog.Logger
 }
 
-// New builds the chat service. Extra options are passed to the Anthropic
-// client (tests inject option.WithBaseURL for a fake API).
+// New builds the chat service. The model is reached over the
+// OpenAI-compatible chat-completions protocol — CHAT_BASE_URL selects the
+// provider (Gemini's compatibility endpoint by default; Groq, Mistral,
+// OpenRouter, … are config swaps). Extra options are passed to the client
+// (tests inject option.WithBaseURL for a fake API).
 func New(
 	cfg config.Config, server *mcp.Server, store *Store, log *slog.Logger,
 	opts ...option.RequestOption,
 ) *Service {
-	clientOpts := append(
-		[]option.RequestOption{option.WithAPIKey(cfg.AnthropicAPIKey)},
-		opts...,
-	)
+	clientOpts := append([]option.RequestOption{
+		option.WithBaseURL(cfg.ChatBaseURL),
+		option.WithAPIKey(cfg.ChatAPIKey),
+	}, opts...)
 	return &Service{
 		cfg:    cfg,
 		server: server,
 		store:  store,
-		client: anthropic.NewClient(clientOpts...),
+		client: openai.NewClient(clientOpts...),
 		log:    log,
 	}
 }
 
 // Enabled reports whether the chat surface is configured; without an API
 // key the route is not mounted at all.
-func (s *Service) Enabled() bool { return s.cfg.AnthropicAPIKey != "" }
+func (s *Service) Enabled() bool { return s.cfg.ChatAPIKey != "" }
 
 type chatRequest struct {
 	ConversationID string `json:"conversationId"`
@@ -155,8 +160,10 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// runTurn executes one assistant turn: Claude looping over the commerce
+// runTurn executes one assistant turn: the model looping over the commerce
 // tools via the in-process MCP bridge, streaming text deltas to the client.
+// The loop is bounded by ChatMaxIterations; each iteration is one streamed
+// chat completion that either finishes with text or requests tool calls.
 func (s *Service) runTurn(
 	r *http.Request,
 	t *tenant.Tenant,
@@ -177,65 +184,78 @@ func (s *Service) runTurn(
 		return "", "", false, fmt.Errorf("chat: list tools: %w", err)
 	}
 
-	messages := make([]anthropic.BetaMessageParam, 0, len(conv.Turns)+1)
-	for _, turn := range conv.Turns {
-		role := anthropic.BetaMessageParamRoleUser
-		if turn.Role == "assistant" {
-			role = anthropic.BetaMessageParamRoleAssistant
-		}
-		messages = append(messages, anthropic.BetaMessageParam{
-			Role: role,
-			Content: []anthropic.BetaContentBlockParamUnion{{
-				OfText: &anthropic.BetaTextBlockParam{Text: turn.Text},
-			}},
-		})
-	}
+	messages := make(
+		[]openai.ChatCompletionMessageParamUnion, 0, len(conv.Turns)+2)
 	messages = append(messages,
-		anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(userMessage)))
-
-	runner := s.client.Beta.Messages.NewToolRunnerStreaming(tools,
-		anthropic.BetaToolRunnerParams{
-			BetaMessageNewParams: anthropic.BetaMessageNewParams{
-				Model:     s.cfg.ChatModel,
-				MaxTokens: int64(s.cfg.ChatMaxTokens),
-				System: []anthropic.BetaTextBlockParam{
-					{Text: systemPrompt(t, conv.CartID)},
-				},
-				Messages: messages,
-				OutputConfig: anthropic.BetaOutputConfigParam{
-					Effort: anthropic.BetaOutputConfigEffort(s.cfg.ChatEffort),
-				},
-			},
-			MaxIterations: s.cfg.ChatMaxIterations,
-		})
+		openai.SystemMessage(systemPrompt(t, conv.CartID)))
+	for _, turn := range conv.Turns {
+		if turn.Role == "assistant" {
+			messages = append(messages, openai.AssistantMessage(turn.Text))
+		} else {
+			messages = append(messages, openai.UserMessage(turn.Text))
+		}
+	}
+	messages = append(messages, openai.UserMessage(userMessage))
 
 	var text strings.Builder
-	for stream, err := range runner.AllStreaming(ctx) {
-		if err != nil {
-			return "", "", false, err
+	for range s.cfg.ChatMaxIterations {
+		params := openai.ChatCompletionNewParams{
+			Model:               s.cfg.ChatModel,
+			Messages:            messages,
+			Tools:               tools,
+			MaxCompletionTokens: openai.Int(int64(s.cfg.ChatMaxTokens)),
 		}
-		for event, err := range stream {
-			if err != nil {
-				return "", "", false, err
-			}
-			if delta, ok := event.AsAny().(anthropic.BetaRawContentBlockDeltaEvent); ok {
-				if td, ok := delta.Delta.AsAny().(anthropic.BetaTextDelta); ok &&
-					td.Text != "" {
-					text.WriteString(td.Text)
-					sse.event("delta", map[string]string{"text": td.Text})
+		if s.cfg.ChatEffort != "" {
+			params.ReasoningEffort = shared.ReasoningEffort(s.cfg.ChatEffort)
+		}
+
+		stream := s.client.Chat.Completions.NewStreaming(ctx, params)
+		acc := openai.ChatCompletionAccumulator{}
+		for stream.Next() {
+			chunk := stream.Current()
+			acc.AddChunk(chunk)
+			if len(chunk.Choices) > 0 {
+				if delta := chunk.Choices[0].Delta.Content; delta != "" {
+					text.WriteString(delta)
+					sse.event("delta", map[string]string{"text": delta})
 				}
 			}
 		}
-	}
-	if err := runner.Err(); err != nil {
-		return "", "", false, err
-	}
+		if err := stream.Err(); err != nil {
+			return "", "", false, err
+		}
+		if len(acc.Choices) == 0 {
+			break
+		}
+		msg := acc.Choices[0].Message
 
-	if last := runner.LastMessage(); last != nil &&
-		string(last.StopReason) == "refusal" {
-		sse.event("delta", map[string]string{"text": refusalMessage})
-		text.Reset()
-		text.WriteString(refusalMessage)
+		if msg.Refusal != "" {
+			sse.event("delta", map[string]string{"text": refusalMessage})
+			text.Reset()
+			text.WriteString(refusalMessage)
+			break
+		}
+		if len(msg.ToolCalls) == 0 {
+			break
+		}
+
+		messages = append(messages, msg.ToParam())
+		for _, tc := range msg.ToolCalls {
+			input := map[string]any{}
+			if args := tc.Function.Arguments; args != "" {
+				if err := json.Unmarshal([]byte(args), &input); err != nil {
+					messages = append(messages, openai.ToolMessage(
+						"ERROR: invalid tool arguments", tc.ID))
+					continue
+				}
+			}
+			result, err := br.call(ctx, tc.Function.Name, input)
+			if err != nil {
+				return "", "", false, fmt.Errorf(
+					"chat: tool %s: %w", tc.Function.Name, err)
+			}
+			messages = append(messages, openai.ToolMessage(result, tc.ID))
+		}
 	}
 
 	cartID, cartMutated = br.cartState()

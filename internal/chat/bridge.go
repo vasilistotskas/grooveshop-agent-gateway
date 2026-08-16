@@ -6,9 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/toolrunner"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/shared"
 )
 
 // cartTools mutate the shopper's cart; a successful call flags the widget
@@ -20,9 +20,18 @@ var cartTools = map[string]bool{
 	"remove_cart_item": true,
 }
 
+// accountTools need an OAuth-linked agent credential on the MCP HTTP
+// request — the chat widget's shopper authenticates via the storefront
+// session instead, so these tools are excluded from the bot's toolset
+// (the storefront UI already shows orders and loyalty).
+var accountTools = map[string]bool{
+	"my_orders":         true,
+	"my_loyalty_points": true,
+}
+
 // bridge is a per-turn in-process MCP client over the shared tool server.
-// Claude's tool definitions are derived from the server's own schemas, so
-// the chatbot and external MCP agents can never drift apart.
+// The model's tool definitions are derived from the server's own schemas,
+// so the chatbot and external MCP agents can never drift apart.
 type bridge struct {
 	session *mcp.ClientSession
 
@@ -54,58 +63,52 @@ func (b *bridge) close() {
 	_ = b.session.Close()
 }
 
-// accountTools need an OAuth-linked agent credential on the MCP HTTP
-// request — the chat widget's shopper authenticates via the storefront
-// session instead, so these tools are excluded from the bot's toolset
-// (the storefront UI already shows orders and loyalty).
-var accountTools = map[string]bool{
-	"my_orders":         true,
-	"my_loyalty_points": true,
-}
-
-// tools converts every MCP tool into an Anthropic tool whose handler calls
-// back through the MCP session. Handlers run concurrently within a turn,
-// hence the mutex around cart state.
-func (b *bridge) tools(ctx context.Context) ([]anthropic.BetaTool, error) {
+// tools converts every MCP tool into an OpenAI-protocol function tool.
+// The MCP input schema is already draft-07-compatible JSON Schema, which
+// is what the chat-completions `parameters` field expects.
+func (b *bridge) tools(
+	ctx context.Context,
+) ([]openai.ChatCompletionToolUnionParam, error) {
 	list, err := b.session.ListTools(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	tools := make([]anthropic.BetaTool, 0, len(list.Tools))
+	tools := make([]openai.ChatCompletionToolUnionParam, 0, len(list.Tools))
 	for _, t := range list.Tools {
 		if accountTools[t.Name] {
 			continue
 		}
-		schemaJSON, err := json.Marshal(t.InputSchema)
+		raw, err := json.Marshal(t.InputSchema)
 		if err != nil {
 			return nil, err
 		}
-		name := t.Name
-		tool, err := toolrunner.NewBetaToolFromBytes(
-			name, t.Description, schemaJSON,
-			func(callCtx context.Context, input map[string]any) (
-				anthropic.BetaToolResultBlockParamContentUnion, error,
-			) {
-				return b.call(callCtx, name, input)
-			},
-		)
-		if err != nil {
+		var params shared.FunctionParameters
+		if err := json.Unmarshal(raw, &params); err != nil {
 			return nil, err
 		}
-		tools = append(tools, tool)
+		tools = append(tools, openai.ChatCompletionFunctionTool(
+			shared.FunctionDefinitionParam{
+				Name:        t.Name,
+				Description: openai.String(t.Description),
+				Parameters:  params,
+			}))
 	}
 	return tools, nil
 }
 
+// call executes one tool through the MCP session and renders the result
+// as the plain text a tool-role message carries. Business failures come
+// back as "ERROR: …" text so the model can react (the MCP server never
+// turns them into protocol errors).
 func (b *bridge) call(
 	ctx context.Context, name string, input map[string]any,
-) (anthropic.BetaToolResultBlockParamContentUnion, error) {
+) (string, error) {
 	res, err := b.session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      name,
 		Arguments: input,
 	})
 	if err != nil {
-		return anthropic.BetaToolResultBlockParamContentUnion{}, err
+		return "", err
 	}
 
 	var parts []string
@@ -126,9 +129,7 @@ func (b *bridge) call(
 	if res.IsError {
 		text = "ERROR: " + text
 	}
-	return anthropic.BetaToolResultBlockParamContentUnion{
-		OfText: &anthropic.BetaTextBlockParam{Text: text},
-	}, nil
+	return text, nil
 }
 
 // recordCartState tracks the active cart id and whether this turn changed

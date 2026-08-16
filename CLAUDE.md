@@ -15,7 +15,7 @@ storefront's own domain (Traefik path-routes them here):
 | `GET /.well-known/ucp` | UCP business profile (spec 2026-04-08) |
 | `/acp/*` | ACP agentic checkout REST (spec 2026-04-17) |
 | `/feeds/*` | Product feeds: google.xml, meta.xml, tiktok.xml, acp.json |
-| `POST /chat` | First-party shopping chatbot (SSE, Claude via anthropic-sdk-go) |
+| `POST /chat` | First-party shopping chatbot (SSE; OpenAI-compatible protocol via openai-go — Gemini free tier by default, any compatible provider via CHAT_BASE_URL) |
 | `/internal/*` | Cluster-only: Django order-event push (shared-secret header) |
 
 The gateway is a **protocol adapter**: all commerce state lives in Django
@@ -95,7 +95,7 @@ cannot race-detect) → build.
   `.well-known/oauth-protected-resource[/mcp]` names the Django API as
   the OAuth authorization server (allauth.idp: auth-code + PKCE + DCR).
 - Config gates: `ACP_BEARER_TOKEN` unset disables the ACP REST surface;
-  `ANTHROPIC_API_KEY` unset disables /chat. Both log a startup warning
+  `CHAT_API_KEY` unset disables /chat. Both log a startup warning
   instead of failing.
 - Infra repo: manifests under `manifests/app-constructs/grooveshop/base/`,
   path rules on the storefront ingress.

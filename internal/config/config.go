@@ -55,9 +55,14 @@ type Config struct {
 	// the surface entirely.
 	ACPBearerToken string
 
-	// Chat (first-party shopping assistant). An empty AnthropicAPIKey
-	// disables the /chat surface entirely.
-	AnthropicAPIKey   string
+	// Chat (first-party shopping assistant), spoken over the
+	// OpenAI-compatible chat-completions protocol. ChatBaseURL selects
+	// the provider (default: Gemini's compatibility endpoint — its free
+	// tier has the best Greek of the zero-cost options); Groq, Mistral,
+	// OpenRouter, Z.ai or Anthropic's compat layer are config swaps. An
+	// empty ChatAPIKey disables the /chat surface entirely.
+	ChatAPIKey        string
+	ChatBaseURL       string
 	ChatModel         string
 	ChatEffort        string
 	ChatMaxTokens     int
@@ -83,10 +88,12 @@ func Load() (Config, error) {
 		MediaURLTemplate: envOr("MEDIA_IMAGE_URL_TEMPLATE",
 			"https://assets.{domain}/media_stream-image/{path}"+
 				"/800/800/contain/entropy/transparent/5/80.webp"),
-		ACPBearerToken:  os.Getenv("ACP_BEARER_TOKEN"),
-		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
-		ChatModel:       envOr("CHAT_MODEL", "claude-sonnet-5"),
-		ChatEffort:      envOr("CHAT_EFFORT", "medium"),
+		ACPBearerToken: os.Getenv("ACP_BEARER_TOKEN"),
+		ChatAPIKey:     os.Getenv("CHAT_API_KEY"),
+		ChatBaseURL: envOr("CHAT_BASE_URL",
+			"https://generativelanguage.googleapis.com/v1beta/openai/"),
+		ChatModel:  envOr("CHAT_MODEL", "gemini-3.7-flash"),
+		ChatEffort: envOr("CHAT_EFFORT", "low"),
 		FeedImageURLTemplate: envOr("FEED_IMAGE_URL_TEMPLATE",
 			"https://assets.{domain}/media_stream-image/{path}"+
 				"/1000/1000/contain/center/FFFFFF/5/85.jpeg"),

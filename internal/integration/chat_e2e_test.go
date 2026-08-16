@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -25,48 +25,60 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
-// sseFrame writes one SSE event in the Anthropic wire format.
-func sseFrame(w *strings.Builder, event, data string) {
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+// chunk writes one OpenAI chat-completions SSE chunk (data-only frames;
+// the stream terminates with data: [DONE]).
+func chunk(b *strings.Builder, deltaJSON, finishReason string) {
+	finish := "null"
+	if finishReason != "" {
+		finish = `"` + finishReason + `"`
+	}
+	fmt.Fprintf(b,
+		`data: {"id":"cmpl-e2e","object":"chat.completion.chunk",`+
+			`"created":1,"model":"fake","choices":[{"index":0,`+
+			`"delta":%s,"finish_reason":%s}]}`+"\n\n",
+		deltaJSON, finish)
 }
 
 // textTurnSSE is a complete streamed assistant turn of plain text.
 func textTurnSSE(chunks ...string) string {
 	var b strings.Builder
-	sseFrame(&b, "message_start", `{"type":"message_start","message":{"id":"msg_text","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`)
-	sseFrame(&b, "content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+	chunk(&b, `{"role":"assistant","content":""}`, "")
 	for _, c := range chunks {
 		raw, _ := json.Marshal(c)
-		sseFrame(&b, "content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":`+string(raw)+`}}`)
+		chunk(&b, `{"content":`+string(raw)+`}`, "")
 	}
-	sseFrame(&b, "content_block_stop", `{"type":"content_block_stop","index":0}`)
-	sseFrame(&b, "message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}`)
-	sseFrame(&b, "message_stop", `{"type":"message_stop"}`)
+	chunk(&b, `{}`, "stop")
+	b.WriteString("data: [DONE]\n\n")
 	return b.String()
 }
 
-// toolUseTurnSSE is a streamed assistant turn that calls one tool.
+// toolUseTurnSSE is a streamed assistant turn that calls one tool, with
+// the arguments split across chunks the way real providers stream them.
 func toolUseTurnSSE(toolName, argsJSON string) string {
 	var b strings.Builder
-	sseFrame(&b, "message_start", `{"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`)
-	sseFrame(&b, "content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_e2e_1","name":"`+toolName+`","input":{}}}`)
-	raw, _ := json.Marshal(argsJSON)
-	sseFrame(&b, "content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":`+string(raw)+`}}`)
-	sseFrame(&b, "content_block_stop", `{"type":"content_block_stop","index":0}`)
-	sseFrame(&b, "message_delta", `{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":20}}`)
-	sseFrame(&b, "message_stop", `{"type":"message_stop"}`)
+	chunk(&b, `{"role":"assistant","tool_calls":[{"index":0,`+
+		`"id":"call_e2e_1","type":"function","function":{"name":"`+
+		toolName+`","arguments":""}}]}`, "")
+	half := len(argsJSON) / 2
+	for _, part := range []string{argsJSON[:half], argsJSON[half:]} {
+		raw, _ := json.Marshal(part)
+		chunk(&b, `{"tool_calls":[{"index":0,"function":{"arguments":`+
+			string(raw)+`}}]}`, "")
+	}
+	chunk(&b, `{}`, "tool_calls")
+	b.WriteString("data: [DONE]\n\n")
 	return b.String()
 }
 
-// fakeAnthropic scripts successive /v1/messages responses.
-type fakeAnthropic struct {
+// fakeChatAPI scripts successive /chat/completions responses.
+type fakeChatAPI struct {
 	calls   atomic.Int32
 	scripts []string
 	// lastBody captures the final request for assertions.
 	lastBody atomic.Pointer[[]byte]
 }
 
-func (f *fakeAnthropic) handler() http.Handler {
+func (f *fakeChatAPI) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var buf bytes.Buffer
 		_, _ = buf.ReadFrom(r.Body)
@@ -83,12 +95,12 @@ func (f *fakeAnthropic) handler() http.Handler {
 	})
 }
 
-func startChatGateway(t *testing.T, fake *fakeAnthropic) *httptest.Server {
+func startChatGateway(t *testing.T, fake *fakeChatAPI) *httptest.Server {
 	t.Helper()
 	djangoSrv := httptest.NewServer(fakeDjangoMux(t))
 	t.Cleanup(djangoSrv.Close)
-	anthSrv := httptest.NewServer(fake.handler())
-	t.Cleanup(anthSrv.Close)
+	modelSrv := httptest.NewServer(fake.handler())
+	t.Cleanup(modelSrv.Close)
 	rdb := startRedis(t)
 
 	log := quietLogger()
@@ -102,9 +114,10 @@ func startChatGateway(t *testing.T, fake *fakeAnthropic) *httptest.Server {
 		UpstreamTimeout:   5 * time.Second,
 		RateLimitPerMin:   6000,
 		RateLimitBurst:    1000,
-		AnthropicAPIKey:   "sk-test-fake",
-		ChatModel:         "claude-sonnet-5",
-		ChatEffort:        "medium",
+		ChatAPIKey:        "sk-test-fake",
+		ChatBaseURL:       modelSrv.URL,
+		ChatModel:         "gemini-3.7-flash",
+		ChatEffort:        "low",
 		ChatMaxTokens:     1024,
 		ChatMaxTurns:      10,
 		ChatMaxIterations: 4,
@@ -121,8 +134,8 @@ func startChatGateway(t *testing.T, fake *fakeAnthropic) *httptest.Server {
 	handler := server.New(server.Deps{
 		Cfg: cfg, Log: log, Metrics: metrics, Redis: rdb,
 		Django: dj, Resolver: resolver, Version: "test",
-		AnthropicOpts: []option.RequestOption{
-			option.WithBaseURL(anthSrv.URL),
+		ChatOpts: []option.RequestOption{
+			option.WithBaseURL(modelSrv.URL),
 		},
 	})
 	srv := httptest.NewServer(handler)
@@ -169,7 +182,7 @@ func postChat(t *testing.T, gwURL string, body map[string]any) []sseEvent {
 }
 
 func TestChatTextOnlyTurn(t *testing.T) {
-	fake := &fakeAnthropic{scripts: []string{
+	fake := &fakeChatAPI{scripts: []string{
 		textTurnSSE("Γεια σου! ", "Πώς μπορώ να βοηθήσω;"),
 	}}
 	gw := startChatGateway(t, fake)
@@ -191,14 +204,15 @@ func TestChatTextOnlyTurn(t *testing.T) {
 	assert.NotEmpty(t, done["conversationId"])
 	assert.Equal(t, false, done["cartMutated"])
 
-	// The system prompt must scope the assistant to the tenant's store.
+	// The system prompt must scope the assistant to the tenant's store,
+	// and the configured model must reach the wire.
 	body := *fake.lastBody.Load()
 	assert.Contains(t, string(body), "Webside")
-	assert.Contains(t, string(body), "claude-sonnet-5")
+	assert.Contains(t, string(body), "gemini-3.7-flash")
 }
 
 func TestChatToolUseTurnMutatesCart(t *testing.T) {
-	fake := &fakeAnthropic{scripts: []string{
+	fake := &fakeChatAPI{scripts: []string{
 		toolUseTurnSSE("add_to_cart", `{"productId": 1, "quantity": 1}`),
 		textTurnSSE("Το πρόσθεσα στο καλάθι σου!"),
 	}}
@@ -221,14 +235,15 @@ func TestChatToolUseTurnMutatesCart(t *testing.T) {
 		"tool result must be sent back for a second model call")
 
 	// The follow-up request must contain the tool result from the real
-	// in-process tool execution (cart total from the fixture).
+	// in-process tool execution (cart total from the fixture) attributed
+	// to the streamed tool-call id.
 	body := *fake.lastBody.Load()
-	assert.Contains(t, string(body), "toolu_e2e_1")
+	assert.Contains(t, string(body), "call_e2e_1")
 	assert.Contains(t, string(body), "929.36")
 }
 
 func TestChatConversationPersistsAcrossTurns(t *testing.T) {
-	fake := &fakeAnthropic{scripts: []string{
+	fake := &fakeChatAPI{scripts: []string{
 		textTurnSSE("Πρώτη απάντηση."),
 		textTurnSSE("Δεύτερη απάντηση."),
 	}}
