@@ -94,6 +94,24 @@ func fakeDjangoMux(t *testing.T) http.Handler {
 	route("GET /api/v1/order/uuid/b9be45e5-6062-4976-ae7b-2c31eb2ad689",
 		"order_by_uuid.json")
 
+	// Agent surface: OIDC-bearer-only endpoints. "Bearer linked-token"
+	// is the valid credential; anything else is rejected the way
+	// allauth.idp's TokenAuthentication would (401).
+	agentRoute := func(pattern, fixture string) {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer linked-token" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"detail": "Invalid token."}`))
+				return
+			}
+			serveFixture(t, w, fixture)
+		})
+	}
+	agentRoute("GET /api/v1/agent/me", "agent_me.json")
+	agentRoute("GET /api/v1/agent/me/orders", "agent_orders.json")
+	agentRoute("GET /api/v1/agent/me/loyalty", "agent_loyalty.json")
+
 	// Product alerts: first subscription succeeds, repeats conflict.
 	var alertSubscribed atomic.Bool
 	mux.HandleFunc("POST /api/v1/product/alert",
@@ -210,6 +228,7 @@ func TestMCPEndToEnd(t *testing.T) {
 			"add_to_cart", "update_cart_item", "remove_cart_item",
 			"get_checkout_link", "track_order", "subscribe_product_alert",
 			"create_checkout", "update_checkout", "complete_checkout",
+			"my_orders", "my_loyalty_points",
 		}, names)
 	})
 
@@ -375,4 +394,78 @@ func TestMCPUnknownHost404(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// bearerTransport injects a static Authorization header into every MCP
+// HTTP request, the way an OAuth-linked agent's client would.
+type bearerTransport struct{ token string }
+
+func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+b.token)
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+func connectMCPWithBearer(
+	t *testing.T, gatewayURL, token string,
+) *mcp.ClientSession {
+	t.Helper()
+	client := mcp.NewClient(&mcp.Implementation{
+		Name: "e2e-linked-client", Version: "test",
+	}, nil)
+	session, err := client.Connect(context.Background(),
+		&mcp.StreamableClientTransport{
+			Endpoint:             gatewayURL + "/mcp",
+			HTTPClient:           &http.Client{Transport: bearerTransport{token}},
+			DisableStandaloneSSE: true,
+		}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	return session
+}
+
+func TestMCPAccountTools(t *testing.T) {
+	gw := startGateway(t)
+
+	t.Run("anonymous my_orders explains the OAuth link", func(t *testing.T) {
+		session := connectMCP(t, gw.URL)
+		res := callTool(t, session, "my_orders", map[string]any{})
+		require.True(t, res.IsError)
+		text := res.Content[0].(*mcp.TextContent).Text
+		assert.Contains(t, text, "oauth-protected-resource/mcp")
+	})
+
+	t.Run("linked my_orders returns the shopper's orders", func(t *testing.T) {
+		session := connectMCPWithBearer(t, gw.URL, "linked-token")
+		res := callTool(t, session, "my_orders", map[string]any{})
+		require.False(t, res.IsError)
+		out := structured(t, res)
+		orders := out["orders"].([]any)
+		require.Len(t, orders, 2)
+		first := orders[0].(map[string]any)
+		assert.Equal(t, "b9be45e5-6062-4976-ae7b-2c31eb2ad689",
+			first["orderUuid"])
+		assert.Equal(t, "929.36", first["itemsTotal"])
+	})
+
+	t.Run("linked my_loyalty_points localizes the tier", func(t *testing.T) {
+		session := connectMCPWithBearer(t, gw.URL, "linked-token")
+		res := callTool(t, session, "my_loyalty_points", map[string]any{})
+		require.False(t, res.IsError)
+		out := structured(t, res)
+		assert.Equal(t, "420", out["pointsBalance"])
+		assert.Equal(t, "Χρυσό", out["tier"])
+	})
+
+	t.Run("invalid bearer is challenged with 401 + RFC 9728", func(t *testing.T) {
+		req, err := http.NewRequest(http.MethodPost, gw.URL+"/mcp", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer expired-token")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		assert.Contains(t, resp.Header.Get("WWW-Authenticate"),
+			"oauth-protected-resource/mcp")
+	})
 }

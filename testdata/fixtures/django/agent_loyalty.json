@@ -1,0 +1,15 @@
+{
+  "pointsBalance": 420,
+  "totalXp": 5200,
+  "level": 6,
+  "tier": {
+    "id": 2,
+    "translations": {
+      "el": { "name": "Χρυσό" },
+      "en": { "name": "Gold" }
+    },
+    "requiredLevel": 5,
+    "pointsMultiplier": "1.50"
+  },
+  "pointsToNextTier": 4800
+}

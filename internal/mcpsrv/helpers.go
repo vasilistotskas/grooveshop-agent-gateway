@@ -37,6 +37,14 @@ func upstreamErr(err error, notFound string) error {
 	switch {
 	case errors.Is(err, django.ErrNotFound):
 		return errors.New(notFound)
+	// Guest-flow 403s (e.g. a wrong order UUID) are "not yours to see" —
+	// for an agent that is indistinguishable from not found.
+	case errors.Is(err, django.ErrForbidden):
+		return errors.New(notFound)
+	case errors.Is(err, django.ErrUnauthorized):
+		return errors.New(
+			"authentication is required or the access token has expired; " +
+				"re-link the shopper's account and retry")
 	case errors.Is(err, django.ErrThrottled):
 		return errors.New(
 			"the store is rate limiting requests; wait a minute and retry")

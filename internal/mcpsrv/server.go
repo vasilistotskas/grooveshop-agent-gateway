@@ -148,6 +148,26 @@ func NewServer(d Deps) *mcp.Server {
 			"expensive right now.",
 	}, h.subscribeProductAlert)
 
+	// Account-scoped tools: need a linked shopper account (OAuth
+	// authorization-code + PKCE against the store's identity provider;
+	// discovery via /.well-known/oauth-protected-resource/mcp). The
+	// bearer token travels on the MCP HTTP request's Authorization
+	// header and is forwarded to Django, which enforces scopes.
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "my_orders",
+		Description: "The linked shopper's recent orders (requires a " +
+			"connected account with the orders:read scope). Returns " +
+			"status, payment state and totals; use track_order with an " +
+			"orderUuid for carrier tracking.",
+	}, h.myOrders)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "my_loyalty_points",
+		Description: "The linked shopper's loyalty summary — spendable " +
+			"points, level and tier (requires a connected account with " +
+			"the loyalty:read scope).",
+	}, h.myLoyaltyPoints)
+
 	// UCP checkout capability (dev.ucp.shopping.checkout, MCP transport
 	// binding). Structured output is the UCP checkout session object.
 	mcp.AddTool(srv, &mcp.Tool{

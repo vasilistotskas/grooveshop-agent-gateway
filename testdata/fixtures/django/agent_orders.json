@@ -1,0 +1,26 @@
+[
+  {
+    "id": 684,
+    "uuid": "b9be45e5-6062-4976-ae7b-2c31eb2ad689",
+    "status": "PENDING",
+    "statusDisplay": "Σε εκκρεμότητα",
+    "paymentStatus": "COMPLETED",
+    "paymentStatusDisplay": "Ολοκληρωμένη",
+    "isPaid": true,
+    "createdAt": "2026-08-01T10:00:00+03:00",
+    "totalPriceItems": "929.36",
+    "totalPriceExtra": "4.50"
+  },
+  {
+    "id": 620,
+    "uuid": "0e35c7e5-8a5d-4f6e-9be1-2be929e14a41",
+    "status": "COMPLETED",
+    "statusDisplay": "Ολοκληρωμένη",
+    "paymentStatus": "COMPLETED",
+    "paymentStatusDisplay": "Ολοκληρωμένη",
+    "isPaid": true,
+    "createdAt": "2026-06-11T09:30:00+03:00",
+    "totalPriceItems": "120.00",
+    "totalPriceExtra": "0.00"
+  }
+]

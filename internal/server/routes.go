@@ -20,6 +20,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/feeds"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/identity"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcpsrv"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
@@ -74,7 +75,14 @@ func New(d Deps) http.Handler {
 		Log:              d.Log,
 		Version:          d.Version,
 	})
-	mux.Handle("/mcp", tenantMW(mcpsrv.Handler(mcpServer, d.Log)))
+	// Identity runs inside the tenant middleware (the upstream token
+	// probe needs the tenant). Auth is OPTIONAL — anonymous shopping
+	// stays open; a present-but-invalid bearer gets the RFC 9728
+	// challenge so MCP clients can (re-)run their OAuth flow.
+	identityMW := identity.Middleware(
+		identity.NewVerifier(d.Django, d.Log), d.Log)
+	mux.Handle("/mcp",
+		tenantMW(identityMW(mcpsrv.Handler(mcpServer, d.Log))))
 
 	mux.Handle("GET /.well-known/ucp",
 		tenantMW(ucp.ProfileHandler(d.SigningKey)))

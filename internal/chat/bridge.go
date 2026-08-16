@@ -54,6 +54,15 @@ func (b *bridge) close() {
 	_ = b.session.Close()
 }
 
+// accountTools need an OAuth-linked agent credential on the MCP HTTP
+// request — the chat widget's shopper authenticates via the storefront
+// session instead, so these tools are excluded from the bot's toolset
+// (the storefront UI already shows orders and loyalty).
+var accountTools = map[string]bool{
+	"my_orders":         true,
+	"my_loyalty_points": true,
+}
+
 // tools converts every MCP tool into an Anthropic tool whose handler calls
 // back through the MCP session. Handlers run concurrently within a turn,
 // hence the mutex around cart state.
@@ -64,6 +73,9 @@ func (b *bridge) tools(ctx context.Context) ([]anthropic.BetaTool, error) {
 	}
 	tools := make([]anthropic.BetaTool, 0, len(list.Tools))
 	for _, t := range list.Tools {
+		if accountTools[t.Name] {
+			continue
+		}
 		schemaJSON, err := json.Marshal(t.InputSchema)
 		if err != nil {
 			return nil, err

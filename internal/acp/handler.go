@@ -94,7 +94,9 @@ func upstreamError(w http.ResponseWriter, err error) {
 			Type: "service_unavailable", Code: "rate_limited",
 			Message: "Too many requests; retry shortly.",
 		})
-	case errors.Is(err, django.ErrValidation):
+	case errors.Is(err, django.ErrValidation),
+		errors.Is(err, django.ErrForbidden),
+		errors.Is(err, django.ErrUnauthorized):
 		var apiErr *django.APIError
 		msg := "The store rejected the request as invalid."
 		if errors.As(err, &apiErr) && apiErr.Detail != "" {

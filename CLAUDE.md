@@ -11,7 +11,7 @@ storefront's own domain (Traefik path-routes them here):
 
 | Path | Surface |
 |---|---|
-| `POST /mcp` | MCP server (stateless streamable HTTP): commerce tools + UCP checkout tools |
+| `POST /mcp` | MCP server (stateless streamable HTTP): commerce tools + UCP checkout tools + account tools (`my_orders`, `my_loyalty_points`) |
 | `GET /.well-known/ucp` | UCP business profile (spec 2026-04-08) |
 | `/acp/*` | ACP agentic checkout REST (spec 2026-04-17) |
 | `/feeds/*` | Product feeds: google.xml, meta.xml, tiktok.xml, acp.json |
@@ -41,6 +41,11 @@ cannot race-detect) → build.
 - `cmd/gateway` — wiring only: config → clients → mux → graceful shutdown.
 - `internal/config` — env config, fail-fast `Load()`. Per-tenant values come
   from Django `tenant/resolve` at request time, never env.
+- `internal/identity` — optional-auth middleware on /mcp: a present
+  `Authorization: Bearer` is verified against Django `/agent/me`
+  (60s in-memory cache, SHA-256 keys); invalid tokens get 401 + the
+  RFC 9728 `WWW-Authenticate` challenge; anonymous requests pass
+  through. Account tools forward the bearer — Django enforces scopes.
 - `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:{host}`
   → Django; singleflight; 60s negative cache; stale-if-error) + middleware
   (tenant from the **real Host header only** — inbound X-Forwarded-Host is
@@ -86,6 +91,11 @@ cannot race-detect) → build.
   authorization via UCP `requires_escalation`+`continue_url`), Stripe
   tokenized behind per-tenant flag.
 - Nuxt repo: `/cart/claim?uuid=` claims a gateway-built cart into the
-  browser session; `.well-known/mcp/server-card.json` points at `/mcp`.
+  browser session; `.well-known/mcp/server-card.json` points at `/mcp`;
+  `.well-known/oauth-protected-resource[/mcp]` names the Django API as
+  the OAuth authorization server (allauth.idp: auth-code + PKCE + DCR).
+- Config gates: `ACP_BEARER_TOKEN` unset disables the ACP REST surface;
+  `ANTHROPIC_API_KEY` unset disables /chat. Both log a startup warning
+  instead of failing.
 - Infra repo: manifests under `manifests/app-constructs/grooveshop/base/`,
   path rules on the storefront ingress.
