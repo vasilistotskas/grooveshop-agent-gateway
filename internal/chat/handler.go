@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
@@ -130,11 +131,27 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 
 	assistantText, cartID, cartMutated, err := s.runTurn(r, t, conv, req.Message, sse)
 	if err != nil {
-		s.log.ErrorContext(r.Context(), "chat turn failed",
+		attrs := []any{
 			slog.String("tenant", t.SchemaName),
 			slog.String("conversation", conv.ID),
 			slog.String("error", err.Error()),
-		)
+		}
+		// The status line alone is undebuggable — surface the model
+		// API's error body and the failing request shape.
+		var apierr *openai.Error
+		if errors.As(err, &apierr) {
+			attrs = append(attrs,
+				slog.Int("upstream_status", apierr.StatusCode),
+				// RawJSON misses non-object error bodies (Gemini wraps
+				// errors in an ARRAY) — the response dump is the source
+				// of truth.
+				slog.String("upstream_response",
+					truncateStr(string(apierr.DumpResponse(true)), 2048)),
+				slog.String("upstream_request", truncateStr(
+					redactAuth(string(apierr.DumpRequest(true))), 8192)),
+			)
+		}
+		s.log.ErrorContext(r.Context(), "chat turn failed", attrs...)
 		sse.event("error", map[string]string{
 			"message": "Η συνομιλία διακόπηκε προσωρινά — δοκίμασε ξανά.",
 		})
@@ -211,6 +228,12 @@ func (s *Service) runTurn(
 
 		stream := s.client.Chat.Completions.NewStreaming(ctx, params)
 		acc := openai.ChatCompletionAccumulator{}
+		// Gemini 3 models attach a per-tool-call
+		// ``extra_content.google.thought_signature`` that MUST be echoed
+		// back on the assistant message — omitting it is a hard 400.
+		// It's a non-standard field, so it only survives via the raw
+		// extra-fields channel; keyed by tool-call index.
+		signatures := map[int]string{}
 		for stream.Next() {
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
@@ -218,6 +241,11 @@ func (s *Service) runTurn(
 				if delta := chunk.Choices[0].Delta.Content; delta != "" {
 					text.WriteString(delta)
 					sse.event("delta", map[string]string{"text": delta})
+				}
+				for _, tc := range chunk.Choices[0].Delta.ToolCalls {
+					if raw := tc.JSON.ExtraFields["extra_content"].Raw(); raw != "" {
+						signatures[int(tc.Index)] = raw
+					}
 				}
 			}
 		}
@@ -239,7 +267,21 @@ func (s *Service) runTurn(
 			break
 		}
 
-		messages = append(messages, msg.ToParam())
+		assistant := msg.ToParam()
+		if a := assistant.OfAssistant; a != nil {
+			for i := range a.ToolCalls {
+				raw, ok := signatures[i]
+				if !ok {
+					continue
+				}
+				if f := a.ToolCalls[i].OfFunction; f != nil {
+					f.SetExtraFields(map[string]any{
+						"extra_content": json.RawMessage(raw),
+					})
+				}
+			}
+		}
+		messages = append(messages, assistant)
 		for _, tc := range msg.ToolCalls {
 			input := map[string]any{}
 			if args := tc.Function.Arguments; args != "" {
@@ -280,4 +322,19 @@ func jsonError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
+}
+
+// redactAuth strips credential header values from a dumped HTTP request
+// before it reaches the logs.
+var authHeaderRe = regexp.MustCompile(`(?mi)^(Authorization:).*$`)
+
+func redactAuth(dump string) string {
+	return authHeaderRe.ReplaceAllString(dump, "$1 [redacted]")
 }

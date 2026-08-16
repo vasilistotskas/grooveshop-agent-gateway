@@ -92,7 +92,7 @@ func Load() (Config, error) {
 		ChatAPIKey:     os.Getenv("CHAT_API_KEY"),
 		ChatBaseURL: envOr("CHAT_BASE_URL",
 			"https://generativelanguage.googleapis.com/v1beta/openai/"),
-		ChatModel:  envOr("CHAT_MODEL", "gemini-3.7-flash"),
+		ChatModel:  envOr("CHAT_MODEL", "gemini-3.5-flash"),
 		ChatEffort: envOr("CHAT_EFFORT", "low"),
 		FeedImageURLTemplate: envOr("FEED_IMAGE_URL_TEMPLATE",
 			"https://assets.{domain}/media_stream-image/{path}"+
