@@ -141,21 +141,29 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		message := "Η συνομιλία διακόπηκε προσωρινά — δοκίμασε ξανά."
 		var apierr *openai.Error
 		if errors.As(err, &apierr) {
+			upstream := string(apierr.DumpResponse(true))
 			attrs = append(attrs,
 				slog.Int("upstream_status", apierr.StatusCode),
 				// RawJSON misses non-object error bodies (Gemini wraps
 				// errors in an ARRAY) — the response dump is the source
 				// of truth.
 				slog.String("upstream_response",
-					truncateStr(string(apierr.DumpResponse(true)), 2048)),
+					truncateStr(upstream, 2048)),
 				slog.String("upstream_request", truncateStr(
 					redactAuth(string(apierr.DumpRequest(true))), 8192)),
 			)
 			// Rate limits are the one upstream failure the shopper can
 			// act on (wait) — don't present them as a generic outage.
+			// Lift which quota died out of the body dump so triage
+			// reads one field instead of a 2KB blob.
 			if apierr.StatusCode == http.StatusTooManyRequests {
 				message = "Ο βοηθός δέχεται πολλές ερωτήσεις αυτή τη " +
 					"στιγμή — δοκίμασε ξανά σε λίγο."
+				for field, re := range quotaFields {
+					if m := re.FindStringSubmatch(upstream); m != nil {
+						attrs = append(attrs, slog.String(field, m[1]))
+					}
+				}
 			}
 		}
 		s.log.ErrorContext(r.Context(), "chat turn failed", attrs...)
@@ -334,6 +342,17 @@ func truncateStr(s string, max int) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+// quotaFields lift the salient parts of a Gemini RESOURCE_EXHAUSTED body
+// into structured log fields: which quota died (per-day vs per-minute),
+// for which model, at what limit, and the upstream retry hint. Providers
+// that phrase 429s differently simply match nothing.
+var quotaFields = map[string]*regexp.Regexp{
+	"quota_metric": regexp.MustCompile(`"quotaId":\s*"([^"]+)"`),
+	"quota_limit":  regexp.MustCompile(`limit:\s*(\d+)`),
+	"quota_model":  regexp.MustCompile(`model:\s*([a-z0-9.-]+)`),
+	"retry_hint":   regexp.MustCompile(`retry in ([0-9.]+s)`),
 }
 
 // redactAuth strips credential header values from a dumped HTTP request
