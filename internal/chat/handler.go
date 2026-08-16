@@ -304,11 +304,19 @@ func (s *Service) runTurn(
 					continue
 				}
 			}
+			// Tool activity streams to the widget so waits read as
+			// progress ("searching products…") instead of dead air.
+			sse.event("tool", map[string]string{
+				"name": tc.Function.Name, "status": "running",
+			})
 			result, err := br.call(ctx, tc.Function.Name, input)
 			if err != nil {
 				return "", "", false, fmt.Errorf(
 					"chat: tool %s: %w", tc.Function.Name, err)
 			}
+			sse.event("tool", map[string]string{
+				"name": tc.Function.Name, "status": "done",
+			})
 			messages = append(messages, openai.ToolMessage(result, tc.ID))
 		}
 	}
