@@ -261,7 +261,12 @@ func applyFulfillment(
 ) {
 	if fd != nil && fd.Address != nil {
 		a := fd.Address
-		s.Fulfillment.Street = a.LineOne
+		// ACP addresses are free-form lines while Django's order model
+		// requires a separate street_number — recover it from a
+		// trailing numeric token ("Ερμού 12" → "Ερμού" + "12").
+		street, number := splitStreetNumber(a.LineOne)
+		s.Fulfillment.Street = street
+		s.Fulfillment.StreetNumber = number
 		if a.LineTwo != "" {
 			s.Fulfillment.Street += ", " + a.LineTwo
 		}
@@ -276,6 +281,24 @@ func applyFulfillment(
 			s.Fulfillment.Kind = kind
 		}
 	}
+}
+
+// splitStreetNumber cuts a trailing house-number token off a free-form
+// address line ("Ερμού 12" → "Ερμού", "12"; "Ερμού 12Β" keeps the
+// letter suffix). Lines without a numeric tail stay whole — Django then
+// reports street_number as missing, which is the store's own rule for
+// human checkouts too.
+func splitStreetNumber(line string) (street, number string) {
+	line = strings.TrimSpace(line)
+	i := strings.LastIndexByte(line, ' ')
+	if i <= 0 {
+		return line, ""
+	}
+	tail := line[i+1:]
+	if tail == "" || tail[0] < '0' || tail[0] > '9' {
+		return line, ""
+	}
+	return strings.TrimSpace(line[:i]), tail
 }
 
 // syncCartLines reconciles the Django cart with the requested item list:

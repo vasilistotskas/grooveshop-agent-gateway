@@ -166,3 +166,21 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 		assert.Equal(t, "canceled", payload.Status)
 	})
 }
+
+func TestSplitStreetNumber(t *testing.T) {
+	cases := []struct{ in, street, number string }{
+		{"Ερμού 12", "Ερμού", "12"},
+		{"Ερμού 12Β", "Ερμού", "12Β"},
+		{"Λεωφ. Κηφισίας 128", "Λεωφ. Κηφισίας", "128"},
+		{"Ερμού", "Ερμού", ""},
+		{"  Ερμού 5  ", "Ερμού", "5"},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		street, number := splitStreetNumber(c.in)
+		if street != c.street || number != c.number {
+			t.Errorf("splitStreetNumber(%q) = %q,%q want %q,%q",
+				c.in, street, number, c.street, c.number)
+		}
+	}
+}

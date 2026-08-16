@@ -208,6 +208,15 @@ func (c *Client) apiError(resp *http.Response) error {
 	if err := json.Unmarshal(body, &parsed); err == nil {
 		detail = parsed.Detail
 	}
+	// DRF validation errors are a {"field": ["msg", …]} map with no
+	// "detail" key — swallowing them leaves undebuggable "Bad Request"
+	// errors, so carry the raw body instead.
+	if detail == "" && len(body) > 0 {
+		detail = string(body)
+		if len(detail) > 512 {
+			detail = detail[:512] + "…"
+		}
+	}
 	if detail == "" {
 		detail = http.StatusText(resp.StatusCode)
 	}
