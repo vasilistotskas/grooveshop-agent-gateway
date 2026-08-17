@@ -114,7 +114,6 @@ func startChatGateway(t *testing.T, fake *fakeChatAPI) *httptest.Server {
 		UpstreamTimeout:   5 * time.Second,
 		RateLimitPerMin:   6000,
 		RateLimitBurst:    1000,
-		ChatAPIKey:        "sk-test-fake",
 		ChatBaseURL:       modelSrv.URL,
 		ChatModel:         "gemini-3.7-flash",
 		ChatEffort:        "low",

@@ -44,6 +44,13 @@ func fakeDjangoMux(t *testing.T) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/tenant/resolve",
 		func(w http.ResponseWriter, r *http.Request) {
+			// Real Django only includes chatApiKey for internally
+			// authenticated resolves — the gateway must identify itself.
+			// Suites construct the client with one of two secrets.
+			got := r.Header.Get("X-Internal-Token")
+			if got != "test-secret" && got != internalSecret {
+				t.Errorf("tenant/resolve missing internal token, got %q", got)
+			}
 			if r.URL.Query().Get("domain") == "unknown.test" {
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"detail": "Store not found."}`))

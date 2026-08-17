@@ -59,9 +59,9 @@ type Config struct {
 	// OpenAI-compatible chat-completions protocol. ChatBaseURL selects
 	// the provider (default: Gemini's compatibility endpoint — its free
 	// tier has the best Greek of the zero-cost options); Groq, Mistral,
-	// OpenRouter, Z.ai or Anthropic's compat layer are config swaps. An
-	// empty ChatAPIKey disables the /chat surface entirely.
-	ChatAPIKey        string
+	// OpenRouter, Z.ai or Anthropic's compat layer are config swaps.
+	// The credential is per-tenant: it arrives on tenant/resolve
+	// (chatApiKey), never from the environment.
 	ChatBaseURL       string
 	ChatModel         string
 	ChatEffort        string
@@ -89,10 +89,9 @@ func Load() (Config, error) {
 			"https://assets.{domain}/media_stream-image/{path}"+
 				"/800/800/contain/entropy/transparent/5/80.webp"),
 		ACPBearerToken: os.Getenv("ACP_BEARER_TOKEN"),
-		ChatAPIKey:     os.Getenv("CHAT_API_KEY"),
 		ChatBaseURL: envOr("CHAT_BASE_URL",
 			"https://generativelanguage.googleapis.com/v1beta/openai/"),
-		ChatModel:  envOr("CHAT_MODEL", "gemini-3.5-flash"),
+		ChatModel:  envOr("CHAT_MODEL", "gemini-3.5-flash-lite"),
 		ChatEffort: envOr("CHAT_EFFORT", "low"),
 		FeedImageURLTemplate: envOr("FEED_IMAGE_URL_TEMPLATE",
 			"https://assets.{domain}/media_stream-image/{path}"+

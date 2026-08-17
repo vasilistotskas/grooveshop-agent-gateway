@@ -112,17 +112,15 @@ func New(d Deps) http.Handler {
 		d.Log,
 		d.ChatOpts...,
 	)
-	if chatSvc.Enabled() {
-		// The chat surface pays per token — it gets its own, stricter
-		// per-IP limiter on top of the global one.
-		chatLimiter := httpmw.NewRateLimiter(
-			d.Cfg.ChatRatePerMin, d.Cfg.ChatRateBurst, d.Metrics,
-		)
-		mux.Handle("POST /chat",
-			tenantMW(chatLimiter.Middleware()(chatSvc.Handler())))
-	} else {
-		d.Log.Warn("chat surface disabled: CHAT_API_KEY is not set")
-	}
+	// The chat surface pays per token — it gets its own, stricter per-IP
+	// limiter on top of the global one. Whether chat is on is a
+	// per-tenant question (chatApiKey on tenant/resolve), so the route
+	// is always mounted and the handler rejects keyless tenants.
+	chatLimiter := httpmw.NewRateLimiter(
+		d.Cfg.ChatRatePerMin, d.Cfg.ChatRateBurst, d.Metrics,
+	)
+	mux.Handle("POST /chat",
+		tenantMW(chatLimiter.Middleware()(chatSvc.Handler())))
 
 	// Global chain, outermost first. Metrics sits directly around the mux so
 	// r.Pattern (set during routing) is visible when it records.

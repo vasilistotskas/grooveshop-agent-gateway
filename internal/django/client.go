@@ -76,13 +76,16 @@ func (c *Client) Ping(ctx context.Context) error {
 // ResolveTenant maps a storefront domain to its tenant configuration. It is
 // the only host-unscoped call: the platform API host satisfies Django's
 // ALLOWED_HOSTS check while the domain being resolved rides the query.
+// The internal secret authenticates the gateway so Django includes the
+// tenant's secret fields (chatApiKey) that public callers never see.
 func (c *Client) ResolveTenant(ctx context.Context, domain string) (*TenantConfig, error) {
 	var out TenantConfig
 	err := c.get(ctx, request{
-		path:  "/tenant/resolve",
-		host:  c.publicHost,
-		query: url.Values{"domain": {domain}},
-		out:   &out,
+		path:    "/tenant/resolve",
+		host:    c.publicHost,
+		query:   url.Values{"domain": {domain}},
+		headers: map[string]string{"X-Internal-Token": c.internalSecret},
+		out:     &out,
 	})
 	if err != nil {
 		return nil, err

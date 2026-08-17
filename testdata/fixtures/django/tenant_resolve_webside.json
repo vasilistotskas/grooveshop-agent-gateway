@@ -1,5 +1,6 @@
 {
   "schemaName": "webside",
+  "chatApiKey": "sk-test-fake",
   "name": "webside",
   "storeName": "Webside",
   "storeDescription": "Greek e-commerce storefront.",

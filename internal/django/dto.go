@@ -297,4 +297,8 @@ type TenantConfig struct {
 	LoyaltyEnabled       bool   `json:"loyaltyEnabled"`
 	BlogEnabled          bool   `json:"blogEnabled"`
 	StripePublishableKey string `json:"stripePublishableKey"`
+	// ChatAPIKey is the tenant's own model-provider credential. Django
+	// includes it only on internally-authenticated resolves (the
+	// X-Internal-Token header); empty means chat is off for the tenant.
+	ChatAPIKey string `json:"chatApiKey"`
 }

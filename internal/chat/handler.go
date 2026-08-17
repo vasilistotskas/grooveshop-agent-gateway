@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
@@ -29,8 +30,10 @@ type Service struct {
 	cfg    config.Config
 	server *mcp.Server
 	store  *Store
-	client openai.Client
-	log    *slog.Logger
+	// clientOpts hold everything but the credential — the API key is
+	// per-tenant (from tenant/resolve) and attached per turn.
+	clientOpts []option.RequestOption
+	log        *slog.Logger
 }
 
 // New builds the chat service. The model is reached over the
@@ -44,20 +47,15 @@ func New(
 ) *Service {
 	clientOpts := append([]option.RequestOption{
 		option.WithBaseURL(cfg.ChatBaseURL),
-		option.WithAPIKey(cfg.ChatAPIKey),
 	}, opts...)
 	return &Service{
-		cfg:    cfg,
-		server: server,
-		store:  store,
-		client: openai.NewClient(clientOpts...),
-		log:    log,
+		cfg:        cfg,
+		server:     server,
+		store:      store,
+		clientOpts: clientOpts,
+		log:        log,
 	}
 }
-
-// Enabled reports whether the chat surface is configured; without an API
-// key the route is not mounted at all.
-func (s *Service) Enabled() bool { return s.cfg.ChatAPIKey != "" }
 
 type chatRequest struct {
 	ConversationID string `json:"conversationId"`
@@ -79,6 +77,13 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	t, ok := tenant.FromContext(r.Context())
 	if !ok {
 		http.Error(w, "unknown store", http.StatusNotFound)
+		return
+	}
+	// Chat is a per-tenant capability: no key on the tenant config means
+	// the store has not enabled the assistant.
+	if t.ChatAPIKey == "" {
+		jsonError(w, http.StatusNotFound,
+			"Ο βοηθός δεν είναι διαθέσιμος για αυτό το κατάστημα.")
 		return
 	}
 
@@ -227,6 +232,11 @@ func (s *Service) runTurn(
 	}
 	messages = append(messages, openai.UserMessage(userMessage))
 
+	// The credential is the tenant's own — attach it last so it can
+	// never be overridden by the shared base options.
+	client := openai.NewClient(append(
+		slices.Clone(s.clientOpts), option.WithAPIKey(t.ChatAPIKey))...)
+
 	var text strings.Builder
 	for range s.cfg.ChatMaxIterations {
 		params := openai.ChatCompletionNewParams{
@@ -239,7 +249,7 @@ func (s *Service) runTurn(
 			params.ReasoningEffort = shared.ReasoningEffort(s.cfg.ChatEffort)
 		}
 
-		stream := s.client.Chat.Completions.NewStreaming(ctx, params)
+		stream := client.Chat.Completions.NewStreaming(ctx, params)
 		acc := openai.ChatCompletionAccumulator{}
 		// Gemini 3 models attach a per-tool-call
 		// ``extra_content.google.thought_signature`` that MUST be echoed
