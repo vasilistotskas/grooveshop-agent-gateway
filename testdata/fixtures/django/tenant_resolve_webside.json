@@ -1,6 +1,7 @@
 {
   "schemaName": "webside",
   "chatApiKey": "sk-test-fake",
+  "acpBearerToken": "acp-bearer-webside-fixture",
   "name": "webside",
   "storeName": "Webside",
   "storeDescription": "Greek e-commerce storefront.",

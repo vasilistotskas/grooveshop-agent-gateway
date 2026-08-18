@@ -94,11 +94,13 @@ cannot race-detect) → build.
   browser session; `.well-known/mcp/server-card.json` points at `/mcp`;
   `.well-known/oauth-protected-resource[/mcp]` names the Django API as
   the OAuth authorization server (allauth.idp: auth-code + PKCE + DCR).
-- Config gates: `ACP_BEARER_TOKEN` unset disables the ACP REST surface
-  (startup warning, not a failure). Chat is per-tenant: the model
-  credential arrives as `chatApiKey` on `tenant/resolve` — Django
-  includes it only when the resolve call carries the gateway's
-  `X-Internal-Token` (same shared secret as the order-event push) — and
-  a tenant without a key gets a localized 404 from `/chat`.
+- Config gates: ACP and chat are per-tenant. The ACP platform bearer
+  arrives as `acpBearerToken` and the chat model credential as
+  `chatApiKey` on `tenant/resolve` — Django includes both only when the
+  resolve call carries the gateway's `X-Internal-Token` (same shared
+  secret as the order-event push). A tenant without a chat key gets a
+  localized 404 from `/chat`; a tenant without an ACP token gets 401
+  from `/acp/*`. `ACP_BEARER_TOKEN` is a deprecated fallback honored
+  only for tenants with no per-tenant token.
 - Infra repo: manifests under `manifests/app-constructs/grooveshop/base/`,
   path rules on the storefront ingress.

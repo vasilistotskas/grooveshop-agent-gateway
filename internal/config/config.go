@@ -50,9 +50,10 @@ type Config struct {
 	FeedFreshTTL         time.Duration
 	FeedStaleTTL         time.Duration
 
-	// ACPBearerToken authenticates agentic-commerce platforms on the
-	// /acp/* REST surface (issued at platform enrollment). Empty disables
-	// the surface entirely.
+	// ACPBearerToken is DEPRECATED: /acp/* now authenticates against the
+	// tenant's own acpBearerToken from tenant/resolve. This env token is
+	// honored only for tenants that have no per-tenant token yet; unset it
+	// once every enrolled tenant carries one.
 	ACPBearerToken string
 
 	// Chat (first-party shopping assistant), spoken over the

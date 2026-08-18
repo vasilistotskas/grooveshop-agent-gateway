@@ -301,4 +301,8 @@ type TenantConfig struct {
 	// includes it only on internally-authenticated resolves (the
 	// X-Internal-Token header); empty means chat is off for the tenant.
 	ChatAPIKey string `json:"chatApiKey"`
+	// ACPBearerToken authenticates the tenant's agentic-commerce platform
+	// on /acp/*. Like ChatAPIKey it arrives only on internally
+	// authenticated resolves; empty means no platform is enrolled.
+	ACPBearerToken string `json:"acpBearerToken"`
 }

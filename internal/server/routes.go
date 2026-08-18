@@ -40,8 +40,9 @@ type Deps struct {
 	// injects a fake API base URL here.
 	ChatOpts []option.RequestOption
 
-	// SigningKey signs UCP order webhooks and publishes in profiles.
-	SigningKey *ucp.SigningKey
+	// Keys serves the per-schema signing keys that sign UCP order
+	// webhooks and publish in each tenant's profile.
+	Keys *ucp.Keys
 	// Dispatcher delivers queued order webhooks (Run started by main).
 	Dispatcher *ucp.Dispatcher
 }
@@ -85,19 +86,22 @@ func New(d Deps) http.Handler {
 		tenantMW(identityMW(mcpsrv.Handler(mcpServer, d.Log))))
 
 	mux.Handle("GET /.well-known/ucp",
-		tenantMW(ucp.ProfileHandler(d.SigningKey)))
+		tenantMW(ucp.ProfileHandler(d.Keys)))
 
 	// Cluster-internal: Django's order-event push. Not tenant-scoped —
 	// the event body carries the schema.
 	mux.Handle("POST /internal/events/order-status", internalOrderEvents(
 		d.Cfg.InternalSecret, checkoutFlow, d.Dispatcher, d.Log))
 
+	// ACP is always mounted; access is gated per tenant at request time
+	// by the tenant's own acpBearerToken from tenant/resolve.
 	if d.Cfg.ACPBearerToken != "" {
-		acp.NewHandler(d.Django, checkoutStore, checkoutFlow, d.Redis,
-			d.Cfg.ACPBearerToken, d.Log).Register(mux, tenantMW)
-	} else {
-		d.Log.Warn("acp surface disabled: ACP_BEARER_TOKEN is not set")
+		d.Log.Warn("ACP_BEARER_TOKEN is deprecated: it now only serves " +
+			"tenants without a per-tenant acpBearerToken; enroll tokens " +
+			"per tenant and unset it")
 	}
+	acp.NewHandler(d.Django, checkoutStore, checkoutFlow, d.Redis,
+		d.Cfg.ACPBearerToken, d.Log).Register(mux, tenantMW)
 
 	feedSvc := feeds.NewService(d.Django, d.Redis, d.Log,
 		d.Cfg.FeedImageURLTemplate, d.Cfg.FeedFreshTTL, d.Cfg.FeedStaleTTL)

@@ -64,6 +64,8 @@ func TestResolveTenantDecodesFixture(t *testing.T) {
 	assert.Equal(t, "EUR", cfg.DefaultCurrency)
 	assert.Equal(t, "shop.example.test", cfg.PrimaryDomain)
 	assert.True(t, cfg.LoyaltyEnabled)
+	assert.Equal(t, "sk-test-fake", cfg.ChatAPIKey)
+	assert.Equal(t, "acp-bearer-webside-fixture", cfg.ACPBearerToken)
 }
 
 func TestResolveTenantNotFound(t *testing.T) {

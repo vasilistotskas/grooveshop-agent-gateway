@@ -53,15 +53,9 @@ func run() error {
 		dj, rdb, cfg.TenantCacheTTL, cfg.NegativeCacheTTL, log, metrics,
 	)
 
-	keyCtx, keyCancel := context.WithTimeout(
-		context.Background(), 10*time.Second,
-	)
-	signingKey, err := ucp.LoadOrCreateSigningKey(keyCtx, rdb)
-	keyCancel()
-	if err != nil {
-		return err
-	}
-	dispatcher := ucp.NewDispatcher(rdb, signingKey, log)
+	// Signing keys are per tenant schema and load lazily at first use.
+	keys := ucp.NewKeys(rdb)
+	dispatcher := ucp.NewDispatcher(rdb, keys, log)
 
 	handler := server.New(server.Deps{
 		Cfg:        cfg,
@@ -71,7 +65,7 @@ func run() error {
 		Django:     dj,
 		Resolver:   resolver,
 		Version:    version,
-		SigningKey: signingKey,
+		Keys:       keys,
 		Dispatcher: dispatcher,
 	})
 

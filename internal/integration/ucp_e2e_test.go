@@ -33,7 +33,10 @@ const (
 	fixtureOrderUUID = "b9be45e5-6062-4976-ae7b-2c31eb2ad689"
 	vivaCheckoutURL  = "https://demo.vivapayments.com/web/checkout?ref=e2e42"
 	internalSecret   = "e2e-internal-secret"
-	acpBearerToken   = "e2e-acp-bearer"
+	// acpBearerToken is the tenant's own token as recorded in
+	// tenant_resolve_webside.json — the suite runs without the deprecated
+	// ACP_BEARER_TOKEN env fallback.
+	acpBearerToken = "acp-bearer-webside-fixture"
 )
 
 // webhookSink records signed order webhooks a platform would receive.
@@ -118,7 +121,6 @@ func startUCPGateway(t *testing.T) (*httptest.Server, *ucp.SigningKey) {
 		DjangoBaseURL:    djangoSrv.URL + "/api/v1",
 		DjangoPublicHost: "api.example.test",
 		InternalSecret:   internalSecret,
-		ACPBearerToken:   acpBearerToken,
 		MediaURLTemplate: "https://assets.{domain}/media_stream-image/{path}" +
 			"/800/800/contain/entropy/transparent/5/80.webp",
 		TenantCacheTTL:   time.Minute,
@@ -132,9 +134,11 @@ func startUCPGateway(t *testing.T) (*httptest.Server, *ucp.SigningKey) {
 	resolver := tenant.NewResolver(dj, rdb,
 		cfg.TenantCacheTTL, cfg.NegativeCacheTTL, log, metrics)
 
-	key, err := ucp.LoadOrCreateSigningKey(context.Background(), rdb)
+	keys := ucp.NewKeys(rdb)
+	// The fixture tenant's key, for signature/KID assertions.
+	key, err := keys.ForSchema(context.Background(), "webside")
 	require.NoError(t, err)
-	dispatcher := ucp.NewDispatcher(rdb, key, log)
+	dispatcher := ucp.NewDispatcher(rdb, keys, log)
 	ctx, cancel := context.WithCancel(context.Background())
 	go dispatcher.Run(ctx)
 	t.Cleanup(cancel)
@@ -142,7 +146,7 @@ func startUCPGateway(t *testing.T) (*httptest.Server, *ucp.SigningKey) {
 	handler := server.New(server.Deps{
 		Cfg: cfg, Log: log, Metrics: metrics, Redis: rdb,
 		Django: dj, Resolver: resolver, Version: "test",
-		SigningKey: key, Dispatcher: dispatcher,
+		Keys: keys, Dispatcher: dispatcher,
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)

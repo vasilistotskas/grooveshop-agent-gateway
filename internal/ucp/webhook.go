@@ -41,21 +41,22 @@ type OrderEvent struct {
 
 // Dispatcher delivers order webhooks from a Redis list with at-least-once
 // semantics: enqueue is acknowledged only after LPUSH; a processing list
-// covers crash windows between pop and delivery.
+// covers crash windows between pop and delivery. Each event is signed
+// with its own tenant's key.
 type Dispatcher struct {
 	rdb  *redis.Client
-	key  *SigningKey
+	keys *Keys
 	hc   *http.Client
 	log  *slog.Logger
 	stop chan struct{}
 }
 
 func NewDispatcher(
-	rdb *redis.Client, key *SigningKey, log *slog.Logger,
+	rdb *redis.Client, keys *Keys, log *slog.Logger,
 ) *Dispatcher {
 	return &Dispatcher{
 		rdb:  rdb,
-		key:  key,
+		keys: keys,
 		hc:   &http.Client{Timeout: 15 * time.Second},
 		log:  log,
 		stop: make(chan struct{}),
@@ -130,6 +131,10 @@ func (d *Dispatcher) deliver(ctx context.Context, raw string) {
 		d.log.Error("webhook event corrupt", slog.String("error", err.Error()))
 		return
 	}
+	if ev.Schema == "" {
+		d.log.Error("webhook event missing schema", slog.String("event", ev.ID))
+		return
+	}
 
 	body, err := json.Marshal(ev)
 	if err != nil {
@@ -143,7 +148,16 @@ func (d *Dispatcher) deliver(ctx context.Context, raw string) {
 				return
 			}
 		}
-		if d.post(ctx, ev.TargetURL, body) {
+		// The key lookup sits inside the retry loop so a Redis blip on a
+		// cold cache gets the same backoff as a delivery failure.
+		key, err := d.keys.ForSchema(ctx, ev.Schema)
+		if err != nil {
+			d.log.Warn("webhook signing key unavailable",
+				slog.String("schema", ev.Schema),
+				slog.String("error", err.Error()))
+			continue
+		}
+		if d.post(ctx, key, ev.TargetURL, body) {
 			return
 		}
 	}
@@ -153,18 +167,21 @@ func (d *Dispatcher) deliver(ctx context.Context, raw string) {
 	)
 }
 
-// post signs the body with the profile's Ed25519 key so platforms verify
-// against the published JWK (kid header selects the key).
-func (d *Dispatcher) post(ctx context.Context, url string, body []byte) bool {
+// post signs the body with the tenant's Ed25519 key so platforms verify
+// against the JWK published in that tenant's profile (kid header selects
+// the key).
+func (d *Dispatcher) post(
+	ctx context.Context, key *SigningKey, url string, body []byte,
+) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url,
 		bytes.NewReader(body))
 	if err != nil {
 		return false
 	}
-	sig := ed25519.Sign(d.key.Private, body)
+	sig := ed25519.Sign(key.Private, body)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("UCP-Signature", base64.RawURLEncoding.EncodeToString(sig))
-	req.Header.Set("UCP-Key-Id", d.key.KID)
+	req.Header.Set("UCP-Key-Id", key.KID)
 
 	resp, err := d.hc.Do(req)
 	if err != nil {

@@ -67,11 +67,18 @@ func BuildProfile(t *tenant.Tenant, key *SigningKey) *Profile {
 
 // ProfileHandler serves GET /.well-known/ucp. The spec mandates HTTPS
 // (Traefik terminates TLS) and a public Cache-Control of at least 60s.
-func ProfileHandler(key *SigningKey) http.Handler {
+// Each tenant's profile publishes only that tenant's own signing key.
+func ProfileHandler(keys *Keys) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t, ok := tenant.FromContext(r.Context())
 		if !ok {
 			http.Error(w, "unknown store", http.StatusNotFound)
+			return
+		}
+		key, err := keys.ForSchema(r.Context(), t.SchemaName)
+		if err != nil {
+			http.Error(w, "profile temporarily unavailable",
+				http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

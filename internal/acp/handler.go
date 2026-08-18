@@ -21,23 +21,27 @@ import (
 )
 
 // Handler serves the merchant-side Agentic Checkout REST API. Platform
-// access is bearer-authenticated (the token is issued at enrollment).
+// access is bearer-authenticated with the tenant's own token (issued at
+// enrollment, served on tenant/resolve as acpBearerToken).
 type Handler struct {
-	dj     *django.Client
-	store  *checkout.Store
-	flow   *checkout.Flow
-	rdb    *redis.Client
-	bearer string
-	log    *slog.Logger
+	dj    *django.Client
+	store *checkout.Store
+	flow  *checkout.Flow
+	rdb   *redis.Client
+	// envBearer is the deprecated ACP_BEARER_TOKEN fallback, honored only
+	// while a tenant has no acpBearerToken of its own. Remove once every
+	// enrolled tenant carries a per-tenant token.
+	envBearer string
+	log       *slog.Logger
 }
 
 func NewHandler(
 	dj *django.Client, store *checkout.Store, flow *checkout.Flow,
-	rdb *redis.Client, bearer string, log *slog.Logger,
+	rdb *redis.Client, envBearer string, log *slog.Logger,
 ) *Handler {
 	return &Handler{
 		dj: dj, store: store, flow: flow, rdb: rdb,
-		bearer: bearer, log: log,
+		envBearer: envBearer, log: log,
 	}
 }
 
@@ -54,11 +58,27 @@ func (h *Handler) Register(mux *http.ServeMux, mw func(http.Handler) http.Handle
 	mux.Handle("POST /acp/checkout_sessions/{id}/cancel", wrap(h.cancel))
 }
 
+// auth gates a route on the requesting tenant's bearer token, so a
+// platform enrolled with one store can never drive another store's
+// checkout by switching Host. A tenant with no token of any kind gets the
+// same 401 as a wrong token.
 func (h *Handler) auth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t, ok := tenant.FromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusNotFound, Error{
+				Type: "invalid_request", Code: "not_found",
+				Message: "Unknown store.",
+			})
+			return
+		}
+		expected := t.ACPBearerToken
+		if expected == "" {
+			expected = h.envBearer
+		}
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || subtle.ConstantTimeCompare(
-			[]byte(token), []byte(h.bearer)) != 1 {
+		if expected == "" || !ok || subtle.ConstantTimeCompare(
+			[]byte(token), []byte(expected)) != 1 {
 			writeError(w, http.StatusUnauthorized, Error{
 				Type: "invalid_request", Code: "unauthorized",
 				Message: "A valid bearer token is required.",
