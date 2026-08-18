@@ -50,12 +50,6 @@ type Config struct {
 	FeedFreshTTL         time.Duration
 	FeedStaleTTL         time.Duration
 
-	// ACPBearerToken is DEPRECATED: /acp/* now authenticates against the
-	// tenant's own acpBearerToken from tenant/resolve. This env token is
-	// honored only for tenants that have no per-tenant token yet; unset it
-	// once every enrolled tenant carries one.
-	ACPBearerToken string
-
 	// Chat (first-party shopping assistant), spoken over the
 	// OpenAI-compatible chat-completions protocol. ChatBaseURL selects
 	// the provider (default: Gemini's compatibility endpoint — its free
@@ -89,7 +83,6 @@ func Load() (Config, error) {
 		MediaURLTemplate: envOr("MEDIA_IMAGE_URL_TEMPLATE",
 			"https://assets.{domain}/media_stream-image/{path}"+
 				"/800/800/contain/entropy/transparent/5/80.webp"),
-		ACPBearerToken: os.Getenv("ACP_BEARER_TOKEN"),
 		ChatBaseURL: envOr("CHAT_BASE_URL",
 			"https://generativelanguage.googleapis.com/v1beta/openai/"),
 		ChatModel:  envOr("CHAT_MODEL", "gemini-3.5-flash-lite"),

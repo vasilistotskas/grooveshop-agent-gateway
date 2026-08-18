@@ -94,14 +94,10 @@ func New(d Deps) http.Handler {
 		d.Cfg.InternalSecret, checkoutFlow, d.Dispatcher, d.Log))
 
 	// ACP is always mounted; access is gated per tenant at request time
-	// by the tenant's own acpBearerToken from tenant/resolve.
-	if d.Cfg.ACPBearerToken != "" {
-		d.Log.Warn("ACP_BEARER_TOKEN is deprecated: it now only serves " +
-			"tenants without a per-tenant acpBearerToken; enroll tokens " +
-			"per tenant and unset it")
-	}
+	// by the tenant's own acpBearerToken from tenant/resolve. A tenant
+	// without one has ACP disabled and every bearer gets 401.
 	acp.NewHandler(d.Django, checkoutStore, checkoutFlow, d.Redis,
-		d.Cfg.ACPBearerToken, d.Log).Register(mux, tenantMW)
+		d.Log).Register(mux, tenantMW)
 
 	feedSvc := feeds.NewService(d.Django, d.Redis, d.Log,
 		d.Cfg.FeedImageURLTemplate, d.Cfg.FeedFreshTTL, d.Cfg.FeedStaleTTL)

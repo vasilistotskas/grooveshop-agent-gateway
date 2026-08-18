@@ -34,8 +34,7 @@ const (
 	vivaCheckoutURL  = "https://demo.vivapayments.com/web/checkout?ref=e2e42"
 	internalSecret   = "e2e-internal-secret"
 	// acpBearerToken is the tenant's own token as recorded in
-	// tenant_resolve_webside.json — the suite runs without the deprecated
-	// ACP_BEARER_TOKEN env fallback.
+	// tenant_resolve_webside.json.
 	acpBearerToken = "acp-bearer-webside-fixture"
 )
 

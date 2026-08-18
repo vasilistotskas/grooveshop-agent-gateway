@@ -99,8 +99,7 @@ cannot race-detect) → build.
   `chatApiKey` on `tenant/resolve` — Django includes both only when the
   resolve call carries the gateway's `X-Internal-Token` (same shared
   secret as the order-event push). A tenant without a chat key gets a
-  localized 404 from `/chat`; a tenant without an ACP token gets 401
-  from `/acp/*`. `ACP_BEARER_TOKEN` is a deprecated fallback honored
-  only for tenants with no per-tenant token.
+  localized 404 from `/chat`; a tenant without an ACP token has ACP
+  disabled — every bearer gets 401 from `/acp/*`.
 - Infra repo: manifests under `manifests/app-constructs/grooveshop/base/`,
   path rules on the storefront ingress.

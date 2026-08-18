@@ -25,14 +25,15 @@ func authTenant(schema, token string) *tenant.Tenant {
 
 func TestAuthPerTenantBearer(t *testing.T) {
 	const (
-		tokenA   = "platform-token-tenant-a"
-		tokenB   = "platform-token-tenant-b"
-		envToken = "legacy-env-token"
+		tokenA = "platform-token-tenant-a"
+		tokenB = "platform-token-tenant-b"
+		// formerEnvToken is the value the removed ACP_BEARER_TOKEN
+		// fallback used to accept; it must authorize nothing now.
+		formerEnvToken = "legacy-env-token"
 	)
 	cases := []struct {
 		name       string
 		tenant     *tenant.Tenant
-		envBearer  string
 		authHeader string
 		wantStatus int
 	}{
@@ -60,21 +61,19 @@ func TestAuthPerTenantBearer(t *testing.T) {
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
-			name:       "env token ignored when tenant has its own",
+			name:       "former env token rejected on an enrolled tenant",
 			tenant:     authTenant("alpha", tokenA),
-			envBearer:  envToken,
-			authHeader: "Bearer " + envToken,
+			authHeader: "Bearer " + formerEnvToken,
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
-			name:       "env fallback accepted for tokenless tenant",
+			name:       "tokenless tenant (ACP disabled) rejects former env token",
 			tenant:     authTenant("alpha", ""),
-			envBearer:  envToken,
-			authHeader: "Bearer " + envToken,
-			wantStatus: http.StatusOK,
+			authHeader: "Bearer " + formerEnvToken,
+			wantStatus: http.StatusUnauthorized,
 		},
 		{
-			name:       "tenant with no token anywhere rejected",
+			name:       "tokenless tenant rejects another tenant's token",
 			tenant:     authTenant("alpha", ""),
 			authHeader: "Bearer " + tokenA,
 			wantStatus: http.StatusUnauthorized,
@@ -91,7 +90,7 @@ func TestAuthPerTenantBearer(t *testing.T) {
 		&slog.HandlerOptions{Level: slog.LevelError + 1}))
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := &Handler{envBearer: tc.envBearer, log: log}
+			h := &Handler{log: log}
 			next := func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			}

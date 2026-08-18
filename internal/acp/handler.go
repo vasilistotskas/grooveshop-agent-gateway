@@ -28,20 +28,15 @@ type Handler struct {
 	store *checkout.Store
 	flow  *checkout.Flow
 	rdb   *redis.Client
-	// envBearer is the deprecated ACP_BEARER_TOKEN fallback, honored only
-	// while a tenant has no acpBearerToken of its own. Remove once every
-	// enrolled tenant carries a per-tenant token.
-	envBearer string
-	log       *slog.Logger
+	log   *slog.Logger
 }
 
 func NewHandler(
 	dj *django.Client, store *checkout.Store, flow *checkout.Flow,
-	rdb *redis.Client, envBearer string, log *slog.Logger,
+	rdb *redis.Client, log *slog.Logger,
 ) *Handler {
 	return &Handler{
-		dj: dj, store: store, flow: flow, rdb: rdb,
-		envBearer: envBearer, log: log,
+		dj: dj, store: store, flow: flow, rdb: rdb, log: log,
 	}
 }
 
@@ -60,8 +55,9 @@ func (h *Handler) Register(mux *http.ServeMux, mw func(http.Handler) http.Handle
 
 // auth gates a route on the requesting tenant's bearer token, so a
 // platform enrolled with one store can never drive another store's
-// checkout by switching Host. A tenant with no token of any kind gets the
-// same 401 as a wrong token.
+// checkout by switching Host. An empty acpBearerToken means ACP is
+// disabled for the tenant: every bearer gets the same 401 as a wrong
+// token.
 func (h *Handler) auth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t, ok := tenant.FromContext(r.Context())
@@ -73,9 +69,6 @@ func (h *Handler) auth(next http.HandlerFunc) http.Handler {
 			return
 		}
 		expected := t.ACPBearerToken
-		if expected == "" {
-			expected = h.envBearer
-		}
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if expected == "" || !ok || subtle.ConstantTimeCompare(
 			[]byte(token), []byte(expected)) != 1 {
