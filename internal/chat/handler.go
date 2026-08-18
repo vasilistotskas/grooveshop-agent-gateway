@@ -20,12 +20,6 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
-// refusalMessage is shown when the model declines a request; the widget
-// audience is Greek-first.
-const refusalMessage = "Λυπάμαι, δεν μπορώ να βοηθήσω με αυτό το αίτημα. " +
-	"Μπορώ όμως να σε βοηθήσω να βρεις προϊόντα, να δεις διαθεσιμότητα " +
-	"και να ολοκληρώσεις την παραγγελία σου!"
-
 type Service struct {
 	cfg    config.Config
 	server *mcp.Server
@@ -83,7 +77,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	// the store has not enabled the assistant.
 	if t.ChatAPIKey == "" {
 		jsonError(w, http.StatusNotFound,
-			"Ο βοηθός δεν είναι διαθέσιμος για αυτό το κατάστημα.")
+			messageFor(t.DefaultLocale, msgChatDisabled))
 		return
 	}
 
@@ -143,7 +137,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		// The status line alone is undebuggable — surface the model
 		// API's error body and the failing request shape.
-		message := "Η συνομιλία διακόπηκε προσωρινά — δοκίμασε ξανά."
+		message := messageFor(t.DefaultLocale, msgTurnFailed)
 		var apierr *openai.Error
 		if errors.As(err, &apierr) {
 			upstream := string(apierr.DumpResponse(true))
@@ -162,8 +156,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 			// Lift which quota died out of the body dump so triage
 			// reads one field instead of a 2KB blob.
 			if apierr.StatusCode == http.StatusTooManyRequests {
-				message = "Ο βοηθός δέχεται πολλές ερωτήσεις αυτή τη " +
-					"στιγμή — δοκίμασε ξανά σε λίγο."
+				message = messageFor(t.DefaultLocale, msgRateLimited)
 				for field, re := range quotaFields {
 					if m := re.FindStringSubmatch(upstream); m != nil {
 						attrs = append(attrs, slog.String(field, m[1]))
@@ -281,9 +274,10 @@ func (s *Service) runTurn(
 		msg := acc.Choices[0].Message
 
 		if msg.Refusal != "" {
-			sse.event("delta", map[string]string{"text": refusalMessage})
+			refusal := messageFor(t.DefaultLocale, msgRefusal)
+			sse.event("delta", map[string]string{"text": refusal})
 			text.Reset()
-			text.WriteString(refusalMessage)
+			text.WriteString(refusal)
 			break
 		}
 		if len(msg.ToolCalls) == 0 {

@@ -29,6 +29,17 @@ func TestSystemPromptWithoutCart(t *testing.T) {
 	assert.Contains(t, p, "NEVER happens in chat")
 }
 
+func TestSystemPromptIsTenantNeutral(t *testing.T) {
+	tn := testTenant()
+	tn.DefaultLocale = "de"
+	p := systemPrompt(tn, "")
+	assert.Contains(t, p, "the store's language (de)")
+	assert.NotContains(t, p, "Greek")
+	assert.NotContains(t, p, "Greece")
+	assert.NotContains(t, p, "ACS")
+	assert.NotContains(t, p, "BOX NOW")
+}
+
 func TestSystemPromptWithCart(t *testing.T) {
 	p := systemPrompt(testTenant(), "cart-uuid-1")
 	assert.Contains(t, p, "cart-uuid-1")
