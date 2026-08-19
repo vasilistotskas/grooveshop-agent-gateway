@@ -75,6 +75,33 @@ func TestRateLimiterRejectsBurstOverflow(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, do("5.6.7.8"))
 }
 
+func TestRateLimiterPartitionsPerTenantHost(t *testing.T) {
+	// Agent platforms share egress IPs: exhausting tenant A's budget
+	// from one IP must not consume tenant B's budget for the SAME IP —
+	// buckets are keyed per (Host, IP).
+	rl := NewRateLimiter(60, 1, nil)
+	h := rl.Middleware()(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+	do := func(host string) int {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Host = host
+		req.Header.Set("X-Real-Ip", "9.9.9.9")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	assert.Equal(t, http.StatusNoContent, do("tenant-a.example"))
+	assert.Equal(t, http.StatusTooManyRequests, do("tenant-a.example"))
+	// Same IP, different tenant host: fresh bucket.
+	assert.Equal(t, http.StatusNoContent, do("tenant-b.example"))
+	// Host normalization: case and port do not split the bucket.
+	assert.Equal(t, http.StatusTooManyRequests, do("TENANT-B.example:443"))
+}
+
 func TestExtrasTenantEnrichment(t *testing.T) {
 	var logged string
 	h := Logging(quietLogger())(http.HandlerFunc(
