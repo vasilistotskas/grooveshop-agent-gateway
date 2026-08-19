@@ -20,9 +20,12 @@ type Config struct {
 	// http://backend-service/api/v1 (no trailing slash).
 	DjangoBaseURL string
 	// DjangoPublicHost is sent as X-Forwarded-Host on calls that are not
-	// scoped to a tenant (only tenant/resolve today) so Django's
-	// ALLOWED_HOSTS validation passes. Tenant-scoped calls send the
-	// tenant's own domain instead.
+	// scoped to a tenant (tenant/resolve and the health ping) so
+	// Django's ALLOWED_HOSTS + TenantMainMiddleware checks pass.
+	// Point it at the PLATFORM control-plane host (the public-schema
+	// TenantDomain created by ``manage.py bootstrap_platform``) — both
+	// endpoints live on Django's public urlconf. Tenant-scoped calls
+	// send the tenant's own domain instead.
 	DjangoPublicHost string
 	// InternalSecret authenticates Django's order-event pushes to
 	// /internal/* routes.
