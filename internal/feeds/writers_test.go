@@ -35,10 +35,11 @@ func testFeedContext() *feedContext {
 	return &feedContext{
 		StoreName:        "Webside",
 		Domain:           "shop.example.test",
+		AssetsHost:       "assets.platform.test",
 		Schema:           "webside",
 		Currency:         "EUR",
 		Locale:           "el",
-		ImageURLTemplate: "https://assets.{domain}/media_stream-image/{path}/1000/1000/contain/center/FFFFFF/5/85.jpeg",
+		ImageURLTemplate: "https://{assets_host}/media_stream-image/{path}/1000/1000/contain/center/FFFFFF/5/85.jpeg",
 		CategoryNames:    map[int64]string{262: "Ηλεκτρονικά & Gadgets"},
 	}
 }

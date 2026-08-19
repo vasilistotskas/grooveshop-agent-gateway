@@ -13,6 +13,7 @@ func setRequired(t *testing.T) {
 	t.Setenv("DJANGO_PUBLIC_HOST", "api.example.test")
 	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 	t.Setenv("INTERNAL_EVENTS_SECRET", "s3cret")
+	t.Setenv("ASSETS_HOST", "assets.platform.test")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -61,4 +62,17 @@ func TestLoadInvalidDuration(t *testing.T) {
 	_, err := Load()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "UPSTREAM_TIMEOUT")
+}
+
+// ASSETS_HOST is required, not defaulted: the gateway used to derive
+// assets.<tenant-domain>, a hostname the documented onboarding never
+// creates, and the resulting URLs went straight into product feeds and
+// agent responses where nothing reports a broken image back.
+func TestLoadRequiresAssetsHost(t *testing.T) {
+	setRequired(t)
+	t.Setenv("ASSETS_HOST", "")
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ASSETS_HOST")
 }

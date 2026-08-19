@@ -284,16 +284,23 @@ type ProductAlert struct {
 // TenantConfig mirrors the tenant/resolve wire shape (camelCase, produced
 // by djangorestframework-camel-case from TenantConfigSerializer).
 type TenantConfig struct {
-	SchemaName           string `json:"schemaName"`
-	Name                 string `json:"name"`
-	StoreName            string `json:"storeName"`
-	StoreDescription     string `json:"storeDescription"`
-	LogoLightURL         string `json:"logoLightUrl"`
-	LogoDarkURL          string `json:"logoDarkUrl"`
-	FaviconURL           string `json:"faviconUrl"`
-	DefaultLocale        string `json:"defaultLocale"`
-	DefaultCurrency      string `json:"defaultCurrency"`
-	PrimaryDomain        string `json:"primaryDomain"`
+	SchemaName       string `json:"schemaName"`
+	Name             string `json:"name"`
+	StoreName        string `json:"storeName"`
+	StoreDescription string `json:"storeDescription"`
+	LogoLightURL     string `json:"logoLightUrl"`
+	LogoDarkURL      string `json:"logoDarkUrl"`
+	FaviconURL       string `json:"faviconUrl"`
+	DefaultLocale    string `json:"defaultLocale"`
+	DefaultCurrency  string `json:"defaultCurrency"`
+	PrimaryDomain    string `json:"primaryDomain"`
+	// AssetsDomain is the tenant's OWN media host, and is empty for
+	// every tenant that has not opted into white-label asset URLs —
+	// which is the documented default. Resolve it through
+	// media.Host so an empty value falls back to the platform origin
+	// instead of producing assets.<tenant-domain>, a hostname standard
+	// onboarding never creates.
+	AssetsDomain         string `json:"assetsDomain"`
 	LoyaltyEnabled       bool   `json:"loyaltyEnabled"`
 	BlogEnabled          bool   `json:"blogEnabled"`
 	StripePublishableKey string `json:"stripePublishableKey"`

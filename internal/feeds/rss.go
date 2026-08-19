@@ -27,8 +27,14 @@ const (
 
 // feedContext carries per-generation tenant data every writer needs.
 type feedContext struct {
-	StoreName        string
-	Domain           string
+	StoreName string
+	// Domain is the storefront host, used for product links.
+	Domain string
+	// AssetsHost is the resolved media origin for image links — the
+	// tenant's own when it opted into white-label assets, otherwise the
+	// platform origin. NOT derived from Domain: assets.<storefront> is a
+	// hostname standard onboarding never creates.
+	AssetsHost       string
 	Schema           string
 	Currency         string
 	Locale           string
@@ -225,8 +231,13 @@ func feedImageURL(ctx *feedContext, path string) string {
 	for i, s := range segments {
 		segments[i] = url.PathEscape(s)
 	}
+	if ctx.AssetsHost == "" {
+		// No media origin configured — emit nothing rather than an
+		// unreachable URL that ad platforms reject silently.
+		return ""
+	}
 	return strings.NewReplacer(
-		"{domain}", ctx.Domain,
+		"{assets_host}", ctx.AssetsHost,
 		"{schema}", ctx.Schema,
 		"{path}", strings.Join(segments, "/"),
 	).Replace(ctx.ImageURLTemplate)

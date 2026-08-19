@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/media"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -39,22 +40,27 @@ type Meta struct {
 }
 
 type Service struct {
-	dj       *django.Client
-	rdb      *redis.Client
-	log      *slog.Logger
-	imageTpl string
-	freshTTL time.Duration
-	staleTTL time.Duration
-	sf       singleflight.Group
+	dj  *django.Client
+	rdb *redis.Client
+	log *slog.Logger
+	// imageTpl expands {assets_host}/{schema}/{path}; assetsHost is the
+	// PLATFORM media origin used for tenants that have not opted into
+	// white-label asset URLs (the documented default).
+	imageTpl   string
+	assetsHost string
+	freshTTL   time.Duration
+	staleTTL   time.Duration
+	sf         singleflight.Group
 }
 
 func NewService(
 	dj *django.Client, rdb *redis.Client, log *slog.Logger,
-	imageTpl string, freshTTL, staleTTL time.Duration,
+	imageTpl, assetsHost string, freshTTL, staleTTL time.Duration,
 ) *Service {
 	return &Service{
 		dj: dj, rdb: rdb, log: log,
-		imageTpl: imageTpl, freshTTL: freshTTL, staleTTL: staleTTL,
+		imageTpl: imageTpl, assetsHost: assetsHost,
+		freshTTL: freshTTL, staleTTL: staleTTL,
 	}
 }
 
@@ -136,6 +142,7 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 	fctx := &feedContext{
 		StoreName:        storeName(t),
 		Domain:           t.Domain,
+		AssetsHost:       media.Host(t.AssetsDomain, s.assetsHost),
 		Schema:           t.SchemaName,
 		Currency:         t.DefaultCurrency,
 		Locale:           t.DefaultLocale,

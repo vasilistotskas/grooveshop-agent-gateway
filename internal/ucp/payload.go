@@ -88,10 +88,15 @@ type Checkout struct {
 type Builder struct {
 	dj               *django.Client
 	mediaURLTemplate string
+	assetsHost       string
 }
 
-func NewBuilder(dj *django.Client, mediaURLTemplate string) *Builder {
-	return &Builder{dj: dj, mediaURLTemplate: mediaURLTemplate}
+func NewBuilder(
+	dj *django.Client, mediaURLTemplate, assetsHost string,
+) *Builder {
+	return &Builder{
+		dj: dj, mediaURLTemplate: mediaURLTemplate, assetsHost: assetsHost,
+	}
 }
 
 // paymentHandlers advertises what this tenant can accept. Stripe's
@@ -149,7 +154,8 @@ func (b *Builder) BuildCheckout(
 				Title: line.Title,
 				Price: line.UnitMinor,
 				ImageURL: media.ImageURL(b.mediaURLTemplate,
-					t.Domain, t.SchemaName, line.ImagePath),
+					media.Host(t.AssetsDomain, b.assetsHost),
+					t.SchemaName, line.ImagePath),
 			},
 			Quantity: line.Quantity,
 			Totals: []LineItemTotal{

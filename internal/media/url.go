@@ -6,15 +6,34 @@ package media
 
 import "strings"
 
-// ImageURL expands the template's {domain}, {schema} and {path}
-// placeholders. An empty source path yields an empty URL — callers decide
-// how to represent "no image".
-func ImageURL(template, domain, schema, path string) string {
-	if path == "" || template == "" {
+// Host picks the media origin for a tenant: its own assets host when it
+// has opted into white-label asset URLs, otherwise the platform origin.
+//
+// Deriving the host from the tenant's storefront domain instead (the old
+// "assets.{domain}" template) produced a hostname that standard
+// onboarding never creates — docs/tenant-onboarding.md states that
+// assets hosts are NOT provisioned per tenant and every tenant shares
+// the platform origin. Django and Nuxt both honour that fallback; the
+// gateway emitted NXDOMAIN image URLs into every feed and agent
+// response, which Meta and TikTok reject silently because nothing here
+// ever fetches what it emits.
+func Host(tenantAssetsDomain, platformHost string) string {
+	if tenantAssetsDomain != "" {
+		return tenantAssetsDomain
+	}
+	return platformHost
+}
+
+// ImageURL expands the template's {assets_host}, {schema} and {path}
+// placeholders. An empty source path — or an unresolved media host —
+// yields an empty URL, so a missing configuration drops the image
+// rather than publishing an unreachable one.
+func ImageURL(template, assetsHost, schema, path string) string {
+	if path == "" || template == "" || assetsHost == "" {
 		return ""
 	}
 	return strings.NewReplacer(
-		"{domain}", domain,
+		"{assets_host}", assetsHost,
 		"{schema}", schema,
 		"{path}", path,
 	).Replace(template)

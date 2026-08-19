@@ -166,3 +166,55 @@ func TestMiddlewareInvalidBearerGets401WithChallenge(t *testing.T) {
 		`resource_metadata="https://shop.example.test`+
 			`/.well-known/oauth-protected-resource/mcp"`)
 }
+
+// otherTenant is a second store served by the same gateway pod pool —
+// every tenant's ingress targets the same Service.
+func otherTenant() *tenant.Tenant {
+	return &tenant.Tenant{
+		TenantConfig: django.TenantConfig{
+			SchemaName:    "acme",
+			DefaultLocale: "en",
+		},
+		Domain: "acme.example.test",
+	}
+}
+
+// A verdict is obtained per tenant, so it must not be reused across
+// them. Keying the cache on the token alone let a bearer verified for
+// one store be accepted at another with the first store's shopper
+// profile attached.
+func TestVerifyDoesNotReuseVerdictAcrossTenants(t *testing.T) {
+	v, hits, done := newHarness(t)
+	defer done()
+
+	_, err := v.Verify(t.Context(), testTenant(), "good")
+	require.NoError(t, err)
+	require.Equal(t, int64(1), hits.Load())
+
+	// Same token, different tenant: must re-probe rather than hit cache.
+	_, err = v.Verify(t.Context(), otherTenant(), "good")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), hits.Load(),
+		"second tenant must be verified upstream, not served from cache")
+
+	// Same tenant again still caches.
+	_, err = v.Verify(t.Context(), testTenant(), "good")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), hits.Load(), "same-tenant repeat should hit cache")
+}
+
+// The negative direction: a token rejected at one store must not mark
+// it invalid at its own store for the rest of the TTL.
+func TestVerifyDoesNotReuseRejectionAcrossTenants(t *testing.T) {
+	v, hits, done := newHarness(t)
+	defer done()
+
+	_, err := v.Verify(t.Context(), testTenant(), "nope")
+	require.Error(t, err)
+	require.Equal(t, int64(1), hits.Load())
+
+	_, err = v.Verify(t.Context(), otherTenant(), "nope")
+	require.Error(t, err)
+	assert.Equal(t, int64(2), hits.Load(),
+		"rejection for one tenant must not answer for another")
+}

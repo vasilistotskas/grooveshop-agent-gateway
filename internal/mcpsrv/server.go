@@ -22,6 +22,7 @@ type Deps struct {
 	Flow             *checkout.Flow
 	UCP              *ucp.Builder
 	MediaURLTemplate string
+	AssetsHost       string
 	Log              *slog.Logger
 	Version          string
 }

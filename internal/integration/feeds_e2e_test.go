@@ -89,8 +89,9 @@ func TestFeedsEndToEnd(t *testing.T) {
 	cfg := config.Config{
 		DjangoBaseURL:    djangoSrv.URL + "/api/v1",
 		DjangoPublicHost: "api.example.test",
-		MediaURLTemplate: "https://assets.{domain}/x/{path}",
-		FeedImageURLTemplate: "https://assets.{domain}/media_stream-image/{path}" +
+		AssetsHost:       "assets.platform.test",
+		MediaURLTemplate: "https://{assets_host}/x/{path}",
+		FeedImageURLTemplate: "https://{assets_host}/media_stream-image/{path}" +
 			"/1000/1000/contain/center/FFFFFF/5/85.jpeg",
 		FeedFreshTTL:     time.Hour,
 		FeedStaleTTL:     24 * time.Hour,

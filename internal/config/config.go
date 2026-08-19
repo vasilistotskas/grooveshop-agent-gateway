@@ -33,8 +33,18 @@ type Config struct {
 
 	RedisURL string
 
+	// AssetsHost is the PLATFORM media origin (e.g. assets.example.com),
+	// used for every tenant that has not opted into white-label asset
+	// URLs — which per docs/tenant-onboarding.md is the default: assets
+	// hosts are not provisioned per tenant. A tenant that HAS opted in
+	// carries its own host in TenantConfig.AssetsDomain, which wins.
+	// Deliberately has no default: guessing a hostname here is what
+	// produced unreachable image URLs, and an empty value now yields an
+	// empty image URL instead.
+	AssetsHost string
+
 	// MediaURLTemplate builds public product-image URLs. Placeholders:
-	// {domain} (tenant storefront domain), {schema} (tenant schema),
+	// {assets_host} (resolved via media.Host), {schema} (tenant schema),
 	// {path} (relative mainImagePath). The full media-stream segment list
 	// lives in the template so the MT cutover is a config flip.
 	MediaURLTemplate string
@@ -83,15 +93,16 @@ func Load() (Config, error) {
 		DjangoPublicHost: os.Getenv("DJANGO_PUBLIC_HOST"),
 		InternalSecret:   os.Getenv("INTERNAL_EVENTS_SECRET"),
 		RedisURL:         os.Getenv("REDIS_URL"),
+		AssetsHost:       os.Getenv("ASSETS_HOST"),
 		MediaURLTemplate: envOr("MEDIA_IMAGE_URL_TEMPLATE",
-			"https://assets.{domain}/media_stream-image/{path}"+
+			"https://{assets_host}/media_stream-image/{path}"+
 				"/800/800/contain/entropy/transparent/5/80.webp"),
 		ChatBaseURL: envOr("CHAT_BASE_URL",
 			"https://generativelanguage.googleapis.com/v1beta/openai/"),
 		ChatModel:  envOr("CHAT_MODEL", "gemini-3.5-flash-lite"),
 		ChatEffort: envOr("CHAT_EFFORT", "low"),
 		FeedImageURLTemplate: envOr("FEED_IMAGE_URL_TEMPLATE",
-			"https://assets.{domain}/media_stream-image/{path}"+
+			"https://{assets_host}/media_stream-image/{path}"+
 				"/1000/1000/contain/center/FFFFFF/5/85.jpeg"),
 	}
 
@@ -151,6 +162,15 @@ func Load() (Config, error) {
 	}
 	if cfg.InternalSecret == "" {
 		missing = append(missing, "INTERNAL_EVENTS_SECRET")
+	}
+	// Required rather than defaulted: every deployment serves product
+	// images, and the previous behaviour — deriving assets.<tenant
+	// domain> — produced URLs that resolve nowhere for any tenant on the
+	// documented onboarding path. Feeds and agent responses carry those
+	// URLs to Meta, TikTok and shopping agents, none of which report a
+	// broken image back. Crash at startup instead.
+	if cfg.AssetsHost == "" {
+		missing = append(missing, "ASSETS_HOST")
 	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf(

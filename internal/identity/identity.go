@@ -84,7 +84,18 @@ var ErrInvalidToken = errors.New("identity: invalid token")
 func (v *Verifier) Verify(
 	ctx context.Context, t *tenant.Tenant, token string,
 ) (*Linked, error) {
-	sum := sha256.Sum256([]byte(token))
+	// Key on (tenant, token), never the token alone. The upstream probe
+	// below is tenant-scoped, so a verdict is only ever valid for the
+	// tenant it was obtained for. Caching by token alone let a hit
+	// answer for a DIFFERENT store: a bearer valid for tenant A, replayed
+	// against tenant B within the TTL, was admitted with A's shopper
+	// profile attached — and in the other direction a token rejected at
+	// A was treated as invalid at its own store for the rest of the TTL.
+	// Every tenant's ingress targets this same pod pool, so both
+	// directions are reachable from outside.
+	sum := sha256.Sum256(
+		append(append([]byte(t.SchemaName), 0), token...),
+	)
 	key := hex.EncodeToString(sum[:])
 
 	v.mu.Lock()

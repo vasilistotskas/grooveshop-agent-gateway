@@ -120,7 +120,8 @@ func startUCPGateway(t *testing.T) (*httptest.Server, *ucp.SigningKey) {
 		DjangoBaseURL:    djangoSrv.URL + "/api/v1",
 		DjangoPublicHost: "api.example.test",
 		InternalSecret:   internalSecret,
-		MediaURLTemplate: "https://assets.{domain}/media_stream-image/{path}" +
+		AssetsHost:       "assets.platform.test",
+		MediaURLTemplate: "https://{assets_host}/media_stream-image/{path}" +
 			"/800/800/contain/entropy/transparent/5/80.webp",
 		TenantCacheTTL:   time.Minute,
 		NegativeCacheTTL: time.Minute,

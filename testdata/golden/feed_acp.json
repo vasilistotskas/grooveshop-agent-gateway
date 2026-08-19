@@ -10,7 +10,7 @@
    "media": [
     {
      "type": "image",
-     "url": "https://assets.shop.example.test/media_stream-image/media/uploads/products/%CF%86%CE%BF%CF%81%CF%84%CE%B9%CF%83%CF%84%CE%AE%CF%82.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
+     "url": "https://assets.platform.test/media_stream-image/media/uploads/products/%CF%86%CE%BF%CF%81%CF%84%CE%B9%CF%83%CF%84%CE%AE%CF%82.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
     }
    ],
    "variants": [
@@ -36,7 +36,7 @@
      "media": [
       {
        "type": "image",
-       "url": "https://assets.shop.example.test/media_stream-image/media/uploads/products/%CF%86%CE%BF%CF%81%CF%84%CE%B9%CF%83%CF%84%CE%AE%CF%82.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
+       "url": "https://assets.platform.test/media_stream-image/media/uploads/products/%CF%86%CE%BF%CF%81%CF%84%CE%B9%CF%83%CF%84%CE%AE%CF%82.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
       }
      ]
     }
@@ -52,7 +52,7 @@
    "media": [
     {
      "type": "image",
-     "url": "https://assets.shop.example.test/media_stream-image/media/uploads/products/case.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
+     "url": "https://assets.platform.test/media_stream-image/media/uploads/products/case.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
     }
    ],
    "variants": [
@@ -78,7 +78,7 @@
      "media": [
       {
        "type": "image",
-       "url": "https://assets.shop.example.test/media_stream-image/media/uploads/products/case.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
+       "url": "https://assets.platform.test/media_stream-image/media/uploads/products/case.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
       }
      ]
     }

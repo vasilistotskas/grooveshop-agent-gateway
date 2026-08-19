@@ -65,7 +65,9 @@ func New(d Deps) http.Handler {
 
 	checkoutStore := checkout.NewStore(d.Redis)
 	checkoutFlow := checkout.NewFlow(d.Django, checkoutStore, d.Log)
-	ucpBuilder := ucp.NewBuilder(d.Django, d.Cfg.MediaURLTemplate)
+	ucpBuilder := ucp.NewBuilder(
+		d.Django, d.Cfg.MediaURLTemplate, d.Cfg.AssetsHost,
+	)
 
 	mcpServer := mcpsrv.NewServer(mcpsrv.Deps{
 		Django:           d.Django,
@@ -73,6 +75,7 @@ func New(d Deps) http.Handler {
 		Flow:             checkoutFlow,
 		UCP:              ucpBuilder,
 		MediaURLTemplate: d.Cfg.MediaURLTemplate,
+		AssetsHost:       d.Cfg.AssetsHost,
 		Log:              d.Log,
 		Version:          d.Version,
 	})
@@ -100,7 +103,8 @@ func New(d Deps) http.Handler {
 		d.Log).Register(mux, tenantMW)
 
 	feedSvc := feeds.NewService(d.Django, d.Redis, d.Log,
-		d.Cfg.FeedImageURLTemplate, d.Cfg.FeedFreshTTL, d.Cfg.FeedStaleTTL)
+		d.Cfg.FeedImageURLTemplate, d.Cfg.AssetsHost,
+		d.Cfg.FeedFreshTTL, d.Cfg.FeedStaleTTL)
 	mux.Handle("GET /feeds/google.xml", tenantMW(feedSvc.Handler(feeds.KindGoogle)))
 	mux.Handle("GET /feeds/meta.xml", tenantMW(feedSvc.Handler(feeds.KindMeta)))
 	mux.Handle("GET /feeds/tiktok.xml", tenantMW(feedSvc.Handler(feeds.KindTikTok)))

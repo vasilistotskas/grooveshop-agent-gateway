@@ -130,7 +130,11 @@ func fixtureDjango(t *testing.T) *django.Client {
 func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 	schema := compileUCP(t, "shopping/checkout.json")
 	tn := testTenant()
-	b := NewBuilder(fixtureDjango(t), "https://assets.{domain}/img/{path}.webp")
+	b := NewBuilder(
+		fixtureDjango(t),
+		"https://{assets_host}/img/{path}.webp",
+		"assets.platform.test",
+	)
 
 	newSession := func(status checkout.Status) *checkout.Session {
 		s := checkout.NewSession("public", tn.Domain, "ucp",

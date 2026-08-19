@@ -108,7 +108,8 @@ func startChatGateway(t *testing.T, fake *fakeChatAPI) *httptest.Server {
 	cfg := config.Config{
 		DjangoBaseURL:     djangoSrv.URL + "/api/v1",
 		DjangoPublicHost:  "api.example.test",
-		MediaURLTemplate:  "https://assets.{domain}/x/{path}",
+		AssetsHost:        "assets.platform.test",
+		MediaURLTemplate:  "https://{assets_host}/x/{path}",
 		TenantCacheTTL:    time.Minute,
 		NegativeCacheTTL:  time.Minute,
 		UpstreamTimeout:   5 * time.Second,

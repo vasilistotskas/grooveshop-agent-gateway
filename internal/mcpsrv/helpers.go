@@ -101,7 +101,8 @@ func (h *handlers) productURL(t *tenant.Tenant, id int64, slug string) string {
 }
 
 func (h *handlers) imageURL(t *tenant.Tenant, path string) string {
-	return media.ImageURL(h.deps.MediaURLTemplate, t.Domain, t.SchemaName, path)
+	host := media.Host(t.AssetsDomain, h.deps.AssetsHost)
+	return media.ImageURL(h.deps.MediaURLTemplate, host, t.SchemaName, path)
 }
 
 // num renders a json.Number for structured output, defaulting empty values
