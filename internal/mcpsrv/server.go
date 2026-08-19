@@ -1,17 +1,20 @@
 // Package mcpsrv exposes the commerce toolset over MCP (stateless
-// streamable HTTP). One immutable Server carries every tool; the tenant
-// arrives per request via the tenant middleware's context value, which the
-// SDK propagates into tool handlers.
+// streamable HTTP). One Server per tenant carries every tool — they
+// differ only in the store name they advertise at initialize; the
+// tenant itself arrives per request via the tenant middleware's context
+// value, which the SDK propagates into tool handlers.
 package mcpsrv
 
 import (
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
@@ -28,10 +31,23 @@ type Deps struct {
 }
 
 // NewServer builds the MCP server with the full commerce toolset.
-func NewServer(d Deps) *mcp.Server {
+//
+// title is what the server calls itself in the `initialize` response.
+// It is per-tenant: on a white-label storefront an agent must be told
+// it is talking to the MERCHANT, not to the platform behind them. The
+// neighbouring surfaces already do this — /.well-known/ucp is per
+// tenant and the feeds resolve the merchant name — so a hardcoded
+// platform title here was the odd one out.
+//
+// Name stays constant: it is the protocol identifier, not a display
+// name.
+func NewServer(d Deps, title string) *mcp.Server {
+	if title == "" {
+		title = "Storefront"
+	}
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "grooveshop-agent-gateway",
-		Title:   "GrooveShop storefront",
+		Title:   title,
 		Version: d.Version,
 	}, nil)
 
@@ -205,9 +221,10 @@ func NewServer(d Deps) *mcp.Server {
 }
 
 // Handler wraps the server in the stateless streamable HTTP transport.
-func Handler(srv *mcp.Server, log *slog.Logger) http.Handler {
+func Handler(d Deps, log *slog.Logger) http.Handler {
+	cache := &serverCache{deps: d, servers: map[string]*mcp.Server{}}
 	return mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return srv },
+		cache.forRequest,
 		&mcp.StreamableHTTPOptions{
 			Stateless:                    true,
 			JSONResponse:                 true,
@@ -215,4 +232,48 @@ func Handler(srv *mcp.Server, log *slog.Logger) http.Handler {
 			Logger:                       log,
 		},
 	)
+}
+
+// serverCache hands out one MCP server per tenant schema.
+//
+// The tool set is identical for every tenant — only the advertised
+// title differs — so building a server costs one pass over the AddTool
+// calls, done once per schema rather than per request. The tenant
+// middleware wraps this handler from outside, so the request context
+// already carries the resolved tenant.
+type serverCache struct {
+	mu      sync.Mutex
+	deps    Deps
+	servers map[string]*mcp.Server
+}
+
+// maxCachedServers bounds the map the way the UCP key cache is bounded:
+// schemas are operator-created and few, but nothing should grow without
+// a ceiling. Past it the map is dropped and rebuilt on demand.
+const maxCachedServers = 512
+
+func (c *serverCache) forRequest(r *http.Request) *mcp.Server {
+	t, ok := tenant.FromContext(r.Context())
+	if !ok || t == nil {
+		return c.get("", "Storefront")
+	}
+	title := t.StoreName
+	if title == "" {
+		title = t.Name
+	}
+	return c.get(t.SchemaName, title)
+}
+
+func (c *serverCache) get(schema, title string) *mcp.Server {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if srv, hit := c.servers[schema]; hit {
+		return srv
+	}
+	if len(c.servers) >= maxCachedServers {
+		c.servers = map[string]*mcp.Server{}
+	}
+	srv := NewServer(c.deps, title)
+	c.servers[schema] = srv
+	return srv
 }

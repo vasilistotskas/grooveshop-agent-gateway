@@ -69,7 +69,9 @@ func New(d Deps) http.Handler {
 		d.Django, d.Cfg.MediaURLTemplate, d.Cfg.AssetsHost,
 	)
 
-	mcpServer := mcpsrv.NewServer(mcpsrv.Deps{
+	// The handler builds one server per tenant (they differ only in the
+	// store name advertised at initialize) and caches them by schema.
+	mcpDeps := mcpsrv.Deps{
 		Django:           d.Django,
 		Checkout:         checkoutStore,
 		Flow:             checkoutFlow,
@@ -78,7 +80,7 @@ func New(d Deps) http.Handler {
 		AssetsHost:       d.Cfg.AssetsHost,
 		Log:              d.Log,
 		Version:          d.Version,
-	})
+	}
 	// Identity runs inside the tenant middleware (the upstream token
 	// probe needs the tenant). Auth is OPTIONAL — anonymous shopping
 	// stays open; a present-but-invalid bearer gets the RFC 9728
@@ -86,7 +88,7 @@ func New(d Deps) http.Handler {
 	identityMW := identity.Middleware(
 		identity.NewVerifier(d.Django, d.Log), d.Log)
 	mux.Handle("/mcp",
-		tenantMW(identityMW(mcpsrv.Handler(mcpServer, d.Log))))
+		tenantMW(identityMW(mcpsrv.Handler(mcpDeps, d.Log))))
 
 	mux.Handle("GET /.well-known/ucp",
 		tenantMW(ucp.ProfileHandler(d.Keys)))
@@ -110,8 +112,12 @@ func New(d Deps) http.Handler {
 	mux.Handle("GET /feeds/tiktok.xml", tenantMW(feedSvc.Handler(feeds.KindTikTok)))
 	mux.Handle("GET /feeds/acp.json", tenantMW(feedSvc.Handler(feeds.KindACP)))
 
+	// Chat calls the same toolset in-process. The title is only ever
+	// read from an MCP `initialize` response, which this path does not
+	// serve — the shopper sees the store name through the system prompt
+	// instead — so one shared instance is correct here.
 	chatSvc := chat.New(d.Cfg,
-		mcpServer,
+		mcpsrv.NewServer(mcpDeps, "Storefront"),
 		chat.NewStore(d.Redis, d.Cfg.ConversationTTL, d.Cfg.ChatMaxTurns),
 		d.Log,
 		d.ChatOpts...,
