@@ -86,6 +86,16 @@ func (h *handlers) createCheckout(
 		}
 	}
 
+	// Reject an unusable endpoint here rather than queueing deliveries
+	// to it: this tool is reachable anonymously, and the dispatcher
+	// POSTs to whatever is stored on every order transition.
+	if err := ucp.ValidateWebhookURL(
+		in.WebhookURL, h.deps.AllowLocalWebhooks,
+	); err != nil {
+		return nil, zero, fmt.Errorf(
+			"webhookUrl rejected: %w", err)
+	}
+
 	s := checkout.NewSession(t.SchemaName, t.Domain, "ucp", cartID)
 	s.WebhookURL = in.WebhookURL
 	applyCheckoutInputs(s, in.Buyer, in.Fulfillment, in.PayWayID)

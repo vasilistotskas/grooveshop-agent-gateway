@@ -26,8 +26,12 @@ type Deps struct {
 	UCP              *ucp.Builder
 	MediaURLTemplate string
 	AssetsHost       string
-	Log              *slog.Logger
-	Version          string
+	// AllowLocalWebhooks relaxes webhook-endpoint validation for
+	// development and the e2e suite, which register httptest servers on
+	// 127.0.0.1. Production keeps the strict public-https rule.
+	AllowLocalWebhooks bool
+	Log                *slog.Logger
+	Version            string
 }
 
 // NewServer builds the MCP server with the full commerce toolset.

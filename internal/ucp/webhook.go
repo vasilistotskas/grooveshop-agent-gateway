@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,8 +17,27 @@ import (
 )
 
 const (
+	// Deliberately NOT per-schema: this is one work queue for the whole
+	// pod pool and each event carries its own schema, which is what the
+	// signing key and the target URL are resolved from. Per-schema lists
+	// would need a fair scheduler across an unbounded set of keys to
+	// gain anything the worker pool below does not already give.
 	eventsKey     = "ag:events:orders"
 	processingKey = "ag:events:orders:processing"
+
+	// deliveryWorkers bounds concurrent deliveries.
+	//
+	// Delivery used to run inline in the consumer loop, so ONE
+	// undeliverable endpoint stalled every tenant's webhooks: three
+	// attempts at a 15s client timeout plus 5s and 20s of backoff is up
+	// to ~70s of head-of-line blocking per event, and a tenant whose
+	// platform endpoint blackholes generates one such event per order
+	// transition. Queued events for other tenants simply waited.
+	//
+	// A pool bounds the damage to one worker per stuck endpoint while
+	// keeping at-least-once semantics unchanged: each event is still
+	// moved to the processing list before delivery and removed after.
+	deliveryWorkers = 8
 )
 
 // OrderEvent is one order-lifecycle update queued for platform delivery.
@@ -80,9 +100,33 @@ func (d *Dispatcher) Enqueue(ctx context.Context, ev OrderEvent) error {
 }
 
 // Run consumes the queue until Stop. Start once per pod.
+//
+// Reads are serial (one BLMove at a time keeps the processing-list
+// bookkeeping simple); DELIVERY is handed to a bounded worker pool so a
+// slow or dead platform endpoint occupies one worker instead of the
+// whole queue.
 func (d *Dispatcher) Run(ctx context.Context) {
 	// Reclaim events a crashed pod left in the processing list.
 	d.reclaim(ctx)
+
+	jobs := make(chan string, deliveryWorkers)
+	var wg sync.WaitGroup
+	for range deliveryWorkers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for raw := range jobs {
+				d.deliver(ctx, raw)
+			}
+		}()
+	}
+	// Drain in-flight deliveries before returning so a shutdown does not
+	// strand events in the processing list any longer than a crash would.
+	defer func() {
+		close(jobs)
+		wg.Wait()
+	}()
+
 	for {
 		select {
 		case <-d.stop:
@@ -105,7 +149,17 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			time.Sleep(time.Second)
 			continue
 		}
-		d.deliver(ctx, raw)
+		select {
+		case jobs <- raw:
+		case <-d.stop:
+			// Shutting down: hand the event straight back so it is not
+			// lost between the pop and the (now closed) pool.
+			_ = d.rdb.LMove(ctx, processingKey, eventsKey,
+				"LEFT", "LEFT").Err()
+			return
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 

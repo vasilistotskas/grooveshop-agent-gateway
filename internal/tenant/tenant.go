@@ -18,6 +18,11 @@ type Tenant struct {
 	// Stale marks a config served past its TTL because Django was
 	// unreachable on refresh (availability over freshness for branding).
 	Stale bool
+	// SecretsLoaded reports whether ChatAPIKey / ACPBearerToken are
+	// populated. They are deliberately NOT written to the shared Redis
+	// tier, so a config served from there arrives without them; routes
+	// that need one must go through EnsureSecrets. See Resolver.storeRedis.
+	SecretsLoaded bool
 }
 
 type ctxKey struct{}

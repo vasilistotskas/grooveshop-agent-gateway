@@ -2,6 +2,7 @@ package tenant
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -184,4 +185,45 @@ func TestNormalizeHost(t *testing.T) {
 	for _, tc := range cases {
 		assert.Equal(t, tc.want, NormalizeHost(tc.in), "input %q", tc.in)
 	}
+}
+
+// Per-tenant credentials must never reach the shared Redis tier. DB 4 is
+// the same server and password Django, Nuxt, media-stream and Celery all
+// hold, and the key pattern is fully predictable, so a config cached
+// whole exposed every tenant's model-provider key and agentic-platform
+// bearer to any of those workloads.
+func TestPublicConfigStripsCredentials(t *testing.T) {
+	cfg := &django.TenantConfig{
+		SchemaName:     "acme",
+		StoreName:      "Acme",
+		ChatAPIKey:     "sk-live-do-not-cache",
+		ACPBearerToken: "acp-live-do-not-cache",
+	}
+
+	public := publicConfig(cfg)
+
+	assert.Empty(t, public.ChatAPIKey)
+	assert.Empty(t, public.ACPBearerToken)
+	// Everything else still rides the cache.
+	assert.Equal(t, "acme", public.SchemaName)
+	assert.Equal(t, "Acme", public.StoreName)
+
+	// The source is untouched — the memory tier keeps the real values.
+	assert.Equal(t, "sk-live-do-not-cache", cfg.ChatAPIKey)
+	assert.Equal(t, "acp-live-do-not-cache", cfg.ACPBearerToken)
+
+	raw, err := json.Marshal(&public)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "do-not-cache")
+}
+
+// A config resolved from Django carries its credentials, so the
+// secret-bearing routes can use it without a refresh.
+func TestDjangoResolveMarksSecretsLoaded(t *testing.T) {
+	f := newFakeDjango(t)
+	r := newTestResolver(t, f, time.Minute)
+
+	tn, err := r.Resolve(t.Context(), "shop.example.test")
+	require.NoError(t, err)
+	assert.True(t, tn.SecretsLoaded)
 }

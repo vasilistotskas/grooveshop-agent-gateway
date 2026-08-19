@@ -135,7 +135,18 @@ func (s *Service) refreshAsync(t *tenant.Tenant) {
 // generate sweeps the catalog once, rendering all kinds, and stores them
 // gzipped with the stale TTL as the Redis expiry.
 func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
-	generationSlots <- struct{}{}
+	// Wait for a slot OR for the caller to go away. A bare send ignored
+	// cancellation: when a client gave up on a cold feed, the goroutine
+	// kept queuing, eventually took a slot, and ran a full catalog sweep
+	// against Django for a request nobody was listening to. A burst of
+	// cold feed requests across tenants therefore queued an unbounded
+	// pile of sweeps behind a two-slot semaphore that is shared by every
+	// tenant.
+	select {
+	case generationSlots <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	defer func() { <-generationSlots }()
 
 	start := time.Now()

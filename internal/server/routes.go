@@ -62,6 +62,10 @@ func New(d Deps) http.Handler {
 	// Tenant-scoped surfaces. The tenant middleware wraps handlers inside
 	// routing so mux patterns stay visible to the metrics middleware.
 	tenantMW := tenant.Middleware(d.Resolver, d.Log)
+	// /chat and /acp authenticate against a per-tenant credential, and
+	// those are kept out of the shared Redis cache tier — so they need
+	// the variant that tops them up.
+	tenantSecretsMW := tenant.MiddlewareWithSecrets(d.Resolver, d.Log)
 
 	checkoutStore := checkout.NewStore(d.Redis)
 	checkoutFlow := checkout.NewFlow(d.Django, checkoutStore, d.Log)
@@ -78,8 +82,13 @@ func New(d Deps) http.Handler {
 		UCP:              ucpBuilder,
 		MediaURLTemplate: d.Cfg.MediaURLTemplate,
 		AssetsHost:       d.Cfg.AssetsHost,
-		Log:              d.Log,
-		Version:          d.Version,
+		// Strict by default: only an explicitly non-production ENV
+		// relaxes webhook-endpoint validation, so an unset or
+		// unrecognised value keeps the public-https rule rather than
+		// silently opening the gateway up as a request origin.
+		AllowLocalWebhooks: d.Cfg.Env == "development" || d.Cfg.Env == "test",
+		Log:                d.Log,
+		Version:            d.Version,
 	}
 	// Identity runs inside the tenant middleware (the upstream token
 	// probe needs the tenant). Auth is OPTIONAL — anonymous shopping
@@ -102,7 +111,7 @@ func New(d Deps) http.Handler {
 	// by the tenant's own acpBearerToken from tenant/resolve. A tenant
 	// without one has ACP disabled and every bearer gets 401.
 	acp.NewHandler(d.Django, checkoutStore, checkoutFlow, d.Redis,
-		d.Log).Register(mux, tenantMW)
+		d.Log).Register(mux, tenantSecretsMW)
 
 	feedSvc := feeds.NewService(d.Django, d.Redis, d.Log,
 		d.Cfg.FeedImageURLTemplate, d.Cfg.AssetsHost,
@@ -130,7 +139,7 @@ func New(d Deps) http.Handler {
 		d.Cfg.ChatRatePerMin, d.Cfg.ChatRateBurst, d.Metrics,
 	)
 	mux.Handle("POST /chat",
-		tenantMW(chatLimiter.Middleware()(chatSvc.Handler())))
+		tenantSecretsMW(chatLimiter.Middleware()(chatSvc.Handler())))
 
 	// Global chain, outermost first. Metrics sits directly around the mux so
 	// r.Pattern (set during routing) is visible when it records.

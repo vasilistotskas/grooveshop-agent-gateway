@@ -87,6 +87,8 @@ func TestFeedsEndToEnd(t *testing.T) {
 	log := quietLogger()
 	metrics := obs.NewMetrics()
 	cfg := config.Config{
+		// Registers httptest webhook endpoints on 127.0.0.1.
+		Env:              "test",
 		DjangoBaseURL:    djangoSrv.URL + "/api/v1",
 		DjangoPublicHost: "api.example.test",
 		AssetsHost:       "assets.platform.test",

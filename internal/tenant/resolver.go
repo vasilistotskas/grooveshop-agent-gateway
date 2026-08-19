@@ -106,9 +106,10 @@ func (r *Resolver) resolveSlow(ctx context.Context, domain string) (*Tenant, err
 	switch {
 	case err == nil:
 		t := &Tenant{
-			TenantConfig: *cfg,
-			Domain:       domain,
-			ResolvedAt:   time.Now(),
+			TenantConfig:  *cfg,
+			Domain:        domain,
+			ResolvedAt:    time.Now(),
+			SecretsLoaded: true,
 		}
 		r.storeMemory(domain, memEntry{tenant: t, expires: time.Now().Add(r.ttl)})
 		r.storeRedis(ctx, domain, cfg)
@@ -183,6 +184,7 @@ func (r *Resolver) fromRedis(ctx context.Context, domain string) (*Tenant, error
 			slog.String("error", err.Error()))
 		return nil, nil, false
 	}
+	// SecretsLoaded stays false: storeRedis strips the credential fields.
 	t := &Tenant{TenantConfig: cfg, Domain: domain, ResolvedAt: time.Now()}
 	r.storeMemory(domain, memEntry{tenant: t, expires: time.Now().Add(r.ttl)})
 	r.count("redis_hit")
@@ -193,7 +195,8 @@ func (r *Resolver) storeRedis(ctx context.Context, domain string, cfg *django.Te
 	if r.rdb == nil {
 		return
 	}
-	raw, err := json.Marshal(cfg)
+	public := publicConfig(cfg)
+	raw, err := json.Marshal(&public)
 	if err != nil {
 		return
 	}
@@ -201,6 +204,23 @@ func (r *Resolver) storeRedis(ctx context.Context, domain string, cfg *django.Te
 		r.log.WarnContext(ctx, "tenant redis write failed",
 			slog.String("error", err.Error()))
 	}
+}
+
+// publicConfig copies a tenant config with the per-tenant CREDENTIALS
+// cleared, for the shared Redis cache tier.
+//
+// Redis DB 4 lives on the same server, behind the same password, as the
+// caches Django, Nuxt, media-stream and Celery all use — so marshalling
+// the whole config put every tenant's model-provider key and
+// agentic-platform bearer in plaintext under a fully predictable key,
+// readable from any of those workloads. Credentials stay in the
+// process-memory tier only; routes that need one go through
+// Resolver.EnsureSecrets.
+func publicConfig(cfg *django.TenantConfig) django.TenantConfig {
+	public := *cfg
+	public.ChatAPIKey = ""
+	public.ACPBearerToken = ""
+	return public
 }
 
 func (r *Resolver) storeRedisNegative(ctx context.Context, domain string) {
@@ -258,4 +278,38 @@ func NormalizeHost(host string) string {
 		return h
 	}
 	return host
+}
+
+// EnsureSecrets returns a tenant whose credential fields are populated.
+//
+// The Redis tier deliberately stores the public config only (see
+// storeRedis), so a tenant resolved from there carries empty
+// ChatAPIKey / ACPBearerToken. Routes that authenticate against one —
+// /chat and /acp — must call this, or a Redis-tier hit would look
+// exactly like a tenant that never configured the feature: a localized
+// 404 from chat, a 401 from ACP.
+//
+// A refresh costs one Django call and repopulates the memory tier, so
+// the cost lands at most once per pod per TTL, on two low-volume routes.
+func (r *Resolver) EnsureSecrets(
+	ctx context.Context, t *Tenant,
+) (*Tenant, error) {
+	if t == nil || t.SecretsLoaded {
+		return t, nil
+	}
+	cfg, err := r.django.ResolveTenant(ctx, t.Domain)
+	if err != nil {
+		return nil, err
+	}
+	full := &Tenant{
+		TenantConfig:  *cfg,
+		Domain:        t.Domain,
+		ResolvedAt:    time.Now(),
+		SecretsLoaded: true,
+	}
+	r.storeMemory(t.Domain, memEntry{
+		tenant:  full,
+		expires: time.Now().Add(r.ttl),
+	})
+	return full, nil
 }
