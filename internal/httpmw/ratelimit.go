@@ -121,10 +121,34 @@ func limiterKey(r *http.Request) string {
 	return host + "|" + clientIP(r)
 }
 
-// clientIP trusts exactly one proxy hop: Traefik sets X-Real-Ip. Anything
-// else falls back to the socket address.
+// clientIP resolves the real caller for rate-limit bucketing.
+//
+// The order matters and mirrors what the storefront already does
+// (server/utils/auth.ts): these hosts sit behind Cloudflare, so the
+// address Traefik puts in X-Real-Ip is its immediate peer — the CF edge.
+// Bucketing on that collapses every client behind one PoP into a single
+// bucket, which is the exact mistake the Traefik middleware config
+// documents rejecting when it chose ipStrategy depth 2. One aggressive
+// agent then exhausts the limit for every legitimate agent sharing that
+// edge, while a distributed scraper gets a fresh bucket per PoP.
+//
+// Cloudflare overwrites CF-Connecting-IP at its edge, so a client cannot
+// forge it from outside; in-cluster callers reach the gateway through
+// Traefik on the same path. Falls back through the standard headers to
+// the socket address.
 func clientIP(r *http.Request) string {
-	if ip := r.Header.Get("X-Real-Ip"); ip != "" {
+	for _, h := range []string{"CF-Connecting-IP", "True-Client-IP"} {
+		if ip := strings.TrimSpace(r.Header.Get(h)); ip != "" {
+			return ip
+		}
+	}
+	// XFF is a list, client-first: "<client>, <cf-edge>".
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
+			return first
+		}
+	}
+	if ip := strings.TrimSpace(r.Header.Get("X-Real-Ip")); ip != "" {
 		return ip
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
