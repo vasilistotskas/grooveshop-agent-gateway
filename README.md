@@ -10,8 +10,10 @@ makes every tenant storefront shoppable by AI agents.
   authorization via `continue_url`; Stripe tokenized where enabled).
 - **ACP** agentic checkout REST surface + product feed.
 - **Product feeds** per tenant: Google Merchant, Meta, TikTok, ACP.
-- **Shopping chatbot** backend (SSE) powering the storefront widget —
-  Claude looping over the same commerce tools.
+- **Shopping chatbot** backend (SSE) powering the storefront widget — an
+  OpenAI-compatible model (via `openai-go`; the Gemini free tier by
+  default, any provider via `CHAT_BASE_URL`) looping over the same
+  commerce tools.
 
 See `CLAUDE.md` for architecture and conventions. Configuration is
 env-based — see `.env.example`.

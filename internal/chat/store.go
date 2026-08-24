@@ -1,7 +1,8 @@
 // Package chat implements the first-party shopping assistant: an SSE
-// endpoint that loops Claude over the gateway's own commerce tools via an
-// in-process MCP client — one tool surface for external agents and the
-// storefront widget alike.
+// endpoint that loops an OpenAI-compatible model (openai-go; the Gemini
+// free tier by default, any provider via CHAT_BASE_URL) over the gateway's
+// own commerce tools via an in-process MCP client — one tool surface for
+// external agents and the storefront widget alike.
 package chat
 
 import (
