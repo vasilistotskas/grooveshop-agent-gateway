@@ -54,6 +54,7 @@ func TestMessageFor(t *testing.T) {
 func TestMessageTablesComplete(t *testing.T) {
 	keys := []string{
 		msgRefusal, msgChatDisabled, msgTurnFailed, msgRateLimited,
+		msgTurnIncomplete,
 	}
 	for lang, table := range messages {
 		for _, key := range keys {

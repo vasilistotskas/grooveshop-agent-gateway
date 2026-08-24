@@ -6,10 +6,11 @@ import "strings"
 // the model's own output goes through messageFor so it follows the
 // tenant's language.
 const (
-	msgRefusal      = "refusal"
-	msgChatDisabled = "chat_disabled"
-	msgTurnFailed   = "turn_failed"
-	msgRateLimited  = "rate_limited"
+	msgRefusal        = "refusal"
+	msgChatDisabled   = "chat_disabled"
+	msgTurnFailed     = "turn_failed"
+	msgRateLimited    = "rate_limited"
+	msgTurnIncomplete = "turn_incomplete"
 )
 
 // messages maps language → key → text. Deliberately not an i18n library:
@@ -24,6 +25,9 @@ var messages = map[string]map[string]string{
 		msgTurnFailed: "Η συνομιλία διακόπηκε προσωρινά — δοκίμασε ξανά.",
 		msgRateLimited: "Ο βοηθός δέχεται πολλές ερωτήσεις αυτή τη " +
 			"στιγμή — δοκίμασε ξανά σε λίγο.",
+		msgTurnIncomplete: "Χρειάστηκα περισσότερα βήματα από όσα " +
+			"επιτρέπονται για αυτό. Μπορείς να το διατυπώσεις πιο απλά ή " +
+			"να ρωτήσεις ξανά;",
 	},
 	"en": {
 		msgRefusal: "Sorry, I can't help with that request. I can help " +
@@ -34,6 +38,8 @@ var messages = map[string]map[string]string{
 			"please try again.",
 		msgRateLimited: "The assistant is handling a lot of questions " +
 			"right now — please try again in a little while.",
+		msgTurnIncomplete: "That took more steps than I'm allowed in one " +
+			"go. Could you rephrase or ask again?",
 	},
 }
 

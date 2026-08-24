@@ -325,6 +325,15 @@ func (s *Service) runTurn(
 		}
 	}
 
+	// The model can exhaust the iteration budget still asking for tools, or
+	// return an empty final message — either way no prose reached the
+	// shopper. Surface a friendly nudge instead of an empty bubble.
+	if text.Len() == 0 {
+		fallback := messageFor(t.DefaultLocale, msgTurnIncomplete)
+		sse.event("delta", map[string]string{"text": fallback})
+		text.WriteString(fallback)
+	}
+
 	cartID, cartMutated = br.cartState()
 	return text.String(), cartID, cartMutated, nil
 }
