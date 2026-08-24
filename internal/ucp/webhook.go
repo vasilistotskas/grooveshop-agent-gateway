@@ -36,8 +36,15 @@ const (
 	//
 	// A pool bounds the damage to one worker per stuck endpoint while
 	// keeping at-least-once semantics unchanged: each event is still
-	// moved to the processing list before delivery and removed after.
+	// moved to the processing list before delivery and removed only on a
+	// terminal outcome (delivered, or permanently undeliverable). A
+	// shutdown mid-delivery leaves the event on the processing list for
+	// reclaim() to rescue on the next boot.
 	deliveryWorkers = 8
+
+	// ackTimeout bounds the detached removal of a terminally-handled event
+	// so a shutdown cannot hang on it.
+	ackTimeout = 5 * time.Second
 )
 
 // OrderEvent is one order-lifecycle update queued for platform delivery.
@@ -61,8 +68,8 @@ type OrderEvent struct {
 
 // Dispatcher delivers order webhooks from a Redis list with at-least-once
 // semantics: enqueue is acknowledged only after LPUSH; a processing list
-// covers crash windows between pop and delivery. Each event is signed
-// with its own tenant's key.
+// covers crash and shutdown windows between pop and a terminal outcome.
+// Each event is signed with its own tenant's key.
 type Dispatcher struct {
 	rdb  *redis.Client
 	keys *Keys
@@ -175,23 +182,31 @@ func (d *Dispatcher) reclaim(ctx context.Context) {
 	}
 }
 
+// deliver attempts one event and removes it from the processing list ONLY on
+// a terminal outcome. The reliable-queue invariant is that an in-flight event
+// stays on the processing list until it is acknowledged, so a shutdown that
+// aborts delivery before a terminal outcome must leave the event there for
+// reclaim() to requeue on the next boot — never remove it (that would drop an
+// undelivered order webhook, violating at-least-once).
 func (d *Dispatcher) deliver(ctx context.Context, raw string) {
-	defer func() {
-		_ = d.rdb.LRem(ctx, processingKey, 1, raw).Err()
-	}()
-
 	var ev OrderEvent
 	if err := json.Unmarshal([]byte(raw), &ev); err != nil {
+		// Unparseable: can never be delivered — acknowledge and drop.
 		d.log.Error("webhook event corrupt", slog.String("error", err.Error()))
+		d.ack(raw)
 		return
 	}
 	if ev.Schema == "" {
 		d.log.Error("webhook event missing schema", slog.String("event", ev.ID))
+		d.ack(raw)
 		return
 	}
 
 	body, err := json.Marshal(ev)
 	if err != nil {
+		d.log.Error("webhook event unencodable",
+			slog.String("event", ev.ID), slog.String("error", err.Error()))
+		d.ack(raw)
 		return
 	}
 	for attempt := range 3 {
@@ -199,26 +214,52 @@ func (d *Dispatcher) deliver(ctx context.Context, raw string) {
 			select {
 			case <-time.After(time.Duration(attempt*attempt) * 5 * time.Second):
 			case <-ctx.Done():
-				return
+				return // shutting down: leave for reclaim(), do not ack
 			}
 		}
 		// The key lookup sits inside the retry loop so a Redis blip on a
 		// cold cache gets the same backoff as a delivery failure.
 		key, err := d.keys.ForSchema(ctx, ev.Schema)
 		if err != nil {
+			if ctx.Err() != nil {
+				return // shutting down: leave for reclaim(), do not ack
+			}
 			d.log.Warn("webhook signing key unavailable",
 				slog.String("schema", ev.Schema),
 				slog.String("error", err.Error()))
 			continue
 		}
 		if d.post(ctx, key, ev.TargetURL, body) {
+			d.ack(raw) // delivered
 			return
 		}
+		if ctx.Err() != nil {
+			return // post aborted by shutdown: leave for reclaim(), do not ack
+		}
 	}
+	// Retries exhausted against a live endpoint: give up and drop so the
+	// event does not cycle forever. There is no dead-letter list by design;
+	// this permanent-failure log is the record.
 	d.log.Error("webhook delivery failed permanently",
 		slog.String("event", ev.ID),
 		slog.String("order", ev.OrderUUID),
 	)
+	d.ack(raw)
+}
+
+// ack removes a terminally-handled event from the processing list. It uses a
+// context detached from delivery on purpose: when a successful post is
+// immediately followed by shutdown, the delivery context is already
+// cancelled and go-redis would skip the removal (it short-circuits commands
+// on a done context), stranding a delivered event to be redelivered by
+// reclaim(). A fresh, bounded context makes the acknowledgement fire anyway.
+func (d *Dispatcher) ack(raw string) {
+	ctx, cancel := context.WithTimeout(context.Background(), ackTimeout)
+	defer cancel()
+	if err := d.rdb.LRem(ctx, processingKey, 1, raw).Err(); err != nil {
+		d.log.Warn("webhook ack failed; event will redeliver on reclaim",
+			slog.String("error", err.Error()))
+	}
 }
 
 // post signs the body with the tenant's Ed25519 key so platforms verify
