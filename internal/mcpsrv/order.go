@@ -24,8 +24,13 @@ type TrackOrderOut struct {
 		Total    string `json:"total"`
 	} `json:"items"`
 	GrandTotal string `json:"grandTotal"`
-	Currency   string `json:"currency"`
-	Tracking   *struct {
+	// Discount fields mirror the order's pricingBreakdown and are
+	// present only when non-zero.
+	Discount        string `json:"discount,omitempty" jsonschema:"promotion/coupon discount included in grandTotal"`
+	LoyaltyDiscount string `json:"loyaltyDiscount,omitempty"`
+	GiftCardAmount  string `json:"giftCardAmount,omitempty" jsonschema:"amount covered by gift cards"`
+	Currency        string `json:"currency"`
+	Tracking        *struct {
 		Carrier string `json:"carrier"`
 		Number  string `json:"number"`
 		URL     string `json:"url"`
@@ -58,6 +63,9 @@ func (h *handlers) trackOrder(
 	out.IsPaid = o.IsPaid
 	out.PlacedAt = o.CreatedAt
 	out.GrandTotal = num(o.PricingBreakdown.GrandTotal)
+	out.Discount = posNum(o.PricingBreakdown.Discount)
+	out.LoyaltyDiscount = posNum(o.PricingBreakdown.LoyaltyDiscount)
+	out.GiftCardAmount = posNum(o.PricingBreakdown.GiftCardAmount)
 	out.Currency = o.PricingBreakdown.Currency
 	for _, it := range o.Items {
 		tr := localized(it.Product.Translations, t.DefaultLocale)

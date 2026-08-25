@@ -114,6 +114,19 @@ func num(n json.Number) string {
 	return n.String()
 }
 
+// posNum renders a json.Number only when it is a positive amount — used
+// for discount fields that structured outputs omit at zero.
+func posNum(n json.Number) string {
+	if n == "" {
+		return ""
+	}
+	f, err := n.Float64()
+	if err != nil || f <= 0 {
+		return ""
+	}
+	return n.String()
+}
+
 func jsonMarshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }

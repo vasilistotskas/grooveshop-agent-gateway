@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -25,17 +26,26 @@ type CartOut struct {
 	CartID     string        `json:"cartId" jsonschema:"persist this and pass it to every cart and checkout tool"`
 	Items      []CartItemOut `json:"items"`
 	TotalItems int           `json:"totalItems"`
-	Total      string        `json:"total" jsonschema:"VAT-inclusive items total"`
+	Total      string        `json:"total" jsonschema:"VAT-inclusive items total, before promotionDiscount"`
 	Currency   string        `json:"currency"`
+	// Discount fields are present only when non-zero.
+	PromotionDiscount  string   `json:"promotionDiscount,omitempty" jsonschema:"promotion/coupon discount subtracted from total at checkout"`
+	TotalDiscountValue string   `json:"totalDiscountValue,omitempty" jsonschema:"product markdown savings already included in item prices"`
+	AppliedCouponCodes []string `json:"appliedCouponCodes,omitempty"`
+	FreeShipping       bool     `json:"freeShipping,omitempty" jsonschema:"a promotion grants free delivery on this cart"`
 }
 
 func (h *handlers) cartOut(t *tenant.Tenant, c *django.Cart) CartOut {
 	out := CartOut{
-		CartID:     c.UUID,
-		TotalItems: c.TotalItems,
-		Total:      num(c.TotalPrice),
-		Currency:   t.DefaultCurrency,
-		Items:      make([]CartItemOut, 0, len(c.Items)),
+		CartID:             c.UUID,
+		TotalItems:         c.TotalItems,
+		Total:              num(c.TotalPrice),
+		Currency:           t.DefaultCurrency,
+		Items:              make([]CartItemOut, 0, len(c.Items)),
+		PromotionDiscount:  posNum(c.PromotionDiscount),
+		TotalDiscountValue: posNum(c.TotalDiscountValue),
+		AppliedCouponCodes: c.AppliedCouponCodes,
+		FreeShipping:       c.PromotionFreeShipping,
 	}
 	for _, it := range c.Items {
 		tr := localized(it.Product.Translations, t.DefaultLocale)
@@ -52,11 +62,24 @@ func (h *handlers) cartOut(t *tenant.Tenant, c *django.Cart) CartOut {
 }
 
 func (h *handlers) cartSummary(out CartOut) *mcp.CallToolResult {
+	discountNote := ""
+	if out.PromotionDiscount != "" {
+		discountNote = fmt.Sprintf(" A promotion discount of %s %s",
+			out.PromotionDiscount, out.Currency)
+		if len(out.AppliedCouponCodes) > 0 {
+			discountNote += fmt.Sprintf(" (coupon %s)",
+				strings.Join(out.AppliedCouponCodes, ", "))
+		}
+		discountNote += " applies at checkout."
+	}
+	if out.FreeShipping {
+		discountNote += " Shipping is free on this cart."
+	}
 	return textResult(
-		"Cart %s holds %d items totalling %s %s (VAT included). Persist "+
+		"Cart %s holds %d items totalling %s %s (VAT included).%s Persist "+
 			"cartId for later calls; hand the shopper get_checkout_link "+
 			"when they're ready to pay.",
-		out.CartID, out.TotalItems, out.Total, out.Currency,
+		out.CartID, out.TotalItems, out.Total, out.Currency, discountNote,
 	)
 }
 

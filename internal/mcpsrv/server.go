@@ -124,8 +124,10 @@ func NewServer(d Deps, title string) *mcp.Server {
 	}, h.createCart)
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "get_cart",
-		Description: "Fetch a cart's current lines and totals by cartId.",
+		Name: "get_cart",
+		Description: "Fetch a cart's current lines and totals by cartId, " +
+			"including any applied coupon, promotion discount and " +
+			"promotional free shipping.",
 	}, h.getCart)
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -203,14 +205,15 @@ func NewServer(d Deps, title string) *mcp.Server {
 		Description: "UCP: start a checkout session from a cartId or a " +
 			"list of products. Collect buyer, fulfillment and payWayId " +
 			"(via update_checkout or inline) until status is " +
-			"ready_for_complete.",
+			"ready_for_complete. Accepts optional discountCodes (one " +
+			"coupon per order).",
 	}, h.createCheckout)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "update_checkout",
 		Description: "UCP: add or change buyer details, delivery " +
-			"(address or ACS/BOX NOW pickup point) and payment method " +
-			"on a checkout session.",
+			"(address or ACS/BOX NOW pickup point), payment method and " +
+			"discount codes on a checkout session.",
 	}, h.updateCheckout)
 
 	mcp.AddTool(srv, &mcp.Tool{

@@ -31,19 +31,21 @@ type UCPBuyerIn struct {
 }
 
 type CreateCheckoutIn struct {
-	CartID      string                `json:"cartId,omitempty" jsonschema:"an existing cart from the cart tools; omit when passing lineItems"`
-	LineItems   []UCPLineItemIn       `json:"lineItems,omitempty" jsonschema:"products to buy; a cart is created for them"`
-	Buyer       *UCPBuyerIn           `json:"buyer,omitempty"`
-	Fulfillment *checkout.Fulfillment `json:"fulfillment,omitempty" jsonschema:"delivery details; kind home_delivery or pickup_point with providerCode acs/boxnow and the pickup ids from find_pickup_points"`
-	PayWayID    int64                 `json:"payWayId,omitempty" jsonschema:"payment method id from get_payment_methods"`
-	WebhookURL  string                `json:"webhookUrl,omitempty" jsonschema:"platform endpoint for signed order lifecycle webhooks"`
+	CartID        string                `json:"cartId,omitempty" jsonschema:"an existing cart from the cart tools; omit when passing lineItems"`
+	LineItems     []UCPLineItemIn       `json:"lineItems,omitempty" jsonschema:"products to buy; a cart is created for them"`
+	Buyer         *UCPBuyerIn           `json:"buyer,omitempty"`
+	Fulfillment   *checkout.Fulfillment `json:"fulfillment,omitempty" jsonschema:"delivery details; kind home_delivery or pickup_point with providerCode acs/boxnow and the pickup ids from find_pickup_points"`
+	PayWayID      int64                 `json:"payWayId,omitempty" jsonschema:"payment method id from get_payment_methods"`
+	DiscountCodes []string              `json:"discountCodes,omitempty" jsonschema:"discount/coupon codes; the store applies one code per order (the first), extra codes are rejected"`
+	WebhookURL    string                `json:"webhookUrl,omitempty" jsonschema:"platform endpoint for signed order lifecycle webhooks"`
 }
 
 type UpdateCheckoutIn struct {
-	CheckoutID  string                `json:"checkoutId"`
-	Buyer       *UCPBuyerIn           `json:"buyer,omitempty"`
-	Fulfillment *checkout.Fulfillment `json:"fulfillment,omitempty"`
-	PayWayID    int64                 `json:"payWayId,omitempty"`
+	CheckoutID    string                `json:"checkoutId"`
+	Buyer         *UCPBuyerIn           `json:"buyer,omitempty"`
+	Fulfillment   *checkout.Fulfillment `json:"fulfillment,omitempty"`
+	PayWayID      int64                 `json:"payWayId,omitempty"`
+	DiscountCodes []string              `json:"discountCodes,omitempty" jsonschema:"replaces previously submitted codes; an empty array removes the coupon"`
 }
 
 type CompleteCheckoutIn struct {
@@ -98,13 +100,23 @@ func (h *handlers) createCheckout(
 
 	s := checkout.NewSession(t.SchemaName, t.Domain, "ucp", cartID)
 	s.WebhookURL = in.WebhookURL
+	if in.DiscountCodes != nil {
+		if err := checkout.ApplyDiscountCodes(
+			ctx, h.deps.Django, t, s, in.DiscountCodes,
+		); err != nil {
+			return nil, zero, upstreamErr(err,
+				"the discount code could not be applied; the cart is "+
+					"unchanged")
+		}
+	}
 	applyCheckoutInputs(s, in.Buyer, in.Fulfillment, in.PayWayID)
 	s.Recompute()
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
 		return nil, zero, errors.New(
 			"checkout is temporarily unavailable; retry shortly")
 	}
-	return h.checkoutResult(ctx, t, s)
+	res, out, err := h.checkoutResult(ctx, t, s)
+	return h.discountAnnotated(res, out, err, s, in.DiscountCodes != nil)
 }
 
 func (h *handlers) updateCheckout(
@@ -126,13 +138,23 @@ func (h *handlers) updateCheckout(
 			"checkout %s is %s and can no longer be updated",
 			s.ID, s.Status)
 	}
+	if in.DiscountCodes != nil {
+		if err := checkout.ApplyDiscountCodes(
+			ctx, h.deps.Django, t, s, in.DiscountCodes,
+		); err != nil {
+			return nil, zero, upstreamErr(err,
+				"the discount code could not be applied; the checkout is "+
+					"unchanged")
+		}
+	}
 	applyCheckoutInputs(s, in.Buyer, in.Fulfillment, in.PayWayID)
 	s.Recompute()
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
 		return nil, zero, errors.New(
 			"checkout is temporarily unavailable; retry shortly")
 	}
-	return h.checkoutResult(ctx, t, s)
+	res, out, err := h.checkoutResult(ctx, t, s)
+	return h.discountAnnotated(res, out, err, s, in.DiscountCodes != nil)
 }
 
 func (h *handlers) completeCheckout(
@@ -303,6 +325,31 @@ func (h *handlers) checkoutResult(
 		text = fmt.Sprintf("Checkout %s status: %s.", s.ID, s.Status)
 	}
 	return textResult("%s", text), *payload, nil
+}
+
+// discountAnnotated appends the outcome of a discount submission to the
+// tool's summary text so the agent sees rejections without digging into
+// the session state.
+func (h *handlers) discountAnnotated(
+	res *mcp.CallToolResult, out ucp.Checkout, err error,
+	s *checkout.Session, submitted bool,
+) (*mcp.CallToolResult, ucp.Checkout, error) {
+	if err != nil || !submitted || len(s.RejectedDiscounts) == 0 {
+		return res, out, err
+	}
+	var notes []string
+	for _, rej := range s.RejectedDiscounts {
+		note := fmt.Sprintf("discount code %q was rejected (%s)",
+			rej.Code, rej.Reason)
+		if rej.Message != "" {
+			note += ": " + rej.Message
+		}
+		notes = append(notes, note)
+	}
+	if tc, ok := res.Content[0].(*mcp.TextContent); ok {
+		tc.Text += " Note: " + strings.Join(notes, "; ") + "."
+	}
+	return res, out, err
 }
 
 func marshalCheckout(c ucp.Checkout) ([]byte, error) {
