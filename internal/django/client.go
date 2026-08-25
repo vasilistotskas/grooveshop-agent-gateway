@@ -204,12 +204,14 @@ func (c *Client) do(ctx context.Context, r request) error {
 
 func (c *Client) apiError(resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-	detail := ""
+	detail, reason := "", ""
 	var parsed struct {
 		Detail string `json:"detail"`
+		Reason string `json:"reason"`
 	}
 	if err := json.Unmarshal(body, &parsed); err == nil {
 		detail = parsed.Detail
+		reason = parsed.Reason
 	}
 	// DRF validation errors are a {"field": ["msg", …]} map with no
 	// "detail" key — swallowing them leaves undebuggable "Bad Request"
@@ -223,7 +225,7 @@ func (c *Client) apiError(resp *http.Response) error {
 	if detail == "" {
 		detail = http.StatusText(resp.StatusCode)
 	}
-	return &APIError{Status: resp.StatusCode, Detail: detail}
+	return &APIError{Status: resp.StatusCode, Detail: detail, Reason: reason}
 }
 
 func retryable(err error) bool {

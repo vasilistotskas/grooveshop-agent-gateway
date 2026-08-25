@@ -2,6 +2,7 @@ package django
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -88,6 +89,54 @@ func (c *Client) RemoveCartItem(
 		language: lang,
 		headers:  c.cartHeaders(cartID),
 	})
+}
+
+// ApplyCoupon attaches a discount code to the cart (the store keeps one
+// coupon per cart — a new code replaces the previous one) and returns the
+// updated cart. A refusal surfaces as *CouponRejectedError carrying the
+// machine-readable reason.
+func (c *Client) ApplyCoupon(
+	ctx context.Context, host, lang, cartID, code string,
+) (*Cart, error) {
+	var out Cart
+	err := c.send(ctx, http.MethodPost, request{
+		path:     "/cart/coupon",
+		host:     host,
+		language: lang,
+		headers:  c.cartHeaders(cartID),
+		body:     map[string]any{"code": code},
+		out:      &out,
+	})
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) &&
+			apiErr.Status == http.StatusBadRequest && apiErr.Reason != "" {
+			return nil, &CouponRejectedError{
+				Reason: apiErr.Reason, Detail: apiErr.Detail,
+			}
+		}
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RemoveCoupon detaches the applied coupon (a no-op cart comes back
+// unchanged) and returns the updated cart.
+func (c *Client) RemoveCoupon(
+	ctx context.Context, host, lang, cartID string,
+) (*Cart, error) {
+	var out Cart
+	err := c.send(ctx, http.MethodDelete, request{
+		path:     "/cart/coupon",
+		host:     host,
+		language: lang,
+		headers:  c.cartHeaders(cartID),
+		out:      &out,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // OrderByUUID fetches an order through the guest flow: possession of the

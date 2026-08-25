@@ -86,6 +86,39 @@ func TestDecodeCategories(t *testing.T) {
 	assert.Equal(t, 0, cats[0].Level)
 }
 
+func TestDecodeCartWithItems(t *testing.T) {
+	c := decodeFixture[Cart](t, "cart_with_items.json")
+
+	assert.Equal(t, "29eb4495-e018-45e7-b59c-6646302bd4ef", c.UUID)
+	require.Len(t, c.Items, 1)
+	assert.Equal(t, "929.36", c.TotalPrice.String())
+	assert.Equal(t, "0.0", c.PromotionDiscount.String())
+	assert.False(t, c.PromotionFreeShipping)
+	assert.Empty(t, c.AppliedCouponCodes)
+	assert.Equal(t, "0.0", c.TotalDiscountValue.String())
+}
+
+func TestDecodeCartWithCoupon(t *testing.T) {
+	c := decodeFixture[Cart](t, "cart_with_coupon.json")
+
+	assert.Equal(t, "92.94", c.PromotionDiscount.String())
+	assert.Equal(t, []string{"SAVE10"}, c.AppliedCouponCodes)
+	assert.False(t, c.PromotionFreeShipping)
+	assert.Equal(t, "929.36", c.TotalPrice.String())
+}
+
+func TestDecodeOrderPricingBreakdown(t *testing.T) {
+	o := decodeFixture[Order](t, "order_by_uuid.json")
+
+	pb := o.PricingBreakdown
+	assert.Equal(t, "64.67", pb.ItemsSubtotal.String())
+	assert.Equal(t, "5.0", pb.Discount.String())
+	assert.Equal(t, "0", pb.LoyaltyDiscount.String())
+	assert.Equal(t, "0", pb.GiftCardAmount.String())
+	assert.Equal(t, "64.17", pb.GrandTotal.String())
+	assert.Equal(t, "EUR", pb.Currency)
+}
+
 func TestDecodePayWays(t *testing.T) {
 	page := decodeFixture[Page[PayWay]](t, "pay_way.json")
 

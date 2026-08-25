@@ -217,17 +217,23 @@ type CartItem struct {
 }
 
 // Cart is identified by UUID; the API resolves it from the X-Cart-Id
-// header and auto-creates one on first GET.
+// header and auto-creates one on first GET. TotalDiscountValue is the
+// product-markdown savings already baked into item prices, while
+// PromotionDiscount is the server-evaluated promotion/coupon discount
+// still to subtract from TotalPrice.
 type Cart struct {
-	ID                 int64       `json:"id"`
-	UUID               string      `json:"uuid"`
-	Items              []CartItem  `json:"items"`
-	TotalPrice         json.Number `json:"totalPrice"`
-	TotalVatValue      json.Number `json:"totalVatValue"`
-	TotalDiscountValue json.Number `json:"totalDiscountValue"`
-	TotalItems         int         `json:"totalItems"`
-	TotalItemsUnique   int         `json:"totalItemsUnique"`
-	Currency           string      `json:"currency"`
+	ID                    int64       `json:"id"`
+	UUID                  string      `json:"uuid"`
+	Items                 []CartItem  `json:"items"`
+	TotalPrice            json.Number `json:"totalPrice"`
+	TotalVatValue         json.Number `json:"totalVatValue"`
+	TotalDiscountValue    json.Number `json:"totalDiscountValue"`
+	PromotionDiscount     json.Number `json:"promotionDiscount"`
+	PromotionFreeShipping bool        `json:"promotionFreeShipping"`
+	AppliedCouponCodes    []string    `json:"appliedCouponCodes"`
+	TotalItems            int         `json:"totalItems"`
+	TotalItemsUnique      int         `json:"totalItemsUnique"`
+	Currency              string      `json:"currency"`
 }
 
 type OrderItem struct {
@@ -249,6 +255,9 @@ type PricingBreakdown struct {
 	ItemsSubtotal    json.Number `json:"itemsSubtotal"`
 	ShippingCost     json.Number `json:"shippingCost"`
 	PaymentMethodFee json.Number `json:"paymentMethodFee"`
+	Discount         json.Number `json:"discount"`
+	LoyaltyDiscount  json.Number `json:"loyaltyDiscount"`
+	GiftCardAmount   json.Number `json:"giftCardAmount"`
 	GrandTotal       json.Number `json:"grandTotal"`
 	PaidAmount       json.Number `json:"paidAmount"`
 	Currency         string      `json:"currency"`
