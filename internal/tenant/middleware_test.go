@@ -83,3 +83,73 @@ func TestMiddlewareResolverError503(t *testing.T) {
 
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
+
+func TestRequireAgentCommerce(t *testing.T) {
+	on := true
+	off := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	cases := []struct {
+		name  string
+		agent *bool
+		want  int
+	}{
+		// nil = payload from an older Django or a stale cached
+		// resolve — MUST fail open toward the pre-flag behavior.
+		{"nil fails open", nil, http.StatusNoContent},
+		{"explicit on", &on, http.StatusNoContent},
+		{"explicit off 404s", &off, http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tn := &Tenant{}
+			tn.AgentCommerceEnabled = tc.agent
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "http://x/", nil)
+			req = req.WithContext(NewContext(req.Context(), tn))
+			RequireAgentCommerce(next).ServeHTTP(rec, req)
+			assert.Equal(t, tc.want, rec.Code)
+		})
+	}
+
+	t.Run("missing tenant context 404s", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "http://x/", nil)
+		RequireAgentCommerce(next).ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusNotFound, rec.Code)
+	})
+}
+
+func TestRequireProductFeedsSubordinateToAgentGate(t *testing.T) {
+	on := true
+	off := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	cases := []struct {
+		name  string
+		agent *bool
+		feeds *bool
+		want  int
+	}{
+		{"both nil fails open", nil, nil, http.StatusNoContent},
+		{"feeds off 404s", &on, &off, http.StatusNotFound},
+		{"agent off kills feeds too", &off, &on, http.StatusNotFound},
+		{"both on serves", &on, &on, http.StatusNoContent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tn := &Tenant{}
+			tn.AgentCommerceEnabled = tc.agent
+			tn.ProductFeedsEnabled = tc.feeds
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "http://x/", nil)
+			req = req.WithContext(NewContext(req.Context(), tn))
+			RequireProductFeeds(next).ServeHTTP(rec, req)
+			assert.Equal(t, tc.want, rec.Code)
+		})
+	}
+}

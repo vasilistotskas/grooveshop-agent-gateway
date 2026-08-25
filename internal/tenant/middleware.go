@@ -73,3 +73,35 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(`{"error":"` + msg + `"}`))
 }
+
+// RequireAgentCommerce 404s the agent-commerce surfaces (MCP, UCP,
+// ACP, chat) when the tenant's effective agent-commerce gate is off.
+// Must run INSIDE Middleware — it reads the tenant from the request
+// context. 404 (not 403) so a disabled surface is indistinguishable
+// from a route that never existed, mirroring Django's feature gates.
+func RequireAgentCommerce(next http.Handler) http.Handler {
+	return requireFeature(next, func(t *Tenant) bool {
+		return t.AgentCommerceOn()
+	})
+}
+
+// RequireProductFeeds is the catalog-feeds variant (a subordinate
+// gate: feeds are off whenever agent commerce is off).
+func RequireProductFeeds(next http.Handler) http.Handler {
+	return requireFeature(next, func(t *Tenant) bool {
+		return t.ProductFeedsOn()
+	})
+}
+
+func requireFeature(
+	next http.Handler, enabled func(*Tenant) bool,
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		t, ok := FromContext(req.Context())
+		if !ok || !enabled(t) {
+			writeJSONError(w, http.StatusNotFound, "not found")
+			return
+		}
+		next.ServeHTTP(w, req)
+	})
+}

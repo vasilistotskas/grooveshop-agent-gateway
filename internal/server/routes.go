@@ -97,10 +97,11 @@ func New(d Deps) http.Handler {
 	identityMW := identity.Middleware(
 		identity.NewVerifier(d.Django, d.Log), d.Log)
 	mux.Handle("/mcp",
-		tenantMW(identityMW(mcpsrv.Handler(mcpDeps, d.Log))))
+		tenantMW(tenant.RequireAgentCommerce(
+			identityMW(mcpsrv.Handler(mcpDeps, d.Log)))))
 
 	mux.Handle("GET /.well-known/ucp",
-		tenantMW(ucp.ProfileHandler(d.Keys)))
+		tenantMW(tenant.RequireAgentCommerce(ucp.ProfileHandler(d.Keys))))
 
 	// Cluster-internal: Django's order-event push. Not tenant-scoped —
 	// the event body carries the schema.
@@ -110,16 +111,22 @@ func New(d Deps) http.Handler {
 	// ACP is always mounted; access is gated per tenant at request time
 	// by the tenant's own acpBearerToken from tenant/resolve. A tenant
 	// without one has ACP disabled and every bearer gets 401.
+	acpMW := func(h http.Handler) http.Handler {
+		return tenantSecretsMW(tenant.RequireAgentCommerce(h))
+	}
 	acp.NewHandler(d.Django, checkoutStore, checkoutFlow, d.Redis,
-		d.Log).Register(mux, tenantSecretsMW)
+		d.Log).Register(mux, acpMW)
 
 	feedSvc := feeds.NewService(d.Django, d.Redis, d.Log,
 		d.Cfg.FeedImageURLTemplate, d.Cfg.AssetsHost,
 		d.Cfg.FeedFreshTTL, d.Cfg.FeedStaleTTL)
-	mux.Handle("GET /feeds/google.xml", tenantMW(feedSvc.Handler(feeds.KindGoogle)))
-	mux.Handle("GET /feeds/meta.xml", tenantMW(feedSvc.Handler(feeds.KindMeta)))
-	mux.Handle("GET /feeds/tiktok.xml", tenantMW(feedSvc.Handler(feeds.KindTikTok)))
-	mux.Handle("GET /feeds/acp.json", tenantMW(feedSvc.Handler(feeds.KindACP)))
+	feedMW := func(h http.Handler) http.Handler {
+		return tenantMW(tenant.RequireProductFeeds(h))
+	}
+	mux.Handle("GET /feeds/google.xml", feedMW(feedSvc.Handler(feeds.KindGoogle)))
+	mux.Handle("GET /feeds/meta.xml", feedMW(feedSvc.Handler(feeds.KindMeta)))
+	mux.Handle("GET /feeds/tiktok.xml", feedMW(feedSvc.Handler(feeds.KindTikTok)))
+	mux.Handle("GET /feeds/acp.json", feedMW(feedSvc.Handler(feeds.KindACP)))
 
 	// Chat calls the same toolset in-process. The title is only ever
 	// read from an MCP `initialize` response, which this path does not
@@ -139,7 +146,8 @@ func New(d Deps) http.Handler {
 		d.Cfg.ChatRatePerMin, d.Cfg.ChatRateBurst, d.Metrics,
 	)
 	mux.Handle("POST /chat",
-		tenantSecretsMW(chatLimiter.Middleware()(chatSvc.Handler())))
+		tenantSecretsMW(tenant.RequireAgentCommerce(
+			chatLimiter.Middleware()(chatSvc.Handler()))))
 
 	// Global chain, outermost first. Metrics sits directly around the mux so
 	// r.Pattern (set during routing) is visible when it records.

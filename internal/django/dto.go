@@ -313,6 +313,14 @@ type TenantConfig struct {
 	LoyaltyEnabled       bool   `json:"loyaltyEnabled"`
 	BlogEnabled          bool   `json:"blogEnabled"`
 	StripePublishableKey string `json:"stripePublishableKey"`
+	// AgentCommerceEnabled / ProductFeedsEnabled gate this gateway's
+	// surfaces per tenant. Django serves the EFFECTIVE value (plan
+	// flag AND merchant extra-setting). Pointers so a payload from an
+	// older Django — or a stale cached resolve — decodes as nil and
+	// FAILS OPEN toward the pre-flag behavior (surface on); use the
+	// AgentCommerceOn/ProductFeedsOn accessors, never the raw fields.
+	AgentCommerceEnabled *bool `json:"agentCommerceEnabled"`
+	ProductFeedsEnabled  *bool `json:"productFeedsEnabled"`
 	// ChatAPIKey is the tenant's own model-provider credential. Django
 	// includes it only on internally-authenticated resolves (the
 	// X-Internal-Token header); empty means chat is off for the tenant.
@@ -321,4 +329,20 @@ type TenantConfig struct {
 	// on /acp/*. Like ChatAPIKey it arrives only on internally
 	// authenticated resolves; empty means no platform is enrolled.
 	ACPBearerToken string `json:"acpBearerToken"`
+}
+
+// AgentCommerceOn reports whether the agent-commerce surface (MCP,
+// UCP, ACP, chat) is enabled for the tenant. nil — an older Django or
+// a stale cached payload without the field — fails OPEN.
+func (t TenantConfig) AgentCommerceOn() bool {
+	return t.AgentCommerceEnabled == nil || *t.AgentCommerceEnabled
+}
+
+// ProductFeedsOn reports whether catalog feed syndication is enabled.
+// Subordinate to the agent-commerce gate; nil fails OPEN.
+func (t TenantConfig) ProductFeedsOn() bool {
+	if !t.AgentCommerceOn() {
+		return false
+	}
+	return t.ProductFeedsEnabled == nil || *t.ProductFeedsEnabled
 }
