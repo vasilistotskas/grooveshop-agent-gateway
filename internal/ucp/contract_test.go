@@ -101,8 +101,9 @@ func TestProfileMatchesBusinessSchema(t *testing.T) {
 	assert.Equal(t, "OKP", profile.Keys[0]["kty"])
 }
 
-// fixtureDjango serves the recorded fixtures BuildCheckout consumes.
-func fixtureDjango(t *testing.T) *django.Client {
+// fixtureDjango serves the recorded fixtures BuildCheckout consumes; an
+// optional cartFixture overrides the default cart payload.
+func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
 	t.Helper()
 	fixture := func(name string) http.HandlerFunc {
 		return func(w http.ResponseWriter, _ *http.Request) {
@@ -113,8 +114,12 @@ func fixtureDjango(t *testing.T) *django.Client {
 			_, _ = w.Write(b)
 		}
 	}
+	cart := "cart_with_items.json"
+	if len(cartFixture) > 0 {
+		cart = cartFixture[0]
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/cart", fixture("cart_with_items.json"))
+	mux.HandleFunc("GET /api/v1/cart", fixture(cart))
 	mux.HandleFunc("GET /api/v1/pay_way", fixture("pay_way.json"))
 	mux.HandleFunc("GET /api/v1/shipping/options",
 		fixture("shipping_options.json"))
@@ -164,6 +169,30 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 		require.NoError(t, schema.Validate(roundTrip(t, payload)))
 		assert.Equal(t, s.PaymentURL, payload.ContinueURL)
 	})
+
+	t.Run("coupon cart emits a negative discount totals line",
+		func(t *testing.T) {
+			couponBuilder := NewBuilder(
+				fixtureDjango(t, "cart_with_coupon.json"),
+				"https://{assets_host}/img/{path}.webp",
+				"assets.platform.test",
+			)
+			s := newSession(checkout.StatusIncomplete)
+			payload, err := couponBuilder.BuildCheckout(
+				context.Background(), tn, s)
+			require.NoError(t, err)
+			require.NoError(t, schema.Validate(roundTrip(t, payload)))
+
+			// Fixture: 929.36 subtotal, 92.94 promotion discount.
+			byType := map[string]int64{}
+			for _, total := range payload.Totals {
+				byType[total.Type] = total.Amount
+			}
+			assert.EqualValues(t, 92936, byType["subtotal"])
+			assert.EqualValues(t, -9294, byType["discount"],
+				"UCP discount totals are strictly negative")
+			assert.EqualValues(t, 83642, byType["total"])
+		})
 
 	t.Run("completed session carries order confirmation", func(t *testing.T) {
 		s := newSession(checkout.StatusCompleted)

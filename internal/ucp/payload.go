@@ -167,6 +167,13 @@ func (b *Builder) BuildCheckout(
 
 	out.Totals = append(out.Totals,
 		LineItemTotal{Type: "subtotal", Amount: pricing.ItemsSubtotal})
+	if pricing.DiscountTotal > 0 {
+		// UCP types discount amounts as strictly negative signed values
+		// (total.json: exclusiveMaximum 0).
+		out.Totals = append(out.Totals, LineItemTotal{
+			Type: "discount", DisplayText: "Discount",
+			Amount: -pricing.DiscountTotal})
+	}
 	if pricing.HasDelivery {
 		out.Totals = append(out.Totals,
 			LineItemTotal{Type: "fulfillment", Amount: pricing.DeliveryFee})
