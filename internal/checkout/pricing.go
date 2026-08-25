@@ -22,9 +22,17 @@ type PricedLine struct {
 // Pricing is the protocol-neutral totals breakdown both the UCP and ACP
 // renderers serialize. Amounts are minor units; fees are present only when
 // the session has selected the option they derive from.
+//
+// DiscountTotal is the promotion/coupon discount Django evaluated on the
+// cart — it reduces Total. MarkdownTotal is the product-markdown savings
+// already baked into the line prices (informational only: emitting it as
+// a totals row would double-count). FreeShipping zeroes the delivery fee.
 type Pricing struct {
 	Lines         []PricedLine
 	ItemsSubtotal int64
+	DiscountTotal int64
+	MarkdownTotal int64
+	FreeShipping  bool
 	DeliveryFee   int64
 	HasDelivery   bool
 	PaymentFee    int64
@@ -65,15 +73,32 @@ func ComputePricing(
 			TotalMinor: lineTotal,
 		})
 	}
-	p.Total = p.ItemsSubtotal
+	p.DiscountTotal, err = money.MinorUnits(cart.PromotionDiscount.String())
+	if err != nil {
+		return nil, nil, err
+	}
+	p.MarkdownTotal, err = money.MinorUnits(cart.TotalDiscountValue.String())
+	if err != nil {
+		return nil, nil, err
+	}
+	p.FreeShipping = cart.PromotionFreeShipping
+	p.Total = p.ItemsSubtotal - p.DiscountTotal
 
 	if fee, ok := deliveryFee(ctx, dj, t, s, cart); ok {
+		// A promotion-granted free shipping keeps the fulfillment row
+		// (the option stays selected) but zeroes its cost.
+		if p.FreeShipping {
+			fee = 0
+		}
 		p.DeliveryFee, p.HasDelivery = fee, true
 		p.Total += fee
 	}
 	if fee, ok := paymentFee(ctx, dj, t, s, cart); ok {
 		p.PaymentFee, p.HasPaymentFee = fee, true
 		p.Total += fee
+	}
+	if p.Total < 0 {
+		p.Total = 0
 	}
 	return p, cart, nil
 }

@@ -94,6 +94,13 @@ type Session struct {
 	Fulfillment Fulfillment `json:"fulfillment"`
 	PayWayID    int64       `json:"payWayId"`
 
+	// DiscountCodes is the last discount-code list the caller submitted
+	// (replace semantics: each submission supersedes the previous one);
+	// RejectedDiscounts records why codes from that submission were not
+	// applied. What IS applied lives on the Django cart, never here.
+	DiscountCodes     []string            `json:"discountCodes,omitempty"`
+	RejectedDiscounts []DiscountRejection `json:"rejectedDiscounts,omitempty"`
+
 	OrderID    int64  `json:"orderId,omitempty"`
 	OrderUUID  string `json:"orderUuid,omitempty"`
 	PaymentURL string `json:"paymentUrl,omitempty"`
