@@ -432,6 +432,18 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s := checkout.NewSession(t.SchemaName, t.Domain, "acp", cart.UUID)
+	// Discounts apply after the lines exist (eligibility can depend on
+	// the cart subtotal). A refused code is not a request failure — it
+	// renders in discounts.rejected.
+	if req.Discounts != nil && req.Discounts.Codes != nil {
+		if err := checkout.ApplyDiscountCodes(
+			r.Context(), h.dj, t, s, req.Discounts.Codes,
+		); err != nil {
+			h.releaseIdem(r, t.SchemaName, "create", key)
+			upstreamError(w, err)
+			return
+		}
+	}
 	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
 	applyFulfillment(s, req.FulfillmentDetails, nil)
 	s.Recompute()
@@ -487,6 +499,14 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 
 	if req.LineItems != nil {
 		if err := h.syncCartLines(r, t, s.CartID, req.LineItems); err != nil {
+			upstreamError(w, err)
+			return
+		}
+	}
+	if req.Discounts != nil && req.Discounts.Codes != nil {
+		if err := checkout.ApplyDiscountCodes(
+			r.Context(), h.dj, t, s, req.Discounts.Codes,
+		); err != nil {
 			upstreamError(w, err)
 			return
 		}

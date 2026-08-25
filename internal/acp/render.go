@@ -16,6 +16,19 @@ func shippingFeeMinor(o django.ShippingOption) (int64, bool) {
 	return fee, err == nil
 }
 
+// discountExtension is the capabilities.extensions declaration for the ACP
+// discount extension (URLs per the spec's own examples).
+var discountExtension = ExtensionDeclaration{
+	Name: "discount",
+	Extends: []string{
+		"$.CheckoutSessionCreateRequest.discounts",
+		"$.CheckoutSessionUpdateRequest.discounts",
+		"$.CheckoutSession.discounts",
+	},
+	Schema: "https://agenticcommerce.dev/schemas/discount.json",
+	Spec:   "https://agenticcommerce.dev/specs/discount",
+}
+
 // statusOf maps the shared checkout lifecycle onto ACP's vocabulary.
 // ready_for_complete renders as ready_for_payment only when an offline
 // (agent-completable) pay way exists — otherwise the honest state is
@@ -63,9 +76,11 @@ func Render(
 	}
 
 	out := &Session{
-		ID:                 s.ID,
-		Protocol:           Protocol{Version: Version},
-		Capabilities:       Capabilities{},
+		ID:       s.ID,
+		Protocol: Protocol{Version: Version},
+		Capabilities: Capabilities{
+			Extensions: []ExtensionDeclaration{discountExtension},
+		},
 		Currency:           t.DefaultCurrency,
 		LineItems:          []LineItem{},
 		FulfillmentOptions: []FulfillmentOption{},
@@ -120,6 +135,15 @@ func Render(
 		Type: "subtotal", DisplayText: "Subtotal",
 		Amount: pricing.ItemsSubtotal,
 	})
+	if pricing.DiscountTotal > 0 {
+		// ACP totals carry the discount as a positive amount under its
+		// own type (the applied_discount amounts are non-negative too);
+		// the total row is already discount-aware.
+		out.Totals = append(out.Totals, Total{
+			Type: "discount", DisplayText: "Discount",
+			Amount: pricing.DiscountTotal,
+		})
+	}
 	if pricing.HasDelivery {
 		out.Totals = append(out.Totals, Total{
 			Type: "fulfillment", DisplayText: "Shipping",
@@ -135,6 +159,8 @@ func Render(
 	out.Totals = append(out.Totals, Total{
 		Type: "total", DisplayText: "Total", Amount: pricing.Total,
 	})
+
+	renderDiscounts(s, cart, pricing, out)
 
 	offline := false
 	if s.Status == checkout.StatusReadyForComplete {
@@ -228,6 +254,57 @@ func renderFulfillment(
 			OptionID: f.ProviderCode + ":" + f.Kind,
 			ItemIDs:  lineIDs,
 		}}
+	}
+}
+
+// renderDiscounts fills the session's discount-extension block: submitted
+// codes echo from the gateway session, applied discounts derive from the
+// Django cart (the store keeps one coupon per cart), and rejections from
+// the last submission surface both in discounts.rejected and as warning
+// messages (MessageWarning carries the discount_code_* vocabulary).
+func renderDiscounts(
+	s *checkout.Session, cart *django.Cart, pricing *checkout.Pricing,
+	out *Session,
+) {
+	d := &Discounts{Codes: s.DiscountCodes}
+	for i, code := range cart.AppliedCouponCodes {
+		applied := AppliedDiscount{
+			ID:     code,
+			Code:   code,
+			Coupon: Coupon{ID: code, Name: code},
+		}
+		// The store evaluates one promotion total, not per-code splits;
+		// with its one-coupon policy the first (only) code carries it.
+		if i == 0 {
+			applied.Amount = pricing.DiscountTotal
+		}
+		d.Applied = append(d.Applied, applied)
+	}
+	if len(cart.AppliedCouponCodes) == 0 && pricing.DiscountTotal > 0 {
+		d.Applied = append(d.Applied, AppliedDiscount{
+			ID:        "automatic",
+			Coupon:    Coupon{ID: "automatic", Name: "Automatic promotion"},
+			Amount:    pricing.DiscountTotal,
+			Automatic: true,
+		})
+	}
+	for _, rej := range s.RejectedDiscounts {
+		d.Rejected = append(d.Rejected, RejectedDiscount{
+			Code: rej.Code, Reason: rej.Reason, Message: rej.Message,
+		})
+		content := rej.Message
+		if content == "" {
+			content = fmt.Sprintf(
+				"Discount code %q could not be applied.", rej.Code)
+		}
+		out.Messages = append(out.Messages, Message{
+			Type: "warning", Code: rej.Reason,
+			Param: "$.discounts.codes", Resolution: "recoverable",
+			ContentType: "plain", Content: content,
+		})
+	}
+	if len(d.Codes)+len(d.Applied)+len(d.Rejected) > 0 {
+		out.Discounts = d
 	}
 }
 

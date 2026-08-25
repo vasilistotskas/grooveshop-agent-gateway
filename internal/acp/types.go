@@ -21,6 +21,19 @@ type Protocol struct {
 
 type Capabilities struct {
 	Payment *Payment `json:"payment,omitempty"`
+	// Extensions declares the active extensions on responses
+	// (ExtensionDeclaration objects per schema.extension.json; agents
+	// send plain identifier strings in requests instead).
+	Extensions []ExtensionDeclaration `json:"extensions,omitempty"`
+}
+
+// ExtensionDeclaration describes one active extension and the schema
+// fields it adds.
+type ExtensionDeclaration struct {
+	Name    string   `json:"name"`
+	Extends []string `json:"extends,omitempty"`
+	Schema  string   `json:"schema,omitempty"`
+	Spec    string   `json:"spec,omitempty"`
 }
 
 type Payment struct {
@@ -129,10 +142,46 @@ type Session struct {
 	FulfillmentOptions         []FulfillmentOption         `json:"fulfillment_options"`
 	SelectedFulfillmentOptions []SelectedFulfillmentOption `json:"selected_fulfillment_options,omitempty"`
 	Totals                     []Total                     `json:"totals"`
+	Discounts                  *Discounts                  `json:"discounts,omitempty"`
 	Messages                   []Message                   `json:"messages"`
 	Links                      []Link                      `json:"links"`
 	ContinueURL                string                      `json:"continue_url,omitempty"`
 	Order                      *Order                      `json:"order,omitempty"`
+}
+
+// Discount-extension response types (schema.discount.json 2026-01-27; the
+// same shapes live in schema.agentic_checkout.json's $defs).
+
+type Coupon struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type AppliedDiscount struct {
+	ID        string `json:"id"`
+	Code      string `json:"code,omitempty"`
+	Coupon    Coupon `json:"coupon"`
+	Amount    int64  `json:"amount"`
+	Automatic bool   `json:"automatic,omitempty"`
+}
+
+type RejectedDiscount struct {
+	Code    string `json:"code"`
+	Reason  string `json:"reason"`
+	Message string `json:"message,omitempty"`
+}
+
+// Discounts is the discounts_response object on the session.
+type Discounts struct {
+	Codes    []string           `json:"codes,omitempty"`
+	Applied  []AppliedDiscount  `json:"applied,omitempty"`
+	Rejected []RejectedDiscount `json:"rejected,omitempty"`
+}
+
+// DiscountsIn is the discounts_request object on create/update bodies.
+// Codes replaces previously submitted codes; an empty array clears.
+type DiscountsIn struct {
+	Codes []string `json:"codes"`
 }
 
 // Error is the protocol-level 4xx/5xx body.
@@ -156,6 +205,7 @@ type CreateRequest struct {
 	Currency           string              `json:"currency"`
 	FulfillmentDetails *FulfillmentDetails `json:"fulfillment_details"`
 	Capabilities       json.RawMessage     `json:"capabilities"`
+	Discounts          *DiscountsIn        `json:"discounts"`
 }
 
 type UpdateRequest struct {
@@ -163,6 +213,7 @@ type UpdateRequest struct {
 	LineItems                  []ItemRef                   `json:"line_items"`
 	FulfillmentDetails         *FulfillmentDetails         `json:"fulfillment_details"`
 	SelectedFulfillmentOptions []SelectedFulfillmentOption `json:"selected_fulfillment_options"`
+	Discounts                  *DiscountsIn                `json:"discounts"`
 }
 
 type PaymentData struct {

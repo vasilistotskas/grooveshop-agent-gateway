@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
@@ -106,6 +108,43 @@ func TestAuthPerTenantBearer(t *testing.T) {
 			assert.Equal(t, tc.wantStatus, rec.Code)
 		})
 	}
+}
+
+// decodeBody keeps ignoring unknown members for forward compatibility,
+// but the discount extension's "discounts" object must decode.
+func TestDecodeBodyReadsDiscounts(t *testing.T) {
+	t.Run("create request", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/acp/checkout_sessions",
+			strings.NewReader(`{
+				"line_items": [{"id": "1", "quantity": 2}],
+				"currency": "eur",
+				"discounts": {"codes": ["SAVE10", "EXTRA"]},
+				"some_future_field": {"ignored": true}
+			}`))
+		rec := httptest.NewRecorder()
+		var out CreateRequest
+		require.True(t, decodeBody(rec, req, &out))
+		require.NotNil(t, out.Discounts)
+		assert.Equal(t, []string{"SAVE10", "EXTRA"}, out.Discounts.Codes)
+	})
+
+	t.Run("update request distinguishes clear from absent", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/acp/checkout_sessions/x",
+			strings.NewReader(`{"discounts": {"codes": []}}`))
+		rec := httptest.NewRecorder()
+		var out UpdateRequest
+		require.True(t, decodeBody(rec, req, &out))
+		require.NotNil(t, out.Discounts)
+		require.NotNil(t, out.Discounts.Codes, "empty array must decode as clear")
+		assert.Empty(t, out.Discounts.Codes)
+
+		req = httptest.NewRequest(http.MethodPost, "/acp/checkout_sessions/x",
+			strings.NewReader(`{"buyer": {"email": "a@b.test"}}`))
+		var untouched UpdateRequest
+		require.True(t, decodeBody(httptest.NewRecorder(), req, &untouched))
+		assert.Nil(t, untouched.Discounts,
+			"absent discounts must not touch the coupon")
+	})
 }
 
 func TestAuthWithoutTenantIs404(t *testing.T) {

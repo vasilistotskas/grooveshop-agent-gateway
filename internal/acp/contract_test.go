@@ -63,7 +63,7 @@ func testTenant() *tenant.Tenant {
 	}
 }
 
-func fixtureDjango(t *testing.T) *django.Client {
+func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
 	t.Helper()
 	fixture := func(name string) http.HandlerFunc {
 		return func(w http.ResponseWriter, _ *http.Request) {
@@ -74,8 +74,12 @@ func fixtureDjango(t *testing.T) *django.Client {
 			_, _ = w.Write(b)
 		}
 	}
+	cart := "cart_with_items.json"
+	if len(cartFixture) > 0 {
+		cart = cartFixture[0]
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/cart", fixture("cart_with_items.json"))
+	mux.HandleFunc("GET /api/v1/cart", fixture(cart))
 	mux.HandleFunc("GET /api/v1/pay_way", fixture("pay_way.json"))
 	mux.HandleFunc("GET /api/v1/shipping/options",
 		fixture("shipping_options.json"))
@@ -155,6 +159,87 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 				withOrderSchema.Validate(roundTrip(t, payload)))
 			require.NotNil(t, payload.Order)
 			assert.Equal(t, s.ID, payload.Order.CheckoutSessionID)
+		})
+
+	t.Run("every response declares the discount extension", func(t *testing.T) {
+		s := newSession()
+		s.Recompute()
+		payload, err := Render(context.Background(), dj, tn, s)
+		require.NoError(t, err)
+		require.Len(t, payload.Capabilities.Extensions, 1)
+		ext := payload.Capabilities.Extensions[0]
+		assert.Equal(t, "discount", ext.Name)
+		assert.Contains(t, ext.Extends, "$.CheckoutSession.discounts")
+		require.NoError(t, sessionSchema.Validate(roundTrip(t, payload)))
+	})
+
+	t.Run("applied coupon renders discounts and totals", func(t *testing.T) {
+		couponDj := fixtureDjango(t, "cart_with_coupon.json")
+		s := newSession()
+		s.DiscountCodes = []string{"SAVE10"}
+		s.Recompute()
+
+		payload, err := Render(context.Background(), couponDj, tn, s)
+		require.NoError(t, err)
+		require.NoError(t, sessionSchema.Validate(roundTrip(t, payload)))
+
+		require.NotNil(t, payload.Discounts)
+		assert.Equal(t, []string{"SAVE10"}, payload.Discounts.Codes)
+		require.Len(t, payload.Discounts.Applied, 1)
+		applied := payload.Discounts.Applied[0]
+		assert.Equal(t, "SAVE10", applied.Code)
+		assert.Equal(t, "SAVE10", applied.Coupon.ID)
+		assert.EqualValues(t, 9294, applied.Amount)
+		assert.False(t, applied.Automatic)
+		assert.Empty(t, payload.Discounts.Rejected)
+
+		// Totals: 92936 subtotal, positive 9294 discount row, total
+		// already reduced.
+		byType := map[string]int64{}
+		for _, total := range payload.Totals {
+			byType[total.Type] = total.Amount
+		}
+		assert.EqualValues(t, 9294, byType["discount"])
+		assert.EqualValues(t, 83642, byType["total"])
+	})
+
+	t.Run("rejected code renders discounts.rejected and a warning",
+		func(t *testing.T) {
+			s := newSession()
+			s.DiscountCodes = []string{"DEAD"}
+			s.RejectedDiscounts = []checkout.DiscountRejection{{
+				Code:    "DEAD",
+				Reason:  "discount_code_expired",
+				Message: "The promotion has ended",
+			}}
+			s.Recompute()
+
+			payload, err := Render(context.Background(), dj, tn, s)
+			require.NoError(t, err)
+			require.NoError(t, sessionSchema.Validate(roundTrip(t, payload)))
+
+			require.NotNil(t, payload.Discounts)
+			assert.Empty(t, payload.Discounts.Applied)
+			require.Len(t, payload.Discounts.Rejected, 1)
+			rej := payload.Discounts.Rejected[0]
+			assert.Equal(t, "DEAD", rej.Code)
+			assert.Equal(t, "discount_code_expired", rej.Reason)
+			assert.Equal(t, "The promotion has ended", rej.Message)
+
+			var warning *Message
+			for i := range payload.Messages {
+				if payload.Messages[i].Type == "warning" {
+					warning = &payload.Messages[i]
+				}
+			}
+			require.NotNil(t, warning, "rejections surface as warnings")
+			assert.Equal(t, "discount_code_expired", warning.Code)
+			assert.Equal(t, "$.discounts.codes", warning.Param)
+
+			// No discount totals row without an applied discount.
+			for _, total := range payload.Totals {
+				assert.NotEqual(t, "discount", total.Type)
+			}
 		})
 
 	t.Run("canceled session keeps the shared status name", func(t *testing.T) {
