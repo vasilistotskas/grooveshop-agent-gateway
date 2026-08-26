@@ -7,3 +7,11 @@ coverage.html
 .env.*
 !.env.example
 .idea/
+
+# Claude Code: per-machine settings and per-user agent memory are not shared.
+.claude/settings.local.json
+.claude/agent-memory/
+
+# Windows artifact: `cmd > NUL` in Git Bash creates a real file named NUL
+# instead of writing to the null device. Both repos have accumulated one.
+NUL

@@ -36,6 +36,10 @@ docker build -t agent-gateway .                  # Production image
 CI runs lint → unit+integration (with `-race`; local Windows Go is 386 and
 cannot race-detect) → build.
 
+The `/gateway-test` skill wraps these. `.claude/` also registers a
+`gateway-contract-reviewer` subagent for the invariants below, and hooks that
+`gofmt` and `go vet` each edited file.
+
 ## Architecture
 
 - `cmd/gateway` — wiring only: config → clients → mux → graceful shutdown.
