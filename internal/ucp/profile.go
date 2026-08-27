@@ -8,6 +8,15 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
+// specBase is the version-namespaced root of the published UCP spec.
+// ucp.dev serves schemas and service bindings only under a release path;
+// the unversioned https://ucp.dev/schemas/... form is a 404, and a
+// platform that cannot fetch a declared schema drops the entity. The host
+// must stay ucp.dev: under the spec's authority binding a platform rejects
+// any dev.ucp.* entity whose schema origin is not name-aligned, so these
+// documents are never self-hosted or proxied.
+const specBase = "https://ucp.dev/" + Version
+
 // Profile is the /.well-known/ucp business profile document.
 type Profile struct {
 	UCP  ProfileEnvelope     `json:"ucp"`
@@ -22,13 +31,22 @@ type ProfileEnvelope struct {
 }
 
 type Service struct {
-	Version   string `json:"version"`
+	Version string `json:"version"`
+	// Spec and Schema are optional for a business profile — only platform
+	// profiles must carry them — but the spec's own reference profile
+	// publishes both, and Schema is the OpenRPC binding a platform reads to
+	// learn this transport's tool surface.
+	Spec      string `json:"spec,omitempty"`
 	Transport string `json:"transport"`
 	Endpoint  string `json:"endpoint"`
+	Schema    string `json:"schema,omitempty"`
 }
 
 type Capability struct {
 	Version string `json:"version"`
+	// Spec is the human-readable specification page; optional but published
+	// so agents can link out during negotiation.
+	Spec string `json:"spec,omitempty"`
 	// Schema is the capability's composable JSON Schema URL — required in
 	// business profiles so platforms can fetch it during negotiation.
 	Schema  string `json:"schema"`
@@ -37,6 +55,12 @@ type Capability struct {
 
 // BuildProfile renders the per-tenant business profile. The MCP service
 // endpoint and every capability live on the tenant's own domain.
+//
+// The /schemas and /services paths are stable across releases, so they are
+// derived from specBase. The per-capability specification pages are not:
+// they moved under /specification/shopping/ in 2026-08-25, so each
+// capability names its own page and a Version bump must revisit these
+// two literals.
 func BuildProfile(t *tenant.Tenant, key *SigningKey) *Profile {
 	base := "https://" + t.Domain
 	return &Profile{
@@ -45,18 +69,22 @@ func BuildProfile(t *tenant.Tenant, key *SigningKey) *Profile {
 			Services: map[string][]Service{
 				"dev.ucp.shopping": {{
 					Version:   Version,
+					Spec:      specBase + "/specification/overview/",
 					Transport: "mcp",
 					Endpoint:  base + "/mcp",
+					Schema:    specBase + "/services/shopping/mcp.openrpc.json",
 				}},
 			},
 			Capabilities: map[string][]Capability{
 				"dev.ucp.shopping.checkout": {{
 					Version: Version,
-					Schema:  "https://ucp.dev/schemas/shopping/checkout.json",
+					Spec:    specBase + "/specification/shopping/checkout/",
+					Schema:  specBase + "/schemas/shopping/checkout.json",
 				}},
 				"dev.ucp.shopping.order": {{
 					Version: Version,
-					Schema:  "https://ucp.dev/schemas/shopping/order.json",
+					Spec:    specBase + "/specification/shopping/order/",
+					Schema:  specBase + "/schemas/shopping/order.json",
 				}},
 			},
 			PaymentHandlers: paymentHandlers(t),

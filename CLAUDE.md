@@ -12,7 +12,7 @@ storefront's own domain (Traefik path-routes them here):
 | Path | Surface |
 |---|---|
 | `POST /mcp` | MCP server (stateless streamable HTTP): commerce tools + UCP checkout tools + account tools (`my_orders`, `my_loyalty_points`, `my_favourites`) |
-| `GET /.well-known/ucp` | UCP business profile (spec 2026-04-08) |
+| `GET /.well-known/ucp` | UCP business profile (spec 2026-08-25) |
 | `/acp/*` | ACP agentic checkout REST (spec 2026-04-17) |
 | `/feeds/*` | Product feeds: google.xml, meta.xml, tiktok.xml, acp.json |
 | `POST /chat` | First-party shopping chatbot (SSE; OpenAI-compatible protocol via openai-go — Gemini free tier by default, any compatible provider via CHAT_BASE_URL) |

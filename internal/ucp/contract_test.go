@@ -48,7 +48,7 @@ func compileUCP(t *testing.T, ref string) *jsonschema.Schema {
 	c := jsonschema.NewCompiler()
 	c.UseLoader(vendoredLoader{
 		root: filepath.Join("..", "..", "testdata", "schemas", "ucp",
-			"2026-04-08"),
+			"2026-08-25"),
 	})
 	schema, err := c.Compile("https://ucp.dev/schemas/" + ref)
 	require.NoError(t, err)
@@ -206,4 +206,38 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 			"https://shop.example.test/checkout/success/"+s.OrderUUID,
 			payload.Order.PermalinkURL)
 	})
+}
+
+// TestProfileAdvertisesResolvableUCPDocuments locks the shape of every
+// spec and schema URL the profile publishes. Both properties matter and
+// neither is expressible in the JSON Schema: the URLs must sit under the
+// versioned release path, because the unversioned
+// https://ucp.dev/schemas/... form 404s and a platform drops any entity
+// whose schema it cannot fetch; and they must stay on ucp.dev, because
+// authority binding makes a platform reject a dev.ucp.* entity served from
+// a non-name-aligned origin.
+func TestProfileAdvertisesResolvableUCPDocuments(t *testing.T) {
+	profile := BuildProfile(testTenant(), testKey(t))
+	wantPrefix := "https://ucp.dev/" + Version + "/"
+
+	urls := map[string]string{}
+	for name, services := range profile.UCP.Services {
+		for i, s := range services {
+			urls[fmt.Sprintf("services[%s][%d].spec", name, i)] = s.Spec
+			urls[fmt.Sprintf("services[%s][%d].schema", name, i)] = s.Schema
+		}
+	}
+	for name, caps := range profile.UCP.Capabilities {
+		for i, c := range caps {
+			urls[fmt.Sprintf("capabilities[%s][%d].spec", name, i)] = c.Spec
+			urls[fmt.Sprintf("capabilities[%s][%d].schema", name, i)] = c.Schema
+		}
+	}
+	require.NotEmpty(t, urls)
+
+	for field, url := range urls {
+		require.NotEmpty(t, url, "%s must be published", field)
+		assert.True(t, strings.HasPrefix(url, wantPrefix),
+			"%s = %q must sit under %s", field, url, wantPrefix)
+	}
 }

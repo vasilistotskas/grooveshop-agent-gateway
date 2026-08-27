@@ -18,7 +18,7 @@ import (
 )
 
 // Version is the implemented UCP specification version.
-const Version = "2026-04-08"
+const Version = "2026-08-25"
 
 // legacySigningKeyRedisKey held the single platform-wide key before keys
 // went per-schema. It historically signed for webside (tenant #1), so its

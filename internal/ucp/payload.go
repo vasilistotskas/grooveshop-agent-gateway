@@ -10,7 +10,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
-// Wire types mirror testdata/schemas/ucp/2026-04-08 (amounts are integer
+// Wire types mirror testdata/schemas/ucp/2026-08-25 (amounts are integer
 // minor units; field sets follow shopping/checkout.json and friends).
 
 type Envelope struct {
