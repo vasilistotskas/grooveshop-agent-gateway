@@ -145,18 +145,3 @@ func responsePaymentHandlers(
 	}
 	return handlers
 }
-
-// agentCompletable reports whether any advertised handler lets an agent
-// finish the purchase itself. When nothing does, a session that is
-// otherwise ready must escalate rather than claim a payment path the
-// store cannot honour.
-func agentCompletable(handlers map[string][]PaymentHandler) bool {
-	for _, entries := range handlers {
-		for _, h := range entries {
-			if len(h.AvailableInstruments) > 0 {
-				return true
-			}
-		}
-	}
-	return false
-}

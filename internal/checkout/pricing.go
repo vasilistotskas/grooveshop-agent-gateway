@@ -38,6 +38,12 @@ type Pricing struct {
 	PaymentFee    int64
 	HasPaymentFee bool
 	Total         int64
+	// PayWay is the pay-way the buyer selected, or nil when none is
+	// selected yet or the lookup failed. Callers deciding whether an
+	// agent can settle a checkout unaided MUST read this rather than the
+	// store's advertised set: the selection is the authoritative fact
+	// for THIS checkout.
+	PayWay *django.PayWay
 }
 
 // ComputePricing fetches the cart fresh and derives the totals breakdown
@@ -93,7 +99,15 @@ func ComputePricing(
 		p.DeliveryFee, p.HasDelivery = fee, true
 		p.Total += fee
 	}
-	if fee, ok := paymentFee(ctx, dj, t, s, cart); ok {
+	if s.PayWayID > 0 {
+		// One lookup serves both the fee and the settlement question.
+		if pw, err := dj.PayWayByID(
+			ctx, t.Domain, t.DefaultLocale, s.PayWayID,
+		); err == nil {
+			p.PayWay = pw
+		}
+	}
+	if fee, ok := paymentFee(p.PayWay, cart); ok {
 		p.PaymentFee, p.HasPaymentFee = fee, true
 		p.Total += fee
 	}
@@ -135,14 +149,9 @@ func deliveryFee(
 // paymentFee resolves the chosen pay way's fee, waived above its free
 // threshold.
 func paymentFee(
-	ctx context.Context, dj *django.Client, t *tenant.Tenant,
-	s *Session, cart *django.Cart,
+	pw *django.PayWay, cart *django.Cart,
 ) (int64, bool) {
-	if s.PayWayID <= 0 {
-		return 0, false
-	}
-	pw, err := dj.PayWayByID(ctx, t.Domain, t.DefaultLocale, s.PayWayID)
-	if err != nil {
+	if pw == nil {
 		return 0, false
 	}
 	cost, err := money.MinorUnits(pw.Cost.String())

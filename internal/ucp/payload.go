@@ -125,18 +125,19 @@ func (b *Builder) BuildCheckout(
 		return nil, fmt.Errorf("ucp: pricing: %w", err)
 	}
 
-	// The response declaration is authoritative for this checkout, and
-	// whether it carries an instrument decides whether an agent can
-	// finish the purchase at all.
+	// The response declaration is authoritative for this checkout: it
+	// lists what the agent may still select.
+	//
+	// Readiness is NOT narrowed by which methods an agent can settle.
+	// In UCP `ready_for_complete` means the inputs are collected and the
+	// platform should call complete; whether completion then needs the
+	// buyer at the PSP is discovered by completing, which returns
+	// requires_escalation with the PSP's own continue_url. Downgrading
+	// here would send the agent to a browser instead of placing the
+	// order, and no order would exist for the buyer to pay for. ACP's
+	// ready_for_payment carries the narrower "agent can pay now"
+	// meaning; the vocabularies do not map onto each other.
 	handlers := responsePaymentHandlers(t, b.env)
-	status := s.Status
-	if status == checkout.StatusReadyForComplete &&
-		!agentCompletable(handlers) {
-		// Every active method needs the buyer to authorize at the PSP,
-		// which UCP models as an escalation — not as readiness the agent
-		// could act on.
-		status = checkout.StatusRequiresEscalation
-	}
 
 	out := &Checkout{
 		UCP: Envelope{
@@ -147,7 +148,7 @@ func (b *Builder) BuildCheckout(
 		// The spec types line_items as an array; keep it [] over null even
 		// for an empty cart.
 		LineItems: []LineItem{},
-		Status:    string(status),
+		Status:    string(s.Status),
 		Currency:  t.DefaultCurrency,
 		Links: []Link{
 			{Type: "terms_of_service",
@@ -206,7 +207,7 @@ func (b *Builder) BuildCheckout(
 	out.Totals = append(out.Totals,
 		LineItemTotal{Type: "total", Amount: pricing.Total})
 
-	switch status {
+	switch s.Status {
 	case checkout.StatusRequiresEscalation:
 		// continue_url is REQUIRED whenever the status is
 		// requires_escalation. A hosted PSP page exists only once the

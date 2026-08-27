@@ -288,24 +288,23 @@ func TestBuildCheckoutPaymentParity(t *testing.T) {
 			assert.Equal(t, "on_delivery", h.Config["settlement"])
 		})
 
-	t.Run("online-only store escalates instead of claiming readiness",
+	t.Run("online-only store keeps readiness so complete can run",
 		func(t *testing.T) {
+			// UCP readiness means "inputs collected, call complete". The
+			// escalation belongs to completion, which returns the PSP's
+			// own continue_url; reporting it here would send the agent to
+			// a browser and no order would ever be placed.
 			tn := testTenant()
 			tn.AgentPaymentInstruments = []string{"viva_wallet"}
 
 			out := build(t, tn, checkout.StatusReadyForComplete, "")
 
-			assert.Equal(t, string(checkout.StatusRequiresEscalation),
-				out.Status, "no instrument an agent can submit")
+			assert.Equal(t, string(checkout.StatusReadyForComplete),
+				out.Status)
 			assert.Empty(t, out.UCP.PaymentHandlers,
-				"registry present but empty")
-			// The schema REQUIRES continue_url on requires_escalation, and
-			// no hosted PSP page exists before the buyer reaches payment.
-			assert.Equal(t,
-				"https://shop.example.test/cart/claim?uuid="+
-					"29eb4495-e018-45e7-b59c-6646302bd4ef",
-				out.ContinueURL,
-				"handoff must carry the cart so the buyer lands on it")
+				"registry present but empty: nothing an agent can settle")
+			assert.Empty(t, out.ContinueURL,
+				"no handoff until completion produces one")
 		})
 
 	t.Run("hosted payment page wins as the handoff target",
