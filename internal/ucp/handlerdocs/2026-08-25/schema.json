@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://payments.grooveshop.space/2026-08-25/schema.json",
+  "title": "GrooveShop Payments Handler Schema",
+  "description": "Schema for the space.grooveshop.payments UCP payment handler. The handler covers payment methods a business settles outside the agent conversation, where the platform submits no payment credential. Businesses advertise one instrument per active offline payment method they accept.",
+  "name": "space.grooveshop.payments",
+  "version": "2026-08-25",
+
+  "$defs": {
+    "cash_on_delivery_instrument": {
+      "$ref": "types/cash_on_delivery_instrument.json"
+    },
+
+    "space.grooveshop.payments": {
+      "payment_instrument": {
+        "title": "GrooveShop Payments Instrument",
+        "description": "Any instrument type supported by this handler.",
+        "oneOf": [{ "$ref": "#/$defs/cash_on_delivery_instrument" }]
+      },
+      "business_schema": {
+        "title": "GrooveShop Payments (Business)",
+        "description": "Business-level handler configuration advertised at /.well-known/ucp.",
+        "allOf": [
+          {
+            "$ref": "https://ucp.dev/2026-08-25/schemas/payment_handler.json#/$defs/business_schema"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "config": { "$ref": "types/business_config.json" }
+            }
+          }
+        ]
+      },
+      "response_schema": {
+        "title": "GrooveShop Payments (Response)",
+        "description": "Runtime handler configuration in checkout and order responses.",
+        "allOf": [
+          {
+            "$ref": "https://ucp.dev/2026-08-25/schemas/payment_handler.json#/$defs/response_schema"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "config": { "$ref": "types/response_config.json" }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

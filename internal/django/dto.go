@@ -325,6 +325,13 @@ type TenantConfig struct {
 	// includes it only on internally-authenticated resolves (the
 	// X-Internal-Token header); empty means chat is off for the tenant.
 	ChatAPIKey string `json:"chatApiKey"`
+	// AgentPaymentInstruments lists the provider codes an agent can
+	// settle unaided, in the merchant's presentation order. Django
+	// derives it from the tenant's ACTIVE OFFLINE pay-ways, so every
+	// entry needs no payment credential — the buyer settles with the
+	// carrier. Empty means the store has nothing an agent can complete
+	// on its own and checkout must escalate to the browser.
+	AgentPaymentInstruments []string `json:"agentPaymentInstruments"`
 	// ACPBearerToken authenticates the tenant's agentic-commerce platform
 	// on /acp/*. Like ChatAPIKey it arrives only on internally
 	// authenticated resolves; empty means no platform is enrolled.

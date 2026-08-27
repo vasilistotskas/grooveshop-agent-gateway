@@ -91,7 +91,7 @@ func TestProfilePublishesOnlyOwnKey(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/.well-known/ucp", nil)
 		req = req.WithContext(tenant.NewContext(req.Context(), tn))
 		rec := httptest.NewRecorder()
-		ucp.ProfileHandler(keys).ServeHTTP(rec, req)
+		ucp.ProfileHandler(keys, "test").ServeHTTP(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code)
 		var profile struct {
 			Keys []map[string]string `json:"keys"`

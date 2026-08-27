@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://payments.grooveshop.space/2026-08-25/types/business_config.json",
+  "title": "GrooveShop Payments Business Config",
+  "description": "Configuration a business advertises for the space.grooveshop.payments handler at /.well-known/ucp. The handler needs no processor identity or key material: nothing is charged through it, so there is no credential to authenticate and no secret to publish.",
+  "type": "object",
+  "required": ["environment"],
+  "properties": {
+    "environment": {
+      "type": "string",
+      "enum": ["sandbox", "production"],
+      "description": "Which of the business's environments this declaration describes. Platforms use it to keep test traffic out of live order flow."
+    }
+  }
+}

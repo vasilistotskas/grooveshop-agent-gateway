@@ -1,0 +1,189 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>space.grooveshop.payments — UCP Payment Handler 2026-08-25</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: light dark; --fg:#111; --bg:#fff; --mut:#555; --line:#ddd; --code:#f5f5f5 }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#e8e8e8; --bg:#131313; --mut:#a5a5a5; --line:#333; --code:#1d1d1d }
+  }
+  body { max-width:52rem; margin:0 auto; padding:2rem 1.25rem 6rem;
+         font:16px/1.65 ui-sans-serif,system-ui,sans-serif; color:var(--fg); background:var(--bg) }
+  h1 { font-size:1.6rem; margin:0 0 .25rem } h2 { margin-top:2.5rem; font-size:1.2rem }
+  h3 { margin-top:1.75rem; font-size:1rem }
+  .sub { color:var(--mut); margin:0 0 2rem }
+  code,pre { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.875em }
+  pre { background:var(--code); padding:.9rem 1rem; border-radius:6px; overflow-x:auto }
+  table { border-collapse:collapse; width:100%; margin:1rem 0; display:block; overflow-x:auto }
+  th,td { text-align:left; padding:.45rem .7rem; border-bottom:1px solid var(--line); vertical-align:top }
+  th { font-weight:600 }
+  a { color:inherit } dl dt { font-weight:600; margin-top:.75rem }
+</style>
+
+<h1><code>space.grooveshop.payments</code></h1>
+<p class="sub">UCP payment handler specification &middot; version <strong>2026-08-25</strong> &middot;
+   protocol <a href="https://ucp.dev/2026-08-25/specification/payment/guide/">UCP 2026-08-25</a></p>
+
+<h2>Scope</h2>
+<p>This handler covers payment methods a business settles <strong>outside the agent
+conversation</strong>, where the platform submits <strong>no payment credential</strong>. Selecting
+the instrument is the whole payment authorisation the business needs in order to place
+the order; funds move later, between the buyer and the carrier.</p>
+<p>Because no credential is transmitted, no participant enters PCI DSS scope for any
+instrument in this handler. The instrument schema enforces that structurally:
+<code>credential</code> is <code>false</code>, so a declaration carrying one fails validation
+rather than relying on policy.</p>
+<p>Card, wallet and other credential-bearing payments are <strong>out of scope</strong>. A
+business that only accepts those advertises no handler, and its checkouts escalate to
+the web with <code>requires_escalation</code> and a <code>continue_url</code>.</p>
+
+<h2>Participants</h2>
+<table>
+  <tr><th>Participant</th><th>Role</th></tr>
+  <tr><td><strong>Business</strong></td><td>Advertises the handler, resolves the instruments
+      available for a given checkout, and places the order on completion. Appears as
+      <code>merchant</code> in some UCP field names.</td></tr>
+  <tr><td><strong>Platform</strong></td><td>Discovers the handler, presents the instruments to
+      the buyer, and submits the selected instrument on checkout completion.</td></tr>
+  <tr><td><strong>Carrier</strong></td><td>Collects funds from the buyer on delivery and remits
+      them to the business. Never a UCP participant: it exchanges no protocol
+      messages.</td></tr>
+</table>
+
+<h2>Prerequisites</h2>
+<dl>
+  <dt>Business</dt>
+  <dd>Configures at least one active offline payment method carrying a provider code. No
+      processor onboarding, identity, or key material is required: nothing is charged
+      through this handler, so there is no credential to authenticate and no secret to
+      publish. The handler therefore declares no <code>PaymentIdentity</code>.</dd>
+  <dt>Platform</dt>
+  <dd>None. Any platform that can read the business profile can use this handler.</dd>
+</dl>
+
+<h2>Handler declaration</h2>
+<p>The business advertises the handler at <code>/.well-known/ucp</code>, one entry per
+store, listing one instrument per active offline payment method in its own preferred
+presentation order.</p>
+<pre>{
+  "payment_handlers": {
+    "space.grooveshop.payments": [
+      {
+        "id": "grooveshop_payments",
+        "version": "2026-08-25",
+        "spec": "https://payments.grooveshop.space/2026-08-25/",
+        "schema": "https://payments.grooveshop.space/2026-08-25/schema.json",
+        "available_instruments": [
+          {
+            "type": "cash_on_delivery",
+            "constraints": {
+              "properties": { "provider_code": { "const": "cash_on_delivery" } }
+            }
+          }
+        ],
+        "config": { "environment": "production" }
+      }
+    ]
+  }
+}</pre>
+
+<h3>Config</h3>
+<table>
+  <tr><th>Field</th><th>Required</th><th>Description</th></tr>
+  <tr><td><code>environment</code></td><td>yes</td>
+      <td><code>sandbox</code> or <code>production</code>. Only the production deployment
+      reports <code>production</code>; platforms use it to keep test traffic out of live
+      order flow.</td></tr>
+  <tr><td><code>settlement</code></td><td>response only</td>
+      <td>Fixed at <code>on_delivery</code>. States when funds are expected to move.</td></tr>
+</table>
+
+<h3>Constraint target</h3>
+<p><code>available_instruments[].constraints</code> describes the instrument schema's
+<code>$defs/constraint_target</code>, which declares one member: <code>provider_code</code>,
+the business's own identifier for the settlement provider. It is derived from business
+configuration and never carried in a payload, which is why it is expressed as a
+constraint rather than as a request requirement.</p>
+
+<h2>Supported instruments</h2>
+<table>
+  <tr><th>Type</th><th>Credential</th><th>Description</th></tr>
+  <tr><td><code>cash_on_delivery</code></td><td>none</td>
+      <td>The buyer pays the carrier when the order arrives. The business may add a
+      surcharge, already reflected in the checkout totals and echoed on the instrument's
+      <code>display.fee</code>.</td></tr>
+</table>
+<p>The instrument type vocabulary is open and additive: a new settlement method ships as a
+new instrument type under a <strong>new handler version</strong>, never as new bytes at this
+version's URLs.</p>
+
+<h2>Instrument acquisition</h2>
+<p>There is nothing to acquire. No tokenisation endpoint exists, no credential is
+collected, and no binding is required — binding guards credential replay, and this
+handler transmits no credential. The platform constructs the instrument directly from the
+resolved declaration:</p>
+<pre>{
+  "payment": {
+    "instruments": [
+      {
+        "id": "instr_1",
+        "handler_id": "grooveshop_payments",
+        "type": "cash_on_delivery",
+        "selected": true
+      }
+    ]
+  }
+}</pre>
+<p><code>handler_id</code> MUST equal the <code>id</code> of the handler declaration the
+instrument came from. <code>type</code> MUST be one the authoritative response advertised for
+that checkout; the response is authoritative even where it narrows what the profile
+advertised.</p>
+
+<h2>Processing</h2>
+<ol>
+  <li>The business re-resolves the instrument against the checkout: the type must still be
+      available, and the pay-way behind it must still be active.</li>
+  <li>The business places the order, recording the settlement method so fulfilment
+      instructs the carrier to collect on delivery.</li>
+  <li>The checkout reaches <code>completed</code> and carries the order confirmation. No
+      authorisation, capture, or settlement call occurs at completion — funds move on
+      delivery.</li>
+</ol>
+
+<h3>Errors</h3>
+<table>
+  <tr><th>Condition</th><th>Behaviour</th></tr>
+  <tr><td>Instrument type not available for this checkout</td>
+      <td>Recoverable error naming the offending path; the platform may resubmit with an
+      advertised type.</td></tr>
+  <tr><td>Business has no active offline method</td>
+      <td>No handler is advertised at all, and the checkout escalates with
+      <code>requires_escalation</code> plus a <code>continue_url</code>.</td></tr>
+</table>
+
+<h2>Security</h2>
+<ul>
+  <li><strong>No credential handling.</strong> The instrument schema forbids
+      <code>credential</code>, so no participant can transmit card data through this handler
+      even by mistake, and none enters PCI DSS scope.</li>
+  <li><strong>No tokens, therefore no expiry and no replay window.</strong> Binding is not
+      required because there is no credential whose reuse could be replayed.</li>
+  <li><strong>Authority binding.</strong> These documents are served from
+      <code>payments.grooveshop.space</code>, whose reversed labels equal
+      <code>space.grooveshop.payments</code> — the exact-match case. A platform MUST reject
+      the entity if the schema origin is not name-aligned.</li>
+  <li><strong>Selecting the instrument is the authorisation.</strong> A business exposing this
+      handler accepts an unfunded-order risk (refused delivery) in exchange for
+      agent-completable checkout, and should apply the same order limits and fraud controls
+      it applies to cash on delivery placed on the web.</li>
+</ul>
+
+<h2>References</h2>
+<ul>
+  <li><a href="schema.json">Handler schema</a> — <code>schema.json</code></li>
+  <li><a href="types/cash_on_delivery_instrument.json">Cash on delivery instrument</a></li>
+  <li><a href="types/business_config.json">Business config</a> &middot;
+      <a href="types/response_config.json">Response config</a></li>
+  <li><a href="https://ucp.dev/2026-08-25/specification/payment/guide/">UCP Payment Handler Guide</a></li>
+  <li><a href="https://ucp.dev/2026-08-25/schemas/payment_handler.json">UCP <code>payment_handler.json</code></a></li>
+</ul>

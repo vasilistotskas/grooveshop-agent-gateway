@@ -73,6 +73,9 @@ func testTenant() *tenant.Tenant {
 			DefaultLocale:   "el",
 			DefaultCurrency: "EUR",
 			PrimaryDomain:   "shop.example.test",
+			// The fixture store accepts cash on delivery, so the
+			// profile advertises a payment handler.
+			AgentPaymentInstruments: []string{"cash_on_delivery"},
 		},
 		Domain: "shop.example.test",
 	}
@@ -89,7 +92,7 @@ func testKey(t *testing.T) *SigningKey {
 
 func TestProfileMatchesBusinessSchema(t *testing.T) {
 	schema := compileUCP(t, "profile.json#/$defs/business_schema")
-	profile := BuildProfile(testTenant(), testKey(t))
+	profile := BuildProfile(testTenant(), testKey(t), "production")
 
 	require.NoError(t, schema.Validate(roundTrip(t, profile)))
 
@@ -139,6 +142,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 		fixtureDjango(t),
 		"https://{assets_host}/img/{path}.webp",
 		"assets.platform.test",
+		"production",
 	)
 
 	newSession := func(status checkout.Status) *checkout.Session {
@@ -176,6 +180,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 				fixtureDjango(t, "cart_with_coupon.json"),
 				"https://{assets_host}/img/{path}.webp",
 				"assets.platform.test",
+				"production",
 			)
 			s := newSession(checkout.StatusIncomplete)
 			payload, err := couponBuilder.BuildCheckout(
@@ -217,7 +222,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 // authority binding makes a platform reject a dev.ucp.* entity served from
 // a non-name-aligned origin.
 func TestProfileAdvertisesResolvableUCPDocuments(t *testing.T) {
-	profile := BuildProfile(testTenant(), testKey(t))
+	profile := BuildProfile(testTenant(), testKey(t), "production")
 	wantPrefix := "https://ucp.dev/" + Version + "/"
 
 	urls := map[string]string{}

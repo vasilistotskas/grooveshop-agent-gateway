@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://payments.grooveshop.space/2026-08-25/types/response_config.json",
+  "title": "GrooveShop Payments Response Config",
+  "description": "Runtime handler configuration returned in checkout and order responses. Platforms MUST treat the containing handler declaration as authoritative for the checkout it accompanies.",
+  "type": "object",
+  "required": ["environment"],
+  "properties": {
+    "environment": {
+      "type": "string",
+      "enum": ["sandbox", "production"],
+      "description": "The environment that produced this response."
+    },
+    "settlement": {
+      "type": "string",
+      "const": "on_delivery",
+      "description": "When the business expects funds to settle. Fixed for this handler: the buyer pays the carrier on delivery, after the order is placed."
+    }
+  }
+}

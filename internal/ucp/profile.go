@@ -61,7 +61,9 @@ type Capability struct {
 // they moved under /specification/shopping/ in 2026-08-25, so each
 // capability names its own page and a Version bump must revisit these
 // two literals.
-func BuildProfile(t *tenant.Tenant, key *SigningKey) *Profile {
+func BuildProfile(
+	t *tenant.Tenant, key *SigningKey, env string,
+) *Profile {
 	base := "https://" + t.Domain
 	return &Profile{
 		UCP: ProfileEnvelope{
@@ -87,7 +89,7 @@ func BuildProfile(t *tenant.Tenant, key *SigningKey) *Profile {
 					Schema:  specBase + "/schemas/shopping/order.json",
 				}},
 			},
-			PaymentHandlers: paymentHandlers(t),
+			PaymentHandlers: paymentHandlers(t, env),
 		},
 		Keys: []map[string]string{key.JWK()},
 	}
@@ -96,7 +98,7 @@ func BuildProfile(t *tenant.Tenant, key *SigningKey) *Profile {
 // ProfileHandler serves GET /.well-known/ucp. The spec mandates HTTPS
 // (Traefik terminates TLS) and a public Cache-Control of at least 60s.
 // Each tenant's profile publishes only that tenant's own signing key.
-func ProfileHandler(keys *Keys) http.Handler {
+func ProfileHandler(keys *Keys, env string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t, ok := tenant.FromContext(r.Context())
 		if !ok {
@@ -111,7 +113,7 @@ func ProfileHandler(keys *Keys) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "public, max-age=300")
-		if err := json.NewEncoder(w).Encode(BuildProfile(t, key)); err != nil {
+		if err := json.NewEncoder(w).Encode(BuildProfile(t, key, env)); err != nil {
 			// Headers are already written; nothing recoverable remains.
 			_ = err
 		}

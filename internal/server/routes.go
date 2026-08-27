@@ -70,7 +70,7 @@ func New(d Deps) http.Handler {
 	checkoutStore := checkout.NewStore(d.Redis)
 	checkoutFlow := checkout.NewFlow(d.Django, checkoutStore, d.Log)
 	ucpBuilder := ucp.NewBuilder(
-		d.Django, d.Cfg.MediaURLTemplate, d.Cfg.AssetsHost,
+		d.Django, d.Cfg.MediaURLTemplate, d.Cfg.AssetsHost, d.Cfg.Env,
 	)
 
 	// The handler builds one server per tenant (they differ only in the
@@ -100,8 +100,17 @@ func New(d Deps) http.Handler {
 		tenantMW(tenant.RequireAgentCommerce(
 			identityMW(mcpsrv.Handler(mcpDeps, d.Log)))))
 
+	// Host-scoped so it cannot shadow a tenant path: Go's ServeMux
+	// prefers a pattern carrying a host over a path-only one. The
+	// documents are static and tenant-independent, so this route takes
+	// no tenant middleware and resolves no tenant.
+	if d.Cfg.HandlerDocsHost != "" {
+		mux.Handle("GET "+d.Cfg.HandlerDocsHost+"/",
+			ucp.HandlerDocsHandler())
+	}
+
 	mux.Handle("GET /.well-known/ucp",
-		tenantMW(tenant.RequireAgentCommerce(ucp.ProfileHandler(d.Keys))))
+		tenantMW(tenant.RequireAgentCommerce(ucp.ProfileHandler(d.Keys, d.Cfg.Env))))
 
 	// Cluster-internal: Django's order-event push. Not tenant-scoped —
 	// the event body carries the schema.

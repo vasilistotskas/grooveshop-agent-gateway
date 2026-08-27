@@ -12,9 +12,10 @@ import (
 // locale, feature flags, publishable keys) are served by Django's
 // tenant/resolve endpoint at request time and must never appear here.
 type Config struct {
-	ListenAddr string
-	Env        string
-	LogLevel   string
+	ListenAddr      string
+	Env             string
+	HandlerDocsHost string
+	LogLevel        string
 
 	// DjangoBaseURL is the in-cluster API root, e.g.
 	// http://backend-service/api/v1 (no trailing slash).
@@ -86,8 +87,13 @@ type Config struct {
 // a misconfigured pod crashes at startup instead of serving errors.
 func Load() (Config, error) {
 	cfg := Config{
-		ListenAddr:       envOr("LISTEN_ADDR", ":8080"),
-		Env:              envOr("ENV", "production"),
+		ListenAddr: envOr("LISTEN_ADDR", ":8080"),
+		Env:        envOr("ENV", "production"),
+		// Host that serves the UCP payment handler's spec and schemas.
+		// Authority binding pins it to the reverse of HandlerName, so it
+		// is the SAME host in every environment; the knob exists so a
+		// test can point it at a local listener.
+		HandlerDocsHost:  envOr("HANDLER_DOCS_HOST", "payments.grooveshop.space"),
 		LogLevel:         envOr("LOG_LEVEL", "info"),
 		DjangoBaseURL:    strings.TrimRight(os.Getenv("DJANGO_BASE_URL"), "/"),
 		DjangoPublicHost: os.Getenv("DJANGO_PUBLIC_HOST"),

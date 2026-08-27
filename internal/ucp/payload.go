@@ -19,9 +19,20 @@ type Envelope struct {
 }
 
 type PaymentHandler struct {
-	ID      string         `json:"id"`
-	Version string         `json:"version"`
-	Config  map[string]any `json:"config,omitempty"`
+	ID      string `json:"id"`
+	Version string `json:"version"`
+	// Spec and Schema are optional in a business profile but published
+	// so a platform can fetch and compose the instrument shapes during
+	// negotiation. Omitted in checkout responses, where the containing
+	// declaration is already authoritative.
+	Spec   string `json:"spec,omitempty"`
+	Schema string `json:"schema,omitempty"`
+	// AvailableInstruments narrows what this handler accepts. In a
+	// business profile it is the merchant's standing capability; in a
+	// response it is the set resolved for that checkout, which a
+	// platform MUST treat as authoritative.
+	AvailableInstruments []AvailableInstrument `json:"available_instruments,omitempty"`
+	Config               map[string]any        `json:"config,omitempty"`
 }
 
 type Item struct {
@@ -89,22 +100,18 @@ type Builder struct {
 	dj               *django.Client
 	mediaURLTemplate string
 	assetsHost       string
+	// env is the deployment environment, surfaced to platforms in the
+	// handler config so they can keep test traffic out of live orders.
+	env string
 }
 
 func NewBuilder(
-	dj *django.Client, mediaURLTemplate, assetsHost string,
+	dj *django.Client, mediaURLTemplate, assetsHost, env string,
 ) *Builder {
 	return &Builder{
 		dj: dj, mediaURLTemplate: mediaURLTemplate, assetsHost: assetsHost,
+		env: env,
 	}
-}
-
-// paymentHandlers advertises what this tenant can accept. Stripe's
-// tokenized handler appears only when the tenant's agentic flag is on
-// (ships with the delegated-payment milestone); the Viva hosted flow needs
-// no handler — it rides requires_escalation + continue_url.
-func paymentHandlers(t *tenant.Tenant) map[string][]PaymentHandler {
-	return map[string][]PaymentHandler{}
 }
 
 // BuildCheckout renders the current session state, fetching the cart for
@@ -121,7 +128,7 @@ func (b *Builder) BuildCheckout(
 	out := &Checkout{
 		UCP: Envelope{
 			Version:         Version,
-			PaymentHandlers: paymentHandlers(t),
+			PaymentHandlers: paymentHandlers(t, b.env),
 		},
 		ID: s.ID,
 		// The spec types line_items as an array; keep it [] over null even

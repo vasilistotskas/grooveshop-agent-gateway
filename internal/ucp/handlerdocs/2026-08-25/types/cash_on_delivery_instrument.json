@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://payments.grooveshop.space/2026-08-25/types/cash_on_delivery_instrument.json",
+  "title": "Cash on Delivery Instrument",
+  "description": "Selects settlement on delivery: the buyer pays the carrier when the order arrives. The platform submits no payment credential, so this instrument carries none; selecting it is the whole payment authorisation the business needs to place the order. Because no credential is transmitted, no participant enters PCI DSS scope for this instrument.",
+
+  "$defs": {
+    "constraint_target": {
+      "title": "Cash on Delivery Constraint Target",
+      "description": "Members a business may name in `available_instruments[].constraints`. Never carried in a payload — the business derives each value from its own configuration.",
+      "type": "object",
+      "properties": {
+        "provider_code": {
+          "type": "string",
+          "description": "The business's identifier for the settlement provider behind this instrument, as configured on the business (e.g. 'cash_on_delivery'). Lets a business narrow availability to specific providers."
+        }
+      }
+    }
+  },
+
+  "allOf": [
+    {
+      "$ref": "https://ucp.dev/2026-08-25/schemas/common/types/payment_instrument.json"
+    }
+  ],
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": { "const": "cash_on_delivery" },
+    "credential": false,
+    "display": {
+      "type": "object",
+      "description": "Presentation data for this instrument, resolved by the business in the authoritative response.",
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "Buyer-facing name of the payment method in the checkout's locale."
+        },
+        "instructions": {
+          "type": "string",
+          "description": "Buyer-facing guidance the business wants shown before completion."
+        },
+        "fee": {
+          "$ref": "https://ucp.dev/2026-08-25/schemas/common/types/amount.json",
+          "description": "Surcharge this instrument adds to the order, already reflected in the checkout totals. Absent when the instrument adds no fee."
+        }
+      }
+    }
+  }
+}
