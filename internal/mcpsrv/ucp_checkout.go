@@ -121,6 +121,9 @@ func (h *handlers) createCheckout(
 		}
 	}
 	in.Checkout.applyTo(s)
+	if err := in.Checkout.applyHostedSelection(t, s); err != nil {
+		return nil, zero, err
+	}
 	// payment is optional before completion, but selecting it early
 	// changes the totals through the method's fee, so honour it now.
 	if in.Checkout.Payment != nil {
@@ -173,6 +176,9 @@ func (h *handlers) updateCheckout(
 		}
 	}
 	in.Checkout.applyTo(s)
+	if err := in.Checkout.applyHostedSelection(t, s); err != nil {
+		return nil, zero, err
+	}
 	// payment is optional before completion, but selecting it early
 	// changes the totals through the method's fee, so honour it now.
 	if in.Checkout.Payment != nil {
@@ -217,6 +223,9 @@ func (h *handlers) completeCheckout(
 		return h.checkoutResult(ctx, t, s)
 	}
 
+	if err := in.Checkout.applyHostedSelection(t, s); err != nil {
+		return nil, zero, err
+	}
 	// The submitted instrument decides how this order settles. Resolving
 	// it here — rather than trusting a pay-way set earlier — is what
 	// makes the payment object authoritative, and it rejects an

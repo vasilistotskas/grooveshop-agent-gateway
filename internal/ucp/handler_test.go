@@ -109,3 +109,50 @@ func TestHandlerDocumentsAreAuthorityBound(t *testing.T) {
 	assert.Equal(t, HandlerName, strings.Join(labels, "."),
 		"schema host must reverse to the handler name")
 }
+
+func hostedTenant(commerce, hosted *bool) *tenant.Tenant {
+	return &tenant.Tenant{
+		TenantConfig: django.TenantConfig{
+			AgentCommerceEnabled:      commerce,
+			AgentHostedPaymentEnabled: hosted,
+		},
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+// The extension is advertised only while BOTH tiers allow it. A store
+// with the gate off must not advertise a member the business would then
+// refuse — a platform that negotiated it would build a call that fails.
+func TestHostedSelectionRespectsBothGateTiers(t *testing.T) {
+	on := HostedSelection(hostedTenant(boolPtr(true), boolPtr(true)))
+	require.Len(t, on, 1)
+	cap := on[HostedSelectionCapability][0]
+	assert.Equal(t, "dev.ucp.shopping.checkout", cap.Extends)
+	assert.Equal(t, handlerBase+"/hosted_selection.json", cap.Schema)
+
+	for name, tn := range map[string]*tenant.Tenant{
+		"merchant or platform tier off": hostedTenant(
+			boolPtr(true), boolPtr(false)),
+		"agent commerce off": hostedTenant(
+			boolPtr(false), boolPtr(true)),
+		// A payload that never mentioned the field must not switch a
+		// payment behaviour on.
+		"field absent (older Django or stale cache)": hostedTenant(
+			boolPtr(true), nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Empty(t, HostedSelection(tn))
+		})
+	}
+}
+
+// The extension schema must be authority-bound to the same host as the
+// handler: its name extends space.grooveshop.payments, whose reversed
+// host is payments.grooveshop.space.
+func TestHostedSelectionCapabilityIsAuthorityBound(t *testing.T) {
+	assert.True(t, strings.HasPrefix(
+		HostedSelectionCapability, "space.grooveshop.payments."),
+		"the name must sit under the handler's namespace or the schema "+
+			"host stops matching it")
+}

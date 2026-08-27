@@ -251,7 +251,27 @@ func (c *UCPCheckoutIn) applyTo(s *checkout.Session) {
 	if c.Fulfillment != nil {
 		s.Fulfillment = *c.Fulfillment
 	}
-	if c.PayWayID > 0 {
-		s.PayWayID = c.PayWayID
+}
+
+// applyHostedSelection honours a submitted pay-way id, refusing it when
+// the tenant's hosted-payment gate is off.
+//
+// Refusing beats ignoring: a platform that named a method and got a
+// silent no-op would complete against whatever was selected before, and
+// the buyer could be charged a different way than the agent chose.
+func (c *UCPCheckoutIn) applyHostedSelection(
+	t *tenant.Tenant, s *checkout.Session,
+) error {
+	if c == nil || c.PayWayID <= 0 {
+		return nil
 	}
+	if !t.HostedPaymentOn() {
+		return fmt.Errorf(
+			"checkout.pay_way_id is not accepted by this store: it "+
+				"advertises no %s capability. Submit one of the "+
+				"instruments the checkout advertises, or hand the buyer "+
+				"to continue_url", ucp.HostedSelectionCapability)
+	}
+	s.PayWayID = c.PayWayID
+	return nil
 }

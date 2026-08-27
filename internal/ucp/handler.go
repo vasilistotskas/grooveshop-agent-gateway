@@ -30,6 +30,18 @@ const (
 
 	handlerBase = "https://payments.grooveshop.space/" + HandlerVersion
 
+	// HostedSelectionCapability is the Checkout extension that lets a
+	// platform choose a method the business settles on its own hosted
+	// page. It is a declared extension rather than an instrument because
+	// UCP models neither: an instrument is something a platform ACQUIRES
+	// and submits, and there is nothing to acquire when the buyer enters
+	// their credential on the merchant's page.
+	//
+	// Advertised only while the tenant's hosted-payment gate is on, so a
+	// platform never negotiates an extension whose member the business
+	// would then refuse.
+	HostedSelectionCapability = "space.grooveshop.payments.hosted_selection"
+
 	// InstrumentCashOnDelivery is the instrument type for settlement on
 	// delivery. It carries no credential — the schema forbids one — so
 	// no participant enters PCI scope.
@@ -145,4 +157,24 @@ func responsePaymentHandlers(
 		handlers[name] = entries
 	}
 	return handlers
+}
+
+// HostedSelection declares the hosted-payment extension for a tenant
+// that has it enabled, or nothing at all when the gate is off.
+//
+// The schema is served from the same authority-bound host as the payment
+// handler: the capability name extends space.grooveshop.payments, whose
+// reversed host is payments.grooveshop.space, so the binding holds.
+func HostedSelection(t *tenant.Tenant) map[string][]Capability {
+	if !t.HostedPaymentOn() {
+		return nil
+	}
+	return map[string][]Capability{
+		HostedSelectionCapability: {{
+			Version: HandlerVersion,
+			Spec:    handlerBase + "/",
+			Schema:  handlerBase + "/hosted_selection.json",
+			Extends: "dev.ucp.shopping.checkout",
+		}},
+	}
 }

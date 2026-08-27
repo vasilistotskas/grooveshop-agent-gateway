@@ -65,7 +65,7 @@ func BuildProfile(
 	t *tenant.Tenant, key *SigningKey, env string,
 ) *Profile {
 	base := "https://" + t.Domain
-	return &Profile{
+	profile := &Profile{
 		UCP: ProfileEnvelope{
 			Version: Version,
 			Services: map[string][]Service{
@@ -103,6 +103,13 @@ func BuildProfile(
 		},
 		Keys: []map[string]string{key.JWK()},
 	}
+	// The hosted-payment extension is a per-tenant capability: a store
+	// with the gate off must not advertise a member the business would
+	// then refuse.
+	for name, caps := range HostedSelection(t) {
+		profile.UCP.Capabilities[name] = caps
+	}
+	return profile
 }
 
 // ProfileHandler serves GET /.well-known/ucp. The spec mandates HTTPS

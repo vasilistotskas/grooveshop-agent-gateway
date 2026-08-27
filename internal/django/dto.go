@@ -332,6 +332,16 @@ type TenantConfig struct {
 	// carrier. Empty means the store has nothing an agent can complete
 	// on its own and checkout must escalate to the browser.
 	AgentPaymentInstruments []string `json:"agentPaymentInstruments"`
+	// AgentHostedPaymentEnabled is the EFFECTIVE two-tier gate (platform
+	// plan flag AND merchant extra-setting) for letting an agent pick a
+	// method the business settles on its own hosted page.
+	//
+	// A pointer, and it FAILS CLOSED: an older Django or a stale cached
+	// resolve decodes as nil, and a payment behaviour must never switch
+	// itself on from missing data. Closed degrades gracefully — agents
+	// settle only what they can settle themselves and card buyers are
+	// handed off, which is the plain UCP escalation flow.
+	AgentHostedPaymentEnabled *bool `json:"agentHostedPaymentEnabled"`
 	// ACPBearerToken authenticates the tenant's agentic-commerce platform
 	// on /acp/*. Like ChatAPIKey it arrives only on internally
 	// authenticated resolves; empty means no platform is enrolled.
@@ -343,6 +353,21 @@ type TenantConfig struct {
 // a stale cached payload without the field — fails OPEN.
 func (t TenantConfig) AgentCommerceOn() bool {
 	return t.AgentCommerceEnabled == nil || *t.AgentCommerceEnabled
+}
+
+// HostedPaymentOn reports whether an agent may choose a method the
+// business settles on its own hosted page.
+//
+// Subordinate to the agent-commerce gate, and nil fails CLOSED — unlike
+// the surface gates above. A payment behaviour must not switch itself on
+// from a payload that never mentioned it, and closed degrades to the
+// plain UCP escalation flow rather than breaking anything.
+func (t TenantConfig) HostedPaymentOn() bool {
+	if !t.AgentCommerceOn() {
+		return false
+	}
+	return t.AgentHostedPaymentEnabled != nil &&
+		*t.AgentHostedPaymentEnabled
 }
 
 // ProductFeedsOn reports whether catalog feed syndication is enabled.

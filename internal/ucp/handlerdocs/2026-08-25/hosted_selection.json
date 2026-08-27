@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://payments.grooveshop.space/2026-08-25/hosted_selection.json",
+  "title": "Hosted Payment Selection",
+  "description": "Checkout extension letting a platform choose a payment method the business settles on its own hosted page. UCP has no way to express this: an instrument is something a platform ACQUIRES and submits, and with a merchant-hosted payment page there is nothing to acquire — the buyer enters their credential there. An Action cannot carry it either, since the standard payment Action types require a payment_instrument_id that does not exist. Completing with this selection places the order and returns status requires_escalation with continue_url pointing at the business's payment page, which is the flow UCP already defines for buyer handoff. Its value is that the order exists before the handoff, so the buyer authorises payment instead of re-entering the whole checkout.",
+  "name": "space.grooveshop.payments.hosted_selection",
+  "version": "2026-08-25",
+
+  "$defs": {
+    "dev.ucp.shopping.checkout": {
+      "allOf": [
+        {
+          "$ref": "https://ucp.dev/2026-08-25/schemas/shopping/checkout.json"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "pay_way_id": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Identifier of the business's online payment method, as listed by the store's payment-method surface. Submit it INSTEAD of payment.instruments when the buyer chooses a method the business settles on its own page. A method the business can settle unaided is advertised as an instrument and MUST be submitted through payment.instruments instead.",
+              "ucp_request": {
+                "create": "optional",
+                "update": "optional",
+                "complete": "optional"
+              },
+              "ucp_response": "omit"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
