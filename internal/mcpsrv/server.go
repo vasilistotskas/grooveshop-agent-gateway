@@ -198,31 +198,56 @@ func NewServer(d Deps, title string) *mcp.Server {
 			"connected account with the favourites:read scope).",
 	}, h.myFavourites)
 
-	// UCP checkout capability (dev.ucp.shopping.checkout, MCP transport
-	// binding). Structured output is the UCP checkout session object.
+	// UCP checkout capability (dev.ucp.shopping.checkout), MCP transport
+	// binding. Tool names, argument names and argument shapes come from
+	// the OpenRPC document the profile advertises, so a platform that
+	// generates calls from it reaches these unmodified: `meta` carries
+	// protocol metadata, `id` names the target session, and `checkout`
+	// carries the domain object. Structured output is the UCP checkout
+	// session.
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "create_checkout",
-		Description: "UCP: start a checkout session from a cartId or a " +
-			"list of products. Collect buyer, fulfillment and payWayId " +
-			"(via update_checkout or inline) until status is " +
-			"ready_for_complete. Accepts optional discountCodes (one " +
-			"coupon per order).",
+		Description: "UCP: start a checkout session. Send " +
+			"checkout.line_items (or cart_id for a cart built with the " +
+			"cart tools). Collect buyer, fulfillment and payment with " +
+			"update_checkout until status is ready_for_complete. " +
+			"Requires meta.ucp-agent.profile.",
 	}, h.createCheckout)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "get_checkout",
+		Description: "UCP: read the current state of a checkout " +
+			"session, including its totals, messages and the payment " +
+			"instruments available for it. Requires " +
+			"meta.ucp-agent.profile.",
+	}, h.getCheckout)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "update_checkout",
 		Description: "UCP: add or change buyer details, delivery " +
-			"(address or ACS/BOX NOW pickup point), payment method and " +
-			"discount codes on a checkout session.",
+			"(address or ACS/BOX NOW pickup point), payment and " +
+			"discount codes on a checkout session. Requires " +
+			"meta.ucp-agent.profile.",
 	}, h.updateCheckout)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "complete_checkout",
-		Description: "UCP: place the order. Offline payment methods " +
-			"(e.g. cash on delivery) complete immediately; card payment " +
-			"via Viva returns continue_url where the buyer authorizes " +
-			"payment on the store's hosted page.",
+		Description: "UCP: place the order. Send " +
+			"checkout.payment.instruments naming one instrument the " +
+			"checkout advertised. Offline methods (cash on delivery) " +
+			"complete immediately; card payment via Viva returns " +
+			"continue_url where the buyer authorizes on the store's " +
+			"hosted page. Requires meta.ucp-agent.profile and " +
+			"meta.idempotency-key.",
 	}, h.completeCheckout)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "cancel_checkout",
+		Description: "UCP: abandon a checkout session the buyer is no " +
+			"longer pursuing. Already-canceled sessions succeed " +
+			"unchanged. Requires meta.ucp-agent.profile and " +
+			"meta.idempotency-key.",
+	}, h.cancelCheckout)
 
 	return srv
 }

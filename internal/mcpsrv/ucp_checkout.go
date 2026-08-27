@@ -18,39 +18,45 @@ import (
 // structuredContent (the MCP transport binding requirement). Inputs are
 // MCP-self-describing: platforms read the input schema from tools/list.
 
-type UCPLineItemIn struct {
-	ProductID int64 `json:"productId"`
-	Quantity  int   `json:"quantity" jsonschema:"default 1"`
-}
-
-type UCPBuyerIn struct {
-	FirstName string `json:"firstName"`
-	LastName  string `json:"lastName"`
-	Email     string `json:"email"`
-	Phone     string `json:"phone"`
-}
-
+// CreateCheckoutIn is the create_checkout tool's arguments.
 type CreateCheckoutIn struct {
-	CartID        string                `json:"cartId,omitempty" jsonschema:"an existing cart from the cart tools; omit when passing lineItems"`
-	LineItems     []UCPLineItemIn       `json:"lineItems,omitempty" jsonschema:"products to buy; a cart is created for them"`
-	Buyer         *UCPBuyerIn           `json:"buyer,omitempty"`
-	Fulfillment   *checkout.Fulfillment `json:"fulfillment,omitempty" jsonschema:"delivery details; kind home_delivery or pickup_point with providerCode acs/boxnow and the pickup ids from find_pickup_points"`
-	PayWayID      int64                 `json:"payWayId,omitempty" jsonschema:"payment method id from get_payment_methods"`
-	DiscountCodes []string              `json:"discountCodes,omitempty" jsonschema:"discount/coupon codes; the store applies one code per order (the first), extra codes are rejected"`
-	WebhookURL    string                `json:"webhookUrl,omitempty" jsonschema:"platform endpoint for signed order lifecycle webhooks"`
+	Meta     *MetaIn       `json:"meta"`
+	Checkout UCPCheckoutIn `json:"checkout"`
+	// CartID and WebhookURL are additive members. UCP models neither: a
+	// canonical caller sends line_items and discovers webhooks from the
+	// platform profile, which this business does not yet dereference.
+	// Consumers ignore members they do not recognise, so carrying them
+	// costs conformance nothing while keeping the cart tools usable as a
+	// path into checkout.
+	CartID     string `json:"cart_id,omitempty" jsonschema:"an existing cart from the cart tools; omit when sending line_items"`
+	WebhookURL string `json:"webhook_url,omitempty" jsonschema:"platform endpoint for signed order lifecycle webhooks"`
 }
 
+// GetCheckoutIn is the get_checkout tool's arguments.
+type GetCheckoutIn struct {
+	Meta *MetaIn `json:"meta"`
+	ID   string  `json:"id" jsonschema:"the checkout session id"`
+}
+
+// UpdateCheckoutIn is the update_checkout tool's arguments.
 type UpdateCheckoutIn struct {
-	CheckoutID    string                `json:"checkoutId"`
-	Buyer         *UCPBuyerIn           `json:"buyer,omitempty"`
-	Fulfillment   *checkout.Fulfillment `json:"fulfillment,omitempty"`
-	PayWayID      int64                 `json:"payWayId,omitempty"`
-	DiscountCodes []string              `json:"discountCodes,omitempty" jsonschema:"replaces previously submitted codes; an empty array removes the coupon"`
+	Meta     *MetaIn       `json:"meta"`
+	ID       string        `json:"id" jsonschema:"the checkout session id to update"`
+	Checkout UCPCheckoutIn `json:"checkout"`
 }
 
+// CompleteCheckoutIn is the complete_checkout tool's arguments.
 type CompleteCheckoutIn struct {
-	CheckoutID     string `json:"checkoutId"`
-	IdempotencyKey string `json:"idempotencyKey,omitempty" jsonschema:"repeat with the same key to retry safely"`
+	Meta *MetaIn `json:"meta"`
+	ID   string  `json:"id" jsonschema:"the checkout session id to place"`
+	// Checkout carries the payment object the business needs to settle.
+	Checkout UCPCheckoutIn `json:"checkout"`
+}
+
+// CancelCheckoutIn is the cancel_checkout tool's arguments.
+type CancelCheckoutIn struct {
+	Meta *MetaIn `json:"meta"`
+	ID   string  `json:"id" jsonschema:"the checkout session id to cancel"`
 }
 
 func (h *handlers) createCheckout(
@@ -61,9 +67,16 @@ func (h *handlers) createCheckout(
 	if err != nil {
 		return nil, zero, err
 	}
-	if in.CartID == "" && len(in.LineItems) == 0 {
+	if err := in.Meta.validate(false); err != nil {
+		return nil, zero, err
+	}
+	lines, err := in.Checkout.productQuantities()
+	if err != nil {
+		return nil, zero, err
+	}
+	if in.CartID == "" && len(lines) == 0 {
 		return nil, zero, errors.New(
-			"provide cartId or lineItems to start a checkout")
+			"checkout.line_items is required to start a checkout")
 	}
 
 	cartID := in.CartID
@@ -74,13 +87,10 @@ func (h *handlers) createCheckout(
 				"the cart service is unavailable")
 		}
 		cartID = c.UUID
-		for _, li := range in.LineItems {
-			qty := li.Quantity
-			if qty <= 0 {
-				qty = 1
-			}
+		for _, li := range lines {
 			if _, err := h.deps.Django.AddCartItem(
-				ctx, t.Domain, t.DefaultLocale, cartID, li.ProductID, qty,
+				ctx, t.Domain, t.DefaultLocale, cartID,
+				li.ProductID, li.Quantity,
 			); err != nil {
 				return nil, zero, upstreamErr(err, fmt.Sprintf(
 					"product %d was not found", li.ProductID))
@@ -100,23 +110,34 @@ func (h *handlers) createCheckout(
 
 	s := checkout.NewSession(t.SchemaName, t.Domain, "ucp", cartID)
 	s.WebhookURL = in.WebhookURL
-	if in.DiscountCodes != nil {
+	codes, hasCodes := in.Checkout.discountCodes()
+	if hasCodes {
 		if err := checkout.ApplyDiscountCodes(
-			ctx, h.deps.Django, t, s, in.DiscountCodes,
+			ctx, h.deps.Django, t, s, codes,
 		); err != nil {
 			return nil, zero, upstreamErr(err,
 				"the discount code could not be applied; the cart is "+
 					"unchanged")
 		}
 	}
-	applyCheckoutInputs(s, in.Buyer, in.Fulfillment, in.PayWayID)
+	in.Checkout.applyTo(s)
+	// payment is optional before completion, but selecting it early
+	// changes the totals through the method's fee, so honour it now.
+	if in.Checkout.Payment != nil {
+		payWayID, err := resolvePayWay(
+			ctx, h.deps.Django, t, in.Checkout.Payment)
+		if err != nil {
+			return nil, zero, err
+		}
+		s.PayWayID = payWayID
+	}
 	s.Recompute()
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
 		return nil, zero, errors.New(
 			"checkout is temporarily unavailable; retry shortly")
 	}
 	res, out, err := h.checkoutResult(ctx, t, s)
-	return h.discountAnnotated(res, out, err, s, in.DiscountCodes != nil)
+	return h.discountAnnotated(res, out, err, s, hasCodes)
 }
 
 func (h *handlers) updateCheckout(
@@ -127,7 +148,10 @@ func (h *handlers) updateCheckout(
 	if err != nil {
 		return nil, zero, err
 	}
-	s, release, err := h.lockedSession(ctx, t, in.CheckoutID)
+	if err := in.Meta.validate(false); err != nil {
+		return nil, zero, err
+	}
+	s, release, err := h.lockedSession(ctx, t, in.ID)
 	if err != nil {
 		return nil, zero, err
 	}
@@ -138,23 +162,34 @@ func (h *handlers) updateCheckout(
 			"checkout %s is %s and can no longer be updated",
 			s.ID, s.Status)
 	}
-	if in.DiscountCodes != nil {
+	codes, hasCodes := in.Checkout.discountCodes()
+	if hasCodes {
 		if err := checkout.ApplyDiscountCodes(
-			ctx, h.deps.Django, t, s, in.DiscountCodes,
+			ctx, h.deps.Django, t, s, codes,
 		); err != nil {
 			return nil, zero, upstreamErr(err,
 				"the discount code could not be applied; the checkout is "+
 					"unchanged")
 		}
 	}
-	applyCheckoutInputs(s, in.Buyer, in.Fulfillment, in.PayWayID)
+	in.Checkout.applyTo(s)
+	// payment is optional before completion, but selecting it early
+	// changes the totals through the method's fee, so honour it now.
+	if in.Checkout.Payment != nil {
+		payWayID, err := resolvePayWay(
+			ctx, h.deps.Django, t, in.Checkout.Payment)
+		if err != nil {
+			return nil, zero, err
+		}
+		s.PayWayID = payWayID
+	}
 	s.Recompute()
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
 		return nil, zero, errors.New(
 			"checkout is temporarily unavailable; retry shortly")
 	}
 	res, out, err := h.checkoutResult(ctx, t, s)
-	return h.discountAnnotated(res, out, err, s, in.DiscountCodes != nil)
+	return h.discountAnnotated(res, out, err, s, hasCodes)
 }
 
 func (h *handlers) completeCheckout(
@@ -165,7 +200,10 @@ func (h *handlers) completeCheckout(
 	if err != nil {
 		return nil, zero, err
 	}
-	s, release, err := h.lockedSession(ctx, t, in.CheckoutID)
+	if err := in.Meta.validate(true); err != nil {
+		return nil, zero, err
+	}
+	s, release, err := h.lockedSession(ctx, t, in.ID)
 	if err != nil {
 		return nil, zero, err
 	}
@@ -179,10 +217,26 @@ func (h *handlers) completeCheckout(
 		return h.checkoutResult(ctx, t, s)
 	}
 
-	idemKey := in.IdempotencyKey
-	if idemKey == "" {
-		idemKey = "default"
+	// The submitted instrument decides how this order settles. Resolving
+	// it here — rather than trusting a pay-way set earlier — is what
+	// makes the payment object authoritative, and it rejects an
+	// instrument the store cannot honour instead of placing an order the
+	// buyer has no way to pay for.
+	if in.Checkout.Payment != nil {
+		payWayID, err := resolvePayWay(
+			ctx, h.deps.Django, t, in.Checkout.Payment)
+		if err != nil {
+			return nil, zero, err
+		}
+		s.PayWayID = payWayID
+		s.Recompute()
+	} else if s.PayWayID <= 0 {
+		return nil, zero, errors.New(
+			"checkout.payment.instruments is required to complete: " +
+				"submit one of the instruments the checkout advertised")
 	}
+
+	idemKey := in.Meta.IdempotencyKey
 	_, claimed, err := h.deps.Checkout.ClaimCompletion(
 		ctx, t.SchemaName, s.ID, idemKey)
 	if err != nil {
@@ -243,31 +297,11 @@ func (h *handlers) completeCheckout(
 	return res, out, err
 }
 
-func applyCheckoutInputs(
-	s *checkout.Session, buyer *UCPBuyerIn,
-	fulfillment *checkout.Fulfillment, payWayID int64,
-) {
-	if buyer != nil {
-		s.Buyer = checkout.Buyer{
-			FirstName: buyer.FirstName,
-			LastName:  buyer.LastName,
-			Email:     buyer.Email,
-			Phone:     buyer.Phone,
-		}
-	}
-	if fulfillment != nil {
-		s.Fulfillment = *fulfillment
-	}
-	if payWayID > 0 {
-		s.PayWayID = payWayID
-	}
-}
-
 func (h *handlers) lockedSession(
 	ctx context.Context, t *tenant.Tenant, id string,
 ) (*checkout.Session, func(), error) {
 	if id == "" {
-		return nil, nil, errors.New("checkoutId is required")
+		return nil, nil, errors.New("id is required")
 	}
 	release, err := h.deps.Checkout.Lock(ctx, t.SchemaName, id)
 	if err != nil {
@@ -354,4 +388,72 @@ func (h *handlers) discountAnnotated(
 
 func marshalCheckout(c ucp.Checkout) ([]byte, error) {
 	return jsonMarshal(c)
+}
+
+// getCheckout re-renders a session. Read-only, so it takes no lock and
+// no idempotency key.
+func (h *handlers) getCheckout(
+	ctx context.Context, _ *mcp.CallToolRequest, in GetCheckoutIn,
+) (*mcp.CallToolResult, ucp.Checkout, error) {
+	var zero ucp.Checkout
+	t, err := h.tenantFor(ctx)
+	if err != nil {
+		return nil, zero, err
+	}
+	if err := in.Meta.validate(false); err != nil {
+		return nil, zero, err
+	}
+	if in.ID == "" {
+		return nil, zero, errors.New("id is required")
+	}
+	s, err := h.deps.Checkout.Load(ctx, t.SchemaName, in.ID)
+	if err != nil {
+		if errors.Is(err, checkout.ErrNotFound) {
+			return nil, zero, errors.New(
+				"that checkout no longer exists; start a new one with " +
+					"create_checkout")
+		}
+		return nil, zero, errors.New(
+			"checkout is temporarily unavailable; retry shortly")
+	}
+	return h.checkoutResult(ctx, t, s)
+}
+
+// cancelCheckout abandons a session the buyer is no longer pursuing.
+//
+// A terminal session is re-rendered rather than refused: cancel is
+// idempotent by nature, and a platform retrying after a lost response
+// must not receive an error for work already done. An escalated session
+// stays cancellable — the buyer may simply never pay.
+func (h *handlers) cancelCheckout(
+	ctx context.Context, _ *mcp.CallToolRequest, in CancelCheckoutIn,
+) (*mcp.CallToolResult, ucp.Checkout, error) {
+	var zero ucp.Checkout
+	t, err := h.tenantFor(ctx)
+	if err != nil {
+		return nil, zero, err
+	}
+	if err := in.Meta.validate(true); err != nil {
+		return nil, zero, err
+	}
+	s, release, err := h.lockedSession(ctx, t, in.ID)
+	if err != nil {
+		return nil, zero, err
+	}
+	defer release()
+
+	if s.Status == checkout.StatusCanceled {
+		return h.checkoutResult(ctx, t, s)
+	}
+	if s.Status == checkout.StatusCompleted {
+		return nil, zero, fmt.Errorf(
+			"checkout %s is already completed and cannot be canceled; "+
+				"the order exists", s.ID)
+	}
+	s.Status = checkout.StatusCanceled
+	if err := h.deps.Checkout.Save(ctx, s); err != nil {
+		return nil, zero, errors.New(
+			"checkout is temporarily unavailable; retry shortly")
+	}
+	return h.checkoutResult(ctx, t, s)
 }

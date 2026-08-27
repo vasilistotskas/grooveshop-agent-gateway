@@ -11,7 +11,7 @@ storefront's own domain (Traefik path-routes them here):
 
 | Path | Surface |
 |---|---|
-| `POST /mcp` | MCP server (stateless streamable HTTP): commerce tools + UCP checkout tools + account tools (`my_orders`, `my_loyalty_points`, `my_favourites`) |
+| `POST /mcp` | MCP server (stateless streamable HTTP): the UCP checkout capability's five canonical tools + ergonomic commerce tools + account tools (`my_orders`, `my_loyalty_points`, `my_favourites`) |
 | `GET /.well-known/ucp` | UCP business profile (spec 2026-08-25) |
 | `/acp/*` | ACP agentic checkout REST (spec 2026-04-17) |
 | `/feeds/*` | Product feeds: google.xml, meta.xml, tiktok.xml, acp.json |
@@ -78,6 +78,22 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   money as `json.Number` → integer cents internally, format at the edge.
 - Business failures in MCP tools return `CallToolResult{IsError: true}`
   with actionable text — never a Go error (that becomes a protocol error).
+- **The canonical UCP tools take the wire shapes from the OpenRPC document**
+  (`create_checkout`, `get_checkout`, `update_checkout`,
+  `complete_checkout`, `cancel_checkout`): `meta` (with
+  `ucp-agent.profile`, plus `idempotency-key` on complete/cancel), `id`
+  for the target session, and `checkout` for the domain object with
+  snake_case members. Extensions compose FLAT onto `checkout`
+  (`fulfillment`, `discounts`), never nested under capability names.
+  Payment is selected by submitting an ADVERTISED instrument
+  (`checkout.payment.instruments`), which the business resolves to a
+  pay-way; the additive `pay_way_id` exists only because an online
+  method has no instrument type yet. These five are withheld from the
+  chatbot (`internal/chat/bridge.go`) — their shapes target a platform
+  generating calls, and chat hands over a checkout link instead.
+- The service `schema` (OpenRPC) URL stays OUT of the profile until every
+  method it defines for an advertised capability exists; `get_order` is
+  still missing. Declaring it asserts a machine-checkable contract.
 - Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:{host}`.
 - No tenant label on Prometheus metrics (unbounded cardinality) — tenant
   goes in logs.

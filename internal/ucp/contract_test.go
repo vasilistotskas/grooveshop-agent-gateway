@@ -229,7 +229,15 @@ func TestProfileAdvertisesResolvableUCPDocuments(t *testing.T) {
 	for name, services := range profile.UCP.Services {
 		for i, s := range services {
 			urls[fmt.Sprintf("services[%s][%d].spec", name, i)] = s.Spec
-			urls[fmt.Sprintf("services[%s][%d].schema", name, i)] = s.Schema
+			// The service `schema` (the OpenRPC document) is
+			// deliberately withheld while a method it defines for an
+			// advertised capability is still missing. Publishing it
+			// asserts a machine-checkable contract, so it must stay
+			// empty until the transport actually satisfies it.
+			assert.Empty(t, s.Schema,
+				"services[%s][%d].schema is withheld until the MCP "+
+					"transport implements every method the OpenRPC "+
+					"document defines", name, i)
 		}
 	}
 	for name, caps := range profile.UCP.Capabilities {

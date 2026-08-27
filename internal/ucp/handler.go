@@ -45,12 +45,13 @@ type AvailableInstrument struct {
 	Constraints map[string]any `json:"constraints,omitempty"`
 }
 
-// instrumentTypeFor maps a merchant pay-way provider code onto the
+// InstrumentTypeFor maps a merchant pay-way provider code onto the
 // instrument type that models it. Only codes with a modelled instrument
 // are advertised: an unknown code has no schema for a platform to
 // compose, and advertising it would offer an instrument no agent can
-// construct.
-func instrumentTypeFor(providerCode string) (string, bool) {
+// construct. Exported so the transport layer can resolve a submitted
+// instrument back to the pay-way that settles it.
+func InstrumentTypeFor(providerCode string) (string, bool) {
 	switch providerCode {
 	case "cash_on_delivery":
 		return InstrumentCashOnDelivery, true
@@ -86,7 +87,7 @@ func paymentHandlers(
 		len(t.AgentPaymentInstruments))
 	seen := make(map[string]struct{}, len(t.AgentPaymentInstruments))
 	for _, code := range t.AgentPaymentInstruments {
-		kind, ok := instrumentTypeFor(code)
+		kind, ok := InstrumentTypeFor(code)
 		if !ok {
 			continue
 		}

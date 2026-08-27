@@ -162,9 +162,29 @@ func TestUCPEndToEnd(t *testing.T) {
 	platform := httptest.NewServer(sink.handler())
 	t.Cleanup(platform.Close)
 
+	// Canonical request members: the buyer object is snake_case on the
+	// wire, and every call carries meta.ucp-agent.profile.
 	buyer := map[string]any{
-		"firstName": "Μαρία", "lastName": "Παπαδοπούλου",
-		"email": "maria@example.test", "phone": "+306912345678",
+		"first_name": "Μαρία", "last_name": "Παπαδοπούλου",
+		"email": "maria@example.test", "phone_number": "+306912345678",
+	}
+	meta := func(idem string) map[string]any {
+		m := map[string]any{
+			"ucp-agent": map[string]any{
+				"profile": "https://agent.example.test/profile.json",
+			},
+		}
+		if idem != "" {
+			m["idempotency-key"] = idem
+		}
+		return m
+	}
+	codInstrument := map[string]any{
+		"instruments": []any{map[string]any{
+			"handler_id": ucp.HandlerID,
+			"type":       ucp.InstrumentCashOnDelivery,
+			"selected":   true,
+		}},
 	}
 	fulfillment := map[string]any{
 		"kind": "home_delivery", "providerCode": "acs",
@@ -192,7 +212,9 @@ func TestUCPEndToEnd(t *testing.T) {
 	t.Run("cash-on-delivery checkout completes without escalation",
 		func(t *testing.T) {
 			res := callTool(t, session, "create_checkout", map[string]any{
-				"cartId": fixtureCartID,
+				"meta":     meta(""),
+				"cart_id":  fixtureCartID,
+				"checkout": map[string]any{},
 			})
 			require.False(t, res.IsError)
 			created := structured(t, res)
@@ -200,10 +222,15 @@ func TestUCPEndToEnd(t *testing.T) {
 			checkoutID := created["id"].(string)
 
 			res = callTool(t, session, "update_checkout", map[string]any{
-				"checkoutId":  checkoutID,
-				"buyer":       buyer,
-				"fulfillment": fulfillment,
-				"payWayId":    1, // cash_on_delivery (offline)
+				"meta": meta(""),
+				"id":   checkoutID,
+				"checkout": map[string]any{
+					"buyer":       buyer,
+					"fulfillment": fulfillment,
+					// Selecting the advertised instrument is how an agent
+					// says "cash on delivery" — no store-specific id.
+					"payment": codInstrument,
+				},
 			})
 			require.False(t, res.IsError)
 			updated := structured(t, res)
@@ -215,7 +242,9 @@ func TestUCPEndToEnd(t *testing.T) {
 			assert.EqualValues(t, 92936, first["amount"])
 
 			res = callTool(t, session, "complete_checkout", map[string]any{
-				"checkoutId": checkoutID,
+				"meta":     meta("11111111-1111-1111-1111-111111111111"),
+				"id":       checkoutID,
+				"checkout": map[string]any{"payment": codInstrument},
 			})
 			require.False(t, res.IsError)
 			completed := structured(t, res)
@@ -227,7 +256,9 @@ func TestUCPEndToEnd(t *testing.T) {
 
 			// Repeat completes are idempotent reads of the final state.
 			res = callTool(t, session, "complete_checkout", map[string]any{
-				"checkoutId": checkoutID,
+				"meta":     meta("11111111-1111-1111-1111-111111111111"),
+				"id":       checkoutID,
+				"checkout": map[string]any{"payment": codInstrument},
 			})
 			require.False(t, res.IsError)
 			assert.Equal(t, "completed", structured(t, res)["status"])
@@ -236,11 +267,16 @@ func TestUCPEndToEnd(t *testing.T) {
 	t.Run("viva checkout escalates, then the order event completes it "+
 		"and signs the platform webhook", func(t *testing.T) {
 		res := callTool(t, session, "create_checkout", map[string]any{
-			"cartId":      fixtureCartID,
-			"buyer":       buyer,
-			"fulfillment": fulfillment,
-			"payWayId":    2, // viva_wallet (online, hosted authorization)
-			"webhookUrl":  platform.URL + "/ucp/orders",
+			"meta":        meta(""),
+			"cart_id":     fixtureCartID,
+			"webhook_url": platform.URL + "/ucp/orders",
+			"checkout": map[string]any{
+				"buyer":       buyer,
+				"fulfillment": fulfillment,
+				// An ONLINE method has no advertised instrument, so it is
+				// named by id until that option is modelled.
+				"pay_way_id": 2, // viva_wallet, hosted authorization
+			},
 		})
 		require.False(t, res.IsError)
 		created := structured(t, res)
@@ -248,7 +284,9 @@ func TestUCPEndToEnd(t *testing.T) {
 		checkoutID := created["id"].(string)
 
 		res = callTool(t, session, "complete_checkout", map[string]any{
-			"checkoutId": checkoutID,
+			"meta":     meta("22222222-2222-2222-2222-222222222222"),
+			"id":       checkoutID,
+			"checkout": map[string]any{},
 		})
 		require.False(t, res.IsError)
 		escalated := structured(t, res)
@@ -296,7 +334,9 @@ func TestUCPEndToEnd(t *testing.T) {
 
 		// The session is now terminal; complete re-renders the outcome.
 		res = callTool(t, session, "complete_checkout", map[string]any{
-			"checkoutId": checkoutID,
+			"meta":     meta("22222222-2222-2222-2222-222222222222"),
+			"id":       checkoutID,
+			"checkout": map[string]any{},
 		})
 		require.False(t, res.IsError)
 		assert.Equal(t, "completed", structured(t, res)["status"])

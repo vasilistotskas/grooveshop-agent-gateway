@@ -24,6 +24,19 @@ var cartTools = map[string]bool{
 // request — the chat widget's shopper authenticates via the storefront
 // session instead, so these tools are excluded from the bot's toolset
 // (the storefront UI already shows orders and loyalty).
+// checkoutTools are the UCP checkout capability's canonical tools. They
+// are withheld from the chatbot: their arguments are shaped for a
+// platform generating calls from the OpenRPC document, not for a
+// conversational model, and the shopping assistant is meant to hand the
+// buyer a checkout link rather than place orders itself.
+var checkoutTools = map[string]bool{
+	"create_checkout":   true,
+	"get_checkout":      true,
+	"update_checkout":   true,
+	"complete_checkout": true,
+	"cancel_checkout":   true,
+}
+
 var accountTools = map[string]bool{
 	"my_orders":         true,
 	"my_loyalty_points": true,
@@ -76,7 +89,7 @@ func (b *bridge) tools(
 	}
 	tools := make([]openai.ChatCompletionToolUnionParam, 0, len(list.Tools))
 	for _, t := range list.Tools {
-		if accountTools[t.Name] {
+		if accountTools[t.Name] || checkoutTools[t.Name] {
 			continue
 		}
 		raw, err := json.Marshal(t.InputSchema)

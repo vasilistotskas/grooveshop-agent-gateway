@@ -74,7 +74,14 @@ func BuildProfile(
 					Spec:      specBase + "/specification/overview/",
 					Transport: "mcp",
 					Endpoint:  base + "/mcp",
-					Schema:    specBase + "/services/shopping/mcp.openrpc.json",
+					// The OpenRPC schema URL is withheld until every
+					// method it defines for our advertised capabilities
+					// exists. Declaring it asserts a machine-checkable
+					// contract, and `get_order` is still missing; a
+					// platform generating calls from it would hit a
+					// tool that is not there. `schema` is optional in a
+					// business profile, so omitting it is honest rather
+					// than incomplete.
 				}},
 			},
 			Capabilities: map[string][]Capability{
