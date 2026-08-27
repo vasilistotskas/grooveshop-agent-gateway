@@ -246,3 +246,74 @@ func TestProfileAdvertisesResolvableUCPDocuments(t *testing.T) {
 			"%s = %q must sit under %s", field, url, wantPrefix)
 	}
 }
+
+// A checkout's handler declaration is authoritative, and whether it
+// carries an instrument decides whether the agent may complete. These
+// cases pin both, and each payload is validated against the real
+// checkout schema so the escalation branch cannot drift out of spec.
+func TestBuildCheckoutPaymentParity(t *testing.T) {
+	schema := compileUCP(t, "shopping/checkout.json")
+	dj := fixtureDjango(t)
+
+	build := func(t *testing.T, tn *tenant.Tenant, st checkout.Status,
+		paymentURL string,
+	) *Checkout {
+		t.Helper()
+		b := NewBuilder(dj, "https://{assets_host}/img/{path}.webp",
+			"assets.platform.test", "production")
+		s := checkout.NewSession(tn.SchemaName, tn.Domain, "ucp",
+			"29eb4495-e018-45e7-b59c-6646302bd4ef")
+		s.Status = st
+		s.PaymentURL = paymentURL
+		payload, err := b.BuildCheckout(context.Background(), tn, s)
+		require.NoError(t, err)
+		require.NoError(t, schema.Validate(roundTrip(t, payload)))
+		return payload
+	}
+
+	t.Run("agent-completable store stays ready and declares instruments",
+		func(t *testing.T) {
+			out := build(t, testTenant(), checkout.StatusReadyForComplete, "")
+
+			assert.Equal(t, string(checkout.StatusReadyForComplete),
+				out.Status)
+
+			h := out.UCP.PaymentHandlers[HandlerName][0]
+			require.Len(t, h.AvailableInstruments, 1)
+			assert.Equal(t, InstrumentCashOnDelivery,
+				h.AvailableInstruments[0].Type)
+			// A response declares resolved state, not documents.
+			assert.Empty(t, h.Spec)
+			assert.Empty(t, h.Schema)
+			assert.Equal(t, "on_delivery", h.Config["settlement"])
+		})
+
+	t.Run("online-only store escalates instead of claiming readiness",
+		func(t *testing.T) {
+			tn := testTenant()
+			tn.AgentPaymentInstruments = []string{"viva_wallet"}
+
+			out := build(t, tn, checkout.StatusReadyForComplete, "")
+
+			assert.Equal(t, string(checkout.StatusRequiresEscalation),
+				out.Status, "no instrument an agent can submit")
+			assert.Empty(t, out.UCP.PaymentHandlers,
+				"registry present but empty")
+			// The schema REQUIRES continue_url on requires_escalation, and
+			// no hosted PSP page exists before the buyer reaches payment.
+			assert.Equal(t,
+				"https://shop.example.test/cart/claim?uuid="+
+					"29eb4495-e018-45e7-b59c-6646302bd4ef",
+				out.ContinueURL,
+				"handoff must carry the cart so the buyer lands on it")
+		})
+
+	t.Run("hosted payment page wins as the handoff target",
+		func(t *testing.T) {
+			const psp = "https://www.vivapayments.com/web/checkout?ref=42"
+			out := build(t, testTenant(),
+				checkout.StatusRequiresEscalation, psp)
+
+			assert.Equal(t, psp, out.ContinueURL)
+		})
+}

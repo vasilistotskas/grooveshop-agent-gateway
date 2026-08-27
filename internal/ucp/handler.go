@@ -119,3 +119,44 @@ func paymentHandlers(
 		}},
 	}
 }
+
+// responsePaymentHandlers renders the AUTHORITATIVE declaration for one
+// checkout. Platforms MUST treat it as final, including where it narrows
+// what the profile advertised.
+//
+// It omits `spec` and `schema`: a platform that reached a checkout has
+// already composed the handler from discovery, and the response's job is
+// resolved state, not document discovery. `settlement` is added so a
+// platform can tell the buyer when money actually moves.
+func responsePaymentHandlers(
+	t *tenant.Tenant, env string,
+) map[string][]PaymentHandler {
+	handlers := paymentHandlers(t, env)
+	for name, entries := range handlers {
+		for i := range entries {
+			entries[i].Spec = ""
+			entries[i].Schema = ""
+			entries[i].Config = map[string]any{
+				"environment": environmentFor(env),
+				"settlement":  "on_delivery",
+			}
+		}
+		handlers[name] = entries
+	}
+	return handlers
+}
+
+// agentCompletable reports whether any advertised handler lets an agent
+// finish the purchase itself. When nothing does, a session that is
+// otherwise ready must escalate rather than claim a payment path the
+// store cannot honour.
+func agentCompletable(handlers map[string][]PaymentHandler) bool {
+	for _, entries := range handlers {
+		for _, h := range entries {
+			if len(h.AvailableInstruments) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}

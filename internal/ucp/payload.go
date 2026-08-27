@@ -125,16 +125,29 @@ func (b *Builder) BuildCheckout(
 		return nil, fmt.Errorf("ucp: pricing: %w", err)
 	}
 
+	// The response declaration is authoritative for this checkout, and
+	// whether it carries an instrument decides whether an agent can
+	// finish the purchase at all.
+	handlers := responsePaymentHandlers(t, b.env)
+	status := s.Status
+	if status == checkout.StatusReadyForComplete &&
+		!agentCompletable(handlers) {
+		// Every active method needs the buyer to authorize at the PSP,
+		// which UCP models as an escalation — not as readiness the agent
+		// could act on.
+		status = checkout.StatusRequiresEscalation
+	}
+
 	out := &Checkout{
 		UCP: Envelope{
 			Version:         Version,
-			PaymentHandlers: paymentHandlers(t, b.env),
+			PaymentHandlers: handlers,
 		},
 		ID: s.ID,
 		// The spec types line_items as an array; keep it [] over null even
 		// for an empty cart.
 		LineItems: []LineItem{},
-		Status:    string(s.Status),
+		Status:    string(status),
 		Currency:  t.DefaultCurrency,
 		Links: []Link{
 			{Type: "terms_of_service",
@@ -193,10 +206,18 @@ func (b *Builder) BuildCheckout(
 	out.Totals = append(out.Totals,
 		LineItemTotal{Type: "total", Amount: pricing.Total})
 
-	switch s.Status {
+	switch status {
 	case checkout.StatusRequiresEscalation:
-		// The buyer authorizes payment on the hosted page (Viva).
+		// continue_url is REQUIRED whenever the status is
+		// requires_escalation. A hosted PSP page exists only once the
+		// buyer reached payment; before that — including a store with no
+		// agent-completable method at all — the honest handoff is the
+		// storefront's own claim page for this cart.
 		out.ContinueURL = s.PaymentURL
+		if out.ContinueURL == "" {
+			out.ContinueURL = fmt.Sprintf("https://%s/cart/claim?uuid=%s",
+				t.Domain, s.CartID)
+		}
 		out.Messages = append(out.Messages, Message{
 			Type: "info", Code: "requires_buyer_review",
 			Text: "The buyer must open continue_url to authorize payment " +
