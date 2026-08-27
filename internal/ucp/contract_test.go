@@ -229,15 +229,8 @@ func TestProfileAdvertisesResolvableUCPDocuments(t *testing.T) {
 	for name, services := range profile.UCP.Services {
 		for i, s := range services {
 			urls[fmt.Sprintf("services[%s][%d].spec", name, i)] = s.Spec
-			// The service `schema` (the OpenRPC document) is
-			// deliberately withheld while a method it defines for an
-			// advertised capability is still missing. Publishing it
-			// asserts a machine-checkable contract, so it must stay
-			// empty until the transport actually satisfies it.
-			assert.Empty(t, s.Schema,
-				"services[%s][%d].schema is withheld until the MCP "+
-					"transport implements every method the OpenRPC "+
-					"document defines", name, i)
+			urls[fmt.Sprintf("services[%s][%d].schema", name, i)] =
+				s.Schema
 		}
 	}
 	for name, caps := range profile.UCP.Capabilities {
@@ -323,4 +316,48 @@ func TestBuildCheckoutPaymentParity(t *testing.T) {
 
 			assert.Equal(t, psp, out.ContinueURL)
 		})
+}
+
+// The order object is what a platform reads post-purchase, so it is
+// validated against the real schema rather than field-by-field.
+func TestBuildOrderMatchesOrderSchema(t *testing.T) {
+	schema := compileUCP(t, "shopping/order.json")
+	tn := testTenant()
+
+	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata",
+		"fixtures", "django", "order_by_uuid.json"))
+	require.NoError(t, err)
+	var order django.Order
+	require.NoError(t, json.Unmarshal(raw, &order))
+
+	out, err := BuildOrder(tn, &order, "chk_abc123")
+	require.NoError(t, err)
+	require.NoError(t, schema.Validate(roundTrip(t, out)))
+
+	assert.Equal(t, "chk_abc123", out.CheckoutID)
+	assert.Equal(t, order.UUID, out.ID)
+	assert.Contains(t, out.PermalinkURL, "/checkout/success/"+order.UUID)
+	require.NotEmpty(t, out.LineItems)
+
+	// Exactly one subtotal and one total, as the schema demands.
+	counts := map[string]int{}
+	for _, tot := range out.Totals {
+		counts[tot.Type]++
+	}
+	assert.Equal(t, 1, counts["subtotal"])
+	assert.Equal(t, 1, counts["total"])
+}
+
+// checkout_id is required, so a caller that cannot name the checkout must
+// be refused rather than handed an order with an empty link.
+func TestBuildOrderRefusesWithoutACheckout(t *testing.T) {
+	_, err := BuildOrder(testTenant(), &django.Order{UUID: "o-1"}, "")
+	assert.ErrorContains(t, err, "no known checkout session")
+}
+
+func TestOrderLineStatusFollowsTheSchemaDefinition(t *testing.T) {
+	assert.Equal(t, "removed", orderLineStatus(0, 0))
+	assert.Equal(t, "fulfilled", orderLineStatus(3, 3))
+	assert.Equal(t, "partial", orderLineStatus(3, 1))
+	assert.Equal(t, "processing", orderLineStatus(3, 0))
 }

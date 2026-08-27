@@ -3,8 +3,13 @@ package mcpsrv
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
 type TrackOrderIn struct {
@@ -92,4 +97,63 @@ func (h *handlers) trackOrder(
 		out.OrderUUID, out.StatusDisplay, out.PaymentStatus,
 		out.GrandTotal, out.Currency, trackNote,
 	), out, nil
+}
+
+// GetOrderIn is the get_order tool's arguments.
+type GetOrderIn struct {
+	Meta *MetaIn `json:"meta"`
+	ID   string  `json:"id" jsonschema:"the order id from the completed checkout"`
+}
+
+// getOrder renders the canonical UCP order object.
+//
+// The order's `checkout_id` comes from the gateway's own order index
+// rather than from the order payload: nothing upstream records which
+// agent session placed an order, and the schema requires the link for
+// reconciliation. An order placed outside this gateway — on the web, say
+// — therefore has no checkout to name, and saying so is better than
+// inventing one.
+func (h *handlers) getOrder(
+	ctx context.Context, _ *mcp.CallToolRequest, in GetOrderIn,
+) (*mcp.CallToolResult, ucp.Order, error) {
+	var zero ucp.Order
+	t, err := h.tenantFor(ctx)
+	if err != nil {
+		return nil, zero, err
+	}
+	if err := in.Meta.validate(false); err != nil {
+		return nil, zero, err
+	}
+	if in.ID == "" {
+		return nil, zero, errors.New("id is required")
+	}
+
+	order, err := h.deps.Django.OrderByUUID(
+		ctx, t.Domain, t.DefaultLocale, in.ID)
+	if err != nil {
+		if errors.Is(err, django.ErrNotFound) {
+			return nil, zero, fmt.Errorf("no order %s exists", in.ID)
+		}
+		return nil, zero, upstreamErr(err,
+			"the order service is unavailable")
+	}
+
+	checkoutID, err := h.deps.Checkout.CheckoutIDForOrder(
+		ctx, t.SchemaName, in.ID)
+	if err != nil {
+		if errors.Is(err, checkout.ErrNotFound) {
+			return nil, zero, fmt.Errorf(
+				"order %s was not placed through this agent surface, so "+
+					"it has no checkout to reconcile against; use "+
+					"track_order for its status", in.ID)
+		}
+		return nil, zero, errors.New(
+			"the order index is temporarily unavailable; retry shortly")
+	}
+
+	out, err := ucp.BuildOrder(t, order, checkoutID)
+	if err != nil {
+		return nil, zero, err
+	}
+	return nil, *out, nil
 }

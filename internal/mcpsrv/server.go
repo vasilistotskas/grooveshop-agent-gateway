@@ -241,6 +241,17 @@ func NewServer(d Deps, title string) *mcp.Server {
 			"meta.idempotency-key.",
 	}, h.completeCheckout)
 
+	// UCP order capability (dev.ucp.shopping.order), MCP transport
+	// binding. Its conformance section requires exactly this tool.
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "get_order",
+		Description: "UCP: the current state of an order placed through " +
+			"this surface — line items with per-line fulfilment status, " +
+			"totals and the permalink. Use track_order for shipment " +
+			"tracking or for orders placed on the web. Requires " +
+			"meta.ucp-agent.profile.",
+	}, h.getOrder)
+
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "cancel_checkout",
 		Description: "UCP: abandon a checkout session the buyer is no " +

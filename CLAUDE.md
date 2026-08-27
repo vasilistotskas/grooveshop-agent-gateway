@@ -12,7 +12,7 @@ storefront's own domain (Traefik path-routes them here):
 | Path | Surface |
 |---|---|
 | `POST /mcp` | MCP server (stateless streamable HTTP): the UCP checkout capability's five canonical tools + ergonomic commerce tools + account tools (`my_orders`, `my_loyalty_points`, `my_favourites`) |
-| `GET /.well-known/ucp` | UCP business profile (spec 2026-08-25) |
+| `GET /.well-known/ucp` | UCP business profile (spec 2026-08-25), incl. the `space.grooveshop.payments` handler |
 | `/acp/*` | ACP agentic checkout REST (spec 2026-04-17) |
 | `/feeds/*` | Product feeds: google.xml, meta.xml, tiktok.xml, acp.json |
 | `POST /chat` | First-party shopping chatbot (SSE; OpenAI-compatible protocol via openai-go — Gemini free tier by default, any compatible provider via CHAT_BASE_URL) |
@@ -91,9 +91,18 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   method has no instrument type yet. These five are withheld from the
   chatbot (`internal/chat/bridge.go`) — their shapes target a platform
   generating calls, and chat hands over a checkout link instead.
-- The service `schema` (OpenRPC) URL stays OUT of the profile until every
-  method it defines for an advertised capability exists; `get_order` is
-  still missing. Declaring it asserts a machine-checkable contract.
+- The service `schema` (OpenRPC) URL may appear ONLY while every method it
+  defines for an ADVERTISED capability exists — the five checkout tools
+  plus `get_order`. Declaring it asserts a machine-checkable contract.
+  Its cart/catalog methods belong to capabilities the profile does not
+  advertise, so a negotiating platform never calls them.
+- `get_order` sources the required `checkout_id` from the gateway's own
+  order index (`ag:{schema}:order:{uuid}`, retained a year — the link must
+  outlive the session, which expires in 24h). An order placed on the web
+  has no checkout to name and is refused with that explanation, never a
+  fabricated id. `order.fulfillment` stays `{}`: an expectation needs a
+  destination the order detail deliberately does not decode (PII), and an
+  event needs a shipment timestamp upstream does not expose.
 - Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:{host}`.
 - No tenant label on Prometheus metrics (unbounded cardinality) — tenant
   goes in logs.

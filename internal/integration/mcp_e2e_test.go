@@ -241,7 +241,7 @@ func TestMCPEndToEnd(t *testing.T) {
 			"add_to_cart", "update_cart_item", "remove_cart_item",
 			"get_checkout_link", "track_order", "subscribe_product_alert",
 			"create_checkout", "get_checkout", "update_checkout",
-			"complete_checkout", "cancel_checkout",
+			"complete_checkout", "cancel_checkout", "get_order",
 			"my_orders", "my_loyalty_points", "my_favourites",
 		}, names)
 	})

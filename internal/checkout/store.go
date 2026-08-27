@@ -25,7 +25,12 @@ var (
 const (
 	activeTTL   = 30 * time.Minute
 	terminalTTL = 24 * time.Hour
-	orderIdxTTL = 30 * 24 * time.Hour
+	// The order index outlives the session it points at, and by a long
+	// way: the UCP order object requires `checkout_id` for
+	// reconciliation, so the order-to-checkout link must survive for as
+	// long as an agent might reasonably ask about an order. The value is
+	// one short string per order, so retention costs almost nothing.
+	orderIdxTTL = 365 * 24 * time.Hour
 	lockTTL     = 10 * time.Second
 )
 
@@ -171,6 +176,23 @@ func (st *Store) IndexOrder(
 ) error {
 	return st.rdb.Set(ctx, orderKey(schema, orderUUID), sessionID,
 		orderIdxTTL).Err()
+}
+
+// CheckoutIDForOrder resolves which checkout produced an order, without
+// loading the session. The session expires long before the index does,
+// so a caller that only needs the id — the UCP order object's
+// `checkout_id` — must not go through SessionForOrder.
+func (st *Store) CheckoutIDForOrder(
+	ctx context.Context, schema, orderUUID string,
+) (string, error) {
+	id, err := st.rdb.Get(ctx, orderKey(schema, orderUUID)).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("checkout: order index: %w", err)
+	}
+	return id, nil
 }
 
 // SessionForOrder resolves the session an order event belongs to.
