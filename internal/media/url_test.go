@@ -10,7 +10,7 @@ func TestImageURL(t *testing.T) {
 	tpl := "https://{assets_host}/media_stream-image/{path}" +
 		"/800/800/contain/entropy/transparent/5/80.webp"
 
-	got := ImageURL(tpl, "assets.platform.test", "webside",
+	got := ImageURL(tpl, "assets.platform.test", "demostore",
 		"media/uploads/products/foo.jpg")
 	assert.Equal(t,
 		"https://assets.platform.test/media_stream-image/"+
@@ -18,7 +18,7 @@ func TestImageURL(t *testing.T) {
 			"/800/800/contain/entropy/transparent/5/80.webp",
 		got)
 
-	assert.Empty(t, ImageURL(tpl, "assets.platform.test", "webside", ""))
+	assert.Empty(t, ImageURL(tpl, "assets.platform.test", "demostore", ""))
 }
 
 func TestImageURLSchemaPlaceholder(t *testing.T) {
@@ -27,8 +27,8 @@ func TestImageURLSchemaPlaceholder(t *testing.T) {
 	tpl := "https://{assets_host}/media_stream-image/media/{schema}" +
 		"/uploads/{path}/800/800/contain/entropy/transparent/5/80.webp"
 
-	got := ImageURL(tpl, "assets.platform.test", "webside", "products/foo.jpg")
-	assert.Contains(t, got, "/media/webside/uploads/products/foo.jpg/")
+	got := ImageURL(tpl, "assets.platform.test", "demostore", "products/foo.jpg")
+	assert.Contains(t, got, "/media/demostore/uploads/products/foo.jpg/")
 }
 
 // An unresolved media origin must drop the image rather than publish an
@@ -36,7 +36,7 @@ func TestImageURLSchemaPlaceholder(t *testing.T) {
 // nothing here ever fetches what it emits, so a broken host is silent.
 func TestImageURLWithoutHostIsEmpty(t *testing.T) {
 	tpl := "https://{assets_host}/media_stream-image/{path}/800/800.webp"
-	assert.Empty(t, ImageURL(tpl, "", "webside", "media/uploads/foo.jpg"))
+	assert.Empty(t, ImageURL(tpl, "", "demostore", "media/uploads/foo.jpg"))
 }
 
 func TestHostPrefersTenantAssetsDomain(t *testing.T) {

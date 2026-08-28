@@ -50,7 +50,7 @@ func fakeDjango(t *testing.T, hits *atomic.Int64) *httptest.Server {
 func testTenant() *tenant.Tenant {
 	return &tenant.Tenant{
 		TenantConfig: django.TenantConfig{
-			SchemaName:    "webside",
+			SchemaName:    "demostore",
 			DefaultLocale: "el",
 		},
 		Domain: "shop.example.test",

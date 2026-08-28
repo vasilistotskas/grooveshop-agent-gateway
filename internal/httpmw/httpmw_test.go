@@ -106,7 +106,7 @@ func TestExtrasTenantEnrichment(t *testing.T) {
 	var logged string
 	h := Logging(quietLogger())(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			SetTenant(r.Context(), "webside")
+			SetTenant(r.Context(), "demostore")
 			if e, ok := r.Context().Value(ctxKeyExtras{}).(*Extras); ok {
 				logged = e.getTenant()
 			}
@@ -114,5 +114,5 @@ func TestExtrasTenantEnrichment(t *testing.T) {
 
 	h.ServeHTTP(httptest.NewRecorder(),
 		httptest.NewRequest(http.MethodGet, "/", nil))
-	assert.Equal(t, "webside", logged)
+	assert.Equal(t, "demostore", logged)
 }

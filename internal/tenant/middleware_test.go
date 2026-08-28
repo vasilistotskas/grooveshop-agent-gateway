@@ -29,7 +29,7 @@ func TestMiddlewareInjectsTenant(t *testing.T) {
 
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 	require.NotNil(t, got)
-	assert.Equal(t, "webside", got.SchemaName)
+	assert.Equal(t, "demostore", got.SchemaName)
 }
 
 func TestMiddlewareUnknownHost404(t *testing.T) {

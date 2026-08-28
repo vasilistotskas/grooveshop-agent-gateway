@@ -66,8 +66,8 @@ func TestResolverSharesRedisTierAcrossInstances(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			if r.URL.Query().Get("domain") == "shop.example.test" {
 				_, _ = w.Write([]byte(`{
-					"schemaName": "webside",
-					"storeName": "Webside",
+					"schemaName": "demostore",
+					"storeName": "Demo Store",
 					"defaultLocale": "el",
 					"defaultCurrency": "EUR",
 					"primaryDomain": "shop.example.test",
@@ -93,12 +93,12 @@ func TestResolverSharesRedisTierAcrossInstances(t *testing.T) {
 	ctx := context.Background()
 	got, err := podA.Resolve(ctx, "shop.example.test")
 	require.NoError(t, err)
-	assert.Equal(t, "webside", got.SchemaName)
+	assert.Equal(t, "demostore", got.SchemaName)
 	assert.Equal(t, int32(1), calls.Load())
 
 	got, err = podB.Resolve(ctx, "shop.example.test")
 	require.NoError(t, err)
-	assert.Equal(t, "webside", got.SchemaName)
+	assert.Equal(t, "demostore", got.SchemaName)
 	assert.Equal(t, int32(1), calls.Load(),
 		"pod B must be served from the shared Redis tier")
 

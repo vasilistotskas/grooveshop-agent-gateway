@@ -19,9 +19,9 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 )
 
-const websideJSON = `{
-	"schemaName": "webside",
-	"storeName": "Webside",
+const demostoreJSON = `{
+	"schemaName": "demostore",
+	"storeName": "Demo Store",
 	"defaultLocale": "el",
 	"defaultCurrency": "EUR",
 	"primaryDomain": "shop.example.test",
@@ -73,7 +73,7 @@ func newFakeDjango(t *testing.T) *fakeDjango {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			if r.URL.Query().Get("domain") == "shop.example.test" {
-				_, _ = w.Write([]byte(websideJSON))
+				_, _ = w.Write([]byte(demostoreJSON))
 				return
 			}
 			w.WriteHeader(http.StatusNotFound)
@@ -107,13 +107,13 @@ func TestResolveCachesInMemory(t *testing.T) {
 
 	first, err := r.Resolve(context.Background(), "SHOP.example.test:443")
 	require.NoError(t, err)
-	assert.Equal(t, "webside", first.SchemaName)
+	assert.Equal(t, "demostore", first.SchemaName)
 	assert.Equal(t, "shop.example.test", first.Domain)
 	assert.False(t, first.Stale)
 
 	second, err := r.Resolve(context.Background(), "shop.example.test")
 	require.NoError(t, err)
-	assert.Equal(t, "webside", second.SchemaName)
+	assert.Equal(t, "demostore", second.SchemaName)
 	assert.Equal(t, int32(1), f.calls.Load(),
 		"second resolve must be served from memory")
 }
@@ -162,7 +162,7 @@ func TestResolveServesStaleWhenDjangoDown(t *testing.T) {
 	got, err := r.Resolve(context.Background(), "shop.example.test")
 	require.NoError(t, err)
 	assert.True(t, got.Stale)
-	assert.Equal(t, "webside", got.SchemaName)
+	assert.Equal(t, "demostore", got.SchemaName)
 }
 
 func TestResolveErrorsWithoutStaleEntry(t *testing.T) {

@@ -20,15 +20,6 @@ import (
 // Version is the implemented UCP specification version.
 const Version = "2026-08-25"
 
-// legacySigningKeyRedisKey held the single platform-wide key before keys
-// went per-schema. It historically signed for webside (tenant #1), so its
-// seed is adopted (copied) into webside's per-schema key on first load to
-// keep the platform-registered public key verifying. The legacy key is
-// never written or deleted here — remove it manually after cutover.
-const legacySigningKeyRedisKey = "ag:ucp:signing_key"
-
-const legacyKeySchema = "webside"
-
 func signingKeyRedisKey(schema string) string {
 	return "ag:" + schema + ":ucp:signing_key"
 }
@@ -73,9 +64,14 @@ func NewKeys(rdb *redis.Client) *Keys {
 }
 
 // ForSchema returns the tenant's persistent signing key, minting and
-// storing one at ag:{schema}:ucp:signing_key on first use. Losing the
-// Redis value is a key rotation: platforms re-read the profile's JWK set,
-// so rotation is safe, just not free — the key has no TTL for that reason.
+// storing one at ag:{schema}:ucp:signing_key on first use.
+//
+// Losing the Redis value is an UNGRACEFUL rotation. UCP verifiers pin
+// nothing — they re-fetch keys[] from the profile — but the spec's
+// rotation procedure publishes the new key ALONGSIDE the old for a grace
+// period (>=7 days) so in-flight signatures still verify, and the profile
+// publishes exactly one key per tenant. The seed therefore carries no
+// TTL, and a graceful rotation would need keys[] to hold two.
 func (k *Keys) ForSchema(
 	ctx context.Context, schema string,
 ) (*SigningKey, error) {
@@ -116,12 +112,12 @@ func (k *Keys) loadOrCreate(
 	seedB64, err := k.rdb.Get(ctx, redisKey).Result()
 	switch {
 	case errors.Is(err, redis.Nil):
-		encoded, err := k.newSeed(ctx, schema)
+		encoded, err := newSeed()
 		if err != nil {
 			return nil, err
 		}
-		// SETNX so concurrent pods (and the legacy adoption) agree on one
-		// key; a lost race re-reads the winner.
+		// SETNX so concurrent pods agree on one key; a lost race
+		// re-reads the winner.
 		ok, err := k.rdb.SetNX(ctx, redisKey, encoded, 0).Result()
 		if err != nil {
 			return nil, fmt.Errorf("ucp: persist key: %w", err)
@@ -140,19 +136,11 @@ func (k *Keys) loadOrCreate(
 	return fromSeed(seed)
 }
 
-// newSeed returns the base64 seed to persist for a schema with no key yet:
-// the legacy global seed for the schema that historically used it, a
-// freshly minted one otherwise.
-func (k *Keys) newSeed(ctx context.Context, schema string) (string, error) {
-	if schema == legacyKeySchema {
-		encoded, err := k.rdb.Get(ctx, legacySigningKeyRedisKey).Result()
-		switch {
-		case err == nil:
-			return encoded, nil
-		case !errors.Is(err, redis.Nil):
-			return "", fmt.Errorf("ucp: load legacy key: %w", err)
-		}
-	}
+// newSeed mints the base64 seed to persist for a schema with no key yet.
+// Every schema mints the same way: no tenant carries a pre-existing
+// identity, so onboarding the thousandth store runs the code path the
+// first one did.
+func newSeed() (string, error) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return "", fmt.Errorf("ucp: generate key: %w", err)

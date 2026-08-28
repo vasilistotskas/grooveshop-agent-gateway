@@ -4,9 +4,6 @@ package integration
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,8 +16,6 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
-
-const legacySigningKeyRedisKey = "ag:ucp:signing_key"
 
 func TestSigningKeysDistinctPerSchema(t *testing.T) {
 	rdb := startRedis(t)
@@ -41,32 +36,24 @@ func TestSigningKeysDistinctPerSchema(t *testing.T) {
 	assert.Equal(t, alpha.Public, again.Public)
 }
 
-func TestWebsideAdoptsLegacySigningKey(t *testing.T) {
+// No schema adopts a pre-existing platform-wide key. The gateway once
+// seeded tenant #1 from a global ag:ucp:signing_key left over from
+// before keys went per-schema; that adoption is gone, so a stray global
+// key is inert and every schema mints its own identity.
+func TestNoSchemaAdoptsAGlobalKey(t *testing.T) {
 	rdb := startRedis(t)
 	ctx := context.Background()
-
-	// A legacy global key from before keys went per-schema.
-	legacyPub, legacyPriv, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-	encoded := base64.StdEncoding.EncodeToString(legacyPriv.Seed())
 	require.NoError(t,
-		rdb.Set(ctx, legacySigningKeyRedisKey, encoded, 0).Err())
+		rdb.Set(ctx, "ag:ucp:signing_key", "stale-global-seed", 0).Err())
 
-	keys := ucp.NewKeys(rdb)
-	webside, err := keys.ForSchema(ctx, "webside")
+	key, err := ucp.NewKeys(rdb).ForSchema(ctx, "alpha")
 	require.NoError(t, err)
-	assert.Equal(t, legacyPub, webside.Public,
-		"webside must keep the platform-registered legacy key")
 
-	// The adoption copies: the legacy key survives for manual cleanup.
-	kept, err := rdb.Get(ctx, legacySigningKeyRedisKey).Result()
+	seed, err := rdb.Get(ctx, "ag:alpha:ucp:signing_key").Result()
 	require.NoError(t, err)
-	assert.Equal(t, encoded, kept)
-
-	// Other schemas never inherit the legacy identity.
-	other, err := keys.ForSchema(ctx, "alpha")
-	require.NoError(t, err)
-	assert.NotEqual(t, webside.KID, other.KID)
+	assert.NotEqual(t, "stale-global-seed", seed,
+		"a leftover global key must never become a schema's identity")
+	assert.NotEmpty(t, key.KID)
 }
 
 func TestProfilePublishesOnlyOwnKey(t *testing.T) {

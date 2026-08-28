@@ -58,7 +58,7 @@ func fakeDjangoMux(t *testing.T) http.Handler {
 				_, _ = w.Write([]byte(`{"detail": "Store not found."}`))
 				return
 			}
-			serveFixture(t, w, "tenant_resolve_webside.json")
+			serveFixture(t, w, "tenant_resolve_demostore.json")
 		})
 	route := func(pattern, fixture string) {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, _ *http.Request) {

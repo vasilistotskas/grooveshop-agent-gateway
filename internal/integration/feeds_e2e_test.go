@@ -47,7 +47,7 @@ func feedsFakeDjango(t *testing.T) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/tenant/resolve",
 		func(w http.ResponseWriter, _ *http.Request) {
-			serveFixture(t, w, "tenant_resolve_webside.json")
+			serveFixture(t, w, "tenant_resolve_demostore.json")
 		})
 	mux.HandleFunc("GET /api/v1/product/category/all",
 		func(w http.ResponseWriter, _ *http.Request) {

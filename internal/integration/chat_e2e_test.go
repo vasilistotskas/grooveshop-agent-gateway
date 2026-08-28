@@ -209,7 +209,7 @@ func TestChatTextOnlyTurn(t *testing.T) {
 	// The system prompt must scope the assistant to the tenant's store,
 	// and the configured model must reach the wire.
 	body := *fake.lastBody.Load()
-	assert.Contains(t, string(body), "Webside")
+	assert.Contains(t, string(body), "Demo Store")
 	assert.Contains(t, string(body), "gemini-3.7-flash")
 }
 

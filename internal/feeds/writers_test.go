@@ -33,10 +33,10 @@ func ptr[T any](v T) *T { return &v }
 
 func testFeedContext() *feedContext {
 	return &feedContext{
-		StoreName:        "Webside",
+		StoreName:        "Demo Store",
 		Domain:           "shop.example.test",
 		AssetsHost:       "assets.platform.test",
-		Schema:           "webside",
+		Schema:           "demostore",
 		Currency:         "EUR",
 		Locale:           "el",
 		ImageURLTemplate: "https://{assets_host}/media_stream-image/{path}/1000/1000/contain/center/FFFFFF/5/85.jpeg",

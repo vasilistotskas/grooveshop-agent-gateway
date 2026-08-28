@@ -74,7 +74,7 @@ func TestDispatcherSurvivesShutdownMidDelivery(t *testing.T) {
 
 	const orderUUID = "b9be45e5-6062-4976-ae7b-2c31eb2ad689"
 	require.NoError(t, dispatcher.Enqueue(ctx, ucp.OrderEvent{
-		Schema:    "webside",
+		Schema:    "demostore",
 		OrderUUID: orderUUID,
 		Status:    "PROCESSING",
 		TargetURL: server.URL + "/ucp/orders",

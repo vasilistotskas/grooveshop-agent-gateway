@@ -119,8 +119,12 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   goes in logs.
 - **No fallback/legacy/backward-compat code paths.** Environment differences
   are config values, not conditionals.
-- Multi-tenant native: webside is tenant #1, never special-cased. Never
-  hardcode production domains — they arrive via tenant config.
+- Multi-tenant native: **no tenant name appears in gateway code**, not
+  even the first one. Tenant identity is the `schema` carried on the
+  request; anything keyed by it (Redis keys, signing keys, prompts) is
+  derived, never enumerated. Never hardcode production domains — they
+  arrive via tenant config. Tests use `demostore`/`acme`/`alpha`, and a
+  literal schema name in non-test code is a bug.
 - 80-char-ish lines, comments only for non-obvious constraints.
 
 ## Cross-repo contracts

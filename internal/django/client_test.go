@@ -46,7 +46,7 @@ func TestResolveTenantDecodesFixture(t *testing.T) {
 			gotHost = r.Header.Get("X-Forwarded-Host")
 			gotDomain = r.URL.Query().Get("domain")
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(fixture(t, "tenant_resolve_webside.json"))
+			_, _ = w.Write(fixture(t, "tenant_resolve_demostore.json"))
 		}))
 	defer srv.Close()
 
@@ -58,14 +58,14 @@ func TestResolveTenantDecodesFixture(t *testing.T) {
 	assert.Equal(t, "api.example.test", gotHost)
 	assert.Equal(t, "shop.example.test", gotDomain)
 
-	assert.Equal(t, "webside", cfg.SchemaName)
-	assert.Equal(t, "Webside", cfg.StoreName)
+	assert.Equal(t, "demostore", cfg.SchemaName)
+	assert.Equal(t, "Demo Store", cfg.StoreName)
 	assert.Equal(t, "el", cfg.DefaultLocale)
 	assert.Equal(t, "EUR", cfg.DefaultCurrency)
 	assert.Equal(t, "shop.example.test", cfg.PrimaryDomain)
 	assert.True(t, cfg.LoyaltyEnabled)
 	assert.Equal(t, "sk-test-fake", cfg.ChatAPIKey)
-	assert.Equal(t, "acp-bearer-webside-fixture", cfg.ACPBearerToken)
+	assert.Equal(t, "acp-bearer-demostore-fixture", cfg.ACPBearerToken)
 }
 
 func TestResolveTenantNotFound(t *testing.T) {
@@ -96,7 +96,7 @@ func TestGetRetriesServerErrors(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(fixture(t, "tenant_resolve_webside.json"))
+			_, _ = w.Write(fixture(t, "tenant_resolve_demostore.json"))
 		}))
 	defer srv.Close()
 
@@ -104,7 +104,7 @@ func TestGetRetriesServerErrors(t *testing.T) {
 	cfg, err := c.ResolveTenant(context.Background(), "shop.example.test")
 	require.NoError(t, err)
 	assert.Equal(t, int32(3), calls.Load())
-	assert.Equal(t, "webside", cfg.SchemaName)
+	assert.Equal(t, "demostore", cfg.SchemaName)
 }
 
 func TestGetDoesNotRetryClientErrors(t *testing.T) {

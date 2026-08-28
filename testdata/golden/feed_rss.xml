@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">
   <channel>
-    <title>Webside</title>
+    <title>Demo Store</title>
     <link>https://shop.example.test</link>
-    <description>Webside</description>
+    <description>Demo Store</description>
     <item>
       <g:id>1</g:id>
       <title>Φορτιστής Κινητού</title>
@@ -13,7 +13,7 @@
       <g:availability>in stock</g:availability>
       <g:condition>new</g:condition>
       <g:price>464.68 EUR</g:price>
-      <g:brand>Webside</g:brand>
+      <g:brand>Demo Store</g:brand>
       <g:product_type>Ηλεκτρονικά &amp; Gadgets</g:product_type>
     </item>
     <item>

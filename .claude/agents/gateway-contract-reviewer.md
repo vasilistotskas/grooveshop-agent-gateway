@@ -62,8 +62,11 @@ reading the whole tree.
 - **No fallback, legacy, or backward-compatibility code paths.** Environment
   differences are config values, not conditionals. Flag `if env == ...`
   branching.
-- Multi-tenant native: `webside` is tenant #1 and is never special-cased.
-  Never hardcode a production domain — domains arrive via tenant config.
+- Multi-tenant native: **no tenant name appears in gateway code**, not even
+  the first one. Tenant identity is the `schema` on the request; anything
+  keyed by it is derived, never enumerated. Flag any string literal that
+  names a real schema outside `_test.go`/`testdata/`, and any production
+  domain — domains arrive via tenant config.
 - Per-tenant gates: ACP and chat are per-tenant. `acpBearerToken` and
   `chatApiKey` reach the gateway from `tenant/resolve` only when the resolve
   call carries `X-Internal-Token`. A tenant with no chat key gets a localized
