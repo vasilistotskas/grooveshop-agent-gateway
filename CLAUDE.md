@@ -147,3 +147,11 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   disabled — every bearer gets 401 from `/acp/*`.
 - Infra repo: manifests under `manifests/app-constructs/grooveshop/base/`,
   path rules on the storefront ingress.
+- B2B/wholesale pricing (Django `b2b/` app) is RETAIL-ONLY here by
+  design: every gateway catalog/cart/checkout call is anonymous (no
+  bearer forwarded), so MCP tools, UCP/ACP checkout and feeds always
+  see retail prices — totals stay self-consistent end to end. Only
+  `/api/v1/agent/*` forwards agent bearers, and those endpoints carry
+  no pricing. Do not thread identity into the catalog/cart clients for
+  B2B without redesigning the feed/catalog caching (one artifact per
+  tenant assumes one price per product).
