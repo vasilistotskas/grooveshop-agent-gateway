@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/feeds"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
@@ -89,5 +90,65 @@ func internalOrderEvents(
 			}
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
+// feedInvalidateBody names the tenant whose feeds went stale.
+type feedInvalidateBody struct {
+	SchemaName string `json:"schemaName"`
+}
+
+// internalFeedInvalidate handles POST /internal/feeds/invalidate.
+//
+// The catalog feeds are cached in Redis for FEED_FRESH_TTL (6h) and the
+// cache survives pod restarts, so before this endpoint the only way out
+// of a stale feed was to wait it out or delete the keys by hand — a
+// merchant's price change took up to six hours to reach Google, Meta and
+// TikTok. Django's cache-purge service now calls this so a catalogue
+// purge covers the feeds too.
+//
+// Same shape as internalOrderEvents: cluster-internal route, shared
+// secret as a second layer, and a non-2xx makes the caller retry.
+//
+// The constant-time compare would accept an empty token against an
+// empty secret, which is fine here only because config.Load lists
+// INTERNAL_EVENTS_SECRET as required — the gateway refuses to start
+// without one, so the route can never be live with an empty secret.
+func internalFeedInvalidate(
+	secret string,
+	svc *feeds.Service,
+	log *slog.Logger,
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		provided := r.Header.Get("X-Internal-Token")
+		if subtle.ConstantTimeCompare(
+			[]byte(provided), []byte(secret)) != 1 {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		var body feedInvalidateBody
+		if err := json.NewDecoder(
+			http.MaxBytesReader(w, r.Body, 4<<10),
+		).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if body.SchemaName == "" {
+			http.Error(w, "schemaName is required", http.StatusBadRequest)
+			return
+		}
+
+		removed, err := svc.Invalidate(r.Context(), body.SchemaName)
+		if err != nil {
+			log.ErrorContext(r.Context(), "feed invalidate failed",
+				slog.String("schema", body.SchemaName),
+				slog.String("error", err.Error()))
+			http.Error(w, "retry", http.StatusServiceUnavailable)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"removed": removed})
 	})
 }

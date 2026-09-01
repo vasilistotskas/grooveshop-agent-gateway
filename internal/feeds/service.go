@@ -122,6 +122,29 @@ func (s *Service) fromCache(
 
 // refreshAsync regenerates in the background, decoupled from the request
 // context; singleflight collapses concurrent refreshes per tenant.
+// Invalidate drops every cached feed for one tenant so the next request
+// regenerates from Django.
+//
+// Without this the only way out of a stale feed was to wait out
+// FEED_FRESH_TTL (6h by default) or delete the keys by hand in Redis —
+// so a merchant's price change, a new product, or a stock change took up
+// to six hours to reach Google, Meta and TikTok. The cache survives pod
+// restarts, so restarting the gateway did not help either.
+//
+// Returns the number of keys removed. Deliberately NOT a full
+// regeneration: generating is a Django round trip per tenant, and the
+// next feed request will do it anyway (or serve stale-while-revalidate
+// if a stale entry somehow remains).
+func (s *Service) Invalidate(ctx context.Context, schema string) (int64, error) {
+	keys := make([]string, 0, len(kinds)*2)
+	for _, kind := range kinds {
+		keys = append(keys, dataKey(schema, kind), metaKey(schema, kind))
+	}
+	// UNLINK, not DEL: a feed payload is a multi-megabyte gzip blob and
+	// reclaiming it must not block the event loop.
+	return s.rdb.Unlink(ctx, keys...).Result()
+}
+
 func (s *Service) refreshAsync(t *tenant.Tenant) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

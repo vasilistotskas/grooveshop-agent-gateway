@@ -137,6 +137,13 @@ func New(d Deps) http.Handler {
 	mux.Handle("GET /feeds/tiktok.xml", feedMW(feedSvc.Handler(feeds.KindTikTok)))
 	mux.Handle("GET /feeds/acp.json", feedMW(feedSvc.Handler(feeds.KindACP)))
 
+	// Cluster-internal: lets Django drop a tenant's cached feeds when the
+	// catalogue changes, instead of the merchant waiting out
+	// FEED_FRESH_TTL. Registered here rather than beside the other
+	// internal route because it needs feedSvc, which is built above.
+	mux.Handle("POST /internal/feeds/invalidate", internalFeedInvalidate(
+		d.Cfg.InternalSecret, feedSvc, d.Log))
+
 	// Chat calls the same toolset in-process. The title is only ever
 	// read from an MCP `initialize` response, which this path does not
 	// serve — the shopper sees the store name through the system prompt
