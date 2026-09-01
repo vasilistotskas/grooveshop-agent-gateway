@@ -1,15 +1,19 @@
 /**
- * PreToolUse hook: Block edits to sensitive or generated files in
- * grooveshop-agent-gateway.
+ * PreToolUse hook: refuse edits to files that hold credentials or that a tool
+ * must regenerate.
  *
- * Blocks: .env, .env.*, go.sum, settings.local.json
- * Allows: .env.example (the template, meant to be edited)
+ * Sibling of the same-named hook in the other four repos and of the workspace
+ * root's `guard-paths.mjs`. They cannot share a file — each repo is a separate
+ * checkout — so they are kept structurally identical instead: the same
+ * first-match-wins RULES table, the same universal rules at the top, and only
+ * the repo-specific rules differing below. When you change one, change them
+ * all.
  *
- * Node rather than shell for parity with the other four repos in the
- * workspace — and because `jq` is not a given on a Windows dev machine.
+ * Node rather than shell for parity with the rest of the workspace — and
+ * because `jq` is not a given on a Windows dev machine.
  *
  * Receives JSON on stdin: { tool_name, tool_input: { file_path, ... } }
- * Exit 0 = allow, exit 2 = block (stderr shown as the reason).
+ * Exit 0 = allow, exit 2 = block with stderr as the reason.
  */
 import { readFileSync } from 'node:fs'
 
@@ -18,28 +22,41 @@ try {
   input = JSON.parse(readFileSync(0, 'utf8'))
 }
 catch {
+  // A malformed payload must not wedge the edit.
   process.exit(0)
 }
 
 const filePath = input.tool_input?.file_path || ''
 if (!filePath) process.exit(0)
 
-const normalized = filePath.split('\\').join('/')
-const base = normalized.split('/').pop()
+const p = filePath.split('\\').join('/')
+const base = p.split('/').pop()
 
-const isEnvFile = /(^|\/)\.env($|\.)/.test(normalized)
-const isEnvExample = base === '.env.example'
-const isGoSum = base === 'go.sum'
-const isLocalSettings = base === 'settings.local.json'
+/** [test, reason] pairs. First match wins. */
+const RULES = [
+  // ---- universal: every repo in the workspace has these ----
+  [() => /(^|\/)\.env($|\.)/.test(p) && base !== '.env.example',
+    'Environment files hold live credentials. Edit .env.example instead.'],
+  [() => base === 'settings.local.json',
+    'settings.local.json is per-machine. Put shared config in settings.json.'],
+  [() => /\.dec\.ya?ml$/.test(base) || /(^|\/)unsealed[-_]/.test(p),
+    'Decrypted secret payload. Re-seal with kubeseal instead of editing.'],
 
-const isBlocked = (isEnvFile && !isEnvExample) || isGoSum || isLocalSettings
+  // ---- repo-specific ----
+  [() => base === 'go.sum',
+    'Run `go mod tidy` instead of editing go.sum.'],
+]
 
-if (isBlocked) {
-  const reason = isGoSum
-    ? 'Run `go mod tidy` instead.'
-    : isLocalSettings
-      ? 'settings.local.json is per-machine; edit settings.json instead.'
-      : 'Edit .env.example instead.'
-  process.stderr.write(`BLOCKED: ${filePath} should not be edited manually. ${reason}`)
+const hit = RULES.find(([test]) => {
+  try {
+    return test()
+  }
+  catch {
+    return false
+  }
+})
+
+if (hit) {
+  process.stderr.write(`BLOCKED: ${filePath} must not be edited by hand. ${hit[1]}`)
   process.exit(2)
 }
