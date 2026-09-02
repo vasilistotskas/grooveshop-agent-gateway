@@ -73,7 +73,7 @@ func (h *handlers) trackOrder(
 	out.GiftCardAmount = posNum(o.PricingBreakdown.GiftCardAmount)
 	out.Currency = o.PricingBreakdown.Currency
 	for _, it := range o.Items {
-		tr := localized(it.Product.Translations, t.DefaultLocale)
+		tr := django.Localized(it.Product.Translations, t.DefaultLocale)
 		out.Items = append(out.Items, struct {
 			Name     string `json:"name"`
 			Quantity int    `json:"quantity"`

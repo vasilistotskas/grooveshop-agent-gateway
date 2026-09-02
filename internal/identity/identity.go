@@ -19,11 +19,12 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -149,8 +150,7 @@ func Middleware(
 ) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			auth := r.Header.Get("Authorization")
-			token, ok := strings.CutPrefix(auth, "Bearer ")
+			token, ok := httpmw.BearerToken(r)
 			if !ok || token == "" {
 				next.ServeHTTP(w, r)
 				return
@@ -165,21 +165,16 @@ func Middleware(
 			switch {
 			case errors.Is(err, ErrInvalidToken):
 				w.Header().Set("WWW-Authenticate",
-					`Bearer error="invalid_token", resource_metadata=`+
-						`"https://`+t.Domain+
-						`/.well-known/oauth-protected-resource/mcp"`)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusUnauthorized)
-				_, _ = w.Write(
-					[]byte(`{"error":"invalid or expired access token"}`))
+					`Bearer error="invalid_token", resource_metadata="`+
+						storefront.OAuthResourceMetadata(t.Domain)+`"`)
+				httpmw.WriteJSONError(w, http.StatusUnauthorized,
+					"invalid or expired access token")
 				return
 			case err != nil:
 				log.ErrorContext(r.Context(), "token verification failed",
 					slog.String("error", err.Error()))
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusServiceUnavailable)
-				_, _ = w.Write(
-					[]byte(`{"error":"store temporarily unavailable"}`))
+				httpmw.WriteJSONError(w, http.StatusServiceUnavailable,
+					"store temporarily unavailable")
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(

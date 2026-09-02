@@ -3,7 +3,6 @@ package acp
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -35,8 +34,7 @@ func compileACP(t *testing.T, def string) *jsonschema.Schema {
 
 	c := jsonschema.NewCompiler()
 	require.NoError(t, c.AddResource("acp-checkout.json", raw))
-	schema, err := c.Compile(
-		fmt.Sprintf("acp-checkout.json#/$defs/%s", def))
+	schema, err := c.Compile("acp-checkout.json#/$defs/" + def)
 	require.NoError(t, err)
 	return schema
 }
@@ -115,6 +113,17 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 		assert.Contains(t, payload.ContinueURL, "/cart/claim?uuid=")
 		require.Len(t, payload.LineItems, 1)
 		assert.EqualValues(t, 46468, payload.LineItems[0].Item.UnitAmount)
+
+		// Legal links must land on pages the storefront serves; the
+		// terms link used to point at a route that does not exist.
+		links := map[string]string{}
+		for _, l := range payload.Links {
+			links[l.Type] = l.URL
+		}
+		assert.Equal(t, "https://shop.example.test/terms-of-use",
+			links["terms_of_use"])
+		assert.Equal(t, "https://shop.example.test/privacy-policy",
+			links["privacy_policy"])
 	})
 
 	t.Run("filled session is ready_for_payment with COD available",

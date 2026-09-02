@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/text"
 )
 
 // Client is the typed Django API client shared by every surface. Tenancy
@@ -183,7 +184,7 @@ func (c *Client) do(ctx context.Context, r request) error {
 			slog.String("error", err.Error()),
 			slog.Int64("upstream_ms", elapsed.Milliseconds()),
 		)
-		return fmt.Errorf("%w: %s", ErrUpstreamDown, err)
+		return fmt.Errorf("%w: %w", ErrUpstreamDown, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -202,8 +203,12 @@ func (c *Client) do(ctx context.Context, r request) error {
 	return nil
 }
 
+// maxErrorBody bounds how much of an upstream error body is retained; the
+// largest structured failure is a stock shortfall listing cart lines.
+const maxErrorBody = 64 << 10
+
 func (c *Client) apiError(resp *http.Response) error {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 	detail, reason := "", ""
 	var parsed struct {
 		Detail string `json:"detail"`
@@ -217,15 +222,14 @@ func (c *Client) apiError(resp *http.Response) error {
 	// "detail" key — swallowing them leaves undebuggable "Bad Request"
 	// errors, so carry the raw body instead.
 	if detail == "" && len(body) > 0 {
-		detail = string(body)
-		if len(detail) > 512 {
-			detail = detail[:512] + "…"
-		}
+		detail = text.Ellipsize(string(body), 512)
 	}
 	if detail == "" {
 		detail = http.StatusText(resp.StatusCode)
 	}
-	return &APIError{Status: resp.StatusCode, Detail: detail, Reason: reason}
+	return &APIError{
+		Status: resp.StatusCode, Detail: detail, Reason: reason, Body: body,
+	}
 }
 
 func retryable(err error) bool {

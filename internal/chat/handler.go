@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -17,7 +18,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/text"
 )
 
 type Service struct {
@@ -70,13 +73,13 @@ func (s *Service) Handler() http.Handler {
 func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	t, ok := tenant.FromContext(r.Context())
 	if !ok {
-		http.Error(w, "unknown store", http.StatusNotFound)
+		httpmw.WriteJSONError(w, http.StatusNotFound, "unknown store")
 		return
 	}
 	// Chat is a per-tenant capability: no key on the tenant config means
 	// the store has not enabled the assistant.
 	if t.ChatAPIKey == "" {
-		jsonError(w, http.StatusNotFound,
+		httpmw.WriteJSONError(w, http.StatusNotFound,
 			messageFor(t.DefaultLocale, msgChatDisabled))
 		return
 	}
@@ -85,29 +88,29 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(
 		http.MaxBytesReader(w, r.Body, 64<<10),
 	).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid request body")
+		httpmw.WriteJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	req.Message = strings.TrimSpace(req.Message)
 	if req.Message == "" {
-		jsonError(w, http.StatusBadRequest, "message is required")
+		httpmw.WriteJSONError(w, http.StatusBadRequest, "message is required")
 		return
 	}
-	if len(req.Message) > s.cfg.ChatMaxMessageLen {
-		jsonError(w, http.StatusBadRequest, "message is too long")
+	if utf8.RuneCountInString(req.Message) > s.cfg.ChatMaxMessageLen {
+		httpmw.WriteJSONError(w, http.StatusBadRequest, "message is too long")
 		return
 	}
 
 	conv, err := s.store.Load(r.Context(), t.SchemaName, req.ConversationID)
 	switch {
 	case errors.Is(err, ErrConversationFull):
-		jsonError(w, http.StatusConflict,
+		httpmw.WriteJSONError(w, http.StatusConflict,
 			"this conversation is finished; start a new one")
 		return
 	case err != nil:
 		s.log.ErrorContext(r.Context(), "chat load failed",
 			slog.String("error", err.Error()))
-		jsonError(w, http.StatusServiceUnavailable,
+		httpmw.WriteJSONError(w, http.StatusServiceUnavailable,
 			"chat is temporarily unavailable")
 		return
 	}
@@ -119,7 +122,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		jsonError(w, http.StatusInternalServerError, "streaming unsupported")
+		httpmw.WriteJSONError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
 	sse := &sseWriter{w: w, f: flusher}
@@ -147,8 +150,8 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 				// errors in an ARRAY) — the response dump is the source
 				// of truth.
 				slog.String("upstream_response",
-					truncateStr(upstream, 2048)),
-				slog.String("upstream_request", truncateStr(
+					text.Ellipsize(upstream, 2048)),
+				slog.String("upstream_request", text.Ellipsize(
 					redactAuth(string(apierr.DumpRequest(true))), 8192)),
 			)
 			// Rate limits are the one upstream failure the shopper can
@@ -350,19 +353,6 @@ func (s *sseWriter) event(name string, v any) {
 	}
 	_, _ = fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", name, raw)
 	s.f.Flush()
-}
-
-func jsonError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
-}
-
-func truncateStr(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "…"
 }
 
 // quotaFields lift the salient parts of a Gemini RESOURCE_EXHAUSTED body

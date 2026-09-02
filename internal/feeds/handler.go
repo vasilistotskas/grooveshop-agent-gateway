@@ -1,6 +1,7 @@
 package feeds
 
 import (
+	"bytes"
 	"compress/gzip"
 	"io"
 	"log/slog"
@@ -50,7 +51,7 @@ func (s *Service) Handler(kind string) http.Handler {
 			_, _ = w.Write(gz)
 			return
 		}
-		zr, err := gzip.NewReader(strings.NewReader(string(gz)))
+		zr, err := gzip.NewReader(bytes.NewReader(gz))
 		if err != nil {
 			http.Error(w, "feed corrupt", http.StatusInternalServerError)
 			return

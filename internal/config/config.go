@@ -2,20 +2,50 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
 
+// Deployment environments. ENV is validated against this set so a typo
+// cannot silently select the strict production behaviour (or, worse, a
+// relaxed one).
+const (
+	EnvProduction  = "production"
+	EnvDevelopment = "development"
+	EnvTest        = "test"
+)
+
+// Values of Config.PaymentHandlerEnv: the two environments the UCP
+// payment handler's config schema admits.
+const (
+	HandlerEnvProduction = "production"
+	HandlerEnvSandbox    = "sandbox"
+)
+
 // Config holds every per-instance setting. Per-tenant values (branding,
 // locale, feature flags, publishable keys) are served by Django's
 // tenant/resolve endpoint at request time and must never appear here.
 type Config struct {
-	ListenAddr      string
-	Env             string
-	HandlerDocsHost string
-	LogLevel        string
+	ListenAddr string
+	Env        string
+	LogLevel   string
+
+	// AllowLocalWebhooks relaxes UCP webhook-endpoint validation to any
+	// http(s) host. Derived from Env here — and only here — so handlers
+	// consume a value, not an environment check: development and the
+	// e2e suite register httptest servers on 127.0.0.1, while production
+	// must never originate requests to anything but a public https
+	// endpoint.
+	AllowLocalWebhooks bool
+	// PaymentHandlerEnv is what the UCP payment handler advertises as its
+	// `environment`. Only the production deployment reads as production:
+	// every other Env is a sandbox, so a platform keeps its test traffic
+	// out of live order flow. Derived from Env here, like
+	// AllowLocalWebhooks.
+	PaymentHandlerEnv string
 
 	// DjangoBaseURL is the in-cluster API root, e.g.
 	// http://backend-service/api/v1 (no trailing slash).
@@ -36,8 +66,8 @@ type Config struct {
 
 	// AssetsHost is the PLATFORM media origin (e.g. assets.example.com),
 	// used for every tenant that has not opted into white-label asset
-	// URLs — which per docs/tenant-onboarding.md is the default: assets
-	// hosts are not provisioned per tenant. A tenant that HAS opted in
+	// URLs — which, per the infra repo's docs/tenant-onboarding.md, is
+	// the default: assets hosts are not provisioned per tenant. A tenant that HAS opted in
 	// carries its own host in TenantConfig.AssetsDomain, which wins.
 	// Deliberately has no default: guessing a hostname here is what
 	// produced unreachable image URLs, and an empty value now yields an
@@ -83,17 +113,13 @@ type Config struct {
 	ChatMaxMessageLen int
 }
 
-// Load reads the environment and fails fast on missing required values so
-// a misconfigured pod crashes at startup instead of serving errors.
+// Load reads the environment and fails fast on missing or malformed
+// values so a misconfigured pod crashes at startup instead of serving
+// errors.
 func Load() (Config, error) {
 	cfg := Config{
-		ListenAddr: envOr("LISTEN_ADDR", ":8080"),
-		Env:        envOr("ENV", "production"),
-		// Host that serves the UCP payment handler's spec and schemas.
-		// Authority binding pins it to the reverse of HandlerName, so it
-		// is the SAME host in every environment; the knob exists so a
-		// test can point it at a local listener.
-		HandlerDocsHost:  envOr("HANDLER_DOCS_HOST", "payments.grooveshop.space"),
+		ListenAddr:       envOr("LISTEN_ADDR", ":8080"),
+		Env:              envOr("ENV", EnvProduction),
 		LogLevel:         envOr("LOG_LEVEL", "info"),
 		DjangoBaseURL:    strings.TrimRight(os.Getenv("DJANGO_BASE_URL"), "/"),
 		DjangoPublicHost: os.Getenv("DJANGO_PUBLIC_HOST"),
@@ -112,47 +138,63 @@ func Load() (Config, error) {
 				"/1000/1000/contain/center/FFFFFF/5/85.jpeg"),
 	}
 
+	switch cfg.Env {
+	case EnvProduction:
+		cfg.PaymentHandlerEnv = HandlerEnvProduction
+	case EnvDevelopment, EnvTest:
+		cfg.AllowLocalWebhooks = true
+		cfg.PaymentHandlerEnv = HandlerEnvSandbox
+	default:
+		return Config{}, fmt.Errorf(
+			"config: ENV must be %s, %s or %s (got %q)",
+			EnvProduction, EnvDevelopment, EnvTest, cfg.Env)
+	}
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
+		return Config{}, fmt.Errorf("config: LOG_LEVEL: %w", err)
+	}
+
 	var err error
-	if cfg.TenantCacheTTL, err = durationOr("TENANT_CACHE_TTL", 5*time.Minute); err != nil {
+	if cfg.TenantCacheTTL, err = parseOr("TENANT_CACHE_TTL", 5*time.Minute, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
-	if cfg.NegativeCacheTTL, err = durationOr("TENANT_NEGATIVE_CACHE_TTL", time.Minute); err != nil {
+	if cfg.NegativeCacheTTL, err = parseOr("TENANT_NEGATIVE_CACHE_TTL", time.Minute, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
-	if cfg.UpstreamTimeout, err = durationOr("UPSTREAM_TIMEOUT", 10*time.Second); err != nil {
+	if cfg.UpstreamTimeout, err = parseOr("UPSTREAM_TIMEOUT", 10*time.Second, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
-	if cfg.RateLimitPerMin, err = intOr("RATE_LIMIT_PER_MIN", 120); err != nil {
+	if cfg.RateLimitPerMin, err = parseOr("RATE_LIMIT_PER_MIN", 120, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.RateLimitBurst, err = intOr("RATE_LIMIT_BURST", 40); err != nil {
+	if cfg.RateLimitBurst, err = parseOr("RATE_LIMIT_BURST", 40, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.ChatMaxTokens, err = intOr("CHAT_MAX_TOKENS", 2048); err != nil {
+	if cfg.ChatMaxTokens, err = parseOr("CHAT_MAX_TOKENS", 2048, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.ChatMaxTurns, err = intOr("CHAT_MAX_TURNS", 40); err != nil {
+	if cfg.ChatMaxTurns, err = parseOr("CHAT_MAX_TURNS", 40, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.ChatMaxIterations, err = intOr("CHAT_MAX_ITERATIONS", 6); err != nil {
+	if cfg.ChatMaxIterations, err = parseOr("CHAT_MAX_ITERATIONS", 6, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.ChatRatePerMin, err = intOr("CHAT_RATE_LIMIT_PER_MIN", 20); err != nil {
+	if cfg.ChatRatePerMin, err = parseOr("CHAT_RATE_LIMIT_PER_MIN", 20, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.ChatRateBurst, err = intOr("CHAT_RATE_LIMIT_BURST", 5); err != nil {
+	if cfg.ChatRateBurst, err = parseOr("CHAT_RATE_LIMIT_BURST", 5, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.ChatMaxMessageLen, err = intOr("CHAT_MAX_MESSAGE_LEN", 2000); err != nil {
+	if cfg.ChatMaxMessageLen, err = parseOr("CHAT_MAX_MESSAGE_LEN", 2000, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.ConversationTTL, err = durationOr("CHAT_CONVERSATION_TTL", 24*time.Hour); err != nil {
+	if cfg.ConversationTTL, err = parseOr("CHAT_CONVERSATION_TTL", 24*time.Hour, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
-	if cfg.FeedFreshTTL, err = durationOr("FEED_FRESH_TTL", 6*time.Hour); err != nil {
+	if cfg.FeedFreshTTL, err = parseOr("FEED_FRESH_TTL", 6*time.Hour, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
-	if cfg.FeedStaleTTL, err = durationOr("FEED_STALE_TTL", 24*time.Hour); err != nil {
+	if cfg.FeedStaleTTL, err = parseOr("FEED_STALE_TTL", 24*time.Hour, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
 
@@ -194,26 +236,17 @@ func envOr(key, def string) string {
 	return def
 }
 
-func durationOr(key string, def time.Duration) (time.Duration, error) {
+// parseOr reads key through parse, returning def when the variable is
+// unset and a key-labelled error when it is set but malformed.
+func parseOr[T any](key string, def T, parse func(string) (T, error)) (T, error) {
 	v := os.Getenv(key)
 	if v == "" {
 		return def, nil
 	}
-	d, err := time.ParseDuration(v)
+	out, err := parse(v)
 	if err != nil {
-		return 0, fmt.Errorf("config: %s: %w", key, err)
+		var zero T
+		return zero, fmt.Errorf("config: %s: %w", key, err)
 	}
-	return d, nil
-}
-
-func intOr(key string, def int) (int, error) {
-	v := os.Getenv(key)
-	if v == "" {
-		return def, nil
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return 0, fmt.Errorf("config: %s: %w", key, err)
-	}
-	return n, nil
+	return out, nil
 }

@@ -3,10 +3,12 @@ package ucp
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/media"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -100,8 +102,8 @@ type Builder struct {
 	dj               *django.Client
 	mediaURLTemplate string
 	assetsHost       string
-	// env is the deployment environment, surfaced to platforms in the
-	// handler config so they can keep test traffic out of live orders.
+	// env is the payment handler's environment (config.PaymentHandlerEnv),
+	// surfaced to platforms so they keep test traffic out of live orders.
 	env string
 }
 
@@ -151,10 +153,8 @@ func (b *Builder) BuildCheckout(
 		Status:    string(s.Status),
 		Currency:  t.DefaultCurrency,
 		Links: []Link{
-			{Type: "terms_of_service",
-				URL: fmt.Sprintf("https://%s/terms-and-conditions", t.Domain)},
-			{Type: "privacy_policy",
-				URL: fmt.Sprintf("https://%s/privacy-policy", t.Domain)},
+			{Type: "terms_of_service", URL: storefront.Terms(t.Domain)},
+			{Type: "privacy_policy", URL: storefront.Privacy(t.Domain)},
 		},
 	}
 
@@ -169,9 +169,9 @@ func (b *Builder) BuildCheckout(
 
 	for _, line := range pricing.Lines {
 		out.LineItems = append(out.LineItems, LineItem{
-			ID: fmt.Sprintf("%d", line.CartItemID),
+			ID: strconv.FormatInt(line.CartItemID, 10),
 			Item: Item{
-				ID:    fmt.Sprintf("%d", line.ProductID),
+				ID:    strconv.FormatInt(line.ProductID, 10),
 				Title: line.Title,
 				Price: line.UnitMinor,
 				ImageURL: media.ImageURL(b.mediaURLTemplate,
@@ -216,8 +216,7 @@ func (b *Builder) BuildCheckout(
 		// storefront's own claim page for this cart.
 		out.ContinueURL = s.PaymentURL
 		if out.ContinueURL == "" {
-			out.ContinueURL = fmt.Sprintf("https://%s/cart/claim?uuid=%s",
-				t.Domain, s.CartID)
+			out.ContinueURL = storefront.CartClaim(t.Domain, s.CartID)
 		}
 		out.Messages = append(out.Messages, Message{
 			Type: "info", Code: "requires_buyer_review",
@@ -232,10 +231,9 @@ func (b *Builder) BuildCheckout(
 	}
 	if s.OrderUUID != "" && s.Status == checkout.StatusCompleted {
 		out.Order = &OrderConfirmation{
-			ID:    s.OrderUUID,
-			Label: fmt.Sprintf("Order %d", s.OrderID),
-			PermalinkURL: fmt.Sprintf("https://%s/checkout/success/%s",
-				t.Domain, s.OrderUUID),
+			ID:           s.OrderUUID,
+			Label:        fmt.Sprintf("Order %d", s.OrderID),
+			PermalinkURL: storefront.OrderSuccess(t.Domain, s.OrderUUID),
 		}
 	}
 	return out, nil

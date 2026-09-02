@@ -9,8 +9,30 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/feeds"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
+
+// requireInternalToken gates the cluster-internal routes on the shared
+// secret. The routes are never exposed via ingress; the token is a second
+// layer, checked before the body is read so an unauthenticated caller
+// cannot tell a malformed body from a valid one.
+//
+// The constant-time compare would accept an empty token against an empty
+// secret, which is fine only because config.Load lists
+// INTERNAL_EVENTS_SECRET as required — the gateway refuses to start
+// without one, so these routes can never be live with an empty secret.
+func requireInternalToken(secret string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		provided := r.Header.Get("X-Internal-Token")
+		if subtle.ConstantTimeCompare(
+			[]byte(provided), []byte(secret)) != 1 {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // orderEventBody is what Django's Celery task POSTs on order/payment
 // status transitions.
@@ -22,24 +44,16 @@ type orderEventBody struct {
 	TrackingNumber string `json:"trackingNumber"`
 }
 
-// internalOrderEvents handles POST /internal/events/order-status. The route
-// is cluster-internal (never exposed via ingress); the shared secret is a
-// second layer. Responding non-2xx makes Celery retry, which combined with
-// the Redis-list dispatcher yields at-least-once platform delivery.
+// internalOrderEvents handles POST /internal/events/order-status.
+// Responding non-2xx makes Celery retry, which combined with the
+// Redis-list dispatcher yields at-least-once platform delivery.
 func internalOrderEvents(
 	secret string,
 	flow *checkout.Flow,
 	dispatcher *ucp.Dispatcher,
 	log *slog.Logger,
 ) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		provided := r.Header.Get("X-Internal-Token")
-		if subtle.ConstantTimeCompare(
-			[]byte(provided), []byte(secret)) != 1 {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-
+	return requireInternalToken(secret, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body orderEventBody
 		if err := json.NewDecoder(
 			http.MaxBytesReader(w, r.Body, 64<<10),
@@ -76,8 +90,8 @@ func internalOrderEvents(
 				OrderUUID:     body.OrderUUID,
 				Status:        body.Status,
 				PaymentStatus: body.PaymentStatus,
-				PermalinkURL: "https://" + session.Domain +
-					"/checkout/success/" + body.OrderUUID,
+				PermalinkURL: storefront.OrderSuccess(
+					session.Domain, body.OrderUUID),
 				OccurredAt: time.Now().UTC(),
 				TargetURL:  session.WebhookURL,
 			}
@@ -90,7 +104,7 @@ func internalOrderEvents(
 			}
 		}
 		w.WriteHeader(http.StatusNoContent)
-	})
+	}))
 }
 
 // feedInvalidateBody names the tenant whose feeds went stale.
@@ -105,28 +119,13 @@ type feedInvalidateBody struct {
 // of a stale feed was to wait it out or delete the keys by hand — a
 // merchant's price change took up to six hours to reach Google, Meta and
 // TikTok. Django's cache-purge service now calls this so a catalogue
-// purge covers the feeds too.
-//
-// Same shape as internalOrderEvents: cluster-internal route, shared
-// secret as a second layer, and a non-2xx makes the caller retry.
-//
-// The constant-time compare would accept an empty token against an
-// empty secret, which is fine here only because config.Load lists
-// INTERNAL_EVENTS_SECRET as required — the gateway refuses to start
-// without one, so the route can never be live with an empty secret.
+// purge covers the feeds too. A non-2xx makes the caller retry.
 func internalFeedInvalidate(
 	secret string,
 	svc *feeds.Service,
 	log *slog.Logger,
 ) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		provided := r.Header.Get("X-Internal-Token")
-		if subtle.ConstantTimeCompare(
-			[]byte(provided), []byte(secret)) != 1 {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-
+	return requireInternalToken(secret, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body feedInvalidateBody
 		if err := json.NewDecoder(
 			http.MaxBytesReader(w, r.Body, 4<<10),
@@ -150,5 +149,5 @@ func internalFeedInvalidate(
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"removed": removed})
-	})
+	}))
 }

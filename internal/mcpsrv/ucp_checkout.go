@@ -108,7 +108,7 @@ func (h *handlers) createCheckout(
 			"webhookUrl rejected: %w", err)
 	}
 
-	s := checkout.NewSession(t.SchemaName, t.Domain, "ucp", cartID)
+	s := checkout.NewSession(t.SchemaName, t.Domain, checkout.ProtocolUCP, cartID)
 	s.WebhookURL = in.WebhookURL
 	codes, hasCodes := in.Checkout.discountCodes()
 	if hasCodes {
@@ -215,11 +215,11 @@ func (h *handlers) completeCheckout(
 	}
 	defer release()
 
-	// A completed session re-renders its final state (idempotent reads).
-	if s.Status == checkout.StatusCompleted {
-		return h.checkoutResult(ctx, t, s)
-	}
-	if s.Status == checkout.StatusRequiresEscalation {
+	// A completed or escalated session re-renders its final state
+	// (idempotent reads); the escalation resolves through the order
+	// event, never through a second complete.
+	if s.Status == checkout.StatusCompleted ||
+		s.Status == checkout.StatusRequiresEscalation {
 		return h.checkoutResult(ctx, t, s)
 	}
 
@@ -246,7 +246,7 @@ func (h *handlers) completeCheckout(
 	}
 
 	idemKey := in.Meta.IdempotencyKey
-	_, claimed, err := h.deps.Checkout.ClaimCompletion(
+	claimed, err := h.deps.Checkout.ClaimCompletion(
 		ctx, t.SchemaName, s.ID, idemKey)
 	if err != nil {
 		if errors.Is(err, checkout.ErrCompletionInProgress) {
@@ -296,14 +296,10 @@ func (h *handlers) completeCheckout(
 			"the order was placed but checkout state could not be saved; " +
 				"track it with track_order using orderUuid " + s.OrderUUID)
 	}
-	res, out, err := h.checkoutResult(ctx, t, s)
-	if err == nil {
-		if raw, mErr := marshalCheckout(out); mErr == nil {
-			_ = h.deps.Checkout.StoreCompletion(
-				ctx, t.SchemaName, s.ID, idemKey, raw)
-		}
-	}
-	return res, out, err
+	// The order exists now, whatever the render below does: a retried
+	// key must re-render, never place a second order.
+	_ = h.deps.Checkout.MarkCompleted(ctx, t.SchemaName, s.ID, idemKey)
+	return h.checkoutResult(ctx, t, s)
 }
 
 func (h *handlers) lockedSession(
@@ -393,10 +389,6 @@ func (h *handlers) discountAnnotated(
 		tc.Text += " Note: " + strings.Join(notes, "; ") + "."
 	}
 	return res, out, err
-}
-
-func marshalCheckout(c ucp.Checkout) ([]byte, error) {
-	return jsonMarshal(c)
 }
 
 // getCheckout re-renders a session. Read-only, so it takes no lock and

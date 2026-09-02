@@ -187,11 +187,10 @@ func TestResolvePayWayHonoursTheSelectedInstrument(t *testing.T) {
 }
 
 func gatedTenant(hosted bool) *tenant.Tenant {
-	on := true
 	return &tenant.Tenant{
 		TenantConfig: django.TenantConfig{
-			AgentCommerceEnabled:      &on,
-			AgentHostedPaymentEnabled: &hosted,
+			AgentCommerceEnabled:      true,
+			AgentHostedPaymentEnabled: hosted,
 		},
 	}
 }

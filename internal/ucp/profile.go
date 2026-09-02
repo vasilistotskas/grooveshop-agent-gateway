@@ -2,9 +2,9 @@ package ucp
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -64,7 +64,6 @@ type Capability struct {
 func BuildProfile(
 	t *tenant.Tenant, key *SigningKey, env string,
 ) *Profile {
-	base := "https://" + t.Domain
 	profile := &Profile{
 		UCP: ProfileEnvelope{
 			Version: Version,
@@ -73,7 +72,7 @@ func BuildProfile(
 					Version:   Version,
 					Spec:      specBase + "/specification/overview/",
 					Transport: "mcp",
-					Endpoint:  base + "/mcp",
+					Endpoint:  storefront.MCP(t.Domain),
 					// The OpenRPC document defining the MCP tool
 					// surface. Declaring it asserts a machine-checkable
 					// contract, so it may only appear while every method
@@ -130,15 +129,7 @@ func ProfileHandler(keys *Keys, env string) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "public, max-age=300")
-		if err := json.NewEncoder(w).Encode(BuildProfile(t, key, env)); err != nil {
-			// Headers are already written; nothing recoverable remains.
-			_ = err
-		}
+		// Headers are already written; nothing recoverable remains.
+		_ = json.NewEncoder(w).Encode(BuildProfile(t, key, env))
 	})
-}
-
-// String renders a profile for diagnostics.
-func (p *Profile) String() string {
-	raw, _ := json.Marshal(p)
-	return fmt.Sprintf("ucp-profile:%s", raw)
 }

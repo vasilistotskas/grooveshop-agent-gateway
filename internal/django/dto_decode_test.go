@@ -132,6 +132,19 @@ func TestDecodePayWays(t *testing.T) {
 	assert.False(t, cod.IsOnlinePayment)
 }
 
+func TestDecodeReserveStock(t *testing.T) {
+	res := decodeFixture[ReserveStockResult](t, "reserve_stock.json")
+	assert.Equal(t, []int64{77, 78}, res.ReservationIDs)
+	assert.NotEmpty(t, res.Message)
+
+	shortfall := decodeFixture[StockShortfall](t, "reserve_stock_shortfall.json")
+	assert.NotEmpty(t, shortfall.Detail)
+	require.Len(t, shortfall.FailedItems, 1)
+	assert.Equal(t, int64(5), shortfall.FailedItems[0].ProductID)
+	assert.Equal(t, 1, shortfall.FailedItems[0].Available)
+	assert.Equal(t, 3, shortfall.FailedItems[0].Requested)
+}
+
 func TestDecodeShippingOptions(t *testing.T) {
 	opts := decodeFixture[[]ShippingOption](t, "shipping_options.json")
 

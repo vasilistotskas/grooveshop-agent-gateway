@@ -43,8 +43,12 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
 ## Architecture
 
 - `cmd/gateway` — wiring only: config → clients → mux → graceful shutdown.
-- `internal/config` — env config, fail-fast `Load()`. Per-tenant values come
-  from Django `tenant/resolve` at request time, never env.
+- `internal/config` — env config, fail-fast `Load()`: unknown `ENV` or
+  `LOG_LEVEL` values refuse to boot, and `ENV` (production |
+  development | test) is folded into `AllowLocalWebhooks` and
+  `PaymentHandlerEnv` there so no handler compares environment strings.
+  Per-tenant values come from Django `tenant/resolve` at request time,
+  never env.
 - `internal/identity` — optional-auth middleware on /mcp: a present
   `Authorization: Bearer` is verified against Django `/agent/me`
   (60s in-memory cache, SHA-256 keys); invalid tokens get 401 + the
@@ -68,6 +72,13 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   `/healthz` is process-only; `/readyz` gates on Redis ONLY — Django-down
   must never flip readiness (agents get actionable errors, not 502s).
 - `internal/server` — mux assembly; new route groups register here.
+- `internal/storefront` — every link into the Nuxt storefront (product,
+  cart claim, order success, legal pages, OAuth metadata). The paths are
+  a cross-repo contract with the Nuxt `app/pages` and `server/routes`
+  trees; build URLs here, never with a `"https://" + domain + path`
+  literal in a renderer.
+- `internal/text` — rune-safe truncation. Byte-index cuts split Greek
+  runes; use `text.Runes` / `text.Ellipsize`.
 - `testdata/fixtures/django/` — recorded upstream responses; DTO decode
   tests guard drift. Refresh when `grooveshop-django-api/schema.yml`
   changes a used endpoint.
@@ -76,8 +87,11 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
 
 - Hand-written minimal DTOs (camelCase tags); decode with `UseNumber()`,
   money as `json.Number` → integer cents internally, format at the edge.
-- Business failures in MCP tools return `CallToolResult{IsError: true}`
-  with actionable text — never a Go error (that becomes a protocol error).
+- Business failures in MCP tools surface as `CallToolResult{IsError:
+  true}` with actionable text. Returning a plain Go error from a typed
+  tool handler is fine — the SDK wraps it into exactly that; only a
+  `*jsonrpc.Error` becomes a protocol error, so never return one for a
+  business condition.
 - **The canonical UCP tools take the wire shapes from the OpenRPC document**
   (`create_checkout`, `get_checkout`, `update_checkout`,
   `complete_checkout`, `cancel_checkout`): `meta` (with
@@ -96,10 +110,12 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   advertised and accepted only while `HostedPaymentOn()`; the gate is
   the Tenant plan flag AND the `AGENT_HOSTED_PAYMENT_ENABLED`
   extra-setting, folded by Django into `agentHostedPaymentEnabled`.
-  Unlike the surface gates it FAILS CLOSED — a payment behaviour must
-  not switch on from a payload that never mentioned it. A gated
-  `pay_way_id` is REFUSED, never ignored: ignoring would complete
-  against a stale selection. These five tools are withheld from the
+  Every tenant gate (`agentCommerceEnabled`, `productFeedsEnabled`,
+  `agentHostedPaymentEnabled`) is a plain boolean Django always emits;
+  a payload without one decodes as OFF, and the `*On()` accessors
+  encode the subordination to agent commerce. A gated `pay_way_id` is
+  REFUSED, never ignored: ignoring would complete against a stale
+  selection. These five tools are withheld from the
   chatbot (`internal/chat/bridge.go`) — their shapes target a platform
   generating calls, and chat hands over a checkout link instead.
 - The service `schema` (OpenRPC) URL may appear ONLY while every method it

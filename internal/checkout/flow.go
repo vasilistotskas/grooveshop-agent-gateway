@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -59,7 +60,7 @@ func (f *Flow) Complete(
 	// tokenized card completion (Stripe) arrives with the ACP delegated
 	// payment flag.
 	online := payWay.IsOnlinePayment
-	if online && payWay.ProviderCode != "viva_wallet" {
+	if online && payWay.ProviderCode != django.ProviderVivaWallet {
 		return nil, ErrPaymentMethodUnsupported
 	}
 
@@ -109,11 +110,10 @@ func (f *Flow) Complete(
 	// Viva: the buyer authorizes on the hosted page; portal-configured
 	// success URLs land back on the storefront. The API requires the URL
 	// fields even though Viva's are static in the merchant portal.
-	successURL := fmt.Sprintf("https://%s/checkout/success/%s",
-		t.Domain, order.UUID)
-	cancelURL := fmt.Sprintf("https://%s/cart", t.Domain)
 	cs, err := f.dj.CreateOrderCheckoutSession(ctx, t.Domain, t.DefaultLocale,
-		order.ID, order.UUID, successURL, cancelURL)
+		order.ID, order.UUID,
+		storefront.OrderSuccess(t.Domain, order.UUID),
+		storefront.Cart(t.Domain))
 	if err != nil {
 		// The order exists but the payment session failed: keep the
 		// escalation pending so a retry can mint a fresh Viva code.
@@ -142,7 +142,7 @@ func (f *Flow) ApplyOrderEvent(
 	if s.Terminal() {
 		return s, nil
 	}
-	if paymentStatus == "COMPLETED" {
+	if paymentStatus == django.PaymentStatusCompleted {
 		s.Status = StatusCompleted
 		if err := f.st.Save(ctx, s); err != nil {
 			return nil, err

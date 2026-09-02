@@ -16,8 +16,7 @@ import (
 const (
 	pageSize = 100
 	// maxPages caps the catalog sweep; combined with pageSize this is a
-	// 10k ceiling. Unlike the old Nuxt implementation the cap is logged
-	// per generation (no silent truncation) and pages fetch concurrently.
+	// 10k ceiling, logged per generation so truncation is never silent.
 	maxPages = 100
 	// fetchWorkers pages in flight; emitWindow completed-but-unemitted
 	// pages, bounding memory to ~emitWindow*pageSize products.
@@ -53,15 +52,18 @@ func fetchAllProducts(
 		totalPages = maxPages
 	}
 
+	// Every early return below cancels the producer and the in-flight
+	// fetches: the errgroup only cancels its context on a failed task or
+	// on Wait, so an emit error that returned without either would leave
+	// the producer parked on the window forever.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(fetchWorkers)
 
-	type slot struct {
-		ch chan []django.Product
-	}
-	slots := make(map[int]slot, totalPages)
+	slots := make(map[int]chan []django.Product, totalPages)
 	for p := 2; p <= totalPages; p++ {
-		slots[p] = slot{ch: make(chan []django.Product, 1)}
+		slots[p] = make(chan []django.Product, 1)
 	}
 	// window tokens are released only after a page is EMITTED, hard-
 	// bounding completed-but-unconsumed pages even if emission stalls.
@@ -80,7 +82,7 @@ func fetchAllProducts(
 				if err != nil {
 					return fmt.Errorf("feeds: page %d: %w", page, err)
 				}
-				slots[page].ch <- res.Results
+				slots[page] <- res.Results
 				return nil
 			})
 		}
@@ -88,7 +90,7 @@ func fetchAllProducts(
 
 	for p := 2; p <= totalPages; p++ {
 		select {
-		case products := <-slots[p].ch:
+		case products := <-slots[p]:
 			for _, prod := range products {
 				if err := emit(prod); err != nil {
 					return count, truncated, err

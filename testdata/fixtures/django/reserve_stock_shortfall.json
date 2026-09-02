@@ -1,0 +1,11 @@
+{
+  "detail": "Insufficient stock for one or more items",
+  "failedItems": [
+    {
+      "productId": 5,
+      "productName": "Θήκη Κινητού",
+      "available": 1,
+      "requested": 3
+    }
+  ]
+}

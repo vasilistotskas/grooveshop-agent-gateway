@@ -30,7 +30,8 @@ const (
 
 var kinds = []string{KindGoogle, KindMeta, KindTikTok, KindACP}
 
-// maxConcurrentGenerations bounds catalog sweeps per pod (memory guard).
+// generationSlots bounds concurrent catalog sweeps per pod (memory
+// guard); the semaphore is shared by every tenant.
 var generationSlots = make(chan struct{}, 2)
 
 type Meta struct {
@@ -120,8 +121,6 @@ func (s *Service) fromCache(
 	return []byte(data), meta, true
 }
 
-// refreshAsync regenerates in the background, decoupled from the request
-// context; singleflight collapses concurrent refreshes per tenant.
 // Invalidate drops every cached feed for one tenant so the next request
 // regenerates from Django.
 //
@@ -145,6 +144,8 @@ func (s *Service) Invalidate(ctx context.Context, schema string) (int64, error) 
 	return s.rdb.Unlink(ctx, keys...).Result()
 }
 
+// refreshAsync regenerates in the background, decoupled from the request
+// context; singleflight collapses concurrent refreshes per tenant.
 func (s *Service) refreshAsync(t *tenant.Tenant) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -205,7 +206,10 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 			if !p.Active {
 				return nil
 			}
-			item := newFeedItem(&p, fctx)
+			item, err := newFeedItem(&p, fctx)
+			if err != nil {
+				return err
+			}
 			if item == nil {
 				skipped++
 				return nil
@@ -213,19 +217,7 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 			for _, w := range rss {
 				w.Item(item)
 			}
-			finalCents, err := minorUnits(p.FinalPrice.String())
-			if err != nil {
-				return err
-			}
-			priceCents, err := minorUnits(p.Price.String())
-			if err != nil {
-				return err
-			}
-			vatCents, err := minorUnits(p.VatValue.String())
-			if err != nil {
-				return err
-			}
-			acp.Item(item, finalCents, priceCents+vatCents)
+			acp.Item(item)
 			return nil
 		})
 	if err != nil {

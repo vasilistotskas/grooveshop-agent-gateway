@@ -9,11 +9,15 @@ import (
 	"strings"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/media"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/text"
 )
 
-// The RSS dialect (RSS 2.0 + xmlns:g) is byte-compatible with the feed the
-// storefront used to render: Meta Commerce Manager, TikTok Ads Manager and
-// Google Merchant Center all ingest it. Spec constraints preserved:
+// The RSS dialect (RSS 2.0 + xmlns:g) is the one Meta Commerce Manager,
+// TikTok Ads Manager and Google Merchant Center all ingest, and it is the
+// shape those platforms already hold for these stores. Spec constraints:
 //   - price format "12.34 EUR" — dot decimal, space, ISO 4217 code
 //   - availability enum: "in stock" | "out of stock"
 //   - images JPEG/PNG only (never WebP), >=500x500 — the feed image
@@ -44,14 +48,16 @@ type feedContext struct {
 
 // feedItem is the normalized per-product row all writers consume.
 type feedItem struct {
-	ID           int64
-	Title        string
-	Description  string
-	Link         string
-	ImageLink    string
-	InStock      bool
-	RegularPrice float64
-	SalePrice    float64
+	ID          int64
+	Title       string
+	Description string
+	Link        string
+	ImageLink   string
+	InStock     bool
+	// Prices are ISO 4217 minor units, like everywhere else in the
+	// gateway; formatFeedPrice renders them at the edge.
+	RegularMinor int64
+	SaleMinor    int64
 	HasSalePrice bool
 	Brand        string
 	CategoryName string
@@ -59,24 +65,34 @@ type feedItem struct {
 	Currency     string
 }
 
-// newFeedItem maps a product row; nil means the platforms would reject the
-// product anyway (no default-locale name or no image), matching the
-// previous implementation's skip rule.
-func newFeedItem(p *django.Product, ctx *feedContext) *feedItem {
+// newFeedItem maps a product row; a nil item means the platforms would
+// reject the product anyway (no default-locale name or no image), so it
+// is skipped rather than emitted broken. A malformed money field is an
+// error: it would corrupt every consumer's feed.
+func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 	tr := p.Translations[ctx.Locale]
 	if tr.Name == "" || p.MainImagePath == "" {
-		return nil
+		return nil, nil
 	}
-	title := truncateRunes(tr.Name, feedTitleMax)
+	title := text.Runes(tr.Name, feedTitleMax)
 	desc := strings.TrimSpace(decodeHTMLEntities(stripHTMLTags(tr.Description)))
 	if desc == "" {
 		desc = tr.Name
 	}
-	desc = truncateRunes(desc, feedDescriptionMax)
+	desc = text.Runes(desc, feedDescriptionMax)
 
-	price, _ := p.Price.Float64()
-	vat, _ := p.VatValue.Float64()
-	final, _ := p.FinalPrice.Float64()
+	price, err := money.MinorUnits(p.Price.String())
+	if err != nil {
+		return nil, err
+	}
+	vat, err := money.MinorUnits(p.VatValue.String())
+	if err != nil {
+		return nil, err
+	}
+	final, err := money.MinorUnits(p.FinalPrice.String())
+	if err != nil {
+		return nil, err
+	}
 	discount, _ := p.DiscountPercent.Float64()
 	regular := price + vat
 
@@ -88,18 +104,17 @@ func newFeedItem(p *django.Product, ctx *feedContext) *feedItem {
 	return &feedItem{
 		ID:    p.ID,
 		Title: title, Description: desc,
-		Link: fmt.Sprintf("https://%s/products/%d/%s",
-			ctx.Domain, p.ID, p.Slug),
+		Link:         storefront.Product(ctx.Domain, p.ID, p.Slug),
 		ImageLink:    feedImageURL(ctx, p.MainImagePath),
 		InStock:      p.Stock > 0,
-		RegularPrice: regular,
-		SalePrice:    final,
+		RegularMinor: regular,
+		SaleMinor:    final,
 		HasSalePrice: discount > 0 && final < regular,
 		Brand:        brand,
 		CategoryName: ctx.CategoryNames[p.Category],
 		VariantGroup: p.VariantGroup,
 		Currency:     ctx.Currency,
-	}
+	}, nil
 }
 
 // rssWriter accumulates one RSS-dialect feed. All three RSS kinds share it;
@@ -134,11 +149,11 @@ func (w *rssWriter) Item(it *feedItem) {
 		fmt.Sprintf("<g:availability>%s</g:availability>", availability(it.InStock)),
 		"<g:condition>new</g:condition>",
 		fmt.Sprintf("<g:price>%s</g:price>",
-			formatFeedPrice(it.RegularPrice, it.Currency)),
+			formatFeedPrice(it.RegularMinor, it.Currency)),
 	)
 	if it.HasSalePrice {
 		fields = append(fields, fmt.Sprintf("<g:sale_price>%s</g:sale_price>",
-			formatFeedPrice(it.SalePrice, it.Currency)))
+			formatFeedPrice(it.SaleMinor, it.Currency)))
 	}
 	fields = append(fields,
 		fmt.Sprintf("<g:brand>%s</g:brand>", escapeXML(it.Brand)))
@@ -168,8 +183,8 @@ func availability(inStock bool) string {
 	return "out of stock"
 }
 
-func formatFeedPrice(amount float64, currency string) string {
-	return strconv.FormatFloat(amount, 'f', 2, 64) + " " + currency
+func formatFeedPrice(minor int64, currency string) string {
+	return money.Format(minor) + " " + currency
 }
 
 // escapeXML matches the storefront's escapeXml byte-for-byte (named
@@ -225,28 +240,13 @@ func decodeHTMLEntities(v string) string {
 }
 
 // feedImageURL expands the feed image template, percent-encoding each path
-// segment (social crawlers reject raw unicode in URLs).
+// segment (social crawlers reject raw unicode in URLs). An unresolved
+// media origin yields no URL rather than an unreachable one.
 func feedImageURL(ctx *feedContext, path string) string {
 	segments := strings.Split(path, "/")
 	for i, s := range segments {
 		segments[i] = url.PathEscape(s)
 	}
-	if ctx.AssetsHost == "" {
-		// No media origin configured — emit nothing rather than an
-		// unreachable URL that ad platforms reject silently.
-		return ""
-	}
-	return strings.NewReplacer(
-		"{assets_host}", ctx.AssetsHost,
-		"{schema}", ctx.Schema,
-		"{path}", strings.Join(segments, "/"),
-	).Replace(ctx.ImageURLTemplate)
-}
-
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max])
+	return media.ImageURL(ctx.ImageURLTemplate, ctx.AssetsHost, ctx.Schema,
+		strings.Join(segments, "/"))
 }

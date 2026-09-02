@@ -32,6 +32,14 @@ const (
 	// one short string per order, so retention costs almost nothing.
 	orderIdxTTL = 365 * 24 * time.Hour
 	lockTTL     = 10 * time.Second
+
+	// Completion-claim markers. A claim is held while the first attempt
+	// runs and, once it succeeds, kept for the session's terminal
+	// lifetime so a retried key re-renders the final state instead of
+	// placing a second order.
+	claimInflight = "inflight"
+	claimDone     = "done"
+	claimTTL      = time.Minute
 )
 
 // Store persists sessions in Redis. Checkout fails closed without Redis:
@@ -131,35 +139,38 @@ func (st *Store) Lock(ctx context.Context, schema, id string) (func(), error) {
 	}, nil
 }
 
-// ClaimCompletion makes complete idempotent: the first caller claims the
-// slot, duplicates read the stored outcome or are told to retry.
+// ClaimCompletion makes complete idempotent: the first caller for a key
+// claims it and places the order; a caller whose key was already
+// claimed gets claimed=false and re-renders the session's current state,
+// or ErrCompletionInProgress while the first attempt is still running.
 func (st *Store) ClaimCompletion(
 	ctx context.Context, schema, id, idempotencyKey string,
-) (prior []byte, claimed bool, err error) {
+) (claimed bool, err error) {
 	key := idemKey(schema, id, idempotencyKey)
-	ok, err := st.rdb.SetNX(ctx, key, "inflight", time.Minute).Result()
+	ok, err := st.rdb.SetNX(ctx, key, claimInflight, claimTTL).Result()
 	if err != nil {
-		return nil, false, fmt.Errorf("checkout: idempotency: %w", err)
+		return false, fmt.Errorf("checkout: idempotency: %w", err)
 	}
 	if ok {
-		return nil, true, nil
+		return true, nil
 	}
-	raw, err := st.rdb.Get(ctx, key).Result()
+	state, err := st.rdb.Get(ctx, key).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
-		return nil, false, fmt.Errorf("checkout: idempotency read: %w", err)
+		return false, fmt.Errorf("checkout: idempotency read: %w", err)
 	}
-	if raw == "" || raw == "inflight" {
-		return nil, false, ErrCompletionInProgress
+	if state != claimDone {
+		return false, ErrCompletionInProgress
 	}
-	return []byte(raw), false, nil
+	return false, nil
 }
 
-// StoreCompletion persists the final completion payload for duplicates.
-func (st *Store) StoreCompletion(
-	ctx context.Context, schema, id, idempotencyKey string, payload []byte,
+// MarkCompleted turns an inflight claim into a durable one after the
+// order was placed.
+func (st *Store) MarkCompleted(
+	ctx context.Context, schema, id, idempotencyKey string,
 ) error {
 	return st.rdb.Set(ctx, idemKey(schema, id, idempotencyKey),
-		payload, terminalTTL).Err()
+		claimDone, terminalTTL).Err()
 }
 
 // ReleaseCompletion clears an inflight claim after a failed attempt so the
@@ -199,12 +210,9 @@ func (st *Store) CheckoutIDForOrder(
 func (st *Store) SessionForOrder(
 	ctx context.Context, schema, orderUUID string,
 ) (*Session, error) {
-	id, err := st.rdb.Get(ctx, orderKey(schema, orderUUID)).Result()
-	if errors.Is(err, redis.Nil) {
-		return nil, ErrNotFound
-	}
+	id, err := st.CheckoutIDForOrder(ctx, schema, orderUUID)
 	if err != nil {
-		return nil, fmt.Errorf("checkout: order index: %w", err)
+		return nil, err
 	}
 	return st.Load(ctx, schema, id)
 }

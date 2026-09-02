@@ -8,11 +8,27 @@ run:
 linters:
   default: standard
   enable:
+    - bodyclose
+    # The Django client's whole error design is sentinel unwrapping via
+    # errors.Is/As; a bare == or type switch on an error silently breaks it.
+    - errorlint
     - gocritic
     - misspell
+    - nilerr
+    - noctx
+    - perfsprint
     - revive
     - unconvert
     - unparam
+    - usestdlibvars
+  exclusions:
+    rules:
+      # Tests use the http.Get/httptest.NewRequest shorthands and helpers
+      # that close bodies out of the linter's sight.
+      - path: _test\.go
+        linters:
+          - bodyclose
+          - noctx
   settings:
     revive:
       rules:

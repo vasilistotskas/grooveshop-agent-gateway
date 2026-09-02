@@ -33,7 +33,8 @@ type limiterEntry struct {
 // buckets per tenant without resolving tenant config in this hot path.
 // Deliberately in-memory: the gateway runs 1–3 pods and Django
 // throttles are the real backstop, so distributed precision buys
-// nothing. Limits are generous by design (see plan risk R4).
+// nothing. Limits are generous by design: the goal is to stop abuse,
+// not to meter legitimate agent traffic.
 type RateLimiter struct {
 	perMin  int
 	burst   int
@@ -61,9 +62,8 @@ func (rl *RateLimiter) Middleware() func(http.Handler) http.Handler {
 					rl.metrics.RateLimited.Inc()
 				}
 				w.Header().Set("Retry-After", "60")
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusTooManyRequests)
-				_, _ = w.Write([]byte(`{"error":"rate limited, retry later"}`))
+				WriteJSONError(w, http.StatusTooManyRequests,
+					"rate limited, retry later")
 				return
 			}
 			next.ServeHTTP(w, r)

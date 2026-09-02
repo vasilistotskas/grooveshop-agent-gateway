@@ -11,9 +11,9 @@ import "strings"
 //
 // Deriving the host from the tenant's storefront domain instead (the old
 // "assets.{domain}" template) produced a hostname that standard
-// onboarding never creates — docs/tenant-onboarding.md states that
-// assets hosts are NOT provisioned per tenant and every tenant shares
-// the platform origin. Django and Nuxt both honour that fallback; the
+// onboarding never creates — the infra repo's docs/tenant-onboarding.md
+// states that assets hosts are NOT provisioned per tenant and every
+// tenant shares the platform origin. Django and Nuxt both honour that fallback; the
 // gateway emitted NXDOMAIN image URLs into every feed and agent
 // response, which Meta and TikTok reject silently because nothing here
 // ever fetches what it emits.

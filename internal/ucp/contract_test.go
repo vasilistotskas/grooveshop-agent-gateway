@@ -163,6 +163,17 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 		assert.EqualValues(t, 46468, payload.LineItems[0].Item.Price)
 		assert.EqualValues(t, 92936, payload.Totals[0].Amount)
 		assert.NotEmpty(t, payload.Messages, "missing-input info messages")
+
+		// Legal links must land on pages the storefront serves; the
+		// terms link used to point at a route that does not exist.
+		links := map[string]string{}
+		for _, l := range payload.Links {
+			links[l.Type] = l.URL
+		}
+		assert.Equal(t, "https://shop.example.test/terms-of-use",
+			links["terms_of_service"])
+		assert.Equal(t, "https://shop.example.test/privacy-policy",
+			links["privacy_policy"])
 	})
 
 	t.Run("escalated session carries continue_url", func(t *testing.T) {

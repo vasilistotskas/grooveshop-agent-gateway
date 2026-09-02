@@ -1,7 +1,6 @@
 package feeds
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,7 +24,7 @@ func validateACP(t *testing.T, def string, doc any) error {
 
 	c := jsonschema.NewCompiler()
 	require.NoError(t, c.AddResource("acp-feed.json", raw))
-	schema, err := c.Compile(fmt.Sprintf("acp-feed.json#/$defs/%s", def))
+	schema, err := c.Compile("acp-feed.json#/$defs/" + def)
 	require.NoError(t, err)
 	return schema.Validate(doc)
 }
