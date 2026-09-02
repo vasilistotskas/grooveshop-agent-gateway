@@ -23,7 +23,10 @@ func TestLoadDefaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, ":8080", cfg.ListenAddr)
-	assert.Equal(t, "production", cfg.Env)
+	assert.Equal(t, EnvProduction, cfg.Env)
+	assert.False(t, cfg.AllowLocalWebhooks,
+		"production keeps the public-https webhook rule")
+	assert.Equal(t, HandlerEnvProduction, cfg.PaymentHandlerEnv)
 	// Trailing slash on the base URL is normalized away.
 	assert.Equal(t, "http://backend-service/api/v1", cfg.DjangoBaseURL)
 	assert.Equal(t, 5*time.Minute, cfg.TenantCacheTTL)
@@ -64,6 +67,15 @@ func TestLoadInvalidDuration(t *testing.T) {
 	assert.Contains(t, err.Error(), "UPSTREAM_TIMEOUT")
 }
 
+func TestLoadInvalidInt(t *testing.T) {
+	setRequired(t)
+	t.Setenv("CHAT_MAX_TURNS", "forty")
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CHAT_MAX_TURNS")
+}
+
 // ASSETS_HOST is required, not defaulted: the gateway used to derive
 // assets.<tenant-domain>, a hostname the documented onboarding never
 // creates, and the resulting URLs went straight into product feeds and
@@ -75,4 +87,36 @@ func TestLoadRequiresAssetsHost(t *testing.T) {
 	_, err := Load()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ASSETS_HOST")
+}
+
+// ENV picks security-relevant behaviour, so an unrecognised value must
+// refuse to boot rather than silently land on one side of it: the old
+// .env.example shipped ENV=dev, which read as "not development" and
+// kept the production webhook rule on a laptop. Only production may
+// advertise the payment handler as production — a platform uses that
+// to keep test traffic out of live order flow.
+func TestLoadEnvIsValidated(t *testing.T) {
+	setRequired(t)
+
+	for _, env := range []string{EnvDevelopment, EnvTest} {
+		t.Setenv("ENV", env)
+		cfg, err := Load()
+		require.NoError(t, err, env)
+		assert.True(t, cfg.AllowLocalWebhooks, env)
+		assert.Equal(t, HandlerEnvSandbox, cfg.PaymentHandlerEnv, env)
+	}
+
+	t.Setenv("ENV", "dev")
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ENV")
+}
+
+func TestLoadLogLevelIsValidated(t *testing.T) {
+	setRequired(t)
+	t.Setenv("LOG_LEVEL", "verbose")
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "LOG_LEVEL")
 }

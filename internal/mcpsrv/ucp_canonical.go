@@ -2,6 +2,7 @@ package mcpsrv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -39,7 +40,7 @@ type MetaIn struct {
 // for the two operations the spec singles out for retry safety.
 func (m *MetaIn) validate(needIdempotency bool) error {
 	if m == nil || m.UCPAgent == nil || m.UCPAgent.Profile == "" {
-		return fmt.Errorf(
+		return errors.New(
 			"meta.ucp-agent.profile is required: it identifies the " +
 				"calling platform so capabilities can be negotiated")
 	}
@@ -49,7 +50,7 @@ func (m *MetaIn) validate(needIdempotency bool) error {
 			m.UCPAgent.Profile)
 	}
 	if needIdempotency && m.IdempotencyKey == "" {
-		return fmt.Errorf(
+		return errors.New(
 			"meta.idempotency-key is required on this operation so a " +
 				"retry cannot place or cancel a second order")
 	}
@@ -183,7 +184,7 @@ func resolvePayWay(
 	payment *UCPPaymentIn,
 ) (int64, error) {
 	if payment == nil || len(payment.Instruments) == 0 {
-		return 0, fmt.Errorf(
+		return 0, errors.New(
 			"checkout.payment.instruments is required to complete: " +
 				"submit one of the instruments the checkout advertised")
 	}

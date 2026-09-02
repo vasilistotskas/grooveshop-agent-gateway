@@ -8,6 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 )
 
 // ProductSummary is the compact product shape shared by search results and
@@ -88,7 +89,7 @@ func (h *handlers) searchProducts(
 			Stock:           hit.Stock,
 			InStock:         hit.Stock > 0,
 			Rating:          num(hit.ReviewAverage),
-			URL:             h.productURL(t, hit.Master, hit.Slug),
+			URL:             storefront.Product(t.Domain, hit.Master, hit.Slug),
 			ImageURL:        h.imageURL(t, hit.MainImagePath),
 		})
 	}
@@ -133,7 +134,7 @@ func (h *handlers) getProduct(
 			in.ProductID))
 	}
 
-	tr := localized(p.Translations, t.DefaultLocale)
+	tr := django.Localized(p.Translations, t.DefaultLocale)
 	out.ProductSummary = ProductSummary{
 		ID:              p.ID,
 		Name:            tr.Name,
@@ -144,7 +145,7 @@ func (h *handlers) getProduct(
 		Stock:           p.Stock,
 		InStock:         p.Stock > 0 && p.Active,
 		Rating:          num(p.ReviewAverage),
-		URL:             h.productURL(t, p.ID, p.Slug),
+		URL:             storefront.Product(t.Domain, p.ID, p.Slug),
 		ImageURL:        h.imageURL(t, p.MainImagePath),
 	}
 	out.VatPercent = num(p.VatPercent)
@@ -161,7 +162,7 @@ func (h *handlers) getProduct(
 			if v.ID == p.ID {
 				continue
 			}
-			vtr := localized(v.Translations, t.DefaultLocale)
+			vtr := django.Localized(v.Translations, t.DefaultLocale)
 			out.Variants = append(out.Variants, ProductSummary{
 				ID:         v.ID,
 				Name:       vtr.Name,
@@ -169,7 +170,7 @@ func (h *handlers) getProduct(
 				Currency:   t.DefaultCurrency,
 				Stock:      v.Stock,
 				InStock:    v.Stock > 0 && v.Active,
-				URL:        h.productURL(t, v.ID, v.Slug),
+				URL:        storefront.Product(t.Domain, v.ID, v.Slug),
 				ImageURL:   h.imageURL(t, v.MainImagePath),
 			})
 		}
@@ -224,7 +225,7 @@ func (h *handlers) listCategories(
 		}
 		out.Categories = append(out.Categories, CategoryOut{
 			ID:       c.ID,
-			Name:     localized(c.Translations, t.DefaultLocale).Name,
+			Name:     django.Localized(c.Translations, t.DefaultLocale).Name,
 			ParentID: c.Parent,
 			Level:    c.Level,
 		})
@@ -334,7 +335,7 @@ func (h *handlers) getProductReviews(
 		}{
 			Reviewer: r.User.FirstName,
 			Rating:   r.Rate,
-			Comment:  localized(r.Translations, t.DefaultLocale).Comment,
+			Comment:  django.Localized(r.Translations, t.DefaultLocale).Comment,
 			Date:     r.CreatedAt,
 		})
 	}

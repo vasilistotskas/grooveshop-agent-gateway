@@ -3,11 +3,13 @@ package acp
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -87,15 +89,12 @@ func Render(
 		Totals:             []Total{},
 		Messages:           []Message{},
 		Links: []Link{
-			{Type: "terms_of_use",
-				URL: fmt.Sprintf("https://%s/terms-and-conditions", t.Domain)},
-			{Type: "privacy_policy",
-				URL: fmt.Sprintf("https://%s/privacy-policy", t.Domain)},
+			{Type: "terms_of_use", URL: storefront.Terms(t.Domain)},
+			{Type: "privacy_policy", URL: storefront.Privacy(t.Domain)},
 		},
 		// Handoff and session recovery: the buyer claims this cart in the
 		// browser and finishes checkout there (card payment included).
-		ContinueURL: fmt.Sprintf("https://%s/cart/claim?uuid=%s",
-			t.Domain, s.CartID),
+		ContinueURL: storefront.CartClaim(t.Domain, s.CartID),
 	}
 
 	if s.Buyer != (checkout.Buyer{}) {
@@ -109,12 +108,12 @@ func Render(
 
 	lineIDs := make([]string, 0, len(pricing.Lines))
 	for _, line := range pricing.Lines {
-		id := fmt.Sprintf("%d", line.CartItemID)
+		id := strconv.FormatInt(line.CartItemID, 10)
 		lineIDs = append(lineIDs, id)
 		out.LineItems = append(out.LineItems, LineItem{
 			ID: id,
 			Item: Item{
-				ID:         fmt.Sprintf("%d", line.ProductID),
+				ID:         strconv.FormatInt(line.ProductID, 10),
 				Name:       line.Title,
 				UnitAmount: line.UnitMinor,
 			},
@@ -178,9 +177,8 @@ func Render(
 		out.Order = &Order{
 			ID:                s.OrderUUID,
 			CheckoutSessionID: s.ID,
-			OrderNumber:       fmt.Sprintf("%d", s.OrderID),
-			PermalinkURL: fmt.Sprintf("https://%s/checkout/success/%s",
-				t.Domain, s.OrderUUID),
+			OrderNumber:       strconv.FormatInt(s.OrderID, 10),
+			PermalinkURL:      storefront.OrderSuccess(t.Domain, s.OrderUUID),
 		}
 	}
 	return out, nil

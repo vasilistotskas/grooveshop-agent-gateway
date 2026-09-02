@@ -17,6 +17,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -69,7 +70,7 @@ func (h *Handler) auth(next http.HandlerFunc) http.Handler {
 			return
 		}
 		expected := t.ACPBearerToken
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		token, ok := httpmw.BearerToken(r)
 		if expected == "" || !ok || subtle.ConstantTimeCompare(
 			[]byte(token), []byte(expected)) != 1 {
 			writeError(w, http.StatusUnauthorized, Error{
@@ -86,6 +87,14 @@ func writeError(w http.ResponseWriter, status int, e Error) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(e)
+}
+
+// writeUnavailable is the protocol body for a transient gateway-side
+// failure (Redis, rendering); the platform retries.
+func writeUnavailable(w http.ResponseWriter, msg string) {
+	writeError(w, http.StatusServiceUnavailable, Error{
+		Type: "service_unavailable", Message: msg,
+	})
 }
 
 func writeSession(w http.ResponseWriter, status int, s *Session) {
@@ -174,10 +183,7 @@ func (h *Handler) claimIdem(
 	ok, err := h.rdb.SetNX(r.Context(), redisKey, "inflight", time.Minute).
 		Result()
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, Error{
-			Type:    "service_unavailable",
-			Message: "Checkout is temporarily unavailable.",
-		})
+		writeUnavailable(w, "Checkout is temporarily unavailable.")
 		return "", false, nil, true
 	}
 	if ok {
@@ -431,7 +437,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s := checkout.NewSession(t.SchemaName, t.Domain, "acp", cart.UUID)
+	s := checkout.NewSession(t.SchemaName, t.Domain, checkout.ProtocolACP, cart.UUID)
 	// Discounts apply after the lines exist (eligibility can depend on
 	// the cart subtotal). A refused code is not a request failure — it
 	// renders in discounts.rejected.
@@ -449,10 +455,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	s.Recompute()
 	if err := h.store.Save(r.Context(), s); err != nil {
 		h.releaseIdem(r, t.SchemaName, "create", key)
-		writeError(w, http.StatusServiceUnavailable, Error{
-			Type:    "service_unavailable",
-			Message: "Checkout is temporarily unavailable.",
-		})
+		writeUnavailable(w, "Checkout is temporarily unavailable.")
 		return
 	}
 	h.storeIdem(r, t.SchemaName, "create", key, idemRecord{
@@ -516,10 +519,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		req.SelectedFulfillmentOptions)
 	s.Recompute()
 	if err := h.store.Save(r.Context(), s); err != nil {
-		writeError(w, http.StatusServiceUnavailable, Error{
-			Type:    "service_unavailable",
-			Message: "Checkout is temporarily unavailable.",
-		})
+		writeUnavailable(w, "Checkout is temporarily unavailable.")
 		return
 	}
 	h.render(w, r, t, s, http.StatusOK)
@@ -547,13 +547,15 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, claimed, prior, handled := h.claimIdem(w, r, t.SchemaName,
+	key, claimed, _, handled := h.claimIdem(w, r, t.SchemaName,
 		"complete", raw)
 	if handled {
 		return
 	}
 	if !claimed {
-		_ = prior
+		// A replayed key re-renders whatever the first attempt produced;
+		// the stored record only matters for create, which must name
+		// the session it minted.
 		h.render(w, r, t, s, http.StatusOK)
 		return
 	}
@@ -607,11 +609,8 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.Save(r.Context(), s); err != nil {
-		writeError(w, http.StatusServiceUnavailable, Error{
-			Type: "service_unavailable",
-			Message: "The order was placed but the session could not be " +
-				"saved; retrieve it again shortly.",
-		})
+		writeUnavailable(w, "The order was placed but the session could not be "+
+			"saved; retrieve it again shortly.")
 		return
 	}
 	h.storeIdem(r, t.SchemaName, "complete", key, idemRecord{
@@ -654,10 +653,7 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	s.Status = checkout.StatusCanceled
 	if err := h.store.Save(r.Context(), s); err != nil {
 		h.releaseIdem(r, t.SchemaName, "cancel", key)
-		writeError(w, http.StatusServiceUnavailable, Error{
-			Type:    "service_unavailable",
-			Message: "Checkout is temporarily unavailable.",
-		})
+		writeUnavailable(w, "Checkout is temporarily unavailable.")
 		return
 	}
 	h.storeIdem(r, t.SchemaName, "cancel", key, idemRecord{
@@ -681,10 +677,7 @@ func (h *Handler) lockSession(
 			})
 			return nil, nil, false
 		}
-		writeError(w, http.StatusServiceUnavailable, Error{
-			Type:    "service_unavailable",
-			Message: "Checkout is temporarily unavailable.",
-		})
+		writeUnavailable(w, "Checkout is temporarily unavailable.")
 		return nil, nil, false
 	}
 	s, err := h.store.Load(r.Context(), t.SchemaName, id)
@@ -704,10 +697,7 @@ func (h *Handler) sessionError(w http.ResponseWriter, err error) {
 		})
 		return
 	}
-	writeError(w, http.StatusServiceUnavailable, Error{
-		Type:    "service_unavailable",
-		Message: "Checkout is temporarily unavailable.",
-	})
+	writeUnavailable(w, "Checkout is temporarily unavailable.")
 }
 
 func (h *Handler) completeError(w http.ResponseWriter, err error) {
@@ -742,10 +732,7 @@ func (h *Handler) render(
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "acp render failed",
 			slog.String("session", s.ID), slog.String("error", err.Error()))
-		writeError(w, http.StatusServiceUnavailable, Error{
-			Type:    "service_unavailable",
-			Message: "The session cannot be rendered right now.",
-		})
+		writeUnavailable(w, "The session cannot be rendered right now.")
 		return
 	}
 	writeSession(w, status, payload)

@@ -24,11 +24,14 @@ var (
 // APIError carries the upstream status and DRF "detail" message. It unwraps
 // to the matching sentinel so callers branch with errors.Is. Reason is the
 // optional machine-readable code some 4xx bodies carry next to detail
-// (coupon, loyalty and gift-card rejections).
+// (coupon, loyalty and gift-card rejections). Body is the raw (bounded)
+// response for the few callers that decode a structured failure, such as
+// the stock-shortfall 409.
 type APIError struct {
 	Status int
 	Detail string
 	Reason string
+	Body   []byte
 }
 
 func (e *APIError) Error() string {

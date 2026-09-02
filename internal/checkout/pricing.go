@@ -59,7 +59,7 @@ func ComputePricing(
 
 	p := &Pricing{Lines: []PricedLine{}}
 	for _, it := range cart.Items {
-		tr := it.Product.Translations[t.DefaultLocale]
+		tr := django.Localized(it.Product.Translations, t.DefaultLocale)
 		unit, err := money.MinorUnits(it.FinalPrice.String())
 		if err != nil {
 			return nil, nil, err

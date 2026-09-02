@@ -23,7 +23,7 @@ func Logging(log *slog.Logger) func(http.Handler) http.Handler {
 				slog.String("host", r.Host),
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
-				slog.Int("status", sw.status),
+				slog.Int("status", sw.Status()),
 				slog.Int64("duration_ms", time.Since(start).Milliseconds()),
 			}
 			if t := extras.getTenant(); t != "" {

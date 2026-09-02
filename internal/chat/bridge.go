@@ -20,10 +20,6 @@ var cartTools = map[string]bool{
 	"remove_cart_item": true,
 }
 
-// accountTools need an OAuth-linked agent credential on the MCP HTTP
-// request — the chat widget's shopper authenticates via the storefront
-// session instead, so these tools are excluded from the bot's toolset
-// (the storefront UI already shows orders and loyalty).
 // checkoutTools are the UCP checkout capability's canonical tools. They
 // are withheld from the chatbot: their arguments are shaped for a
 // platform generating calls from the OpenRPC document, not for a
@@ -37,6 +33,10 @@ var checkoutTools = map[string]bool{
 	"cancel_checkout":   true,
 }
 
+// accountTools need an OAuth-linked agent credential on the MCP HTTP
+// request — the chat widget's shopper authenticates via the storefront
+// session instead, so these tools are excluded from the bot's toolset
+// (the storefront UI already shows orders and loyalty).
 var accountTools = map[string]bool{
 	"my_orders":         true,
 	"my_loyalty_points": true,

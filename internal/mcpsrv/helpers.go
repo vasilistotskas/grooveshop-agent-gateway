@@ -12,10 +12,11 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/media"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/text"
 )
 
 // handlers hosts every tool implementation. The same methods back the MCP
-// server and (from milestone 4 on) the first-party chatbot loop.
+// server and the first-party chatbot loop.
 type handlers struct {
 	deps Deps
 }
@@ -71,33 +72,18 @@ func textResult(format string, args ...any) *mcp.CallToolResult {
 	}
 }
 
-// localized picks the tenant's locale from a parler translations map,
-// falling back to any available language.
-func localized[T any](translations map[string]T, locale string) T {
-	if v, ok := translations[locale]; ok {
-		return v
-	}
-	for _, v := range translations {
-		return v
-	}
-	var zero T
-	return zero
-}
-
+// truncate cuts s to at most max runes, backing up to the last word
+// boundary when it does cut, and marks the cut with an ellipsis.
 func truncate(s string, max int) string {
 	s = strings.TrimSpace(s)
-	if len(s) <= max {
+	cut := text.Runes(s, max)
+	if len(cut) == len(s) {
 		return s
 	}
-	cut := s[:max]
 	if i := strings.LastIndexByte(cut, ' '); i > 0 {
 		cut = cut[:i]
 	}
-	return cut + "…"
-}
-
-func (h *handlers) productURL(t *tenant.Tenant, id int64, slug string) string {
-	return fmt.Sprintf("https://%s/products/%d/%s", t.Domain, id, slug)
+	return cut + text.Ellipsis
 }
 
 func (h *handlers) imageURL(t *tenant.Tenant, path string) string {
@@ -125,8 +111,4 @@ func posNum(n json.Number) string {
 		return ""
 	}
 	return n.String()
-}
-
-func jsonMarshal(v any) ([]byte, error) {
-	return json.Marshal(v)
 }

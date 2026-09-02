@@ -9,6 +9,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/identity"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -22,11 +23,22 @@ func (h *handlers) linkedFor(
 	if !ok {
 		return nil, fmt.Errorf(
 			"no linked account: complete the OAuth flow first — fetch "+
-				"https://%s/.well-known/oauth-protected-resource/mcp to "+
-				"discover the authorization server, authorize with the "+
-				"shopper, then retry with the access token", t.Domain)
+				"%s to discover the authorization server, authorize with "+
+				"the shopper, then retry with the access token",
+			storefront.OAuthResourceMetadata(t.Domain))
 	}
 	return l, nil
+}
+
+// scopedErr maps a failure on an account endpoint: Django answers 403
+// when the linked token was granted without the scope that endpoint
+// needs, which the agent fixes by re-authorizing, not by retrying.
+func scopedErr(err error, scope, notFound string) error {
+	if errors.Is(err, django.ErrForbidden) {
+		return fmt.Errorf("the linked account's token is missing the %s "+
+			"scope; re-authorize requesting it", scope)
+	}
+	return upstreamErr(err, notFound)
 }
 
 type MyOrdersOut struct {
@@ -61,12 +73,7 @@ func (h *handlers) myOrders(
 	orders, err := h.deps.Django.AgentOrders(
 		ctx, t.Domain, t.DefaultLocale, linked.Bearer)
 	if err != nil {
-		if errors.Is(err, django.ErrForbidden) {
-			return nil, out, errors.New(
-				"the linked account's token is missing the orders:read " +
-					"scope; re-authorize requesting it")
-		}
-		return nil, out, upstreamErr(err, "no orders found")
+		return nil, out, scopedErr(err, "orders:read", "no orders found")
 	}
 
 	out.Orders = make([]MyOrder, 0, len(orders))
@@ -87,8 +94,8 @@ func (h *handlers) myOrders(
 	return textResult(
 		"Found %d recent orders for the linked account. Use track_order "+
 			"with an orderUuid for fulfilment details and the carrier "+
-			"tracking link. Amounts are VAT-inclusive EUR.",
-		len(out.Orders)), out, nil
+			"tracking link. Amounts are VAT-inclusive %s.",
+		len(out.Orders), t.DefaultCurrency), out, nil
 }
 
 type MyLoyaltyOut struct {
@@ -115,12 +122,7 @@ func (h *handlers) myLoyaltyPoints(
 	loyalty, err := h.deps.Django.AgentLoyalty(
 		ctx, t.Domain, t.DefaultLocale, linked.Bearer)
 	if err != nil {
-		if errors.Is(err, django.ErrForbidden) {
-			return nil, out, errors.New(
-				"the linked account's token is missing the loyalty:read " +
-					"scope; re-authorize requesting it")
-		}
-		return nil, out, upstreamErr(err, "no loyalty data found")
+		return nil, out, scopedErr(err, "loyalty:read", "no loyalty data found")
 	}
 
 	out.PointsBalance = num(loyalty.PointsBalance)
@@ -130,7 +132,7 @@ func (h *handlers) myLoyaltyPoints(
 		out.PointsToNextTier = loyalty.PointsToNextTier.String()
 	}
 	if loyalty.Tier != nil {
-		out.Tier = localized(loyalty.Tier.Translations, t.DefaultLocale).Name
+		out.Tier = django.Localized(loyalty.Tier.Translations, t.DefaultLocale).Name
 	}
 
 	summary := fmt.Sprintf(
@@ -172,12 +174,7 @@ func (h *handlers) myFavourites(
 	favourites, err := h.deps.Django.AgentFavourites(
 		ctx, t.Domain, t.DefaultLocale, linked.Bearer)
 	if err != nil {
-		if errors.Is(err, django.ErrForbidden) {
-			return nil, out, errors.New(
-				"the linked account's token is missing the " +
-					"favourites:read scope; re-authorize requesting it")
-		}
-		return nil, out, upstreamErr(err, "no favourites found")
+		return nil, out, scopedErr(err, "favourites:read", "no favourites found")
 	}
 
 	out.Favourites = make([]MyFavourite, 0, len(favourites))

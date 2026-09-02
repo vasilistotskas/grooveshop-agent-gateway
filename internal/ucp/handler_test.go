@@ -73,16 +73,6 @@ func TestPaymentHandlersPreservesOrderAndDedupes(t *testing.T) {
 	assert.Equal(t, InstrumentCashOnDelivery, instruments[0].Type)
 }
 
-// Only the production deployment may claim "production": a platform uses
-// it to keep test traffic out of live order flow, so every other
-// environment — including an unset one — must read as a sandbox.
-func TestHandlerEnvironmentOnlyProductionIsProduction(t *testing.T) {
-	assert.Equal(t, "production", environmentFor("production"))
-	for _, env := range []string{"staging", "development", "test", ""} {
-		assert.Equal(t, "sandbox", environmentFor(env), env)
-	}
-}
-
 // The handler's own documents must sit under its versioned base on
 // payments.grooveshop.space. That host's reversed labels equal
 // HandlerName, which is the exact-match case of the spec's authority

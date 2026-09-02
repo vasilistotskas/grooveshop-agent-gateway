@@ -133,7 +133,7 @@ func (h *handlers) findPickupPoints(
 			break
 		}
 		out.Points = append(out.Points, PickupPoint{
-			Provider:     "acs",
+			Provider:     django.ShippingProviderACS,
 			ID:           s.ExternalID,
 			BranchCode:   s.BranchCode,
 			Name:         s.Name,
@@ -160,7 +160,7 @@ func (h *handlers) findPickupPoints(
 			}); err == nil {
 			boxnowIncluded = true
 			out.Points = append(out.Points, PickupPoint{
-				Provider:   "boxnow",
+				Provider:   django.ShippingProviderBoxNow,
 				ID:         l.ID,
 				Name:       l.Name,
 				Address:    l.AddressLine1,
@@ -232,7 +232,7 @@ func (h *handlers) getPaymentMethods(
 		if !pw.Active {
 			continue
 		}
-		tr := localized(pw.Translations, t.DefaultLocale)
+		tr := django.Localized(pw.Translations, t.DefaultLocale)
 		out.Methods = append(out.Methods, PaymentMethodOut{
 			ID:                   pw.ID,
 			Label:                tr.Name,

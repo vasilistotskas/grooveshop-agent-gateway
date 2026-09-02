@@ -109,8 +109,8 @@ func (c *Client) ApplyCoupon(
 	})
 	if err != nil {
 		var apiErr *APIError
-		if errors.As(err, &apiErr) &&
-			apiErr.Status == http.StatusBadRequest && apiErr.Reason != "" {
+		if errors.Is(err, ErrValidation) && errors.As(err, &apiErr) &&
+			apiErr.Reason != "" {
 			return nil, &CouponRejectedError{
 				Reason: apiErr.Reason, Detail: apiErr.Detail,
 			}

@@ -23,7 +23,7 @@ func Metrics(m *obs.Metrics) func(http.Handler) http.Handler {
 				route = "unmatched"
 			}
 			m.HTTPRequests.WithLabelValues(
-				route, r.Method, strconv.Itoa(sw.status),
+				route, r.Method, strconv.Itoa(sw.Status()),
 			).Inc()
 			m.HTTPDuration.WithLabelValues(route, r.Method).
 				Observe(time.Since(start).Seconds())

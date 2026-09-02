@@ -6,6 +6,15 @@ package checkout
 
 import (
 	"time"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+)
+
+// Protocol names the surface that owns a session; readiness rules differ
+// per surface (see payWaySelectionRequired).
+const (
+	ProtocolUCP = "ucp"
+	ProtocolACP = "acp"
 )
 
 // Status values follow the UCP checkout lifecycle; the ACP layer maps them
@@ -67,9 +76,9 @@ func (f Fulfillment) Complete() bool {
 		return true
 	case FulfillmentPickupPoint:
 		switch f.ProviderCode {
-		case "acs":
+		case django.ShippingProviderACS:
 			return f.AcsStationExternalID != "" && f.AcsStationBranch != ""
-		case "boxnow":
+		case django.ShippingProviderBoxNow:
 			return f.BoxnowLockerID != ""
 		}
 		return false
@@ -81,7 +90,7 @@ func (f Fulfillment) Complete() bool {
 // from the cart at render time, never stored.
 type Session struct {
 	ID       string `json:"id"`
-	Protocol string `json:"protocol"` // "ucp" | "acp"
+	Protocol string `json:"protocol"` // ProtocolUCP | ProtocolACP
 	Schema   string `json:"schema"`
 	// Domain is the tenant storefront host at creation time, kept so
 	// webhook payload permalinks render without a tenant lookup.
@@ -125,7 +134,7 @@ func (s *Session) Terminal() bool {
 // ACP payment is the platform's concern — the merchant resolves the pay
 // way at completion time (delegated token, or cash on delivery).
 func (s *Session) payWaySelectionRequired() bool {
-	return s.Protocol != "acp"
+	return s.Protocol != ProtocolACP
 }
 
 // Recompute derives the pre-completion status from collected data. It

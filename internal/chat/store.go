@@ -60,7 +60,7 @@ func (s *Store) Load(
 		return newConversation(), nil
 	}
 	if err := uuid.Validate(id); err != nil {
-		return nil, fmt.Errorf("chat: invalid conversation id")
+		return nil, errors.New("chat: invalid conversation id")
 	}
 	raw, err := s.rdb.Get(ctx, key(schema, id)).Result()
 	if errors.Is(err, redis.Nil) {

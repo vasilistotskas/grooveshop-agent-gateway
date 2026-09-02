@@ -3,11 +3,11 @@ package checkout
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -44,7 +44,7 @@ func pricingCart(promo string, freeShipping bool, codes []string) string {
 		`"finalPrice":100.00},"quantity":2,"finalPrice":100.00,` +
 		`"totalPrice":200.00}],"totalPrice":200.00,` +
 		`"totalDiscountValue":12.00,"promotionDiscount":` + promo + `,` +
-		`"promotionFreeShipping":` + fmt.Sprintf("%t", freeShipping) + `,` +
+		`"promotionFreeShipping":` + strconv.FormatBool(freeShipping) + `,` +
 		`"appliedCouponCodes":` + string(rawCodes) + `,` +
 		`"totalItems":2,"totalItemsUnique":1,"currency":"EUR"}`
 }

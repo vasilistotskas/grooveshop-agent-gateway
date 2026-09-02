@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 )
@@ -36,51 +35,29 @@ type ReserveStockResult struct {
 }
 
 // ReserveStock holds the cart's stock for 15 minutes ahead of order
-// creation. A 409 decodes into *StockShortfall.
+// creation. A 409 whose body lists the failed lines decodes into
+// *StockShortfall; any other failure is the usual *APIError.
 func (c *Client) ReserveStock(
 	ctx context.Context, host, lang, cartID string,
 ) (*ReserveStockResult, error) {
-	u := c.baseURL + "/cart/reserve-stock"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
-	if err != nil {
-		return nil, fmt.Errorf("django: build request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Forwarded-Proto", "https")
-	req.Header.Set("X-Forwarded-Host", host)
-	if lang != "" {
-		req.Header.Set("X-Language", lang)
-	}
-	for k, v := range c.cartHeaders(cartID) {
-		req.Header.Set(k, v)
-	}
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrUpstreamDown, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	switch {
-	case resp.StatusCode == http.StatusConflict:
-		var shortfall StockShortfall
-		if err := json.Unmarshal(body, &shortfall); err == nil {
-			return nil, &shortfall
-		}
-		return nil, &APIError{Status: resp.StatusCode, Detail: "conflict"}
-	case resp.StatusCode >= 400:
-		detail := http.StatusText(resp.StatusCode)
-		var parsed struct {
-			Detail string `json:"detail"`
-		}
-		if err := json.Unmarshal(body, &parsed); err == nil && parsed.Detail != "" {
-			detail = parsed.Detail
-		}
-		return nil, &APIError{Status: resp.StatusCode, Detail: detail}
-	}
 	var out ReserveStockResult
-	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("django: decode reserve-stock: %w", err)
+	err := c.send(ctx, http.MethodPost, request{
+		path:     "/cart/reserve-stock",
+		host:     host,
+		language: lang,
+		headers:  c.cartHeaders(cartID),
+		out:      &out,
+	})
+	if err != nil {
+		var apiErr *APIError
+		if errors.Is(err, ErrConflict) && errors.As(err, &apiErr) {
+			var shortfall StockShortfall
+			if json.Unmarshal(apiErr.Body, &shortfall) == nil &&
+				len(shortfall.FailedItems) > 0 {
+				return nil, &shortfall
+			}
+		}
+		return nil, err
 	}
 	return &out, nil
 }

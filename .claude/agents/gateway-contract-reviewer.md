@@ -39,10 +39,12 @@ reading the whole tree.
   cents internally, formatted only at the edge. Flag a float money field.
 
 ### 3. MCP error shape
-- A *business* failure in an MCP tool returns
-  `CallToolResult{IsError: true}` with actionable text. Returning a Go `error`
-  turns it into a protocol error, which agents cannot act on. Flag any tool
-  path that returns a bare error for a business condition.
+- A *business* failure in an MCP tool must reach the agent as
+  `CallToolResult{IsError: true}` with actionable text. The SDK's typed
+  `AddTool` wrapper turns a plain returned Go `error` into exactly that, so
+  a bare error is fine; only a `*jsonrpc.Error` becomes a protocol error,
+  which agents cannot act on. Flag a `jsonrpc.Error` (or a panic) on a
+  business path, and flag error text that is not actionable.
 
 ### 4. Error handling
 - Errors unwrap to the sentinels (`ErrNotFound`, `ErrConflict`, `ErrThrottled`,

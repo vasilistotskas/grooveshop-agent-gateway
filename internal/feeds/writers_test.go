@@ -88,7 +88,9 @@ func TestRSSWriterGolden(t *testing.T) {
 	ctx := testFeedContext()
 	w := newRSSWriter(ctx)
 	for _, p := range fixtureProducts() {
-		if it := newFeedItem(&p, ctx); it != nil {
+		it, err := newFeedItem(&p, ctx)
+		require.NoError(t, err)
+		if it != nil {
 			w.Item(it)
 		}
 	}
@@ -99,17 +101,11 @@ func TestACPWriterGolden(t *testing.T) {
 	ctx := testFeedContext()
 	w := newACPWriter()
 	for _, p := range fixtureProducts() {
-		it := newFeedItem(&p, ctx)
-		if it == nil {
-			continue
+		it, err := newFeedItem(&p, ctx)
+		require.NoError(t, err)
+		if it != nil {
+			w.Item(it)
 		}
-		final, err := minorUnits(p.FinalPrice.String())
-		require.NoError(t, err)
-		price, err := minorUnits(p.Price.String())
-		require.NoError(t, err)
-		vat, err := minorUnits(p.VatValue.String())
-		require.NoError(t, err)
-		w.Item(it, final, price+vat)
 	}
 	got, err := w.Bytes()
 	require.NoError(t, err)
@@ -120,10 +116,12 @@ func TestRSSItemRules(t *testing.T) {
 	ctx := testFeedContext()
 	products := fixtureProducts()
 
-	plain := newFeedItem(&products[0], ctx)
+	plain, err := newFeedItem(&products[0], ctx)
+	require.NoError(t, err)
 	require.NotNil(t, plain)
-	// Regular price is VAT-inclusive (price + vatValue).
-	assert.InDelta(t, 464.68, plain.RegularPrice, 0.001)
+	// Regular price is VAT-inclusive (price + vatValue), in minor units.
+	assert.EqualValues(t, 46468, plain.RegularMinor)
+	assert.Equal(t, "464.68 EUR", formatFeedPrice(plain.RegularMinor, "EUR"))
 	assert.False(t, plain.HasSalePrice)
 	// HTML is stripped and entities decoded exactly once.
 	assert.Equal(t, "Γρήγορη φόρτιση & ασφάλεια USB-C.", plain.Description)
@@ -131,7 +129,8 @@ func TestRSSItemRules(t *testing.T) {
 	assert.Contains(t, plain.ImageLink,
 		"media/uploads/products/%CF%86%CE%BF%CF%81%CF%84%CE%B9%CF%83%CF%84%CE%AE%CF%82.jpg")
 
-	sale := newFeedItem(&products[1], ctx)
+	sale, err := newFeedItem(&products[1], ctx)
+	require.NoError(t, err)
 	require.NotNil(t, sale)
 	assert.True(t, sale.HasSalePrice)
 	assert.Equal(t, "Spigen", sale.Brand)
@@ -139,23 +138,14 @@ func TestRSSItemRules(t *testing.T) {
 	// Empty description falls back to the name.
 	assert.Equal(t, "Θήκη Κινητού", sale.Description)
 
-	assert.Nil(t, newFeedItem(&products[2], ctx), "no image -> skipped")
-}
+	skipped, err := newFeedItem(&products[2], ctx)
+	require.NoError(t, err)
+	assert.Nil(t, skipped, "no image -> skipped")
 
-func TestMinorUnits(t *testing.T) {
-	cases := map[string]int64{
-		"464.68": 46468,
-		"22.32":  2232,
-		"10":     1000,
-		"0.5":    50,
-		"0.05":   5,
-		"1234.5": 123450,
-	}
-	for in, want := range cases {
-		got, err := minorUnits(in)
-		require.NoError(t, err, in)
-		assert.Equal(t, want, got, in)
-	}
+	bad := products[0]
+	bad.Price = "not-money"
+	_, err = newFeedItem(&bad, ctx)
+	assert.Error(t, err, "malformed money aborts rather than emitting 0")
 }
 
 func TestACPGoldenValidatesAgainstSchema(t *testing.T) {

@@ -45,9 +45,12 @@ type Deps struct {
 //
 // Name stays constant: it is the protocol identifier, not a display
 // name.
+// defaultTitle is advertised when a tenant carries no store name at all.
+const defaultTitle = "Storefront"
+
 func NewServer(d Deps, title string) *mcp.Server {
 	if title == "" {
-		title = "Storefront"
+		title = defaultTitle
 	}
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "grooveshop-agent-gateway",
@@ -298,7 +301,7 @@ const maxCachedServers = 512
 func (c *serverCache) forRequest(r *http.Request) *mcp.Server {
 	t, ok := tenant.FromContext(r.Context())
 	if !ok || t == nil {
-		return c.get("", "Storefront")
+		return c.get("", defaultTitle)
 	}
 	title := t.StoreName
 	if title == "" {

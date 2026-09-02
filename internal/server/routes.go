@@ -70,23 +70,20 @@ func New(d Deps) http.Handler {
 	checkoutStore := checkout.NewStore(d.Redis)
 	checkoutFlow := checkout.NewFlow(d.Django, checkoutStore, d.Log)
 	ucpBuilder := ucp.NewBuilder(
-		d.Django, d.Cfg.MediaURLTemplate, d.Cfg.AssetsHost, d.Cfg.Env,
+		d.Django, d.Cfg.MediaURLTemplate, d.Cfg.AssetsHost,
+		d.Cfg.PaymentHandlerEnv,
 	)
 
 	// The handler builds one server per tenant (they differ only in the
 	// store name advertised at initialize) and caches them by schema.
 	mcpDeps := mcpsrv.Deps{
-		Django:           d.Django,
-		Checkout:         checkoutStore,
-		Flow:             checkoutFlow,
-		UCP:              ucpBuilder,
-		MediaURLTemplate: d.Cfg.MediaURLTemplate,
-		AssetsHost:       d.Cfg.AssetsHost,
-		// Strict by default: only an explicitly non-production ENV
-		// relaxes webhook-endpoint validation, so an unset or
-		// unrecognised value keeps the public-https rule rather than
-		// silently opening the gateway up as a request origin.
-		AllowLocalWebhooks: d.Cfg.Env == "development" || d.Cfg.Env == "test",
+		Django:             d.Django,
+		Checkout:           checkoutStore,
+		Flow:               checkoutFlow,
+		UCP:                ucpBuilder,
+		MediaURLTemplate:   d.Cfg.MediaURLTemplate,
+		AssetsHost:         d.Cfg.AssetsHost,
+		AllowLocalWebhooks: d.Cfg.AllowLocalWebhooks,
 		Log:                d.Log,
 		Version:            d.Version,
 	}
@@ -104,13 +101,11 @@ func New(d Deps) http.Handler {
 	// prefers a pattern carrying a host over a path-only one. The
 	// documents are static and tenant-independent, so this route takes
 	// no tenant middleware and resolves no tenant.
-	if d.Cfg.HandlerDocsHost != "" {
-		mux.Handle("GET "+d.Cfg.HandlerDocsHost+"/",
-			ucp.HandlerDocsHandler())
-	}
+	mux.Handle("GET "+ucp.HandlerDocsHost+"/", ucp.HandlerDocsHandler())
 
 	mux.Handle("GET /.well-known/ucp",
-		tenantMW(tenant.RequireAgentCommerce(ucp.ProfileHandler(d.Keys, d.Cfg.Env))))
+		tenantMW(tenant.RequireAgentCommerce(
+			ucp.ProfileHandler(d.Keys, d.Cfg.PaymentHandlerEnv))))
 
 	// Cluster-internal: Django's order-event push. Not tenant-scoped —
 	// the event body carries the schema.

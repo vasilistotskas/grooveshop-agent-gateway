@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
@@ -78,7 +79,7 @@ func TestProfilePublishesOnlyOwnKey(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/.well-known/ucp", nil)
 		req = req.WithContext(tenant.NewContext(req.Context(), tn))
 		rec := httptest.NewRecorder()
-		ucp.ProfileHandler(keys, "test").ServeHTTP(rec, req)
+		ucp.ProfileHandler(keys, config.HandlerEnvSandbox).ServeHTTP(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code)
 		var profile struct {
 			Keys []map[string]string `json:"keys"`

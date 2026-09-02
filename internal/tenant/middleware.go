@@ -37,14 +37,14 @@ func middleware(
 			t, err := r.Resolve(req.Context(), req.Host)
 			switch {
 			case errors.Is(err, ErrUnknownTenant):
-				writeJSONError(w, http.StatusNotFound, "unknown store")
+				httpmw.WriteJSONError(w, http.StatusNotFound, "unknown store")
 				return
 			case err != nil:
 				log.ErrorContext(req.Context(), "tenant resolution failed",
 					slog.String("host", req.Host),
 					slog.String("error", err.Error()),
 				)
-				writeJSONError(w, http.StatusServiceUnavailable,
+				httpmw.WriteJSONError(w, http.StatusServiceUnavailable,
 					"store temporarily unavailable")
 				return
 			}
@@ -56,7 +56,7 @@ func middleware(
 						slog.String("host", req.Host),
 						slog.String("error", secErr.Error()),
 					)
-					writeJSONError(w, http.StatusServiceUnavailable,
+					httpmw.WriteJSONError(w, http.StatusServiceUnavailable,
 						"store temporarily unavailable")
 					return
 				}
@@ -66,12 +66,6 @@ func middleware(
 			next.ServeHTTP(w, req.WithContext(NewContext(req.Context(), t)))
 		})
 	}
-}
-
-func writeJSONError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(`{"error":"` + msg + `"}`))
 }
 
 // RequireAgentCommerce 404s the agent-commerce surfaces (MCP, UCP,
@@ -99,7 +93,7 @@ func requireFeature(
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		t, ok := FromContext(req.Context())
 		if !ok || !enabled(t) {
-			writeJSONError(w, http.StatusNotFound, "not found")
+			httpmw.WriteJSONError(w, http.StatusNotFound, "not found")
 			return
 		}
 		next.ServeHTTP(w, req)

@@ -1,6 +1,9 @@
 package ucp
 
-import "github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
+import (
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
+)
 
 // The platform authors its own UCP payment handler. Neither published
 // alternative is usable: Stripe's com.stripe.payments is in private
@@ -28,7 +31,14 @@ const (
 	// leaves them alone must not move these URLs.
 	HandlerVersion = "2026-08-25"
 
-	handlerBase = "https://payments.grooveshop.space/" + HandlerVersion
+	// HandlerDocsHost serves the handler's spec and schemas. It is the
+	// reverse of HandlerName and therefore the SAME host in every
+	// environment: the authority binding pins the schema origin to it,
+	// so no per-environment hostname can satisfy the check. The mux
+	// binds this host explicitly (a platform artifact, not a tenant).
+	HandlerDocsHost = "payments.grooveshop.space"
+
+	handlerBase = "https://" + HandlerDocsHost + "/" + HandlerVersion
 
 	// HostedSelectionCapability is the Checkout extension that lets a
 	// platform choose a method the business settles on its own hosted
@@ -65,7 +75,7 @@ type AvailableInstrument struct {
 // instrument back to the pay-way that settles it.
 func InstrumentTypeFor(providerCode string) (string, bool) {
 	switch providerCode {
-	case "cash_on_delivery":
+	case django.ProviderCashOnDelivery:
 		return InstrumentCashOnDelivery, true
 	default:
 		return "", false
@@ -80,18 +90,9 @@ func InstrumentTypeFor(providerCode string) (string, bool) {
 // continue_url), not as a payment handler.
 //
 // Instrument order follows the merchant's own pay-way ordering, which
-// UCP reads as the business's preferred presentation.
-// environmentFor maps the deployment's ENV onto the two values the
-// handler config schema admits. Only the production deployment reads as
-// "production": every other environment must read as a sandbox so a
-// platform keeps its test traffic out of live order flow.
-func environmentFor(env string) string {
-	if env == "production" {
-		return "production"
-	}
-	return "sandbox"
-}
-
+// UCP reads as the business's preferred presentation. env is the
+// handler environment config derived from the deployment
+// (config.PaymentHandlerEnv): production, or sandbox everywhere else.
 func paymentHandlers(
 	t *tenant.Tenant, env string,
 ) map[string][]PaymentHandler {
@@ -127,7 +128,7 @@ func paymentHandlers(
 			Schema:               handlerBase + "/schema.json",
 			AvailableInstruments: instruments,
 			Config: map[string]any{
-				"environment": environmentFor(env),
+				"environment": env,
 			},
 		}},
 	}
@@ -150,7 +151,7 @@ func responsePaymentHandlers(
 			entries[i].Spec = ""
 			entries[i].Schema = ""
 			entries[i].Config = map[string]any{
-				"environment": environmentFor(env),
+				"environment": env,
 				"settlement":  "on_delivery",
 			}
 		}

@@ -2,9 +2,7 @@ package feeds
 
 import (
 	"encoding/json"
-	"fmt"
-
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
+	"strconv"
 )
 
 // ACP feed types mirror testdata/schemas/acp/2026-04-17/schema.feed.json.
@@ -67,8 +65,8 @@ func newACPWriter() *acpWriter {
 	return &acpWriter{feed: acpFeed{Products: []acpProduct{}}}
 }
 
-func (w *acpWriter) Item(it *feedItem, finalPrice, regularPrice int64) {
-	id := fmt.Sprintf("%d", it.ID)
+func (w *acpWriter) Item(it *feedItem) {
+	id := strconv.FormatInt(it.ID, 10)
 	status := "out_of_stock"
 	if it.InStock {
 		status = "in_stock"
@@ -89,10 +87,10 @@ func (w *acpWriter) Item(it *feedItem, finalPrice, regularPrice int64) {
 			Title: it.Title,
 			URL:   it.Link,
 			Price: &acpPrice{
-				Amount: finalPrice, Currency: it.Currency,
+				Amount: it.SaleMinor, Currency: it.Currency,
 			},
 			ListPrice: &acpPrice{
-				Amount: regularPrice, Currency: it.Currency,
+				Amount: it.RegularMinor, Currency: it.Currency,
 			},
 			Availability: &acpAvailability{
 				Available: it.InStock, Status: status,
@@ -105,10 +103,4 @@ func (w *acpWriter) Item(it *feedItem, finalPrice, regularPrice int64) {
 
 func (w *acpWriter) Bytes() ([]byte, error) {
 	return json.MarshalIndent(w.feed, "", " ")
-}
-
-// minorUnits delegates to the shared converter (kept as a local name so
-// test call sites read naturally).
-func minorUnits(decimal string) (int64, error) {
-	return money.MinorUnits(decimal)
 }

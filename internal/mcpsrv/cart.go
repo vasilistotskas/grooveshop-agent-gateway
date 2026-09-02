@@ -9,6 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -48,7 +49,7 @@ func (h *handlers) cartOut(t *tenant.Tenant, c *django.Cart) CartOut {
 		FreeShipping:       c.PromotionFreeShipping,
 	}
 	for _, it := range c.Items {
-		tr := localized(it.Product.Translations, t.DefaultLocale)
+		tr := django.Localized(it.Product.Translations, t.DefaultLocale)
 		out.Items = append(out.Items, CartItemOut{
 			ItemID:     it.ID,
 			ProductID:  it.Product.ID,
@@ -267,7 +268,7 @@ func (h *handlers) getCheckoutLink(
 		return nil, out, upstreamErr(err,
 			"that cart no longer exists; create a new one with create_cart")
 	}
-	out.URL = fmt.Sprintf("https://%s/cart/claim?uuid=%s", t.Domain, in.CartID)
+	out.URL = storefront.CartClaim(t.Domain, in.CartID)
 	return textResult(
 		"Give the shopper this link to review the cart and pay on the "+
 			"store's checkout (address, delivery and payment are chosen "+

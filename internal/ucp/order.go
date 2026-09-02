@@ -2,9 +2,11 @@ package ucp
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -77,14 +79,13 @@ func BuildOrder(
 	}
 
 	out := &Order{
-		UCP:        OrderEnvelope{Version: Version},
-		ID:         o.UUID,
-		Label:      fmt.Sprintf("Order %d", o.ID),
-		CheckoutID: checkoutID,
-		PermalinkURL: fmt.Sprintf("https://%s/checkout/success/%s",
-			t.Domain, o.UUID),
-		LineItems: make([]OrderLineItem, 0, len(o.Items)),
-		Currency:  currency,
+		UCP:          OrderEnvelope{Version: Version},
+		ID:           o.UUID,
+		Label:        fmt.Sprintf("Order %d", o.ID),
+		CheckoutID:   checkoutID,
+		PermalinkURL: storefront.OrderSuccess(t.Domain, o.UUID),
+		LineItems:    make([]OrderLineItem, 0, len(o.Items)),
+		Currency:     currency,
 	}
 
 	// Fulfilment is tracked per shipment upstream, not per line, so a
@@ -106,10 +107,11 @@ func BuildOrder(
 			shipped = item.Quantity
 		}
 		out.LineItems = append(out.LineItems, OrderLineItem{
-			ID: fmt.Sprintf("%d", item.Product.ID),
+			ID: strconv.FormatInt(item.Product.ID, 10),
 			Item: Item{
-				ID:    fmt.Sprintf("%d", item.Product.ID),
-				Title: item.Product.Translations[t.DefaultLocale].Name,
+				ID: strconv.FormatInt(item.Product.ID, 10),
+				Title: django.Localized(
+					item.Product.Translations, t.DefaultLocale).Name,
 				Price: unit,
 			},
 			Quantity: OrderQuantity{

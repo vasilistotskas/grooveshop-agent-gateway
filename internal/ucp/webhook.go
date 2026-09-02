@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -153,7 +154,13 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			}
 			d.log.Warn("webhook queue read failed",
 				slog.String("error", err.Error()))
-			time.Sleep(time.Second)
+			select {
+			case <-time.After(time.Second):
+			case <-d.stop:
+				return
+			case <-ctx.Done():
+				return
+			}
 			continue
 		}
 		select {
@@ -285,5 +292,8 @@ func (d *Dispatcher) post(
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// Drain so the keep-alive connection is reusable for the next
+	// delivery to the same platform.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }

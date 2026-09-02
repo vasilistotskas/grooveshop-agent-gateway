@@ -87,12 +87,14 @@ func TestFeedsEndToEnd(t *testing.T) {
 	log := quietLogger()
 	metrics := obs.NewMetrics()
 	cfg := config.Config{
+		Env: config.EnvTest,
 		// Registers httptest webhook endpoints on 127.0.0.1.
-		Env:              "test",
-		DjangoBaseURL:    djangoSrv.URL + "/api/v1",
-		DjangoPublicHost: "api.example.test",
-		AssetsHost:       "assets.platform.test",
-		MediaURLTemplate: "https://{assets_host}/x/{path}",
+		AllowLocalWebhooks: true,
+		PaymentHandlerEnv:  config.HandlerEnvSandbox,
+		DjangoBaseURL:      djangoSrv.URL + "/api/v1",
+		DjangoPublicHost:   "api.example.test",
+		AssetsHost:         "assets.platform.test",
+		MediaURLTemplate:   "https://{assets_host}/x/{path}",
 		FeedImageURLTemplate: "https://{assets_host}/media_stream-image/{path}" +
 			"/1000/1000/contain/center/FFFFFF/5/85.jpeg",
 		FeedFreshTTL:     time.Hour,
