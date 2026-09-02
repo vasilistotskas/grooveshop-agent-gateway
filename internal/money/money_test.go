@@ -1,6 +1,7 @@
 package money
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -40,6 +41,9 @@ func TestFormat(t *testing.T) {
 	cases := map[int64]string{
 		0: "0.00", 5: "0.05", 50: "0.50", 46468: "464.68",
 		100000000: "1000000.00", -550: "-5.50", -1: "-0.01",
+		// Negation would overflow the minimum; the magnitude must not.
+		math.MinInt64: "-92233720368547758.08",
+		math.MaxInt64: "92233720368547758.07",
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, Format(in), "Format(%d)", in)

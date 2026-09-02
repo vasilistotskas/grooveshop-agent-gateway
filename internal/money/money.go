@@ -45,10 +45,10 @@ func MinorUnits(decimal string) (int64, error) {
 // Format renders minor units as the dot-decimal string the feeds print
 // (46468 → "464.68"), the inverse of MinorUnits.
 func Format(minor int64) string {
-	sign := ""
 	if minor < 0 {
-		sign = "-"
-		minor = -minor
+		// Unsigned magnitude: negating math.MinInt64 would overflow.
+		magnitude := uint64(-(minor + 1)) + 1
+		return fmt.Sprintf("-%d.%02d", magnitude/100, magnitude%100)
 	}
-	return fmt.Sprintf("%s%d.%02d", sign, minor/100, minor%100)
+	return fmt.Sprintf("%d.%02d", minor/100, minor%100)
 }
