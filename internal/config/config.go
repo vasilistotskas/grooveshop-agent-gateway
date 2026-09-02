@@ -11,9 +11,11 @@ import (
 
 // Deployment environments. ENV is validated against this set so a typo
 // cannot silently select the strict production behaviour (or, worse, a
-// relaxed one).
+// relaxed one). Staging is a public cluster, so it keeps production's
+// network rules, but platforms must see it as a sandbox.
 const (
 	EnvProduction  = "production"
+	EnvStaging     = "staging"
 	EnvDevelopment = "development"
 	EnvTest        = "test"
 )
@@ -141,13 +143,15 @@ func Load() (Config, error) {
 	switch cfg.Env {
 	case EnvProduction:
 		cfg.PaymentHandlerEnv = HandlerEnvProduction
+	case EnvStaging:
+		cfg.PaymentHandlerEnv = HandlerEnvSandbox
 	case EnvDevelopment, EnvTest:
 		cfg.AllowLocalWebhooks = true
 		cfg.PaymentHandlerEnv = HandlerEnvSandbox
 	default:
 		return Config{}, fmt.Errorf(
-			"config: ENV must be %s, %s or %s (got %q)",
-			EnvProduction, EnvDevelopment, EnvTest, cfg.Env)
+			"config: ENV must be %s, %s, %s or %s (got %q)",
+			EnvProduction, EnvStaging, EnvDevelopment, EnvTest, cfg.Env)
 	}
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(cfg.LogLevel)); err != nil {

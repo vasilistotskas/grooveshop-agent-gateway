@@ -106,8 +106,17 @@ func TestLoadEnvIsValidated(t *testing.T) {
 		assert.Equal(t, HandlerEnvSandbox, cfg.PaymentHandlerEnv, env)
 	}
 
+	// Staging is the infra overlay's value: a public cluster that must
+	// keep production's webhook rule while advertising itself as a
+	// sandbox so platforms keep test traffic out of live order flow.
+	t.Setenv("ENV", EnvStaging)
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.False(t, cfg.AllowLocalWebhooks)
+	assert.Equal(t, HandlerEnvSandbox, cfg.PaymentHandlerEnv)
+
 	t.Setenv("ENV", "dev")
-	_, err := Load()
+	_, err = Load()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ENV")
 }
