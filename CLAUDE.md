@@ -110,10 +110,12 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   advertised and accepted only while `HostedPaymentOn()`; the gate is
   the Tenant plan flag AND the `AGENT_HOSTED_PAYMENT_ENABLED`
   extra-setting, folded by Django into `agentHostedPaymentEnabled`.
-  Unlike the surface gates it FAILS CLOSED — a payment behaviour must
-  not switch on from a payload that never mentioned it. A gated
-  `pay_way_id` is REFUSED, never ignored: ignoring would complete
-  against a stale selection. These five tools are withheld from the
+  Every tenant gate (`agentCommerceEnabled`, `productFeedsEnabled`,
+  `agentHostedPaymentEnabled`) is a plain boolean Django always emits;
+  a payload without one decodes as OFF, and the `*On()` accessors
+  encode the subordination to agent commerce. A gated `pay_way_id` is
+  REFUSED, never ignored: ignoring would complete against a stale
+  selection. These five tools are withheld from the
   chatbot (`internal/chat/bridge.go`) — their shapes target a platform
   generating calls, and chat hands over a checkout link instead.
 - The service `schema` (OpenRPC) URL may appear ONLY while every method it

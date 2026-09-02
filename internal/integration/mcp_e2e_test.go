@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -46,11 +48,10 @@ func fakeDjangoMux(t *testing.T) http.Handler {
 		func(w http.ResponseWriter, r *http.Request) {
 			// Real Django only includes chatApiKey for internally
 			// authenticated resolves — the gateway must identify itself.
-			// Suites construct the client with one of two secrets
-			// (the UCP suite's constant is behind the integration tag,
-			// so its value is spelled out here).
+			// The UCP suite boots its client with internalSecret, the
+			// other suites with test-secret.
 			got := r.Header.Get("X-Internal-Token")
-			if got != "test-secret" && got != "e2e-internal-secret" {
+			if got != "test-secret" && got != internalSecret {
 				t.Errorf("tenant/resolve missing internal token, got %q", got)
 			}
 			if r.URL.Query().Get("domain") == "unknown.test" {

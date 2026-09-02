@@ -100,7 +100,7 @@ func TestHandlerDocumentsAreAuthorityBound(t *testing.T) {
 		"schema host must reverse to the handler name")
 }
 
-func hostedTenant(commerce, hosted *bool) *tenant.Tenant {
+func hostedTenant(commerce, hosted bool) *tenant.Tenant {
 	return &tenant.Tenant{
 		TenantConfig: django.TenantConfig{
 			AgentCommerceEnabled:      commerce,
@@ -109,27 +109,21 @@ func hostedTenant(commerce, hosted *bool) *tenant.Tenant {
 	}
 }
 
-func boolPtr(v bool) *bool { return &v }
-
 // The extension is advertised only while BOTH tiers allow it. A store
 // with the gate off must not advertise a member the business would then
 // refuse — a platform that negotiated it would build a call that fails.
 func TestHostedSelectionRespectsBothGateTiers(t *testing.T) {
-	on := HostedSelection(hostedTenant(boolPtr(true), boolPtr(true)))
+	on := HostedSelection(hostedTenant(true, true))
 	require.Len(t, on, 1)
 	cap := on[HostedSelectionCapability][0]
 	assert.Equal(t, "dev.ucp.shopping.checkout", cap.Extends)
 	assert.Equal(t, handlerBase+"/hosted_selection.json", cap.Schema)
 
 	for name, tn := range map[string]*tenant.Tenant{
-		"merchant or platform tier off": hostedTenant(
-			boolPtr(true), boolPtr(false)),
-		"agent commerce off": hostedTenant(
-			boolPtr(false), boolPtr(true)),
-		// A payload that never mentioned the field must not switch a
-		// payment behaviour on.
-		"field absent (older Django or stale cache)": hostedTenant(
-			boolPtr(true), nil),
+		"merchant or platform tier off": hostedTenant(true, false),
+		"agent commerce off":            hostedTenant(false, true),
+		// A payload that never mentioned the gate decodes as off.
+		"gate absent": {},
 	} {
 		t.Run(name, func(t *testing.T) {
 			assert.Empty(t, HostedSelection(tn))

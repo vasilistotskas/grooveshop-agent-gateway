@@ -1,7 +1,7 @@
-// Package server assembles the HTTP mux and middleware chain. Route groups
-// added by later milestones (MCP, UCP, ACP, feeds, chat, internal events)
-// register here; tenant-scoped groups wrap their handlers with the tenant
-// middleware INSIDE routing so route patterns stay visible to metrics.
+// Package server assembles the HTTP mux and middleware chain. Every route
+// group (MCP, UCP, ACP, feeds, chat, internal events) registers here;
+// tenant-scoped groups wrap their handlers with the tenant middleware
+// INSIDE routing so route patterns stay visible to metrics.
 package server
 
 import (

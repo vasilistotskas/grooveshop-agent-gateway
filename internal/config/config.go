@@ -66,8 +66,8 @@ type Config struct {
 
 	// AssetsHost is the PLATFORM media origin (e.g. assets.example.com),
 	// used for every tenant that has not opted into white-label asset
-	// URLs — which per docs/tenant-onboarding.md is the default: assets
-	// hosts are not provisioned per tenant. A tenant that HAS opted in
+	// URLs — which, per the infra repo's docs/tenant-onboarding.md, is
+	// the default: assets hosts are not provisioned per tenant. A tenant that HAS opted in
 	// carries its own host in TenantConfig.AssetsDomain, which wins.
 	// Deliberately has no default: guessing a hostname here is what
 	// produced unreachable image URLs, and an empty value now yields an

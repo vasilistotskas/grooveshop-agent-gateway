@@ -16,8 +16,7 @@ import (
 const (
 	pageSize = 100
 	// maxPages caps the catalog sweep; combined with pageSize this is a
-	// 10k ceiling. Unlike the old Nuxt implementation the cap is logged
-	// per generation (no silent truncation) and pages fetch concurrently.
+	// 10k ceiling, logged per generation so truncation is never silent.
 	maxPages = 100
 	// fetchWorkers pages in flight; emitWindow completed-but-unemitted
 	// pages, bounding memory to ~emitWindow*pageSize products.

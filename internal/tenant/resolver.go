@@ -78,7 +78,7 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (*Tenant, error) {
 		return nil, ErrUnknownTenant
 	}
 
-	if t, err, ok := r.fromMemory(domain, false); ok {
+	if t, ok, err := r.fromMemory(domain, false); ok {
 		r.count("hit")
 		return t, err
 	}
@@ -94,11 +94,11 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (*Tenant, error) {
 
 func (r *Resolver) resolveSlow(ctx context.Context, domain string) (*Tenant, error) {
 	// Re-check under singleflight: a concurrent caller may have filled it.
-	if t, err, ok := r.fromMemory(domain, false); ok {
+	if t, ok, err := r.fromMemory(domain, false); ok {
 		return t, err
 	}
 
-	if t, err, ok := r.fromRedis(ctx, domain); ok {
+	if t, ok, err := r.fromRedis(ctx, domain); ok {
 		return t, err
 	}
 
@@ -125,7 +125,7 @@ func (r *Resolver) resolveSlow(ctx context.Context, domain string) (*Tenant, err
 	default:
 		// Django unreachable: serve the last known config past its TTL
 		// rather than 503ing every agent — tenant config is near-static.
-		if t, memErr, ok := r.fromMemory(domain, true); ok && memErr == nil {
+		if t, ok, memErr := r.fromMemory(domain, true); ok && memErr == nil {
 			stale := *t
 			stale.Stale = true
 			r.count("stale")
@@ -140,30 +140,31 @@ func (r *Resolver) resolveSlow(ctx context.Context, domain string) (*Tenant, err
 	}
 }
 
-// fromMemory returns (tenant, error, found). With allowExpired it also
+// fromMemory returns the cached entry when found: a tenant, or
+// ErrUnknownTenant for a negative entry. With allowExpired it also
 // returns entries past their TTL — the stale-if-error path.
-func (r *Resolver) fromMemory(domain string, allowExpired bool) (*Tenant, error, bool) {
+func (r *Resolver) fromMemory(domain string, allowExpired bool) (*Tenant, bool, error) {
 	r.mu.RLock()
 	e, ok := r.mem[domain]
 	r.mu.RUnlock()
 	if !ok {
-		return nil, nil, false
+		return nil, false, nil
 	}
 	if !allowExpired && time.Now().After(e.expires) {
-		return nil, nil, false
+		return nil, false, nil
 	}
 	if e.negative {
 		if allowExpired && time.Now().After(e.expires) {
-			return nil, nil, false
+			return nil, false, nil
 		}
-		return nil, ErrUnknownTenant, true
+		return nil, true, ErrUnknownTenant
 	}
-	return e.tenant, nil, true
+	return e.tenant, true, nil
 }
 
-func (r *Resolver) fromRedis(ctx context.Context, domain string) (*Tenant, error, bool) {
+func (r *Resolver) fromRedis(ctx context.Context, domain string) (*Tenant, bool, error) {
 	if r.rdb == nil {
-		return nil, nil, false
+		return nil, false, nil
 	}
 	raw, err := r.rdb.Get(ctx, redisKey(domain)).Result()
 	if err != nil {
@@ -171,24 +172,24 @@ func (r *Resolver) fromRedis(ctx context.Context, domain string) (*Tenant, error
 			r.log.WarnContext(ctx, "tenant redis read failed",
 				slog.String("error", err.Error()))
 		}
-		return nil, nil, false
+		return nil, false, nil
 	}
 	if raw == negativeSentinel {
 		r.storeMemory(domain, memEntry{negative: true, expires: time.Now().Add(r.negTTL)})
 		r.count("negative")
-		return nil, ErrUnknownTenant, true
+		return nil, true, ErrUnknownTenant
 	}
 	var cfg django.TenantConfig
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		r.log.WarnContext(ctx, "tenant redis entry corrupt",
 			slog.String("error", err.Error()))
-		return nil, nil, false
+		return nil, false, nil
 	}
 	// SecretsLoaded stays false: storeRedis strips the credential fields.
 	t := &Tenant{TenantConfig: cfg, Domain: domain, ResolvedAt: time.Now()}
 	r.storeMemory(domain, memEntry{tenant: t, expires: time.Now().Add(r.ttl)})
 	r.count("redis_hit")
-	return t, nil, true
+	return t, true, nil
 }
 
 func (r *Resolver) storeRedis(ctx context.Context, domain string, cfg *django.TenantConfig) {

@@ -15,9 +15,9 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/text"
 )
 
-// The RSS dialect (RSS 2.0 + xmlns:g) is byte-compatible with the feed the
-// storefront used to render: Meta Commerce Manager, TikTok Ads Manager and
-// Google Merchant Center all ingest it. Spec constraints preserved:
+// The RSS dialect (RSS 2.0 + xmlns:g) is the one Meta Commerce Manager,
+// TikTok Ads Manager and Google Merchant Center all ingest, and it is the
+// shape those platforms already hold for these stores. Spec constraints:
 //   - price format "12.34 EUR" — dot decimal, space, ISO 4217 code
 //   - availability enum: "in stock" | "out of stock"
 //   - images JPEG/PNG only (never WebP), >=500x500 — the feed image
@@ -66,9 +66,9 @@ type feedItem struct {
 }
 
 // newFeedItem maps a product row; a nil item means the platforms would
-// reject the product anyway (no default-locale name or no image),
-// matching the previous implementation's skip rule. A malformed money
-// field is an error: it would corrupt every consumer's feed.
+// reject the product anyway (no default-locale name or no image), so it
+// is skipped rather than emitted broken. A malformed money field is an
+// error: it would corrupt every consumer's feed.
 func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 	tr := p.Translations[ctx.Locale]
 	if tr.Name == "" || p.MainImagePath == "" {

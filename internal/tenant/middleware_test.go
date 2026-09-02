@@ -85,22 +85,19 @@ func TestMiddlewareResolverError503(t *testing.T) {
 }
 
 func TestRequireAgentCommerce(t *testing.T) {
-	on := true
-	off := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
 	cases := []struct {
 		name  string
-		agent *bool
+		agent bool
 		want  int
 	}{
-		// nil = payload from an older Django or a stale cached
-		// resolve — MUST fail open toward the pre-flag behavior.
-		{"nil fails open", nil, http.StatusNoContent},
-		{"explicit on", &on, http.StatusNoContent},
-		{"explicit off 404s", &off, http.StatusNotFound},
+		{"on serves", true, http.StatusNoContent},
+		// Off — or absent from the payload — is closed: a disabled
+		// surface reads as a route that never existed.
+		{"off 404s", false, http.StatusNotFound},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -123,22 +120,20 @@ func TestRequireAgentCommerce(t *testing.T) {
 }
 
 func TestRequireProductFeedsSubordinateToAgentGate(t *testing.T) {
-	on := true
-	off := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
 	cases := []struct {
 		name  string
-		agent *bool
-		feeds *bool
+		agent bool
+		feeds bool
 		want  int
 	}{
-		{"both nil fails open", nil, nil, http.StatusNoContent},
-		{"feeds off 404s", &on, &off, http.StatusNotFound},
-		{"agent off kills feeds too", &off, &on, http.StatusNotFound},
-		{"both on serves", &on, &on, http.StatusNoContent},
+		{"both off 404s", false, false, http.StatusNotFound},
+		{"feeds off 404s", true, false, http.StatusNotFound},
+		{"agent off kills feeds too", false, true, http.StatusNotFound},
+		{"both on serves", true, true, http.StatusNoContent},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

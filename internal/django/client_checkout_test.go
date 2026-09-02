@@ -20,8 +20,7 @@ func TestReserveStockDecodesResult(t *testing.T) {
 			gotCartID = r.Header.Get("X-Cart-Id")
 			gotGateway = r.Header.Get("X-Internal-Gateway")
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(
-				`{"reservationIds": [77, 78], "message": "reserved"}`))
+			_, _ = w.Write(fixture(t, "reserve_stock.json"))
 		}))
 	defer srv.Close()
 
@@ -43,13 +42,7 @@ func TestReserveStockShortfall(t *testing.T) {
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
-			_, _ = w.Write([]byte(`{
-				"detail": "Insufficient stock",
-				"failedItems": [{
-					"productId": 5, "productName": "Θήκη",
-					"available": 1, "requested": 3
-				}]
-			}`))
+			_, _ = w.Write(fixture(t, "reserve_stock_shortfall.json"))
 		}))
 	defer srv.Close()
 
@@ -61,7 +54,7 @@ func TestReserveStockShortfall(t *testing.T) {
 	var shortfall *StockShortfall
 	require.ErrorAs(t, err, &shortfall)
 	require.Len(t, shortfall.FailedItems, 1)
-	assert.Equal(t, "Θήκη", shortfall.FailedItems[0].ProductName)
+	assert.Equal(t, "Θήκη Κινητού", shortfall.FailedItems[0].ProductName)
 	assert.Equal(t, 1, shortfall.FailedItems[0].Available)
 	assert.ErrorIs(t, err, ErrConflict)
 }

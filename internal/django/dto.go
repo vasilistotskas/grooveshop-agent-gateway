@@ -315,12 +315,13 @@ type TenantConfig struct {
 	StripePublishableKey string `json:"stripePublishableKey"`
 	// AgentCommerceEnabled / ProductFeedsEnabled gate this gateway's
 	// surfaces per tenant. Django serves the EFFECTIVE value (plan
-	// flag AND merchant extra-setting). Pointers so a payload from an
-	// older Django — or a stale cached resolve — decodes as nil and
-	// FAILS OPEN toward the pre-flag behavior (surface on); use the
-	// AgentCommerceOn/ProductFeedsOn accessors, never the raw fields.
-	AgentCommerceEnabled *bool `json:"agentCommerceEnabled"`
-	ProductFeedsEnabled  *bool `json:"productFeedsEnabled"`
+	// flag AND merchant extra-setting) on every resolve, and its cache
+	// key includes the payload shape, so the fields are never absent;
+	// a payload without them decodes as off. Use the
+	// AgentCommerceOn/ProductFeedsOn accessors, which encode the
+	// subordination, never the raw fields.
+	AgentCommerceEnabled bool `json:"agentCommerceEnabled"`
+	ProductFeedsEnabled  bool `json:"productFeedsEnabled"`
 	// ChatAPIKey is the tenant's own model-provider credential. Django
 	// includes it only on internally-authenticated resolves (the
 	// X-Internal-Token header); empty means chat is off for the tenant.
@@ -334,14 +335,11 @@ type TenantConfig struct {
 	AgentPaymentInstruments []string `json:"agentPaymentInstruments"`
 	// AgentHostedPaymentEnabled is the EFFECTIVE two-tier gate (platform
 	// plan flag AND merchant extra-setting) for letting an agent pick a
-	// method the business settles on its own hosted page.
-	//
-	// A pointer, and it FAILS CLOSED: an older Django or a stale cached
-	// resolve decodes as nil, and a payment behaviour must never switch
-	// itself on from missing data. Closed degrades gracefully — agents
-	// settle only what they can settle themselves and card buyers are
-	// handed off, which is the plain UCP escalation flow.
-	AgentHostedPaymentEnabled *bool `json:"agentHostedPaymentEnabled"`
+	// method the business settles on its own hosted page. Off degrades
+	// gracefully — agents settle only what they can settle themselves
+	// and card buyers are handed off, which is the plain UCP escalation
+	// flow.
+	AgentHostedPaymentEnabled bool `json:"agentHostedPaymentEnabled"`
 	// ACPBearerToken authenticates the tenant's agentic-commerce platform
 	// on /acp/*. Like ChatAPIKey it arrives only on internally
 	// authenticated resolves; empty means no platform is enrolled.
@@ -349,32 +347,20 @@ type TenantConfig struct {
 }
 
 // AgentCommerceOn reports whether the agent-commerce surface (MCP,
-// UCP, ACP, chat) is enabled for the tenant. nil — an older Django or
-// a stale cached payload without the field — fails OPEN.
+// UCP, ACP, chat) is enabled for the tenant.
 func (t TenantConfig) AgentCommerceOn() bool {
-	return t.AgentCommerceEnabled == nil || *t.AgentCommerceEnabled
+	return t.AgentCommerceEnabled
 }
 
 // HostedPaymentOn reports whether an agent may choose a method the
-// business settles on its own hosted page.
-//
-// Subordinate to the agent-commerce gate, and nil fails CLOSED — unlike
-// the surface gates above. A payment behaviour must not switch itself on
-// from a payload that never mentioned it, and closed degrades to the
-// plain UCP escalation flow rather than breaking anything.
+// business settles on its own hosted page. Subordinate to the
+// agent-commerce gate.
 func (t TenantConfig) HostedPaymentOn() bool {
-	if !t.AgentCommerceOn() {
-		return false
-	}
-	return t.AgentHostedPaymentEnabled != nil &&
-		*t.AgentHostedPaymentEnabled
+	return t.AgentCommerceEnabled && t.AgentHostedPaymentEnabled
 }
 
 // ProductFeedsOn reports whether catalog feed syndication is enabled.
-// Subordinate to the agent-commerce gate; nil fails OPEN.
+// Subordinate to the agent-commerce gate.
 func (t TenantConfig) ProductFeedsOn() bool {
-	if !t.AgentCommerceOn() {
-		return false
-	}
-	return t.ProductFeedsEnabled == nil || *t.ProductFeedsEnabled
+	return t.AgentCommerceEnabled && t.ProductFeedsEnabled
 }
