@@ -582,7 +582,9 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pw, err := offlinePayWay(r.Context(), h.dj, t)
+	pw, err := offlinePayWay(
+		r.Context(), h.dj, t, s.Fulfillment.ProviderCode, s.Fulfillment.Kind,
+	)
 	if err != nil {
 		h.releaseIdem(r, t.SchemaName, "complete", key)
 		upstreamError(w, err)

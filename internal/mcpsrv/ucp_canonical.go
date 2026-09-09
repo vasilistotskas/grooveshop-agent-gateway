@@ -209,7 +209,12 @@ func resolvePayWay(
 	}
 	for i := range page.Results {
 		pw := &page.Results[i]
-		if !pw.Active || pw.IsOnlinePayment || pw.ProviderCode == "" {
+		// Positive test, not "not online". An ONLINE pay way is not an
+		// agent-payable instrument (it needs the store's hosted flow),
+		// and neither is one whose settlement we cannot read — the
+		// profile fails CLOSED by design, so an absent field must
+		// withhold the instrument rather than advertise it.
+		if !pw.Active || !pw.IsCollectedLater() || pw.ProviderCode == "" {
 			continue
 		}
 		if kind, ok := ucp.InstrumentTypeFor(pw.ProviderCode); ok &&

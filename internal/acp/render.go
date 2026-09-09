@@ -49,18 +49,32 @@ func statusOf(s *checkout.Session, offlinePayWay bool) string {
 	}
 }
 
-// offlinePayWay returns the first active offline payment method — the one
-// agentic completion uses until tokenized card payment ships.
+// offlinePayWay returns the first active collect-later payment method —
+// the one agentic completion uses until tokenized card payment ships.
+//
+// Scoped to the session's carrier and kind so Django's own two-layer
+// filter applies. Without that this asked for the unfiltered list and
+// took whatever sorted first, which can be a method the chosen carrier
+// cannot physically settle: BOX NOW PAY ON THE GO is card-at-the-locker
+// and belongs to no courier round, while courier cash belongs to no
+// locker. The rules live upstream, per carrier; duplicating them here
+// would be a second place to get them wrong.
+//
+// IsCollectedLater rather than "not online": an absent or
+// unrecognised settlement must exclude a pay way, not select it.
 func offlinePayWay(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant,
+	shippingProviderCode, shippingKind string,
 ) (*django.PayWay, error) {
-	page, err := dj.PayWays(ctx, t.Domain, t.DefaultLocale, "", "")
+	page, err := dj.PayWays(
+		ctx, t.Domain, t.DefaultLocale, shippingProviderCode, shippingKind,
+	)
 	if err != nil {
 		return nil, err
 	}
 	for i := range page.Results {
 		pw := &page.Results[i]
-		if pw.Active && !pw.IsOnlinePayment {
+		if pw.Active && pw.IsCollectedLater() {
 			return pw, nil
 		}
 	}
@@ -163,7 +177,9 @@ func Render(
 
 	offline := false
 	if s.Status == checkout.StatusReadyForComplete {
-		pw, err := offlinePayWay(ctx, dj, t)
+		pw, err := offlinePayWay(
+			ctx, dj, t, s.Fulfillment.ProviderCode, s.Fulfillment.Kind,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("acp: pay ways: %w", err)
 		}

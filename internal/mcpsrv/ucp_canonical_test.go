@@ -174,6 +174,52 @@ func TestResolvePayWayRejectsWhatTheStoreCannotSettle(t *testing.T) {
 	assert.ErrorContains(t, err, "unknown payment handler_id")
 }
 
+// A pay way whose settlement we cannot read is NOT an instrument.
+//
+// The profile fails closed on purpose: an ONLINE method needs the
+// store's hosted page and nothing here can acquire it, so advertising
+// one as agent-payable would let a platform "complete" a checkout that
+// no one can charge. The predecessor of this filter tested "not
+// online", which an ABSENT settlement satisfies — and absent is exactly
+// what an upstream field removal produces, since Go decodes a missing
+// member to the zero value with no way to tell it apart from a real
+// one. This serves a payload with the member missing and with a value
+// this gateway does not know; both must withhold the instrument.
+func TestResolvePayWayWithholdsUnreadableSettlements(t *testing.T) {
+	for _, tc := range []struct{ name, settlement string }{
+		{"member absent", ""},
+		{"value we do not know", `"settlement":"crypto",`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"count":1,"results":[{"id":1,` + tc.settlement +
+				`"active":true,"providerCode":"cash_on_delivery",` +
+				`"cost":"0","freeThreshold":"0","sortOrder":1,` +
+				`"translations":{}}]}`
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /api/v1/pay_way",
+				func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(body))
+				})
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+			dj := django.New(srv.URL+"/api/v1", "api.test", "secret",
+				5_000_000_000, obs.NewLogger("error", "test", "test"),
+				obs.NewMetrics())
+
+			_, err := resolvePayWay(context.Background(), dj,
+				payWayTenant(), &UCPPaymentIn{
+					Instruments: []UCPInstrumentIn{{
+						HandlerID: ucp.HandlerID,
+						Type:      ucp.InstrumentCashOnDelivery,
+					}},
+				})
+
+			assert.ErrorContains(t, err, "not available")
+		})
+	}
+}
+
 // When the platform marks a selection, that is the one to settle — not
 // whichever happens to be first.
 func TestResolvePayWayHonoursTheSelectedInstrument(t *testing.T) {

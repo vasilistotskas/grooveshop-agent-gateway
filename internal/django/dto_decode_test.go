@@ -125,11 +125,56 @@ func TestDecodePayWays(t *testing.T) {
 	require.Len(t, page.Results, 2)
 	viva := page.Results[1]
 	assert.Equal(t, "viva_wallet", viva.ProviderCode)
-	assert.True(t, viva.IsOnlinePayment)
+	assert.Equal(t, SettlementOnline, viva.Settlement)
+	assert.True(t, viva.IsOnlineSettlement())
+	assert.False(t, viva.IsCollectedLater())
 	assert.Equal(t, "1.0", viva.Cost.String())
 	cod := page.Results[0]
 	assert.Equal(t, "cash_on_delivery", cod.ProviderCode)
-	assert.False(t, cod.IsOnlinePayment)
+	assert.Equal(t, SettlementCourierCash, cod.Settlement)
+	assert.False(t, cod.IsOnlineSettlement())
+	assert.True(t, cod.IsCollectedLater())
+}
+
+// The whole reason the booleans are gone. Go cannot tell a JSON member
+// that is absent from one that is present and false, so the day Django
+// drops the deprecated isOnlinePayment column every pay way would have
+// decoded as "offline" and every caller would have believed it: online
+// methods advertised to agents as collect-on-delivery instruments,
+// card orders placed down the cash-on-delivery path.
+//
+// A settlement string has no such ambiguity — absent decodes to "",
+// which is neither online nor collected-later, so each predicate says
+// no and every branch fails closed.
+func TestPayWaySettlementFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		payload   string
+		online    bool
+		collected bool
+		known     bool
+	}{
+		{"online", `{"settlement":"online"}`, true, false, true},
+		{"courier cash", `{"settlement":"courier_cash"}`, false, true, true},
+		{"locker terminal", `{"settlement":"carrier_terminal"}`,
+			false, true, true},
+		{"bank transfer", `{"settlement":"offline_transfer"}`,
+			false, true, true},
+		{"member absent", `{"providerCode":"viva_wallet"}`,
+			false, false, false},
+		{"member empty", `{"settlement":""}`, false, false, false},
+		{"value we do not know", `{"settlement":"crypto"}`,
+			false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var pw PayWay
+			require.NoError(t, json.Unmarshal([]byte(tc.payload), &pw))
+
+			assert.Equal(t, tc.online, pw.IsOnlineSettlement())
+			assert.Equal(t, tc.collected, pw.IsCollectedLater())
+			assert.Equal(t, tc.known, pw.HasKnownSettlement())
+		})
+	}
 }
 
 func TestDecodeReserveStock(t *testing.T) {

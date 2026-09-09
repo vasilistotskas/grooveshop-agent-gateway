@@ -199,15 +199,19 @@ type PaymentMethodsIn struct {
 }
 
 type PaymentMethodOut struct {
-	ID                   int64  `json:"id" jsonschema:"payWayId used at checkout"`
-	Label                string `json:"label"`
-	Description          string `json:"description,omitempty"`
-	Cost                 string `json:"cost"`
-	FreeThreshold        string `json:"freeThreshold"`
-	Currency             string `json:"currency"`
-	IsOnlinePayment      bool   `json:"isOnlinePayment"`
-	RequiresConfirmation bool   `json:"requiresConfirmation"`
-	ProviderCode         string `json:"providerCode"`
+	ID            int64  `json:"id" jsonschema:"payWayId used at checkout"`
+	Label         string `json:"label"`
+	Description   string `json:"description,omitempty"`
+	Cost          string `json:"cost"`
+	FreeThreshold string `json:"freeThreshold"`
+	Currency      string `json:"currency"`
+	ProviderCode  string `json:"providerCode"`
+	// Replaces the isOnlinePayment / requiresConfirmation pair, which
+	// were deprecated mirrors upstream and could not express the
+	// difference between cash to a courier and a card at a locker
+	// terminal — two methods that ride different carriers and cannot be
+	// swapped. Agents branch on this.
+	Settlement string `json:"settlement" jsonschema:"how the money changes hands: online (paid at checkout), courier_cash (cash or card to the courier on delivery), carrier_terminal (card at the carrier's locker terminal on pickup), offline_transfer (settled off-platform, e.g. bank transfer)"`
 }
 
 type PaymentMethodsOut struct {
@@ -234,15 +238,14 @@ func (h *handlers) getPaymentMethods(
 		}
 		tr := django.Localized(pw.Translations, t.DefaultLocale)
 		out.Methods = append(out.Methods, PaymentMethodOut{
-			ID:                   pw.ID,
-			Label:                tr.Name,
-			Description:          tr.Description,
-			Cost:                 num(pw.Cost),
-			FreeThreshold:        num(pw.FreeThreshold),
-			Currency:             t.DefaultCurrency,
-			IsOnlinePayment:      pw.IsOnlinePayment,
-			RequiresConfirmation: pw.RequiresConfirmation,
-			ProviderCode:         pw.ProviderCode,
+			ID:            pw.ID,
+			Label:         tr.Name,
+			Description:   tr.Description,
+			Cost:          num(pw.Cost),
+			FreeThreshold: num(pw.FreeThreshold),
+			Currency:      t.DefaultCurrency,
+			ProviderCode:  pw.ProviderCode,
+			Settlement:    pw.Settlement,
 		})
 	}
 	return textResult(

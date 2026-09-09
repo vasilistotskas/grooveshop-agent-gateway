@@ -56,11 +56,24 @@ func (f *Flow) Complete(
 	if err != nil {
 		return nil, fmt.Errorf("checkout: pay way lookup: %w", err)
 	}
-	// Viva's hosted authorization and offline pay ways are supported;
-	// tokenized card completion (Stripe) arrives with the ACP delegated
-	// payment flag.
-	online := payWay.IsOnlinePayment
-	if online && payWay.ProviderCode != django.ProviderVivaWallet {
+	// Viva's hosted authorization and collect-later pay ways are
+	// supported; tokenized card completion (Stripe) arrives with the ACP
+	// delegated payment flag.
+	//
+	// The unknown-settlement guard comes FIRST and refuses outright.
+	// This branch decides whether money is taken now or on delivery, so
+	// "I could not tell" must never resolve to "collect it later" — the
+	// bool this replaced would have done exactly that the day Django
+	// drops the deprecated column, placing card orders as if they were
+	// cash on delivery.
+	if !payWay.HasKnownSettlement() {
+		return nil, fmt.Errorf(
+			"%w: pay way %d reports settlement %q",
+			ErrPaymentMethodUnsupported, payWay.ID, payWay.Settlement,
+		)
+	}
+	if payWay.IsOnlineSettlement() &&
+		payWay.ProviderCode != django.ProviderVivaWallet {
 		return nil, ErrPaymentMethodUnsupported
 	}
 
@@ -102,7 +115,7 @@ func (f *Flow) Complete(
 			slog.String("error", err.Error()))
 	}
 
-	if !online {
+	if !payWay.IsOnlineSettlement() {
 		s.Status = StatusCompleted
 		return &Outcome{Completed: true}, nil
 	}

@@ -123,15 +123,55 @@ type PayWayTranslation struct {
 }
 
 type PayWay struct {
-	ID                   int64                        `json:"id"`
-	Translations         map[string]PayWayTranslation `json:"translations"`
-	Active               bool                         `json:"active"`
-	Cost                 json.Number                  `json:"cost"`
-	FreeThreshold        json.Number                  `json:"freeThreshold"`
-	SortOrder            int                          `json:"sortOrder"`
-	ProviderCode         string                       `json:"providerCode"`
-	IsOnlinePayment      bool                         `json:"isOnlinePayment"`
-	RequiresConfirmation bool                         `json:"requiresConfirmation"`
+	ID            int64                        `json:"id"`
+	Translations  map[string]PayWayTranslation `json:"translations"`
+	Active        bool                         `json:"active"`
+	Cost          json.Number                  `json:"cost"`
+	FreeThreshold json.Number                  `json:"freeThreshold"`
+	SortOrder     int                          `json:"sortOrder"`
+	ProviderCode  string                       `json:"providerCode"`
+	// How the money changes hands. See the Settlement* constants in
+	// enums.go for why this replaced the isOnlinePayment /
+	// requiresConfirmation booleans outright. Branch on it through the
+	// predicates below, never by comparing the raw string, so an absent
+	// or unrecognised value stays fail-closed at every call site.
+	Settlement string `json:"settlement"`
+}
+
+// IsOnlineSettlement reports whether the shopper pays at checkout.
+//
+// False for an absent or unrecognised settlement — a caller asking
+// "is this online?" to gate a stricter path must not be told "no"
+// because the field went missing, so pair it with HasKnownSettlement
+// wherever the answer decides whether money can be taken.
+func (p PayWay) IsOnlineSettlement() bool {
+	return p.Settlement == SettlementOnline
+}
+
+// IsCollectedLater reports whether the money is collected after
+// checkout — cash to a courier, a card at a carrier's locker terminal,
+// or a bank transfer settled off-platform.
+//
+// This is the positive form on purpose. "Not online" would include the
+// empty string, which is precisely the state a dropped upstream column
+// produces; requiring a recognised value means such a pay way is simply
+// never selected rather than silently treated as agent-completable.
+func (p PayWay) IsCollectedLater() bool {
+	switch p.Settlement {
+	case SettlementCourierCash,
+		SettlementCarrierTerminal,
+		SettlementOfflineTransfer:
+		return true
+	default:
+		return false
+	}
+}
+
+// HasKnownSettlement reports whether the upstream payload carried a
+// settlement this gateway understands. A false answer means the
+// contract moved and the caller must refuse rather than guess.
+func (p PayWay) HasKnownSettlement() bool {
+	return p.IsOnlineSettlement() || p.IsCollectedLater()
 }
 
 type ShippingOption struct {
