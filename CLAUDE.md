@@ -129,12 +129,23 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   Its cart/catalog methods belong to capabilities the profile does not
   advertise, so a negotiating platform never calls them.
 - `get_order` sources the required `checkout_id` from the gateway's own
-  order index (`ag:{schema}:order:{uuid}`, retained a year — the link must
-  outlive the session, which expires in 24h). An order placed on the web
-  has no checkout to name and is refused with that explanation, never a
-  fabricated id. `order.fulfillment` stays `{}`: an expectation needs a
-  destination the order detail deliberately does not decode (PII), and an
-  event needs a shipment timestamp upstream does not expose.
+  order link (`ag:{schema}:orderlink:{uuid}`: checkout id, storefront
+  domain, webhook target; retained a year — it must outlive the session,
+  which expires in 24h). An order placed on the web has no checkout to
+  name and is refused with that explanation, never a fabricated id.
+  `order.fulfillment` stays `{}`: an expectation needs a destination the
+  order detail deliberately does not decode (PII), and an event needs a
+  shipment timestamp upstream does not expose.
+- Order webhooks route through that link, never the session, and carry
+  the full UCP order entity rendered at enqueue. They are signed per RFC
+  9421 with the tenant's ES256 key (`internal/httpsig`; UCP's baseline
+  algorithm), with Standard Webhooks `Webhook-Id`/`Webhook-Timestamp`
+  and `UCP-Agent` naming the tenant profile. The queue is a Redis stream
+  consumer group (`ag:webhooks:orders`, one consumer per pod name): a
+  delivery is acknowledged only on a terminal outcome, a consumer's own
+  pending entries replay on restart, and a dead consumer's are claimed
+  after the visibility timeout. Delivery dials only public addresses and
+  never follows redirects.
 - Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:{host}`.
 - No tenant label on Prometheus metrics (unbounded cardinality) — tenant
   goes in logs.

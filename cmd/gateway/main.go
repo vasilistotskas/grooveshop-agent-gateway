@@ -55,7 +55,14 @@ func run() error {
 
 	// Signing keys are per tenant schema and load lazily at first use.
 	keys := ucp.NewKeys(rdb)
-	dispatcher := ucp.NewDispatcher(rdb, keys, log)
+	// The pod name: webhook deliveries are claimed per consumer, and a
+	// consumer that disappears has its pending deliveries taken over.
+	consumer, err := os.Hostname()
+	if err != nil {
+		return err
+	}
+	dispatcher := ucp.NewDispatcher(rdb, keys, log, consumer,
+		cfg.AllowLocalWebhooks)
 
 	handler := server.New(server.Deps{
 		Cfg:        cfg,
@@ -82,10 +89,19 @@ func run() error {
 	)
 	defer stop()
 
-	// Order-webhook delivery worker; undelivered events reclaim on next
-	// boot, so exiting with the signal context is safe.
-	go dispatcher.Run(ctx)
-	defer dispatcher.Stop()
+	// Order-webhook delivery. It stops after the HTTP server (no new
+	// events are enqueued by then) and is waited for before Redis closes:
+	// the deferred Close must not race its final acknowledgements.
+	dispatchCtx, stopDispatch := context.WithCancel(context.Background())
+	dispatched := make(chan struct{})
+	go func() {
+		defer close(dispatched)
+		dispatcher.Run(dispatchCtx)
+	}()
+	defer func() {
+		stopDispatch()
+		<-dispatched
+	}()
 
 	errCh := make(chan error, 1)
 	go func() {

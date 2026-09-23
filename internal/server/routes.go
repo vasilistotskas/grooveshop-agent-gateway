@@ -111,7 +111,10 @@ func New(d Deps) http.Handler {
 	// Cluster-internal: Django's order-event push. Not tenant-scoped —
 	// the event body carries the schema.
 	mux.Handle("POST /internal/events/order-status", internalOrderEvents(
-		d.Cfg.InternalSecret, checkoutFlow, d.Dispatcher, d.Log))
+		d.Cfg.InternalSecret, orderEventDeps{
+			Store: checkoutStore, Flow: checkoutFlow, Resolver: d.Resolver,
+			Django: d.Django, Dispatcher: d.Dispatcher, Log: d.Log,
+		}))
 
 	// ACP is always mounted; access is gated per tenant at request time
 	// by the tenant's own acpBearerToken from tenant/resolve. A tenant

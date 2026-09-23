@@ -2,8 +2,7 @@ package ucp
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -81,11 +80,13 @@ func testTenant() *tenant.Tenant {
 
 func testKey(t *testing.T) *SigningKey {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	encoded, err := newEncodedKey()
 	require.NoError(t, err)
-	kid, err := jwkThumbprint(pub)
+	raw, err := base64.StdEncoding.DecodeString(encoded)
 	require.NoError(t, err)
-	return &SigningKey{Private: priv, Public: pub, KID: kid}
+	key, err := keyFromScalar(raw)
+	require.NoError(t, err)
+	return key
 }
 
 func TestProfileMatchesBusinessSchema(t *testing.T) {
@@ -99,7 +100,8 @@ func TestProfileMatchesBusinessSchema(t *testing.T) {
 	assert.Equal(t, "mcp",
 		profile.UCP.Services["dev.ucp.shopping"][0].Transport)
 	assert.Len(t, profile.Keys, 1)
-	assert.Equal(t, "OKP", profile.Keys[0]["kty"])
+	assert.Equal(t, "EC", profile.Keys[0]["kty"])
+	assert.Equal(t, "ES256", profile.Keys[0]["alg"])
 }
 
 // fixtureDjango serves the recorded fixtures BuildCheckout consumes; an

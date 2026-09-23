@@ -3,7 +3,7 @@ package ucp
 import (
 	"errors"
 	"fmt"
-	"net"
+	"net/netip"
 	"net/url"
 	"strings"
 )
@@ -37,8 +37,9 @@ var internalSuffixes = []string{
 // This is a hostname/scheme check, not a DNS check: resolving here would
 // add a round trip to every checkout and would still be
 // time-of-check/time-of-use racy. It rejects the reachable shapes —
-// literal private addresses and names that only exist inside a cluster —
-// while leaving public endpoints alone.
+// literal special-use addresses and names that only exist inside a
+// cluster — while leaving public endpoints alone; the dispatcher checks
+// the address it actually connects to.
 //
 // allowLocal relaxes it to any http(s) host. It is driven by the ENV
 // config value: development and the e2e suite legitimately register
@@ -73,10 +74,8 @@ func ValidateWebhookURL(raw string, allowLocal bool) error {
 		return fmt.Errorf("%w: missing host", ErrWebhookURL)
 	}
 
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
-			ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-			ip.IsInterfaceLocalMulticast() {
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if !publicAddr(addr) {
 			return fmt.Errorf(
 				"%w: %s is not publicly routable", ErrWebhookURL, host)
 		}
@@ -98,4 +97,44 @@ func ValidateWebhookURL(raw string, allowLocal bool) error {
 		}
 	}
 	return nil
+}
+
+// specialUse lists the RFC 6890 special-purpose ranges netip's predicates
+// leave out: shared address space, IETF protocol assignments,
+// documentation, benchmarking, relays and translation prefixes, and the
+// reserved block.
+var specialUse = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("3fff::/20"),
+}
+
+// publicAddr reports whether a webhook may be delivered to addr: a global
+// unicast address outside every private and special-use range. Loopback,
+// link-local (the 169.254.169.254 metadata address included), multicast
+// and unspecified addresses are not global unicast.
+func publicAddr(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() {
+		return false
+	}
+	for _, p := range specialUse {
+		if p.Contains(addr) {
+			return false
+		}
+	}
+	return true
 }

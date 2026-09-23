@@ -25,13 +25,14 @@ var (
 const (
 	activeTTL   = 30 * time.Minute
 	terminalTTL = 24 * time.Hour
-	// The order index outlives the session it points at, and by a long
+	// The order link outlives the session it points at, and by a long
 	// way: the UCP order object requires `checkout_id` for
-	// reconciliation, so the order-to-checkout link must survive for as
-	// long as an agent might reasonably ask about an order. The value is
-	// one short string per order, so retention costs almost nothing.
-	orderIdxTTL = 365 * 24 * time.Hour
-	lockTTL     = 10 * time.Second
+	// reconciliation, and the store keeps sending order events (shipped,
+	// delivered) long after the session's 24h. The link must survive for
+	// as long as an agent might reasonably ask about an order. It is a
+	// few short strings per order, so retention costs almost nothing.
+	orderLinkTTL = 365 * 24 * time.Hour
+	lockTTL      = 10 * time.Second
 
 	// Completion-claim markers. A claim is held while the first attempt
 	// runs and, once it succeeds, kept for the session's terminal
@@ -64,8 +65,8 @@ func idemKey(schema, id, key string) string {
 	return "ag:" + schema + ":idem:" + id + ":" + key
 }
 
-func orderKey(schema, orderUUID string) string {
-	return "ag:" + schema + ":order:" + orderUUID
+func orderLinkKey(schema, orderUUID string) string {
+	return "ag:" + schema + ":orderlink:" + orderUUID
 }
 
 func NewSession(schema, domain, protocol, cartID string) *Session {
@@ -179,27 +180,43 @@ func (st *Store) ReleaseCompletion(
 	_ = st.rdb.Del(ctx, idemKey(schema, id, idempotencyKey)).Err()
 }
 
-// IndexOrder maps a Django order UUID to its session for webhook routing.
-func (st *Store) IndexOrder(
-	ctx context.Context, schema, orderUUID, sessionID string,
-) error {
-	return st.rdb.Set(ctx, orderKey(schema, orderUUID), sessionID,
-		orderIdxTTL).Err()
+// OrderLink ties an order placed through a checkout to what outlives
+// that checkout: its id, the storefront domain the order belongs to, and
+// the platform's webhook target.
+type OrderLink struct {
+	CheckoutID string `json:"checkoutId"`
+	Domain     string `json:"domain"`
+	WebhookURL string `json:"webhookUrl,omitempty"`
 }
 
-// CheckoutIDForOrder resolves which checkout produced an order, without
-// loading the session. The session expires long before the index does,
-// so a caller that only needs the id — the UCP order object's
-// `checkout_id` — must not require the session.
-func (st *Store) CheckoutIDForOrder(
+// IndexOrder records the session's order link.
+func (st *Store) IndexOrder(ctx context.Context, s *Session) error {
+	raw, err := json.Marshal(OrderLink{
+		CheckoutID: s.ID, Domain: s.Domain, WebhookURL: s.WebhookURL,
+	})
+	if err != nil {
+		return fmt.Errorf("checkout: encode order link: %w", err)
+	}
+	return st.rdb.Set(ctx, orderLinkKey(s.Schema, s.OrderUUID), raw,
+		orderLinkTTL).Err()
+}
+
+// OrderLinkFor resolves the link for an order, without loading the
+// session: the session expires long before the link does, so neither
+// get_order nor order-event delivery may require it.
+func (st *Store) OrderLinkFor(
 	ctx context.Context, schema, orderUUID string,
-) (string, error) {
-	id, err := st.rdb.Get(ctx, orderKey(schema, orderUUID)).Result()
+) (*OrderLink, error) {
+	raw, err := st.rdb.Get(ctx, orderLinkKey(schema, orderUUID)).Result()
 	if errors.Is(err, redis.Nil) {
-		return "", ErrNotFound
+		return nil, ErrNotFound
 	}
 	if err != nil {
-		return "", fmt.Errorf("checkout: order index: %w", err)
+		return nil, fmt.Errorf("checkout: order link: %w", err)
 	}
-	return id, nil
+	var link OrderLink
+	if err := json.Unmarshal([]byte(raw), &link); err != nil {
+		return nil, fmt.Errorf("checkout: corrupt order link: %w", err)
+	}
+	return &link, nil
 }

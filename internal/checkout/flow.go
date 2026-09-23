@@ -140,7 +140,7 @@ func (f *Flow) Complete(
 	}
 	s.OrderID = order.ID
 	s.OrderUUID = order.UUID
-	if err := f.st.IndexOrder(ctx, s.Schema, order.UUID, s.ID); err != nil {
+	if err := f.st.IndexOrder(ctx, s); err != nil {
 		f.log.ErrorContext(ctx, "checkout: order index write failed",
 			slog.String("order", order.UUID),
 			slog.String("error", err.Error()))
@@ -186,42 +186,33 @@ func (f *Flow) startPayment(
 	return &Outcome{Escalated: true, PaymentURL: cs.CheckoutURL}, nil
 }
 
-// ApplyOrderEvent folds a Django order/payment event into the session it
-// belongs to. Returns the updated session (persisted) or nil when no
-// session tracks that order. It takes the session lock like every other
-// mutation: an unlocked write raced a concurrent cancel or complete, and
-// the last writer won. A busy session returns ErrLocked for the caller to
-// retry.
+// ApplyOrderEvent folds a Django order/payment event into the checkout
+// that placed the order, if that session still exists — sessions expire
+// long before orders stop changing, and a missing one is not an error.
+// It takes the session lock like every other mutation: an unlocked write
+// raced a concurrent cancel or complete, and the last writer won. A busy
+// session returns ErrLocked for the caller to retry.
 func (f *Flow) ApplyOrderEvent(
-	ctx context.Context, schema, orderUUID, paymentStatus string,
-) (*Session, error) {
-	id, err := f.st.CheckoutIDForOrder(ctx, schema, orderUUID)
-	if errors.Is(err, ErrNotFound) {
-		return nil, nil
+	ctx context.Context, schema, checkoutID, paymentStatus string,
+) error {
+	if paymentStatus != django.PaymentStatusCompleted {
+		return nil
 	}
+	release, err := f.st.Lock(ctx, schema, checkoutID)
 	if err != nil {
-		return nil, err
-	}
-	release, err := f.st.Lock(ctx, schema, id)
-	if err != nil {
-		return nil, err
+		return err
 	}
 	defer release()
-	s, err := f.st.Load(ctx, schema, id)
+	s, err := f.st.Load(ctx, schema, checkoutID)
 	if errors.Is(err, ErrNotFound) {
-		return nil, nil
+		return nil
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if s.Terminal() {
-		return s, nil
+		return nil
 	}
-	if paymentStatus == django.PaymentStatusCompleted {
-		s.Status = StatusCompleted
-		if err := f.st.Save(ctx, s); err != nil {
-			return nil, err
-		}
-	}
-	return s, nil
+	s.Status = StatusCompleted
+	return f.st.Save(ctx, s)
 }

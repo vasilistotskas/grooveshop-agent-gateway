@@ -5,14 +5,19 @@ package integration
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -41,12 +47,17 @@ const (
 	acpBearerToken = "acp-bearer-demostore-fixture"
 )
 
+// receivedWebhook is one order webhook as a platform receives it.
+type receivedWebhook struct {
+	method, host, path string
+	header             http.Header
+	body               []byte
+}
+
 // webhookSink records signed order webhooks a platform would receive.
 type webhookSink struct {
 	mu       sync.Mutex
-	bodies   [][]byte
-	sigs     []string
-	keyIDs   []string
+	hooks    []receivedWebhook
 	received chan struct{}
 }
 
@@ -58,13 +69,69 @@ func (s *webhookSink) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		s.mu.Lock()
-		s.bodies = append(s.bodies, body)
-		s.sigs = append(s.sigs, r.Header.Get("UCP-Signature"))
-		s.keyIDs = append(s.keyIDs, r.Header.Get("UCP-Key-Id"))
+		s.hooks = append(s.hooks, receivedWebhook{
+			method: r.Method, host: r.Host, path: r.URL.Path,
+			header: r.Header.Clone(), body: body,
+		})
 		s.mu.Unlock()
 		s.received <- struct{}{}
 		w.WriteHeader(http.StatusOK)
 	})
+}
+
+var signatureInputRe = regexp.MustCompile(`^sig1=\(([^)]*)\)(.*)$`)
+
+// verifyWebhook checks a delivery the way a UCP platform does, from the
+// wire alone: Content-Digest over the raw body, then the RFC 9421
+// signature base rebuilt from the components Signature-Input lists,
+// verified as ES256 against the business profile's JWK.
+func verifyWebhook(t *testing.T, hook receivedWebhook, jwk map[string]string) {
+	t.Helper()
+	sum := sha256.Sum256(hook.body)
+	assert.Equal(t,
+		"sha-256=:"+base64.StdEncoding.EncodeToString(sum[:])+":",
+		hook.header.Get("Content-Digest"))
+
+	input := hook.header.Get("Signature-Input")
+	m := signatureInputRe.FindStringSubmatch(input)
+	require.NotNil(t, m, "Signature-Input: %s", input)
+	assert.Contains(t, m[2], `;keyid="`+jwk["kid"]+`"`)
+	var base strings.Builder
+	for _, quoted := range strings.Fields(m[1]) {
+		name := strings.Trim(quoted, `"`)
+		var value string
+		switch name {
+		case "@method":
+			value = hook.method
+		case "@authority":
+			value = hook.host
+		case "@path":
+			value = hook.path
+		default:
+			value = hook.header.Get(name)
+			require.NotEmpty(t, value, "covered header %s", name)
+		}
+		base.WriteString(quoted + ": " + value + "\n")
+	}
+	base.WriteString(`"@signature-params": (` + m[1] + ")" + m[2])
+
+	sigValue := strings.TrimSuffix(strings.TrimPrefix(
+		hook.header.Get("Signature"), "sig1=:"), ":")
+	sig, err := base64.StdEncoding.DecodeString(sigValue)
+	require.NoError(t, err)
+	require.Len(t, sig, 64, "ES256 is raw r||s, not ASN.1")
+
+	x, err := base64.RawURLEncoding.DecodeString(jwk["x"])
+	require.NoError(t, err)
+	y, err := base64.RawURLEncoding.DecodeString(jwk["y"])
+	require.NoError(t, err)
+	pub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(),
+		append(append([]byte{0x04}, x...), y...))
+	require.NoError(t, err)
+	digest := sha256.Sum256([]byte(base.String()))
+	assert.True(t, ecdsa.Verify(pub, digest[:],
+		new(big.Int).SetBytes(sig[:32]), new(big.Int).SetBytes(sig[32:])),
+		"webhook signature must verify against the profile JWK")
 }
 
 // fakeCheckoutDjango extends the shared fake with the order-placement
@@ -116,6 +183,7 @@ func fakeCheckoutDjango(t *testing.T, failPaymentLink *atomic.Bool) http.Handler
 type ucpStack struct {
 	gw  *httptest.Server
 	key *ucp.SigningKey
+	rdb *redis.Client
 	// failPaymentLink toggles Viva payment-session failures upstream.
 	failPaymentLink *atomic.Bool
 }
@@ -160,7 +228,7 @@ func startUCPGateway(t *testing.T) ucpStack {
 	// The fixture tenant's key, for signature/KID assertions.
 	key, err := keys.ForSchema(context.Background(), "demostore")
 	require.NoError(t, err)
-	dispatcher := ucp.NewDispatcher(rdb, keys, log)
+	dispatcher := ucp.NewDispatcher(rdb, keys, log, "e2e", true)
 	ctx, cancel := context.WithCancel(context.Background())
 	go dispatcher.Run(ctx)
 	t.Cleanup(cancel)
@@ -172,7 +240,9 @@ func startUCPGateway(t *testing.T) ucpStack {
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return ucpStack{gw: srv, key: key, failPaymentLink: failPaymentLink}
+	return ucpStack{
+		gw: srv, key: key, rdb: rdb, failPaymentLink: failPaymentLink,
+	}
 }
 
 func TestUCPEndToEnd(t *testing.T) {
@@ -339,19 +409,26 @@ func TestUCPEndToEnd(t *testing.T) {
 			t.Fatal("platform webhook was never delivered")
 		}
 		sink.mu.Lock()
-		body, sig, kid := sink.bodies[0], sink.sigs[0], sink.keyIDs[0]
+		hook := sink.hooks[0]
 		sink.mu.Unlock()
 
-		assert.Equal(t, key.KID, kid)
-		rawSig, err := base64.RawURLEncoding.DecodeString(sig)
-		require.NoError(t, err)
-		assert.True(t, ed25519.Verify(key.Public, body, rawSig),
-			"webhook signature must verify against the profile JWK")
+		verifyWebhook(t, hook, key.JWK())
+		// Standard Webhooks headers, and the business named as signer.
+		assert.NotEmpty(t, hook.header.Get("Webhook-Id"))
+		assert.NotEmpty(t, hook.header.Get("Webhook-Timestamp"))
+		assert.Contains(t, hook.header.Get("UCP-Agent"),
+			`profile="https://`)
+		assert.Contains(t, hook.header.Get("UCP-Agent"), "/.well-known/ucp")
+
+		// The body is the full order entity, never the queue record.
 		var delivered map[string]any
-		require.NoError(t, json.Unmarshal(body, &delivered))
-		assert.Equal(t, fixtureOrderUUID, delivered["order_uuid"])
-		assert.Equal(t, "COMPLETED", delivered["payment_status"])
+		require.NoError(t, json.Unmarshal(hook.body, &delivered))
+		assert.Equal(t, fixtureOrderUUID, delivered["id"])
 		assert.Equal(t, checkoutID, delivered["checkout_id"])
+		assert.NotEmpty(t, delivered["line_items"])
+		for _, internal := range []string{"schema", "target_url", "targetUrl"} {
+			assert.NotContains(t, delivered, internal)
+		}
 
 		// The session is now terminal; complete re-renders the outcome.
 		res = callTool(t, session, "complete_checkout", map[string]any{
@@ -361,6 +438,36 @@ func TestUCPEndToEnd(t *testing.T) {
 		})
 		require.False(t, res.IsError)
 		assert.Equal(t, "completed", structured(t, res)["status"])
+
+		// The session expires within a day; the store reports shipment
+		// for weeks after. Events route through the order link, so the
+		// platform still hears about them.
+		require.NoError(t, stack.rdb.Del(context.Background(),
+			"ag:demostore:cs:"+checkoutID).Err())
+		shipped, err := json.Marshal(map[string]any{
+			"schemaName": "demostore", "orderUuid": fixtureOrderUUID,
+			"status": "SHIPPED", "paymentStatus": "COMPLETED",
+		})
+		require.NoError(t, err)
+		req, err = http.NewRequest(http.MethodPost,
+			gw.URL+"/internal/events/order-status", bytes.NewReader(shipped))
+		require.NoError(t, err)
+		req.Header.Set("X-Internal-Token", internalSecret)
+		resp, err = http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		require.Equal(t, http.StatusNoContent, resp.StatusCode)
+		select {
+		case <-sink.received:
+		case <-time.After(15 * time.Second):
+			t.Fatal("an event after session expiry was never delivered")
+		}
+		sink.mu.Lock()
+		late := sink.hooks[len(sink.hooks)-1]
+		sink.mu.Unlock()
+		verifyWebhook(t, late, key.JWK())
+		assert.NotEqual(t, hook.header.Get("Webhook-Id"),
+			late.header.Get("Webhook-Id"), "each event is its own delivery")
 	})
 
 	t.Run("an online method named only at complete time places the order",

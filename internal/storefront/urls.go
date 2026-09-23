@@ -59,6 +59,12 @@ func MCP(domain string) string {
 	return Origin(domain) + "/mcp"
 }
 
+// UCPProfile is this gateway's UCP business profile on the tenant
+// domain — the identity order webhooks name in UCP-Agent.
+func UCPProfile(domain string) string {
+	return Origin(domain) + "/.well-known/ucp"
+}
+
 // OAuthResourceMetadata is the RFC 9728 protected-resource document the
 // storefront publishes for the MCP endpoint
 // (server/routes/.well-known/oauth-protected-resource/mcp.get.ts).

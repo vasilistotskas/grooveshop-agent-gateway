@@ -33,7 +33,7 @@ func TestSigningKeysDistinctPerSchema(t *testing.T) {
 	again, err := ucp.NewKeys(rdb).ForSchema(ctx, "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, alpha.KID, again.KID)
-	assert.Equal(t, alpha.Public, again.Public)
+	assert.Equal(t, alpha.JWK(), again.JWK())
 }
 
 // No schema adopts a pre-existing platform-wide key. The gateway once
@@ -49,7 +49,7 @@ func TestNoSchemaAdoptsAGlobalKey(t *testing.T) {
 	key, err := ucp.NewKeys(rdb).ForSchema(ctx, "alpha")
 	require.NoError(t, err)
 
-	seed, err := rdb.Get(ctx, "ag:alpha:ucp:signing_key").Result()
+	seed, err := rdb.Get(ctx, "ag:alpha:ucp:signing_key:es256").Result()
 	require.NoError(t, err)
 	assert.NotEqual(t, "stale-global-seed", seed,
 		"a leftover global key must never become a schema's identity")

@@ -3,290 +3,419 @@ package ucp
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpsig"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 )
 
 const (
 	// Deliberately NOT per-schema: this is one work queue for the whole
-	// pod pool and each event carries its own schema, which is what the
-	// signing key and the target URL are resolved from. Per-schema lists
-	// would need a fair scheduler across an unbounded set of keys to
-	// gain anything the worker pool below does not already give.
-	eventsKey     = "ag:events:orders"
-	processingKey = "ag:events:orders:processing"
+	// pod pool and each delivery carries its own schema, which is what
+	// the signing key is resolved from. Per-schema streams would need a
+	// fair scheduler across an unbounded set of keys to gain anything the
+	// worker pool below does not already give.
+	eventsStream = "ag:webhooks:orders"
+	eventsGroup  = "dispatch"
+	// deliveryField is the stream entry's single field.
+	deliveryField = "delivery"
 
-	// deliveryWorkers bounds concurrent deliveries.
-	//
-	// Delivery used to run inline in the consumer loop, so ONE
-	// undeliverable endpoint stalled every tenant's webhooks: three
-	// attempts at a 15s client timeout plus 5s and 20s of backoff is up
-	// to ~70s of head-of-line blocking per event, and a tenant whose
-	// platform endpoint blackholes generates one such event per order
-	// transition. Queued events for other tenants simply waited.
-	//
-	// A pool bounds the damage to one worker per stuck endpoint while
-	// keeping at-least-once semantics unchanged: each event is still
-	// moved to the processing list before delivery and removed only on a
-	// terminal outcome (delivered, or permanently undeliverable). A
-	// shutdown mid-delivery leaves the event on the processing list for
-	// reclaim() to rescue on the next boot.
+	// deliveryWorkers bounds concurrent deliveries, so one blackholing
+	// platform endpoint occupies one worker instead of the whole queue:
+	// three attempts at a 15s client timeout plus 5s and 20s of backoff
+	// is up to ~70s per event.
 	deliveryWorkers = 8
 
-	// ackTimeout bounds the detached removal of a terminally-handled event
-	// so a shutdown cannot hang on it.
+	// visibilityTimeout is how long a delivery may stay unacknowledged
+	// before another consumer takes it over. It must outlast the longest
+	// delivery (~70s above), or a live pod's in-flight work would be
+	// claimed and sent twice.
+	visibilityTimeout = 3 * time.Minute
+	// reclaimInterval paces the takeover of deliveries a dead consumer
+	// left pending.
+	reclaimInterval = 30 * time.Second
+	// consumerExpiry removes consumers (pods long gone) that hold no
+	// pending deliveries, so pod churn does not grow the group forever.
+	consumerExpiry = time.Hour
+
+	// drainTimeout bounds how long a shutdown waits for in-flight
+	// deliveries; whatever is still unacknowledged stays pending for
+	// another consumer.
+	drainTimeout = 10 * time.Second
+	// ackTimeout bounds the detached acknowledgement of a delivery so a
+	// shutdown cannot hang on it.
 	ackTimeout = 5 * time.Second
 )
 
-// OrderEvent is one order-lifecycle update queued for platform delivery.
-// Events carry a stable ID so platforms can dedupe at-least-once delivery.
-type OrderEvent struct {
-	ID            string    `json:"id"`
-	Schema        string    `json:"schema"`
-	CheckoutID    string    `json:"checkout_id"`
-	OrderUUID     string    `json:"order_uuid"`
-	Status        string    `json:"status"`
-	PaymentStatus string    `json:"payment_status"`
-	PermalinkURL  string    `json:"permalink_url"`
-	OccurredAt    time.Time `json:"occurred_at"`
-
-	WebhookURL string `json:"-"`
-	// TargetURL rides the queued payload (the session's registered
-	// platform endpoint at enqueue time).
-	TargetURL string `json:"target_url"`
-	Attempts  int    `json:"attempts"`
+// signedComponents are the RFC 9421 components a webhook covers, in the
+// order UCP's REST request signing lists them: @query only when the
+// platform's URL carries one.
+func signedComponents(withQuery bool) []string {
+	c := []string{"@method", "@authority", "@path"}
+	if withQuery {
+		c = append(c, "@query")
+	}
+	return append(c, "ucp-agent", "content-digest", "content-type")
 }
 
-// Dispatcher delivers order webhooks from a Redis list with at-least-once
-// semantics: enqueue is acknowledged only after LPUSH; a processing list
-// covers crash and shutdown windows between pop and a terminal outcome.
-// Each event is signed with its own tenant's key.
+// Delivery is one queued order webhook. It is the queue record, never the
+// wire body: Body is the order entity exactly as it will be signed and
+// sent, rendered once at enqueue so every retry carries the same bytes
+// under the same Webhook-Id.
+type Delivery struct {
+	// ID is the Webhook-Id platforms dedupe at-least-once delivery on.
+	ID string `json:"id"`
+	// Schema selects the signing key; Domain names the business profile
+	// in UCP-Agent.
+	Schema     string          `json:"schema"`
+	Domain     string          `json:"domain"`
+	TargetURL  string          `json:"targetUrl"`
+	OccurredAt time.Time       `json:"occurredAt"`
+	Body       json.RawMessage `json:"body"`
+}
+
+// Dispatcher delivers order webhooks from a Redis stream consumer group,
+// at least once: an entry is acknowledged only on a terminal outcome
+// (delivered, or permanently undeliverable), and one a consumer holds
+// past visibilityTimeout — it crashed, or was shut down mid-delivery —
+// is taken over by another. Each delivery is signed with its own
+// tenant's key.
 type Dispatcher struct {
-	rdb  *redis.Client
-	keys *Keys
-	hc   *http.Client
-	log  *slog.Logger
-	stop chan struct{}
+	rdb      *redis.Client
+	keys     *Keys
+	hc       *http.Client
+	log      *slog.Logger
+	consumer string
 }
 
+// NewDispatcher builds a dispatcher consuming as consumer, which must be
+// unique per process (the pod name). allowLocal is the ENV-driven
+// AllowLocalWebhooks: only development and tests may deliver to
+// loopback or private addresses.
 func NewDispatcher(
 	rdb *redis.Client, keys *Keys, log *slog.Logger,
+	consumer string, allowLocal bool,
 ) *Dispatcher {
 	return &Dispatcher{
-		rdb:  rdb,
-		keys: keys,
-		hc:   &http.Client{Timeout: 15 * time.Second},
-		log:  log,
-		stop: make(chan struct{}),
+		rdb:      rdb,
+		keys:     keys,
+		hc:       webhookClient(allowLocal),
+		log:      log,
+		consumer: consumer,
 	}
 }
 
-// Enqueue queues an event for delivery. Callers only ACK upstream (Django's
+// webhookClient calls platform endpoints. ValidateWebhookURL vets the
+// registered URL, but only its text: the checks that matter happen here,
+// on what is actually connected to.
+func webhookClient(allowLocal bool) *http.Client {
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	if !allowLocal {
+		// The resolved address, not the hostname: a public name can
+		// resolve to a private address, or rebind to one after
+		// registration.
+		dialer.Control = func(_, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return err
+			}
+			addr, err := netip.ParseAddr(host)
+			if err != nil || !publicAddr(addr) {
+				return fmt.Errorf("%w: %s is not publicly routable",
+					ErrWebhookURL, host)
+			}
+			return nil
+		}
+	}
+	return &http.Client{
+		Timeout: 15 * time.Second,
+		// A redirect would carry a signed request to a target no check
+		// ever saw — an in-cluster service or the metadata address, over
+		// plain http. A 3xx is a failed delivery.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			// No proxy: the dial check must see the platform's address.
+			Proxy:               nil,
+			DialContext:         dialer.DialContext,
+			TLSHandshakeTimeout: 5 * time.Second,
+			MaxIdleConnsPerHost: deliveryWorkers,
+			IdleConnTimeout:     90 * time.Second,
+			ForceAttemptHTTP2:   true,
+		},
+	}
+}
+
+// Enqueue queues a delivery. Callers only acknowledge upstream (Django's
 // Celery push) after this returns nil.
-func (d *Dispatcher) Enqueue(ctx context.Context, ev OrderEvent) error {
-	if ev.TargetURL == "" {
-		return nil // session registered no webhook — nothing to deliver
+func (d *Dispatcher) Enqueue(ctx context.Context, dl Delivery) error {
+	if dl.TargetURL == "" {
+		return errors.New("ucp: delivery without a target")
 	}
-	if ev.ID == "" {
-		ev.ID = uuid.NewString()
+	if dl.ID == "" {
+		dl.ID = uuid.NewString()
 	}
-	raw, err := json.Marshal(ev)
+	raw, err := json.Marshal(dl)
 	if err != nil {
 		return err
 	}
-	return d.rdb.LPush(ctx, eventsKey, raw).Err()
+	return d.rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: eventsStream,
+		Values: map[string]any{deliveryField: raw},
+	}).Err()
 }
 
-// Run consumes the queue until Stop. Start once per pod.
-//
-// Reads are serial (one BLMove at a time keeps the processing-list
-// bookkeeping simple); DELIVERY is handed to a bounded worker pool so a
-// slow or dead platform endpoint occupies one worker instead of the
-// whole queue.
+// Run consumes the stream until ctx ends, then waits up to drainTimeout
+// for in-flight deliveries. Start once per process and wait for it to
+// return before closing Redis.
 func (d *Dispatcher) Run(ctx context.Context) {
-	// Reclaim events a crashed pod left in the processing list.
-	d.reclaim(ctx)
+	if err := d.ensureGroup(ctx); err != nil {
+		d.log.Error("webhook consumer group unavailable",
+			slog.String("error", err.Error()))
+	}
 
-	jobs := make(chan string, deliveryWorkers)
+	// Deliveries outlive the consume loop by up to drainTimeout: a
+	// shutdown lets a post in flight finish instead of abandoning it for
+	// a duplicate from whichever consumer takes it over.
+	deliveryCtx, cancelDeliveries := context.WithCancel(
+		context.WithoutCancel(ctx))
+	jobs := make(chan redis.XMessage)
 	var wg sync.WaitGroup
 	for range deliveryWorkers {
 		wg.Go(func() {
-			for raw := range jobs {
-				d.deliver(ctx, raw)
+			for msg := range jobs {
+				d.deliver(deliveryCtx, msg)
 			}
 		})
 	}
-	// Drain in-flight deliveries before returning so a shutdown does not
-	// strand events in the processing list any longer than a crash would.
 	defer func() {
 		close(jobs)
+		drain := time.AfterFunc(drainTimeout, cancelDeliveries)
 		wg.Wait()
+		drain.Stop()
+		cancelDeliveries()
 	}()
 
-	for {
-		select {
-		case <-d.stop:
-			return
-		case <-ctx.Done():
-			return
-		default:
-		}
-		raw, err := d.rdb.BLMove(ctx, eventsKey, processingKey,
-			"RIGHT", "LEFT", 5*time.Second).Result()
-		if errors.Is(err, redis.Nil) {
-			continue
-		}
-		if err != nil {
-			if ctx.Err() != nil {
-				return
+	// Replay this consumer's own unacknowledged entries first: a restart
+	// under the same name (the same pod) resumes them at once instead of
+	// waiting out visibilityTimeout for another consumer to take over.
+	// Paged by id, since history reads return pending entries until
+	// they are acknowledged.
+	pendingFrom := "0"
+	var lastReclaim time.Time
+	for ctx.Err() == nil {
+		var msgs []redis.XMessage
+		switch {
+		case pendingFrom != "":
+			msgs = d.read(ctx, pendingFrom)
+			if len(msgs) == 0 {
+				pendingFrom = ""
+				continue
 			}
-			d.log.Warn("webhook queue read failed",
-				slog.String("error", err.Error()))
+			pendingFrom = msgs[len(msgs)-1].ID
+		case time.Since(lastReclaim) >= reclaimInterval:
+			lastReclaim = time.Now()
+			msgs = d.reclaim(ctx)
+		}
+		if len(msgs) == 0 && pendingFrom == "" {
+			msgs = d.read(ctx, ">")
+		}
+		for _, msg := range msgs {
 			select {
-			case <-time.After(time.Second):
-			case <-d.stop:
-				return
+			case jobs <- msg:
 			case <-ctx.Done():
+				// Read but not started: it stays pending and is taken
+				// over after visibilityTimeout.
 				return
 			}
-			continue
-		}
-		select {
-		case jobs <- raw:
-		case <-d.stop:
-			// Shutting down: hand the event straight back so it is not
-			// lost between the pop and the (now closed) pool.
-			_ = d.rdb.LMove(ctx, processingKey, eventsKey,
-				"LEFT", "LEFT").Err()
-			return
-		case <-ctx.Done():
-			return
 		}
 	}
 }
 
-func (d *Dispatcher) Stop() { close(d.stop) }
-
-func (d *Dispatcher) reclaim(ctx context.Context) {
-	for {
-		raw, err := d.rdb.LMove(ctx, processingKey, eventsKey,
-			"RIGHT", "LEFT").Result()
-		if err != nil || raw == "" {
-			return
-		}
+func (d *Dispatcher) ensureGroup(ctx context.Context) error {
+	err := d.rdb.XGroupCreateMkStream(ctx, eventsStream, eventsGroup, "0").
+		Err()
+	// BUSYGROUP: another pod (or an earlier boot) created it.
+	if err != nil && !strings.HasPrefix(err.Error(), "BUSYGROUP") {
+		return err
 	}
+	return nil
 }
 
-// deliver attempts one event and removes it from the processing list ONLY on
-// a terminal outcome. The reliable-queue invariant is that an in-flight event
-// stays on the processing list until it is acknowledged, so a shutdown that
-// aborts delivery before a terminal outcome must leave the event there for
-// reclaim() to requeue on the next boot — never remove it (that would drop an
-// undelivered order webhook, violating at-least-once).
-func (d *Dispatcher) deliver(ctx context.Context, raw string) {
-	var ev OrderEvent
-	if err := json.Unmarshal([]byte(raw), &ev); err != nil {
-		// Unparseable: can never be delivered — acknowledge and drop.
-		d.log.Error("webhook event corrupt", slog.String("error", err.Error()))
-		d.ack(raw)
-		return
+// read fetches deliveries after id: ">" blocks for new ones, any other
+// id pages this consumer's pending history. A missing group (the stream
+// was deleted) is recreated; other failures back off.
+func (d *Dispatcher) read(ctx context.Context, id string) []redis.XMessage {
+	streams, err := d.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group:    eventsGroup,
+		Consumer: d.consumer,
+		Streams:  []string{eventsStream, id},
+		Count:    deliveryWorkers,
+		Block:    5 * time.Second,
+	}).Result()
+	switch {
+	case err == nil:
+		var msgs []redis.XMessage
+		for _, s := range streams {
+			msgs = append(msgs, s.Messages...)
+		}
+		return msgs
+	case errors.Is(err, redis.Nil), ctx.Err() != nil:
+		return nil
 	}
-	if ev.Schema == "" {
-		d.log.Error("webhook event missing schema", slog.String("event", ev.ID))
-		d.ack(raw)
+	d.log.Warn("webhook queue read failed", slog.String("error", err.Error()))
+	_ = d.ensureGroup(ctx)
+	select {
+	case <-time.After(time.Second):
+	case <-ctx.Done():
+	}
+	return nil
+}
+
+// reclaim takes over deliveries another consumer has held past
+// visibilityTimeout, and removes consumers that are long gone.
+func (d *Dispatcher) reclaim(ctx context.Context) []redis.XMessage {
+	msgs, _, err := d.rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+		Stream:   eventsStream,
+		Group:    eventsGroup,
+		Consumer: d.consumer,
+		MinIdle:  visibilityTimeout,
+		Start:    "0-0",
+		Count:    deliveryWorkers,
+	}).Result()
+	if err != nil && ctx.Err() == nil {
+		d.log.Warn("webhook reclaim failed", slog.String("error", err.Error()))
+	}
+
+	consumers, err := d.rdb.XInfoConsumers(ctx, eventsStream, eventsGroup).
+		Result()
+	if err == nil {
+		for _, c := range consumers {
+			if c.Name != d.consumer && c.Pending == 0 &&
+				c.Idle > consumerExpiry {
+				_ = d.rdb.XGroupDelConsumer(ctx, eventsStream, eventsGroup,
+					c.Name).Err()
+			}
+		}
+	}
+	return msgs
+}
+
+// deliver attempts one delivery and acknowledges it ONLY on a terminal
+// outcome. A shutdown that aborts delivery first leaves the entry pending
+// for another consumer — never acknowledged, which would drop an
+// undelivered order webhook and break at-least-once.
+func (d *Dispatcher) deliver(ctx context.Context, msg redis.XMessage) {
+	raw, _ := msg.Values[deliveryField].(string)
+	var dl Delivery
+	if err := json.Unmarshal([]byte(raw), &dl); err != nil ||
+		dl.Schema == "" || dl.TargetURL == "" {
+		// Undeliverable as stored: acknowledge and drop.
+		d.log.Error("webhook delivery corrupt", slog.String("entry", msg.ID))
+		d.ack(msg.ID)
 		return
 	}
 
-	body, err := json.Marshal(ev)
-	if err != nil {
-		d.log.Error("webhook event unencodable",
-			slog.String("event", ev.ID), slog.String("error", err.Error()))
-		d.ack(raw)
-		return
-	}
 	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-time.After(time.Duration(attempt*attempt) * 5 * time.Second):
 			case <-ctx.Done():
-				return // shutting down: leave for reclaim(), do not ack
+				return
 			}
 		}
 		// The key lookup sits inside the retry loop so a Redis blip on a
 		// cold cache gets the same backoff as a delivery failure.
-		key, err := d.keys.ForSchema(ctx, ev.Schema)
+		key, err := d.keys.ForSchema(ctx, dl.Schema)
 		if err != nil {
 			if ctx.Err() != nil {
-				return // shutting down: leave for reclaim(), do not ack
+				return
 			}
 			d.log.Warn("webhook signing key unavailable",
-				slog.String("schema", ev.Schema),
+				slog.String("schema", dl.Schema),
 				slog.String("error", err.Error()))
 			continue
 		}
-		if d.post(ctx, key, ev.TargetURL, body) {
-			d.ack(raw) // delivered
+		if d.post(ctx, key, dl) {
+			d.ack(msg.ID)
 			return
 		}
 		if ctx.Err() != nil {
-			return // post aborted by shutdown: leave for reclaim(), do not ack
+			return
 		}
 	}
-	// Retries exhausted against a live endpoint: give up and drop so the
-	// event does not cycle forever. There is no dead-letter list by design;
+	// Retries exhausted against a live endpoint: give up so the entry
+	// does not cycle forever. There is no dead-letter stream by design;
 	// this permanent-failure log is the record.
 	d.log.Error("webhook delivery failed permanently",
-		slog.String("event", ev.ID),
-		slog.String("order", ev.OrderUUID),
-	)
-	d.ack(raw)
+		slog.String("delivery", dl.ID),
+		slog.String("schema", dl.Schema))
+	d.ack(msg.ID)
 }
 
-// ack removes a terminally-handled event from the processing list. It uses a
-// context detached from delivery on purpose: when a successful post is
-// immediately followed by shutdown, the delivery context is already
-// cancelled and go-redis would skip the removal (it short-circuits commands
-// on a done context), stranding a delivered event to be redelivered by
-// reclaim(). A fresh, bounded context makes the acknowledgement fire anyway.
-func (d *Dispatcher) ack(raw string) {
+// ack acknowledges and deletes a terminally handled entry. Its context is
+// detached from delivery on purpose: when a successful post is followed
+// immediately by shutdown, the delivery context is already cancelled and
+// go-redis would skip the command, leaving a delivered entry to be sent
+// again by whichever consumer takes it over.
+func (d *Dispatcher) ack(id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), ackTimeout)
 	defer cancel()
-	if err := d.rdb.LRem(ctx, processingKey, 1, raw).Err(); err != nil {
-		d.log.Warn("webhook ack failed; event will redeliver on reclaim",
+	if err := d.rdb.XAckDel(ctx, eventsStream, eventsGroup, "DELREF", id).
+		Err(); err != nil {
+		d.log.Warn("webhook ack failed; the delivery will repeat",
 			slog.String("error", err.Error()))
 	}
 }
 
-// post signs the body with the tenant's Ed25519 key so platforms verify
-// against the JWK published in that tenant's profile (kid header selects
-// the key).
+// post sends one signed delivery. Headers follow Standard Webhooks
+// (Webhook-Id, Webhook-Timestamp); the signature is RFC 9421 over the
+// UCP REST components, verifiable against the JWK in the tenant's
+// profile, which UCP-Agent names.
 func (d *Dispatcher) post(
-	ctx context.Context, key *SigningKey, url string, body []byte,
+	ctx context.Context, key *SigningKey, dl Delivery,
 ) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url,
-		bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		dl.TargetURL, bytes.NewReader(dl.Body))
 	if err != nil {
 		return false
 	}
-	sig := ed25519.Sign(key.Private, body)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("UCP-Signature", base64.RawURLEncoding.EncodeToString(sig))
-	req.Header.Set("UCP-Key-Id", key.KID)
+	req.Header.Set("Webhook-Id", dl.ID)
+	req.Header.Set("Webhook-Timestamp",
+		strconv.FormatInt(dl.OccurredAt.Unix(), 10))
+	req.Header.Set("UCP-Agent",
+		`profile="`+storefront.UCPProfile(dl.Domain)+`"`)
+	req.Header.Set("Content-Digest", httpsig.ContentDigest(dl.Body))
+
+	if err := httpsig.Sign(req, "sig1",
+		signedComponents(req.URL.RawQuery != ""),
+		httpsig.Params{Created: time.Now().Unix()}, key); err != nil {
+		d.log.Error("webhook signing failed",
+			slog.String("delivery", dl.ID), slog.String("error", err.Error()))
+		return false
+	}
 
 	resp, err := d.hc.Do(req)
 	if err != nil {
 		d.log.Warn("webhook post failed",
-			slog.String("url", url), slog.String("error", err.Error()))
+			slog.String("delivery", dl.ID), slog.String("error", err.Error()))
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()

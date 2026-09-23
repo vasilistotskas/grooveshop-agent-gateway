@@ -138,8 +138,7 @@ func (h *handlers) getOrder(
 			"the order service is unavailable")
 	}
 
-	checkoutID, err := h.deps.Checkout.CheckoutIDForOrder(
-		ctx, t.SchemaName, in.ID)
+	link, err := h.deps.Checkout.OrderLinkFor(ctx, t.SchemaName, in.ID)
 	if err != nil {
 		if errors.Is(err, checkout.ErrNotFound) {
 			return nil, zero, fmt.Errorf(
@@ -151,7 +150,7 @@ func (h *handlers) getOrder(
 			"the order index is temporarily unavailable; retry shortly")
 	}
 
-	out, err := ucp.BuildOrder(t, order, checkoutID)
+	out, err := ucp.BuildOrder(t, order, link.CheckoutID)
 	if err != nil {
 		return nil, zero, err
 	}

@@ -3,13 +3,16 @@ package server
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/feeds"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
@@ -35,25 +38,35 @@ func requireInternalToken(secret string, next http.Handler) http.Handler {
 }
 
 // orderEventBody is what Django's Celery task POSTs on order/payment
-// status transitions.
+// status transitions. Only the order is read from it: the webhook carries
+// the order entity as Django reports it now, not the event's fields.
 type orderEventBody struct {
-	SchemaName     string `json:"schemaName"`
-	OrderUUID      string `json:"orderUuid"`
-	Status         string `json:"status"`
-	PaymentStatus  string `json:"paymentStatus"`
-	TrackingNumber string `json:"trackingNumber"`
+	SchemaName    string `json:"schemaName"`
+	OrderUUID     string `json:"orderUuid"`
+	PaymentStatus string `json:"paymentStatus"`
+}
+
+// orderEventDeps is what the order-event route drives.
+type orderEventDeps struct {
+	Store      *checkout.Store
+	Flow       *checkout.Flow
+	Resolver   *tenant.Resolver
+	Django     *django.Client
+	Dispatcher *ucp.Dispatcher
+	Log        *slog.Logger
 }
 
 // internalOrderEvents handles POST /internal/events/order-status.
-// Responding non-2xx makes Celery retry, which combined with the
-// Redis-list dispatcher yields at-least-once platform delivery.
-func internalOrderEvents(
-	secret string,
-	flow *checkout.Flow,
-	dispatcher *ucp.Dispatcher,
-	log *slog.Logger,
-) http.Handler {
+//
+// Events route through the order link, not the checkout session: the
+// session expires within a day, and the store keeps reporting shipment
+// and delivery for weeks after. Responding non-2xx makes Celery retry,
+// which combined with the stream dispatcher yields at-least-once platform
+// delivery; a 2xx is final, so it is reserved for events that are
+// handled, or that no retry could ever deliver.
+func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 	return requireInternalToken(secret, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		var body orderEventBody
 		if err := json.NewDecoder(
 			http.MaxBytesReader(w, r.Body, 64<<10),
@@ -66,42 +79,86 @@ func internalOrderEvents(
 				http.StatusBadRequest)
 			return
 		}
-
-		session, err := flow.ApplyOrderEvent(r.Context(),
-			body.SchemaName, body.OrderUUID, body.PaymentStatus)
-		if err != nil {
-			log.ErrorContext(r.Context(), "order event apply failed",
+		retry := func(msg string, err error) {
+			d.Log.ErrorContext(ctx, msg,
 				slog.String("order", body.OrderUUID),
 				slog.String("error", err.Error()))
 			http.Error(w, "retry", http.StatusServiceUnavailable)
+		}
+		drop := func(msg string, err error) {
+			d.Log.ErrorContext(ctx, msg,
+				slog.String("order", body.OrderUUID),
+				slog.String("error", err.Error()))
+			w.WriteHeader(http.StatusNoContent)
+		}
+
+		link, err := d.Store.OrderLinkFor(ctx, body.SchemaName, body.OrderUUID)
+		if errors.Is(err, checkout.ErrNotFound) {
+			// Placed outside an agent checkout: nothing to update.
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		// Orders placed outside agent checkouts have no session — ACK so
-		// Celery does not retry forever.
-		if session == nil {
+		if err != nil {
+			retry("order link read failed", err)
+			return
+		}
+		if err := d.Flow.ApplyOrderEvent(ctx, body.SchemaName,
+			link.CheckoutID, body.PaymentStatus); err != nil {
+			retry("order event apply failed", err)
+			return
+		}
+		if link.WebhookURL == "" {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
-		if session.WebhookURL != "" {
-			ev := ucp.OrderEvent{
-				Schema:        body.SchemaName,
-				CheckoutID:    session.ID,
-				OrderUUID:     body.OrderUUID,
-				Status:        body.Status,
-				PaymentStatus: body.PaymentStatus,
-				PermalinkURL: storefront.OrderSuccess(
-					session.Domain, body.OrderUUID),
-				OccurredAt: time.Now().UTC(),
-				TargetURL:  session.WebhookURL,
-			}
-			if err := dispatcher.Enqueue(r.Context(), ev); err != nil {
-				log.ErrorContext(r.Context(), "order event enqueue failed",
-					slog.String("order", body.OrderUUID),
-					slog.String("error", err.Error()))
-				http.Error(w, "retry", http.StatusServiceUnavailable)
-				return
-			}
+		t, err := d.Resolver.Resolve(ctx, link.Domain)
+		if errors.Is(err, tenant.ErrUnknownTenant) {
+			drop("order event for a store that no longer resolves", err)
+			return
+		}
+		if err != nil {
+			retry("order event tenant resolve failed", err)
+			return
+		}
+		// The link names the domain; the event names the schema. A domain
+		// that now belongs to another store must never receive this
+		// store's order, signed with that store's key.
+		if t.SchemaName != body.SchemaName {
+			drop("order event domain moved to another store",
+				fmt.Errorf("domain %s now resolves to %s",
+					link.Domain, t.SchemaName))
+			return
+		}
+		order, err := d.Django.OrderByUUID(
+			ctx, t.Domain, t.DefaultLocale, body.OrderUUID)
+		if errors.Is(err, django.ErrNotFound) {
+			drop("order event for an order that no longer exists", err)
+			return
+		}
+		if err != nil {
+			retry("order event order fetch failed", err)
+			return
+		}
+		entity, err := ucp.BuildOrder(t, order, link.CheckoutID)
+		if err != nil {
+			drop("order event order unrenderable", err)
+			return
+		}
+		raw, err := json.Marshal(entity)
+		if err != nil {
+			drop("order event order unencodable", err)
+			return
+		}
+		if err := d.Dispatcher.Enqueue(ctx, ucp.Delivery{
+			Schema:     t.SchemaName,
+			Domain:     t.Domain,
+			TargetURL:  link.WebhookURL,
+			OccurredAt: time.Now().UTC(),
+			Body:       raw,
+		}); err != nil {
+			retry("order event enqueue failed", err)
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
