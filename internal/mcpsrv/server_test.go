@@ -1,6 +1,8 @@
 package mcpsrv
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -25,6 +27,31 @@ func TestServerTitleIsPerTenant(t *testing.T) {
 
 	// Distinct instances so their advertised titles cannot collide.
 	assert.NotSame(t, acme, other)
+}
+
+// A stateless server has no session to send list-changed notifications
+// on, and logging is deprecated as of 2026-07-28: advertise tools only.
+func TestServerAdvertisesOnlyWhatItHonours(t *testing.T) {
+	ctx := context.Background()
+	serverT, clientT := mcp.NewInMemoryTransports()
+	_, err := NewServer(Deps{Version: "test"}, "Acme Store").
+		Connect(ctx, serverT, nil)
+	require.NoError(t, err)
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).
+		Connect(ctx, clientT, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	raw, err := json.Marshal(session.InitializeResult().Capabilities)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"tools":{}}`, string(raw))
+}
+
+// A store rename must reach initialize without a restart.
+func TestServerCacheFollowsTheStoreTitle(t *testing.T) {
+	c := &serverCache{deps: Deps{Version: "test"}, servers: map[string]*mcp.Server{}}
+	before := c.get("acme", "Acme Store")
+	assert.NotSame(t, before, c.get("acme", "Acme Outlet"))
 }
 
 func TestServerCacheReusesPerSchema(t *testing.T) {

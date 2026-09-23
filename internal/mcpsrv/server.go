@@ -56,7 +56,14 @@ func NewServer(d Deps, title string) *mcp.Server {
 		Name:    "grooveshop-agent-gateway",
 		Title:   title,
 		Version: d.Version,
-	}, nil)
+	}, &mcp.ServerOptions{
+		// Tools only. The SDK default also advertises logging (deprecated
+		// as of 2026-07-28) and tools.listChanged — a notification a
+		// stateless server has no session to send.
+		Capabilities: &mcp.ServerCapabilities{
+			Tools: &mcp.ToolCapabilities{},
+		},
+	})
 
 	h := &handlers{deps: d}
 
@@ -275,7 +282,10 @@ func Handler(d Deps, log *slog.Logger) http.Handler {
 			Stateless:                    true,
 			JSONResponse:                 true,
 			PropagateRequestCancellation: true,
-			Logger:                       log,
+			// Tool arguments are a few KB at most; the SDK default of
+			// 4 MiB is a lot of buffering for an anonymous endpoint.
+			MaxRequestBodyBytes: 256 << 10,
+			Logger:              log,
 		},
 	)
 }
@@ -310,16 +320,19 @@ func (c *serverCache) forRequest(r *http.Request) *mcp.Server {
 	return c.get(t.SchemaName, title)
 }
 
+// get keys by schema AND title so a store rename reaches initialize
+// without a restart; the superseded entry ages out with the map bound.
 func (c *serverCache) get(schema, title string) *mcp.Server {
+	key := schema + "\x00" + title
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if srv, hit := c.servers[schema]; hit {
+	if srv, hit := c.servers[key]; hit {
 		return srv
 	}
 	if len(c.servers) >= maxCachedServers {
 		c.servers = map[string]*mcp.Server{}
 	}
 	srv := NewServer(c.deps, title)
-	c.servers[schema] = srv
+	c.servers[key] = srv
 	return srv
 }

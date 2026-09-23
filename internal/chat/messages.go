@@ -11,10 +11,16 @@ const (
 	msgTurnFailed     = "turn_failed"
 	msgRateLimited    = "rate_limited"
 	msgTurnIncomplete = "turn_incomplete"
+	msgBadRequest     = "bad_request"
+	msgMessageEmpty   = "message_empty"
+	msgMessageTooLong = "message_too_long"
+	msgConversation   = "conversation_finished"
+	msgUnavailable    = "unavailable"
 )
 
 // messages maps language → key → text. Deliberately not an i18n library:
-// four strings in two languages. New tenant languages add one entry here.
+// a handful of strings in two languages. New tenant languages add one
+// entry here.
 var messages = map[string]map[string]string{
 	"el": {
 		msgRefusal: "Λυπάμαι, δεν μπορώ να βοηθήσω με αυτό το αίτημα. " +
@@ -28,6 +34,14 @@ var messages = map[string]map[string]string{
 		msgTurnIncomplete: "Χρειάστηκα περισσότερα βήματα από όσα " +
 			"επιτρέπονται για αυτό. Μπορείς να το διατυπώσεις πιο απλά ή " +
 			"να ρωτήσεις ξανά;",
+		msgBadRequest: "Το αίτημα δεν ήταν έγκυρο — ανανέωσε τη σελίδα " +
+			"και δοκίμασε ξανά.",
+		msgMessageEmpty:   "Γράψε ένα μήνυμα για να ξεκινήσεις.",
+		msgMessageTooLong: "Το μήνυμα είναι πολύ μεγάλο — σύντομεψέ το.",
+		msgConversation: "Αυτή η συνομιλία ολοκληρώθηκε — ξεκίνα μια " +
+			"νέα.",
+		msgUnavailable: "Ο βοηθός δεν είναι διαθέσιμος αυτή τη στιγμή — " +
+			"δοκίμασε ξανά σε λίγο.",
 	},
 	"en": {
 		msgRefusal: "Sorry, I can't help with that request. I can help " +
@@ -40,6 +54,13 @@ var messages = map[string]map[string]string{
 			"right now — please try again in a little while.",
 		msgTurnIncomplete: "That took more steps than I'm allowed in one " +
 			"go. Could you rephrase or ask again?",
+		msgBadRequest: "That request was not valid — reload the page and " +
+			"try again.",
+		msgMessageEmpty:   "Type a message to get started.",
+		msgMessageTooLong: "That message is too long — please shorten it.",
+		msgConversation:   "This conversation is finished — start a new one.",
+		msgUnavailable: "The assistant is unavailable right now — please " +
+			"try again in a little while.",
 	},
 }
 

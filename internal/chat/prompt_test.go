@@ -46,7 +46,8 @@ func TestSystemPromptWithCart(t *testing.T) {
 func TestLoadRejectsMalformedConversationID(t *testing.T) {
 	s := NewStore(nil, 0, 10)
 	_, err := s.Load(t.Context(), "demostore", "../evil")
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidConversation,
+		"client input, answered 400 rather than 503")
 }
 
 func TestLoadEmptyIDStartsFresh(t *testing.T) {

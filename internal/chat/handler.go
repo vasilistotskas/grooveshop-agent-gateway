@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,9 +9,11 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
@@ -54,6 +57,10 @@ func New(
 	}
 }
 
+// maxToolCallsPerIteration bounds how many tool calls one model response
+// may execute; each one is a Django round trip on the tenant's behalf.
+const maxToolCallsPerIteration = 8
+
 type chatRequest struct {
 	ConversationID string `json:"conversationId"`
 	Message        string `json:"message"`
@@ -84,34 +91,47 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The widget renders payload.error verbatim, so every refusal below
+	// speaks the tenant's language.
+	fail := func(status int, key string) {
+		httpmw.WriteJSONError(w, status, messageFor(t.DefaultLocale, key))
+	}
 	var req chatRequest
 	if err := json.NewDecoder(
 		http.MaxBytesReader(w, r.Body, 64<<10),
 	).Decode(&req); err != nil {
-		httpmw.WriteJSONError(w, http.StatusBadRequest, "invalid request body")
+		fail(http.StatusBadRequest, msgBadRequest)
 		return
 	}
 	req.Message = strings.TrimSpace(req.Message)
 	if req.Message == "" {
-		httpmw.WriteJSONError(w, http.StatusBadRequest, "message is required")
+		fail(http.StatusBadRequest, msgMessageEmpty)
 		return
 	}
 	if utf8.RuneCountInString(req.Message) > s.cfg.ChatMaxMessageLen {
-		httpmw.WriteJSONError(w, http.StatusBadRequest, "message is too long")
+		fail(http.StatusBadRequest, msgMessageTooLong)
+		return
+	}
+	// The cart id lands in the system prompt, so it must be exactly what
+	// the widget sends — a cart UUID — and never free text carrying
+	// instructions at system-role authority.
+	if req.CartID != "" && uuid.Validate(req.CartID) != nil {
+		fail(http.StatusBadRequest, msgBadRequest)
 		return
 	}
 
 	conv, err := s.store.Load(r.Context(), t.SchemaName, req.ConversationID)
 	switch {
+	case errors.Is(err, ErrInvalidConversation):
+		fail(http.StatusBadRequest, msgBadRequest)
+		return
 	case errors.Is(err, ErrConversationFull):
-		httpmw.WriteJSONError(w, http.StatusConflict,
-			"this conversation is finished; start a new one")
+		fail(http.StatusConflict, msgConversation)
 		return
 	case err != nil:
 		s.log.ErrorContext(r.Context(), "chat load failed",
 			slog.String("error", err.Error()))
-		httpmw.WriteJSONError(w, http.StatusServiceUnavailable,
-			"chat is temporarily unavailable")
+		fail(http.StatusServiceUnavailable, msgUnavailable)
 		return
 	}
 	// The widget's session cart wins: the bot must operate on the cart the
@@ -122,7 +142,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		httpmw.WriteJSONError(w, http.StatusInternalServerError, "streaming unsupported")
+		fail(http.StatusInternalServerError, msgUnavailable)
 		return
 	}
 	sse := &sseWriter{w: w, f: flusher}
@@ -132,6 +152,14 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	assistantText, cartID, cartMutated, err := s.runTurn(r, t, conv, req.Message, sse)
+	if err != nil && r.Context().Err() != nil {
+		// The shopper pressed stop or left: nobody is reading the stream,
+		// and a disconnect is not a server fault.
+		s.log.InfoContext(r.Context(), "chat turn abandoned by client",
+			slog.String("tenant", t.SchemaName),
+			slog.String("conversation", conv.ID))
+		return
+	}
 	if err != nil {
 		attrs := []any{
 			slog.String("tenant", t.SchemaName),
@@ -150,9 +178,16 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 				// of truth.
 				slog.String("upstream_response",
 					text.Ellipsize(upstream, 2048)),
-				slog.String("upstream_request", text.Ellipsize(
-					redactAuth(string(apierr.DumpRequest(true))), 8192)),
+				// Method, URL and headers only: the body is the whole
+				// conversation, with whatever personal data the shopper
+				// typed, and does not belong in an ERROR log.
+				slog.String("upstream_request",
+					redactAuth(string(apierr.DumpRequest(false)))),
 			)
+			s.log.DebugContext(r.Context(), "chat turn failed request body",
+				slog.String("conversation", conv.ID),
+				slog.String("upstream_request", text.Ellipsize(
+					redactAuth(string(apierr.DumpRequest(true))), 8192)))
 			// Rate limits are the one upstream failure the shopper can
 			// act on (wait) — don't present them as a generic outage.
 			// Lift which quota died out of the body dump so triage
@@ -178,7 +213,11 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	if cartID != "" {
 		conv.CartID = cartID
 	}
-	if err := s.store.Save(r.Context(), t.SchemaName, conv); err != nil {
+	// The turn's cart changes already happened upstream; a client that
+	// disconnects after the last delta must not leave history behind
+	// them.
+	if err := s.store.Save(context.WithoutCancel(r.Context()),
+		t.SchemaName, conv); err != nil {
 		s.log.ErrorContext(r.Context(), "chat save failed",
 			slog.String("error", err.Error()))
 	}
@@ -233,12 +272,21 @@ func (s *Service) runTurn(
 		slices.Clone(s.clientOpts), option.WithAPIKey(t.ChatAPIKey))...)
 
 	var text strings.Builder
-	for range s.cfg.ChatMaxIterations {
+	for iteration := range s.cfg.ChatMaxIterations {
 		params := openai.ChatCompletionNewParams{
 			Model:               s.cfg.ChatModel,
 			Messages:            messages,
 			Tools:               tools,
 			MaxCompletionTokens: openai.Int(int64(s.cfg.ChatMaxTokens)),
+		}
+		// The last iteration must answer in prose: tool calls requested
+		// there would run (a cart change included) with their results
+		// never shown to the model or the shopper.
+		if iteration == s.cfg.ChatMaxIterations-1 {
+			params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
+				OfAuto: openai.String(string(
+					openai.ChatCompletionToolChoiceOptionAutoNone)),
+			}
 		}
 		if s.cfg.ChatEffort != "" {
 			params.ReasoningEffort = shared.ReasoningEffort(s.cfg.ChatEffort)
@@ -254,7 +302,14 @@ func (s *Service) runTurn(
 		signatures := map[int]string{}
 		for stream.Next() {
 			chunk := stream.Current()
-			acc.AddChunk(chunk)
+			// A rejected chunk (a foreign id, an out-of-range index) is
+			// dropped by the accumulator, tool calls included — the turn
+			// would act on a partial request.
+			if !acc.AddChunk(chunk) {
+				return "", "", false, errors.New(
+					"chat: model stream sent a chunk that cannot be " +
+						"accumulated")
+			}
 			if len(chunk.Choices) > 0 {
 				if delta := chunk.Choices[0].Delta.Content; delta != "" {
 					text.WriteString(delta)
@@ -301,7 +356,16 @@ func (s *Service) runTurn(
 			}
 		}
 		messages = append(messages, assistant)
-		for _, tc := range msg.ToolCalls {
+		for i, tc := range msg.ToolCalls {
+			// Every tool call id needs its tool message, so the excess is
+			// answered with an error rather than dropped.
+			if i >= maxToolCallsPerIteration {
+				messages = append(messages, openai.ToolMessage(
+					"ERROR: too many tool calls at once; make at most "+
+						strconv.Itoa(maxToolCallsPerIteration)+
+						" per step", tc.ID))
+				continue
+			}
 			input := map[string]any{}
 			if args := tc.Function.Arguments; args != "" {
 				if err := json.Unmarshal([]byte(args), &input); err != nil {

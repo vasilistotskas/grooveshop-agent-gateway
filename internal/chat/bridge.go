@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -48,6 +49,11 @@ var accountTools = map[string]bool{
 // so the chatbot and external MCP agents can never drift apart.
 type bridge struct {
 	session *mcp.ClientSession
+	// offered is the set of tools advertised to the model; call refuses
+	// anything else. Withholding a tool from the list is not enough on
+	// its own: a confused model, or one following text injected through
+	// a review or search result, can still name one.
+	offered map[string]bool
 
 	mu          sync.Mutex
 	cartID      string
@@ -88,10 +94,12 @@ func (b *bridge) tools(
 		return nil, err
 	}
 	tools := make([]openai.ChatCompletionToolUnionParam, 0, len(list.Tools))
+	b.offered = make(map[string]bool, len(list.Tools))
 	for _, t := range list.Tools {
 		if accountTools[t.Name] || checkoutTools[t.Name] {
 			continue
 		}
+		b.offered[t.Name] = true
 		raw, err := json.Marshal(t.InputSchema)
 		if err != nil {
 			return nil, err
@@ -112,17 +120,26 @@ func (b *bridge) tools(
 
 // call executes one tool through the MCP session and renders the result
 // as the plain text a tool-role message carries. Business failures come
-// back as "ERROR: …" text so the model can react (the MCP server never
-// turns them into protocol errors).
+// back as "ERROR: …" text so the model can react, and so does a protocol
+// error (an unknown tool, arguments that fail the input schema): those
+// are the model's mistakes, and aborting would throw away the prose the
+// shopper has already seen. Only a dead request context is fatal.
 func (b *bridge) call(
 	ctx context.Context, name string, input map[string]any,
 ) (string, error) {
+	if !b.offered[name] {
+		return "ERROR: unknown tool " + strconv.Quote(name) +
+			"; call only the tools you were given", nil
+	}
 	res, err := b.session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      name,
 		Arguments: input,
 	})
 	if err != nil {
-		return "", err
+		if ctx.Err() != nil {
+			return "", err
+		}
+		return "ERROR: " + err.Error(), nil
 	}
 
 	var parts []string

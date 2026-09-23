@@ -31,8 +31,13 @@ type Conversation struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// ErrConversationFull marks a conversation that reached its turn cap.
-var ErrConversationFull = errors.New("chat: conversation turn cap reached")
+var (
+	// ErrConversationFull marks a conversation that reached its turn cap.
+	ErrConversationFull = errors.New("chat: conversation turn cap reached")
+	// ErrInvalidConversation marks a conversation id that is not one this
+	// store could have issued — client input, not a server fault.
+	ErrInvalidConversation = errors.New("chat: invalid conversation id")
+)
 
 // Store persists conversations in Redis, tenant-prefixed. Chat fails
 // closed without Redis — no in-memory fallback — because a conversation
@@ -60,7 +65,7 @@ func (s *Store) Load(
 		return newConversation(), nil
 	}
 	if err := uuid.Validate(id); err != nil {
-		return nil, errors.New("chat: invalid conversation id")
+		return nil, ErrInvalidConversation
 	}
 	raw, err := s.rdb.Get(ctx, key(schema, id)).Result()
 	if errors.Is(err, redis.Nil) {
