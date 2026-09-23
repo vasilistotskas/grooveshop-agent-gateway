@@ -19,7 +19,7 @@ cluster-only internal endpoint and the operational routes:
 | `/feeds/*` | Product feeds: google.xml, meta.xml, tiktok.xml, acp.json |
 | `POST /chat` | First-party shopping chatbot (SSE; OpenAI-compatible protocol via openai-go — Gemini free tier by default, any compatible provider via CHAT_BASE_URL) |
 | `/internal/*` | Cluster-only: Django order-event push (shared-secret header) |
-| `GET /healthz`, `GET /readyz` | Liveness / readiness (readiness pings Redis + Django) |
+| `GET /healthz`, `GET /readyz` | Liveness / readiness (readiness gates on Redis only; Django is reported, never gating) |
 | `GET /metrics` | Prometheus metrics (registry from `internal/obs`) |
 
 The gateway is a **protocol adapter**: all commerce state lives in Django

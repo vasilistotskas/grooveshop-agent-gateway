@@ -37,6 +37,14 @@ func (e *DiscoveryError) Error() string {
 	return "ucp: " + e.Code + ": " + e.Content
 }
 
+// ErrDiscoveryBusy is the gateway's own discovery budget running out —
+// not a fault of the profile, so it is never cached against the URL. The
+// spec's answer is a retryable 503 (-32000 with retry_after on MCP).
+var ErrDiscoveryBusy = errors.New("ucp: profile discovery is busy")
+
+// DiscoveryRetryAfter is the retry hint, in seconds, for ErrDiscoveryBusy.
+const DiscoveryRetryAfter = 1
+
 func discoveryErr(code, format string, args ...any) *DiscoveryError {
 	return &DiscoveryError{Code: code, Content: fmt.Sprintf(format, args...)}
 }
@@ -80,6 +88,8 @@ type profileEntry struct {
 	profile *PlatformProfile
 	err     *DiscoveryError
 	expires time.Time
+	// used is the last read, for least-recently-used eviction.
+	used time.Time
 }
 
 // NewProfileResolver compiles the spec's platform profile schema.
@@ -100,7 +110,8 @@ func NewProfileResolver(allowLocal bool) (*ProfileResolver, error) {
 }
 
 // Resolve returns the validated profile at raw. Every failure is a
-// *DiscoveryError.
+// *DiscoveryError, except ErrDiscoveryBusy and the caller's own context
+// ending.
 func (r *ProfileResolver) Resolve(
 	ctx context.Context, raw string,
 ) (*PlatformProfile, error) {
@@ -119,9 +130,13 @@ func (r *ProfileResolver) Resolve(
 		defer cancel()
 		p, ttl, derr := r.fetch(fetchCtx, raw)
 		if derr != nil {
-			r.remember(raw, profileEntry{
-				err: derr, expires: time.Now().Add(failureBackoff),
-			})
+			// Only the origin's own failures are backed off: a spent
+			// budget (ErrDiscoveryBusy) says nothing about this URL.
+			if origin, ok := errors.AsType[*DiscoveryError](derr); ok {
+				r.remember(raw, profileEntry{
+					err: origin, expires: time.Now().Add(failureBackoff),
+				})
+			}
 			return nil, derr
 		}
 		r.remember(raw, profileEntry{
@@ -147,6 +162,8 @@ func (r *ProfileResolver) cached(raw string) (*PlatformProfile, error, bool) {
 	if !ok || time.Now().After(e.expires) {
 		return nil, nil, false
 	}
+	e.used = time.Now()
+	r.cache[raw] = e
 	if e.err != nil {
 		return nil, e.err, true
 	}
@@ -159,42 +176,53 @@ func (r *ProfileResolver) remember(raw string, e profileEntry) {
 	if _, present := r.cache[raw]; !present && len(r.cache) >= maxProfiles {
 		r.evictLocked()
 	}
+	e.used = time.Now()
 	r.cache[raw] = e
 }
 
-// evictLocked drops an expired entry, else the one expiring soonest.
+// evictLocked drops an expired entry, else the least recently used one.
+// Recency, not expiry: a flood of one-off profile URLs with long max-age
+// must not push out the platforms that actually call, and each flooded
+// entry is used once.
 func (r *ProfileResolver) evictLocked() {
 	var victim string
-	var soonest time.Time
+	var oldest time.Time
 	now := time.Now()
 	for k, e := range r.cache {
 		if now.After(e.expires) {
 			delete(r.cache, k)
 			return
 		}
-		if victim == "" || e.expires.Before(soonest) {
-			victim, soonest = k, e.expires
+		if victim == "" || e.used.Before(oldest) {
+			victim, oldest = k, e.used
 		}
 	}
 	delete(r.cache, victim)
 }
 
+// fetch returns a *DiscoveryError, or ErrDiscoveryBusy.
+//
+// Error content reaches anonymous callers, so it never carries a
+// transport error's text: that would name the addresses internal hostnames
+// resolve to inside the cluster, even though the dial itself is refused.
 func (r *ProfileResolver) fetch(
 	ctx context.Context, raw string,
-) (*PlatformProfile, time.Duration, *DiscoveryError) {
-	if err := r.limiter.Wait(ctx); err != nil {
-		return nil, 0, discoveryErr(CodeProfileUnreachable,
-			"profile discovery is over its rate budget; retry shortly")
+) (*PlatformProfile, time.Duration, error) {
+	// Allow, not Wait: queueing for a token would spend the fetch's own
+	// deadline, and a spent budget is answered as retryable instead.
+	if !r.limiter.Allow() {
+		return nil, 0, ErrDiscoveryBusy
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
-		return nil, 0, discoveryErr(CodeInvalidProfileURL, "%s", err.Error())
+		return nil, 0, discoveryErr(CodeInvalidProfileURL,
+			"the profile URL cannot be requested")
 	}
 	req.Header.Set("Accept", "application/json")
 	resp, err := r.hc.Do(req)
 	if err != nil {
 		return nil, 0, discoveryErr(CodeProfileUnreachable,
-			"unable to fetch the platform profile: %s", err.Error())
+			"unable to fetch the platform profile")
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -205,7 +233,7 @@ func (r *ProfileResolver) fetch(
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProfileBytes+1))
 	if err != nil {
 		return nil, 0, discoveryErr(CodeProfileUnreachable,
-			"reading the platform profile: %s", err.Error())
+			"the platform profile could not be read")
 	}
 	if len(body) > maxProfileBytes {
 		return nil, 0, discoveryErr(CodeProfileMalformed,

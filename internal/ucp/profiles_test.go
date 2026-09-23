@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/time/rate"
 )
 
 // platformProfile is the recorded platform profile fixture — minimal and
@@ -157,4 +159,58 @@ func TestProfileTTL(t *testing.T) {
 	} {
 		assert.Equal(t, want, profileTTL(header), header)
 	}
+}
+
+// A spent discovery budget is the gateway's condition, not the URL's: it
+// is answered as retryable and never cached against the profile.
+func TestResolveBudgetExhaustionIsNotCached(t *testing.T) {
+	body := platformProfileJSON(t, "https://p.example/hooks")
+	srv := serveProfile(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	})
+	r := newTestResolver(t)
+	r.limiter = rate.NewLimiter(0, 0)
+	_, err := r.Resolve(context.Background(), srv.URL)
+	assert.ErrorIs(t, err, ErrDiscoveryBusy)
+
+	r.limiter = rate.NewLimiter(rate.Inf, 1)
+	_, err = r.Resolve(context.Background(), srv.URL)
+	assert.NoError(t, err, "the busy answer was not remembered")
+}
+
+// Error content reaches anonymous callers: a transport failure must not
+// echo the dialled address.
+func TestResolveHidesTransportErrorDetail(t *testing.T) {
+	r, err := NewProfileResolver(false)
+	require.NoError(t, err)
+	r.hc = platformClient(false, time.Second)
+	// A public-looking name that resolves nowhere public in tests.
+	_, err = r.Resolve(context.Background(),
+		"https://profile.invalid/profile.json")
+	derr, ok := errors.AsType[*DiscoveryError](err)
+	require.True(t, ok, "got %v", err)
+	assert.Equal(t, "unable to fetch the platform profile", derr.Content)
+}
+
+// Eviction removes the least recently used entry, so a flood of one-off
+// URLs cannot push out a platform that keeps calling.
+func TestProfileCacheEvictsLeastRecentlyUsed(t *testing.T) {
+	r := newTestResolver(t)
+	future := time.Now().Add(time.Hour)
+	past := time.Now().Add(-time.Hour)
+	for i := range maxProfiles {
+		// Distinct recency per entry: the clock is too coarse to order
+		// entries written in one loop.
+		r.cache[strconv.Itoa(i)] = profileEntry{
+			profile: &PlatformProfile{}, expires: future,
+			used: past.Add(time.Duration(i) * time.Second),
+		}
+	}
+	_, _, ok := r.cached("0") // the busy platform keeps calling
+	require.True(t, ok)
+	r.remember("flood", profileEntry{profile: &PlatformProfile{}, expires: future})
+	_, _, ok = r.cached("0")
+	assert.True(t, ok, "a recently used entry survives")
+	_, _, ok = r.cached("1")
+	assert.False(t, ok, "the least recently used entry went")
 }

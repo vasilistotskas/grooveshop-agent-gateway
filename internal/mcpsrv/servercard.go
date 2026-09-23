@@ -43,7 +43,11 @@ func IdentityFor(t *tenant.Tenant) Identity {
 	if title == "" {
 		title = t.Name
 	}
-	return Identity{Name: reverseDomain(domain) + "/store", Title: title}
+	// Bounded here, not in the card, so initialize reports the same title.
+	return Identity{
+		Name:  reverseDomain(domain) + "/store",
+		Title: text.Runes(title, serverCardDescriptionMax),
+	}
 }
 
 func reverseDomain(domain string) string {
@@ -116,7 +120,7 @@ func ServerCardHandler(version string) http.Handler {
 			Description: text.Runes("Shopping tools for "+id.Title+
 				": catalog, cart, checkout and order tracking.",
 				serverCardDescriptionMax),
-			Title:      text.Runes(id.Title, serverCardDescriptionMax),
+			Title:      id.Title,
 			WebsiteURL: storefront.Home(t.Domain),
 			Remotes: []remote{{
 				Type:                      "streamable-http",
@@ -137,11 +141,23 @@ func ServerCardHandler(version string) http.Handler {
 		etag := `"` + hex.EncodeToString(sum[:16]) + `"`
 		h.Set("ETag", etag)
 		h.Set("Cache-Control", "public, max-age=3600")
-		if r.Header.Get("If-None-Match") == etag {
+		if etagMatches(r.Header.Get("If-None-Match"), etag) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 		h.Set("Content-Type", "application/mcp-server-card+json")
 		_, _ = w.Write(body)
 	})
+}
+
+// etagMatches applies If-None-Match's weak comparison (RFC 9110 13.1.2):
+// a list of tags, W/ prefixes ignored, or "*".
+func etagMatches(header, etag string) bool {
+	for candidate := range strings.SplitSeq(header, ",") {
+		candidate = strings.TrimPrefix(strings.TrimSpace(candidate), "W/")
+		if candidate == "*" || candidate == etag {
+			return true
+		}
+	}
+	return false
 }

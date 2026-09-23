@@ -78,7 +78,9 @@ const ucpDiscoveryFailed = -32001
 //
 // A discovery failure is the one place a canonical tool returns a
 // protocol error rather than a tool result: the spec defines it as a
-// transport error (-32001), not a business outcome. continueURL is the
+// transport error (-32001), not a business outcome. The spec also asks
+// for the matching HTTP status on Streamable HTTP; the SDK answers every
+// JSON-RPC error with 200, so the JSON-RPC code is the only signal. continueURL is the
 // web handoff for the operation.
 func (h *handlers) negotiate(
 	ctx context.Context, t *tenant.Tenant, meta *MetaIn, continueURL string,
@@ -102,6 +104,16 @@ func (h *handlers) negotiate(
 						"a callable endpoint: " + verr.Error(),
 				}
 			}
+		}
+	}
+	if errors.Is(err, ucp.ErrDiscoveryBusy) {
+		// The spec's retryable 503: -32000 with data.retry_after.
+		data, _ := json.Marshal(map[string]int{
+			"retry_after": ucp.DiscoveryRetryAfter,
+		})
+		return zero, &jsonrpc.Error{
+			Code: -32000, Message: "Service temporarily unavailable",
+			Data: data,
 		}
 	}
 	if err != nil {
