@@ -19,10 +19,10 @@ import (
 func TestServerTitleIsPerTenant(t *testing.T) {
 	deps := Deps{Version: "test"}
 
-	acme := NewServer(deps, "Acme Store")
+	acme := NewServer(deps, Identity{Name: "test.acme/store", Title: "Acme Store"})
 	require.NotNil(t, acme)
 
-	other := NewServer(deps, "Aurora Store")
+	other := NewServer(deps, Identity{Name: "test.aurora/store", Title: "Aurora Store"})
 	require.NotNil(t, other)
 
 	// Distinct instances so their advertised titles cannot collide.
@@ -34,7 +34,8 @@ func TestServerTitleIsPerTenant(t *testing.T) {
 func TestServerAdvertisesOnlyWhatItHonours(t *testing.T) {
 	ctx := context.Background()
 	serverT, clientT := mcp.NewInMemoryTransports()
-	_, err := NewServer(Deps{Version: "test"}, "Acme Store").
+	_, err := NewServer(Deps{Version: "test"},
+		Identity{Name: "test.acme/store", Title: "Acme Store"}).
 		Connect(ctx, serverT, nil)
 	require.NoError(t, err)
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).
@@ -50,31 +51,25 @@ func TestServerAdvertisesOnlyWhatItHonours(t *testing.T) {
 // A store rename must reach initialize without a restart.
 func TestServerCacheFollowsTheStoreTitle(t *testing.T) {
 	c := &serverCache{deps: Deps{Version: "test"}, servers: map[string]*mcp.Server{}}
-	before := c.get("acme", "Acme Store")
-	assert.NotSame(t, before, c.get("acme", "Acme Outlet"))
+	before := c.get("acme", Identity{Name: "test.acme/store", Title: "Acme Store"})
+	assert.NotSame(t, before, c.get("acme", Identity{Name: "test.acme/store", Title: "Acme Outlet"}))
 }
 
 func TestServerCacheReusesPerSchema(t *testing.T) {
 	c := &serverCache{deps: Deps{Version: "test"}, servers: map[string]*mcp.Server{}}
 
-	first := c.get("acme", "Acme Store")
-	again := c.get("acme", "Acme Store")
+	first := c.get("acme", Identity{Name: "test.acme/store", Title: "Acme Store"})
+	again := c.get("acme", Identity{Name: "test.acme/store", Title: "Acme Store"})
 	assert.Same(t, first, again, "same schema must reuse its server")
 
-	other := c.get("aurora", "Aurora Store")
+	other := c.get("aurora", Identity{Name: "test.aurora/store", Title: "Aurora Store"})
 	assert.NotSame(t, first, other, "different schema gets its own server")
 }
 
 func TestServerCacheIsBounded(t *testing.T) {
 	c := &serverCache{deps: Deps{Version: "test"}, servers: map[string]*mcp.Server{}}
 	for i := range maxCachedServers + 5 {
-		c.get(fmt.Sprintf("tenant_%d", i), "Store")
+		c.get(fmt.Sprintf("tenant_%d", i), Identity{Name: "test/store", Title: "Store"})
 	}
 	assert.LessOrEqual(t, len(c.servers), maxCachedServers)
-}
-
-func TestServerTitleFallsBackWhenBlank(t *testing.T) {
-	// A tenant with neither store name nor name must still advertise
-	// something sane rather than an empty title.
-	assert.NotNil(t, NewServer(Deps{Version: "test"}, ""))
 }

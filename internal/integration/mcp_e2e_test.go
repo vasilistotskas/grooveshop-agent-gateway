@@ -235,6 +235,22 @@ func TestMCPEndToEnd(t *testing.T) {
 	gw := startGateway(t)
 	session := connectMCP(t, gw.URL)
 
+	t.Run("server card is served at the reserved location", func(t *testing.T) {
+		resp, err := http.Get(gw.URL + "/mcp/server-card")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "application/mcp-server-card+json",
+			resp.Header.Get("Content-Type"))
+		var card map[string]any
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&card))
+		// Same identity as initialize reports.
+		init := session.InitializeResult().ServerInfo
+		assert.Equal(t, init.Name, card["name"])
+		assert.Equal(t, init.Title, card["title"])
+		assert.Equal(t, init.Version, card["version"])
+	})
+
 	t.Run("lists all tools", func(t *testing.T) {
 		res, err := session.ListTools(context.Background(), nil)
 		require.NoError(t, err)

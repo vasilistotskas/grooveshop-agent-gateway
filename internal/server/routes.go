@@ -101,6 +101,13 @@ func New(d Deps) http.Handler {
 	mux.Handle("/mcp",
 		tenantMW(tenant.RequireAgentCommerce(
 			identityMW(mcpsrv.Handler(mcpDeps, d.Log)))))
+	// The Server Card extension's reserved location: the streamable-HTTP
+	// URL + /server-card. The storefront's /.well-known/ai-catalog.json
+	// points here.
+	serverCard := tenantMW(tenant.RequireAgentCommerce(
+		mcpsrv.ServerCardHandler(d.Version)))
+	mux.Handle("GET /mcp/server-card", serverCard)
+	mux.Handle("OPTIONS /mcp/server-card", serverCard)
 
 	// Host-scoped so it cannot shadow a tenant path: Go's ServeMux
 	// prefers a pattern carrying a host over a path-only one. The
@@ -152,7 +159,7 @@ func New(d Deps) http.Handler {
 	// serve — the shopper sees the store name through the system prompt
 	// instead — so one shared instance is correct here.
 	chatSvc := chat.New(d.Cfg,
-		mcpsrv.NewServer(mcpDeps, "Storefront"),
+		mcpsrv.NewServer(mcpDeps, mcpsrv.BridgeIdentity),
 		chat.NewStore(d.Redis, d.Cfg.ConversationTTL, d.Cfg.ChatMaxTurns),
 		d.Log,
 		d.ChatOpts...,

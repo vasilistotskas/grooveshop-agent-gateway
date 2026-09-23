@@ -37,27 +37,13 @@ type Deps struct {
 	Version  string
 }
 
-// NewServer builds the MCP server with the full commerce toolset.
-//
-// title is what the server calls itself in the `initialize` response.
-// It is per-tenant: on a white-label storefront an agent must be told
-// it is talking to the MERCHANT, not to the platform behind them. The
-// neighbouring surfaces already do this — /.well-known/ucp is per
-// tenant and the feeds resolve the merchant name — so a hardcoded
-// platform title here was the odd one out.
-//
-// Name stays constant: it is the protocol identifier, not a display
-// name.
-// defaultTitle is advertised when a tenant carries no store name at all.
-const defaultTitle = "Storefront"
-
-func NewServer(d Deps, title string) *mcp.Server {
-	if title == "" {
-		title = defaultTitle
-	}
+// NewServer builds the MCP server with the full commerce toolset. id is
+// what it calls itself in `initialize` — per tenant, and identical to the
+// tenant's Server Card (IdentityFor).
+func NewServer(d Deps, id Identity) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{
-		Name:    "grooveshop-agent-gateway",
-		Title:   title,
+		Name:    id.Name,
+		Title:   id.Title,
 		Version: d.Version,
 	}, &mcp.ServerOptions{
 		// Tools only. The SDK default also advertises logging (deprecated
@@ -299,11 +285,11 @@ func Handler(d Deps, log *slog.Logger) http.Handler {
 	)
 }
 
-// serverCache hands out one MCP server per tenant schema.
+// serverCache hands out one MCP server per tenant identity.
 //
 // The tool set is identical for every tenant — only the advertised
-// title differs — so building a server costs one pass over the AddTool
-// calls, done once per schema rather than per request. The tenant
+// identity differs — so building a server costs one pass over the AddTool
+// calls, done once per tenant rather than per request. The tenant
 // middleware wraps this handler from outside, so the request context
 // already carries the resolved tenant.
 type serverCache struct {
@@ -317,22 +303,20 @@ type serverCache struct {
 // a ceiling. Past it the map is dropped and rebuilt on demand.
 const maxCachedServers = 512
 
+// forRequest returns nil — which the SDK answers with 400 — for a request
+// without a tenant; the tenant middleware in front makes that unreachable.
 func (c *serverCache) forRequest(r *http.Request) *mcp.Server {
 	t, ok := tenant.FromContext(r.Context())
-	if !ok || t == nil {
-		return c.get("", defaultTitle)
+	if !ok {
+		return nil
 	}
-	title := t.StoreName
-	if title == "" {
-		title = t.Name
-	}
-	return c.get(t.SchemaName, title)
+	return c.get(t.SchemaName, IdentityFor(t))
 }
 
-// get keys by schema AND title so a store rename reaches initialize
+// get keys by schema AND identity so a store rename reaches initialize
 // without a restart; the superseded entry ages out with the map bound.
-func (c *serverCache) get(schema, title string) *mcp.Server {
-	key := schema + "\x00" + title
+func (c *serverCache) get(schema string, id Identity) *mcp.Server {
+	key := schema + "\x00" + id.Name + "\x00" + id.Title
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if srv, hit := c.servers[key]; hit {
@@ -341,7 +325,7 @@ func (c *serverCache) get(schema, title string) *mcp.Server {
 	if len(c.servers) >= maxCachedServers {
 		c.servers = map[string]*mcp.Server{}
 	}
-	srv := NewServer(c.deps, title)
+	srv := NewServer(c.deps, id)
 	c.servers[key] = srv
 	return srv
 }

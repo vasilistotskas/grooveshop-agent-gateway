@@ -13,6 +13,7 @@ cluster-only internal endpoint and the operational routes:
 | Path | Surface |
 |---|---|
 | `POST /mcp` | MCP server (stateless streamable HTTP): the UCP checkout capability's five canonical tools + ergonomic commerce tools + account tools (`my_orders`, `my_loyalty_points`, `my_favourites`) |
+| `GET /mcp/server-card` | MCP Server Card (SEP-2127): identity and remotes only — no tools, which clients read from `tools/list`. Name/title/version match `initialize` (`mcpsrv.IdentityFor`) |
 | `GET /.well-known/ucp` | UCP business profile (spec 2026-08-25), incl. the `space.grooveshop.payments` handler |
 | `/acp/*` | ACP agentic checkout REST (spec 2026-04-17) |
 | `/feeds/*` | Product feeds: google.xml, meta.xml, tiktok.xml, acp.json |
@@ -181,7 +182,8 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   authorization via UCP `requires_escalation`+`continue_url`), Stripe
   tokenized behind per-tenant flag.
 - Nuxt repo: `/cart/claim?uuid=` claims a gateway-built cart into the
-  browser session; `.well-known/mcp/server-card.json` points at `/mcp`;
+  browser session; `/.well-known/ai-catalog.json` lists the gateway's
+  `/mcp/server-card`;
   `.well-known/oauth-protected-resource[/mcp]` names the Django API as
   the OAuth authorization server (allauth.idp: auth-code + PKCE + DCR).
 - Config gates: ACP and chat are per-tenant. The ACP platform bearer
