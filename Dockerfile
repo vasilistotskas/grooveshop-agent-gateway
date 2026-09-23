@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 # distroless/static runs as nonroot (uid 65532) with a read-only rootfs —
 # matching the Deployment's securityContext.
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=build /out/gateway /gateway
 EXPOSE 8080
 ENTRYPOINT ["/gateway"]
