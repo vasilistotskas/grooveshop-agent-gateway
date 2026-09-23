@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // StockShortfall describes a failed stock reservation (HTTP 409). It is a
@@ -142,20 +143,21 @@ func (c *Client) CreateOrderCheckoutSession(
 	return &out, nil
 }
 
-// PayWayByID resolves one payment method (checkout needs its provider
-// code and fee).
+// PayWayByID resolves one payment method (pricing needs its fee). The
+// detail endpoint applies the same visibility rules as the list: inactive
+// and credential-less methods are a 404.
 func (c *Client) PayWayByID(
 	ctx context.Context, host, lang string, id int64,
 ) (*PayWay, error) {
-	page, err := c.PayWays(ctx, host, lang, "", "")
+	var out PayWay
+	err := c.get(ctx, request{
+		path:     "/pay_way/" + strconv.FormatInt(id, 10),
+		host:     host,
+		language: lang,
+		out:      &out,
+	})
 	if err != nil {
 		return nil, err
 	}
-	for i := range page.Results {
-		if page.Results[i].ID == id {
-			return &page.Results[i], nil
-		}
-	}
-	return nil, errors.Join(ErrNotFound,
-		fmt.Errorf("pay way %d not found", id))
+	return &out, nil
 }

@@ -76,6 +76,8 @@ func fakeDjangoMux(t *testing.T) http.Handler {
 	route("GET /api/v1/product/1/reviews", "product_reviews.json")
 	route("GET /api/v1/product/category/all", "categories_all.json")
 	route("GET /api/v1/pay_way", "pay_way.json")
+	route("GET /api/v1/pay_way/1", "pay_way_1.json")
+	route("GET /api/v1/pay_way/2", "pay_way_2.json")
 	route("GET /api/v1/shipping/options", "shipping_options.json")
 	route("GET /api/v1/shipping/free-shipping-info", "free_shipping_info.json")
 	route("GET /api/v1/shipping/acs/stations/nearest", "acs_stations_nearest.json")

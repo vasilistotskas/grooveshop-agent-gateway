@@ -210,19 +210,35 @@ func (b *Builder) BuildCheckout(
 	switch s.Status {
 	case checkout.StatusRequiresEscalation:
 		// continue_url is REQUIRED whenever the status is
-		// requires_escalation. A hosted PSP page exists only once the
-		// buyer reached payment; before that — including a store with no
-		// agent-completable method at all — the honest handoff is the
+		// requires_escalation. With a hosted PSP page it is that page.
+		// With an order but no page (the link could not be created) it is
+		// the order, never the cart: the cart is kept until payment, and
+		// claiming it would let the buyer check out a second order. With
+		// neither — a store with no agent-completable method — it is the
 		// storefront's own claim page for this cart.
-		out.ContinueURL = s.PaymentURL
-		if out.ContinueURL == "" {
+		switch {
+		case s.PaymentURL != "":
+			out.ContinueURL = s.PaymentURL
+			out.Messages = append(out.Messages, Message{
+				Type: "info", Code: "requires_buyer_review",
+				Text: "The buyer must open continue_url to authorize " +
+					"payment on the store's hosted checkout.",
+			})
+		case s.OrderUUID != "":
+			out.ContinueURL = storefront.OrderSuccess(t.Domain, s.OrderUUID)
+			out.Messages = append(out.Messages, Message{
+				Type: "error", Code: "payment_link_unavailable",
+				Text: "The order is placed but its payment link could not " +
+					"be created; call complete_checkout again to retry.",
+			})
+		default:
 			out.ContinueURL = storefront.CartClaim(t.Domain, s.CartID)
+			out.Messages = append(out.Messages, Message{
+				Type: "info", Code: "requires_buyer_review",
+				Text: "The buyer must open continue_url to finish " +
+					"checkout on the store.",
+			})
 		}
-		out.Messages = append(out.Messages, Message{
-			Type: "info", Code: "requires_buyer_review",
-			Text: "The buyer must open continue_url to authorize payment " +
-				"on the store's hosted checkout.",
-		})
 	case checkout.StatusIncomplete:
 		for _, m := range s.Missing() {
 			out.Messages = append(out.Messages,

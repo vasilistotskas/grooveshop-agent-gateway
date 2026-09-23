@@ -119,6 +119,18 @@ func TestDecodeOrderPricingBreakdown(t *testing.T) {
 	assert.Equal(t, "EUR", pb.Currency)
 }
 
+// PayWayByID reads the detail serializer, a superset of the list's.
+func TestDecodePayWayDetail(t *testing.T) {
+	pw := decodeFixture[PayWay](t, "pay_way_detail.json")
+
+	assert.EqualValues(t, 3, pw.ID)
+	assert.True(t, pw.Active)
+	assert.Equal(t, "cash_on_delivery", pw.ProviderCode)
+	assert.Equal(t, SettlementCourierCash, pw.Settlement)
+	assert.True(t, pw.IsCollectedLater())
+	assert.Equal(t, "0.0", pw.Cost.String())
+}
+
 func TestDecodePayWays(t *testing.T) {
 	page := decodeFixture[Page[PayWay]](t, "pay_way.json")
 

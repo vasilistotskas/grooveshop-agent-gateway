@@ -77,7 +77,6 @@ func NewSession(schema, domain, protocol, cartID string) *Session {
 		Domain:    domain,
 		Status:    StatusIncomplete,
 		CartID:    cartID,
-		Version:   1,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -102,7 +101,6 @@ func (st *Store) Load(ctx context.Context, schema, id string) (*Session, error) 
 }
 
 func (st *Store) Save(ctx context.Context, s *Session) error {
-	s.Version++
 	s.UpdatedAt = time.Now().UTC()
 	raw, err := json.Marshal(s)
 	if err != nil {
@@ -192,7 +190,7 @@ func (st *Store) IndexOrder(
 // CheckoutIDForOrder resolves which checkout produced an order, without
 // loading the session. The session expires long before the index does,
 // so a caller that only needs the id — the UCP order object's
-// `checkout_id` — must not go through SessionForOrder.
+// `checkout_id` — must not require the session.
 func (st *Store) CheckoutIDForOrder(
 	ctx context.Context, schema, orderUUID string,
 ) (string, error) {
@@ -204,15 +202,4 @@ func (st *Store) CheckoutIDForOrder(
 		return "", fmt.Errorf("checkout: order index: %w", err)
 	}
 	return id, nil
-}
-
-// SessionForOrder resolves the session an order event belongs to.
-func (st *Store) SessionForOrder(
-	ctx context.Context, schema, orderUUID string,
-) (*Session, error) {
-	id, err := st.CheckoutIDForOrder(ctx, schema, orderUUID)
-	if err != nil {
-		return nil, err
-	}
-	return st.Load(ctx, schema, id)
 }

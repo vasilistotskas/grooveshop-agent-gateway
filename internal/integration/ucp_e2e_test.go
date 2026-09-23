@@ -14,9 +14,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -65,8 +68,9 @@ func (s *webhookSink) handler() http.Handler {
 }
 
 // fakeCheckoutDjango extends the shared fake with the order-placement
-// endpoints the checkout flow drives.
-func fakeCheckoutDjango(t *testing.T) http.Handler {
+// endpoints the checkout flow drives. failPaymentLink makes Viva's
+// payment-session creation fail, for the order-exists-without-link path.
+func fakeCheckoutDjango(t *testing.T, failPaymentLink *atomic.Bool) http.Handler {
 	t.Helper()
 	outer := http.NewServeMux()
 	outer.HandleFunc("POST /api/v1/cart/reserve-stock",
@@ -89,6 +93,10 @@ func fakeCheckoutDjango(t *testing.T) http.Handler {
 		func(w http.ResponseWriter, r *http.Request) {
 			// Guest authorization rides ?uuid=.
 			assert.Equal(t, fixtureOrderUUID, r.URL.Query().Get("uuid"))
+			if failPaymentLink.Load() {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{
 				"sessionId": "vivasession42",
@@ -104,11 +112,21 @@ func fakeCheckoutDjango(t *testing.T) http.Handler {
 	return outer
 }
 
+// ucpStack is the full gateway over a fake Django and real Redis.
+type ucpStack struct {
+	gw  *httptest.Server
+	key *ucp.SigningKey
+	// failPaymentLink toggles Viva payment-session failures upstream.
+	failPaymentLink *atomic.Bool
+}
+
 // startUCPGateway boots the full stack with real Redis, the webhook
 // dispatcher running, and the internal events route armed.
-func startUCPGateway(t *testing.T) (*httptest.Server, *ucp.SigningKey) {
+func startUCPGateway(t *testing.T) ucpStack {
 	t.Helper()
-	djangoSrv := httptest.NewServer(fakeCheckoutDjango(t))
+	failPaymentLink := new(atomic.Bool)
+	djangoSrv := httptest.NewServer(
+		fakeCheckoutDjango(t, failPaymentLink))
 	t.Cleanup(djangoSrv.Close)
 	rdb := startRedis(t)
 
@@ -154,11 +172,12 @@ func startUCPGateway(t *testing.T) (*httptest.Server, *ucp.SigningKey) {
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return srv, key
+	return ucpStack{gw: srv, key: key, failPaymentLink: failPaymentLink}
 }
 
 func TestUCPEndToEnd(t *testing.T) {
-	gw, key := startUCPGateway(t)
+	stack := startUCPGateway(t)
+	gw, key := stack.gw, stack.key
 	session := connectMCP(t, gw.URL)
 	sink := newWebhookSink()
 	platform := httptest.NewServer(sink.handler())
@@ -343,6 +362,84 @@ func TestUCPEndToEnd(t *testing.T) {
 		require.False(t, res.IsError)
 		assert.Equal(t, "completed", structured(t, res)["status"])
 	})
+
+	t.Run("an online method named only at complete time places the order",
+		func(t *testing.T) {
+			res := callTool(t, session, "create_checkout", map[string]any{
+				"meta":    meta(""),
+				"cart_id": fixtureCartID,
+				"checkout": map[string]any{
+					"buyer": buyer, "fulfillment": fulfillment,
+				},
+			})
+			require.False(t, res.IsError)
+			created := structured(t, res)
+			require.Equal(t, "incomplete", created["status"])
+
+			res = callTool(t, session, "complete_checkout", map[string]any{
+				"meta":     meta(uuid.NewString()),
+				"id":       created["id"],
+				"checkout": map[string]any{"pay_way_id": 2},
+			})
+			require.False(t, res.IsError, "complete must recompute readiness")
+			escalated := structured(t, res)
+			assert.Equal(t, "requires_escalation", escalated["status"])
+			assert.Equal(t, vivaCheckoutURL, escalated["continue_url"])
+		})
+
+	t.Run("a failed payment link keeps the order and retries the link",
+		func(t *testing.T) {
+			stack.failPaymentLink.Store(true)
+			res := callTool(t, session, "create_checkout", map[string]any{
+				"meta":    meta(""),
+				"cart_id": fixtureCartID,
+				"checkout": map[string]any{
+					"buyer": buyer, "fulfillment": fulfillment,
+					"pay_way_id": 2,
+				},
+			})
+			require.False(t, res.IsError)
+			checkoutID := structured(t, res)["id"].(string)
+
+			res = callTool(t, session, "complete_checkout", map[string]any{
+				"meta":     meta(uuid.NewString()),
+				"id":       checkoutID,
+				"checkout": map[string]any{},
+			})
+			require.True(t, res.IsError)
+			text := res.Content[0].(*mcp.TextContent).Text
+			assert.Contains(t, text, "order "+fixtureOrderUUID+" is placed")
+			assert.NotContains(t, text, "the cart is unchanged")
+
+			res = callTool(t, session, "get_checkout", map[string]any{
+				"meta": meta(""), "id": checkoutID,
+			})
+			require.False(t, res.IsError)
+			pending := structured(t, res)
+			assert.Equal(t, "requires_escalation", pending["status"])
+			assert.Contains(t, pending["continue_url"],
+				"/checkout/success/"+fixtureOrderUUID,
+				"never the cart: claiming it would order twice")
+
+			stack.failPaymentLink.Store(false)
+			res = callTool(t, session, "complete_checkout", map[string]any{
+				"meta":     meta(uuid.NewString()),
+				"id":       checkoutID,
+				"checkout": map[string]any{},
+			})
+			require.False(t, res.IsError)
+			assert.Equal(t, vivaCheckoutURL,
+				structured(t, res)["continue_url"])
+
+			// The order exists: canceling the checkout would not cancel
+			// it, and the buyer could still pay a "canceled" checkout.
+			res = callTool(t, session, "cancel_checkout", map[string]any{
+				"meta": meta(uuid.NewString()), "id": checkoutID,
+			})
+			require.True(t, res.IsError)
+			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
+				"cannot be canceled")
+		})
 
 	t.Run("internal events route rejects a bad token", func(t *testing.T) {
 		req, err := http.NewRequest(http.MethodPost,

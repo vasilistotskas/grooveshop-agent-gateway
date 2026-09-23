@@ -19,6 +19,14 @@ var ErrNotReady = errors.New("checkout: session is not ready to complete")
 var ErrPaymentMethodUnsupported = errors.New(
 	"checkout: this payment method cannot be completed by an agent yet")
 
+// ErrPaymentSessionFailed marks an order that exists but whose hosted
+// payment link could not be created. The session stays escalated and
+// ResumePayment mints a fresh link; callers must never report it as a
+// failed order — the buyer would check out again and order twice.
+var ErrPaymentSessionFailed = errors.New(
+	"checkout: the order is placed but its payment link could not be " +
+		"created")
+
 // Outcome describes what completing a session produced.
 type Outcome struct {
 	// Escalated: the buyer must authorize payment at PaymentURL (Viva
@@ -48,13 +56,19 @@ func NewFlow(dj *django.Client, st *Store, log *slog.Logger) *Flow {
 func (f *Flow) Complete(
 	ctx context.Context, t *tenant.Tenant, s *Session,
 ) (*Outcome, error) {
-	if s.Status != StatusReadyForComplete {
+	switch s.Status {
+	case StatusReadyForComplete:
+	case StatusCompleteInProgress:
+		return nil, ErrCompletionInProgress
+	default:
 		return nil, fmt.Errorf("%w: missing %v", ErrNotReady, s.Missing())
 	}
 
-	payWay, err := f.dj.PayWayByID(ctx, t.Domain, t.DefaultLocale, s.PayWayID)
+	// Checked against the FINAL delivery: a method selected before the
+	// carrier was chosen may be one that carrier cannot settle.
+	payWay, err := availablePayWay(ctx, f.dj, t, s)
 	if err != nil {
-		return nil, fmt.Errorf("checkout: pay way lookup: %w", err)
+		return nil, err
 	}
 	// Viva's hosted authorization and collect-later pay ways are
 	// supported; tokenized card completion (Stripe) arrives with the ACP
@@ -72,9 +86,18 @@ func (f *Flow) Complete(
 			ErrPaymentMethodUnsupported, payWay.ID, payWay.Settlement,
 		)
 	}
-	if payWay.IsOnlineSettlement() &&
-		payWay.ProviderCode != django.ProviderVivaWallet {
-		return nil, ErrPaymentMethodUnsupported
+	if payWay.IsOnlineSettlement() {
+		if payWay.ProviderCode != django.ProviderVivaWallet {
+			return nil, ErrPaymentMethodUnsupported
+		}
+		// The hosted-payment gate is read at selection AND here: it can
+		// be switched off in between, and a gated method is refused,
+		// never honoured from a stale selection.
+		if !t.HostedPaymentOn() {
+			return nil, fmt.Errorf(
+				"%w: hosted payment is disabled for this store",
+				ErrPaymentMethodUnsupported)
+		}
 	}
 
 	if _, err := f.dj.ReserveStock(
@@ -83,7 +106,15 @@ func (f *Flow) Complete(
 		return nil, err
 	}
 
+	// Persisted BEFORE the order exists. The session lock can lapse
+	// during the upstream calls below, and a second complete that loads
+	// the session then must see a completion in flight — not a ready
+	// session it would place a second time.
 	s.Status = StatusCompleteInProgress
+	if err := f.st.Save(ctx, s); err != nil {
+		s.Status = StatusReadyForComplete
+		return nil, err
+	}
 	order, err := f.dj.CreateOrder(ctx, t.Domain, t.DefaultLocale, s.CartID,
 		django.OrderCreate{
 			PayWayID:             s.PayWayID,
@@ -119,33 +150,64 @@ func (f *Flow) Complete(
 		s.Status = StatusCompleted
 		return &Outcome{Completed: true}, nil
 	}
+	return f.startPayment(ctx, t, s)
+}
 
-	// Viva: the buyer authorizes on the hosted page; portal-configured
-	// success URLs land back on the storefront. The API requires the URL
-	// fields even though Viva's are static in the merchant portal.
+// ResumePayment mints a fresh hosted payment link for an escalated order
+// whose first link could not be created. A session that already has a
+// link, or no order, is returned as is.
+func (f *Flow) ResumePayment(
+	ctx context.Context, t *tenant.Tenant, s *Session,
+) (*Outcome, error) {
+	if s.Status != StatusRequiresEscalation || s.OrderID == 0 ||
+		s.PaymentURL != "" {
+		return &Outcome{Escalated: true, PaymentURL: s.PaymentURL}, nil
+	}
+	return f.startPayment(ctx, t, s)
+}
+
+// startPayment creates the Viva hosted checkout for a placed order: the
+// buyer authorizes there and portal-configured success URLs land back on
+// the storefront. The API requires the URL fields even though Viva's are
+// static in the merchant portal.
+func (f *Flow) startPayment(
+	ctx context.Context, t *tenant.Tenant, s *Session,
+) (*Outcome, error) {
+	s.Status = StatusRequiresEscalation
 	cs, err := f.dj.CreateOrderCheckoutSession(ctx, t.Domain, t.DefaultLocale,
-		order.ID, order.UUID,
-		storefront.OrderSuccess(t.Domain, order.UUID),
+		s.OrderID, s.OrderUUID,
+		storefront.OrderSuccess(t.Domain, s.OrderUUID),
 		storefront.Cart(t.Domain))
 	if err != nil {
-		// The order exists but the payment session failed: keep the
-		// escalation pending so a retry can mint a fresh Viva code.
-		s.Status = StatusRequiresEscalation
 		s.PaymentURL = ""
-		return nil, fmt.Errorf("checkout: payment session: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrPaymentSessionFailed, err)
 	}
-	s.Status = StatusRequiresEscalation
 	s.PaymentURL = cs.CheckoutURL
 	return &Outcome{Escalated: true, PaymentURL: cs.CheckoutURL}, nil
 }
 
 // ApplyOrderEvent folds a Django order/payment event into the session it
 // belongs to. Returns the updated session (persisted) or nil when no
-// session tracks that order.
+// session tracks that order. It takes the session lock like every other
+// mutation: an unlocked write raced a concurrent cancel or complete, and
+// the last writer won. A busy session returns ErrLocked for the caller to
+// retry.
 func (f *Flow) ApplyOrderEvent(
 	ctx context.Context, schema, orderUUID, paymentStatus string,
 ) (*Session, error) {
-	s, err := f.st.SessionForOrder(ctx, schema, orderUUID)
+	id, err := f.st.CheckoutIDForOrder(ctx, schema, orderUUID)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	release, err := f.st.Lock(ctx, schema, id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	s, err := f.st.Load(ctx, schema, id)
 	if errors.Is(err, ErrNotFound) {
 		return nil, nil
 	}

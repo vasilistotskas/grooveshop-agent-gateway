@@ -70,11 +70,16 @@ func (h *handlers) createCheckout(
 	if err := in.Meta.validate(false); err != nil {
 		return nil, zero, err
 	}
-	lines, err := in.Checkout.productQuantities()
+	lines, err := in.Checkout.lines()
 	if err != nil {
 		return nil, zero, err
 	}
-	if in.CartID == "" && len(lines) == 0 {
+	switch {
+	case in.CartID != "" && len(lines) > 0:
+		return nil, zero, errors.New(
+			"send either cart_id or checkout.line_items, not both: the " +
+				"cart already holds its lines")
+	case in.CartID == "" && len(lines) == 0:
 		return nil, zero, errors.New(
 			"checkout.line_items is required to start a checkout")
 	}
@@ -87,14 +92,11 @@ func (h *handlers) createCheckout(
 				"the cart service is unavailable")
 		}
 		cartID = c.UUID
-		for _, li := range lines {
-			if _, err := h.deps.Django.AddCartItem(
-				ctx, t.Domain, t.DefaultLocale, cartID,
-				li.ProductID, li.Quantity,
-			); err != nil {
-				return nil, zero, upstreamErr(err, fmt.Sprintf(
-					"product %d was not found", li.ProductID))
-			}
+		if err := checkout.SyncCartLines(
+			ctx, h.deps.Django, t, cartID, lines,
+		); err != nil {
+			return nil, zero, upstreamErr(err,
+				"a requested product was not found")
 		}
 	}
 
@@ -121,18 +123,8 @@ func (h *handlers) createCheckout(
 		}
 	}
 	in.Checkout.applyTo(s)
-	if err := in.Checkout.applyHostedSelection(t, s); err != nil {
+	if err := h.applyPayment(ctx, t, s, &in.Checkout); err != nil {
 		return nil, zero, err
-	}
-	// payment is optional before completion, but selecting it early
-	// changes the totals through the method's fee, so honour it now.
-	if in.Checkout.Payment != nil {
-		payWayID, err := resolvePayWay(
-			ctx, h.deps.Django, t, in.Checkout.Payment)
-		if err != nil {
-			return nil, zero, err
-		}
-		s.PayWayID = payWayID
 	}
 	s.Recompute()
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
@@ -141,6 +133,28 @@ func (h *handlers) createCheckout(
 	}
 	res, out, err := h.checkoutResult(ctx, t, s)
 	return h.discountAnnotated(res, out, err, s, hasCodes)
+}
+
+// applyPayment honours a payment selection submitted before completion:
+// it changes the totals through the method's fee. A hosted pay_way_id
+// and an advertised instrument are mutually exclusive.
+func (h *handlers) applyPayment(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	in *UCPCheckoutIn,
+) error {
+	if err := in.applyHostedSelection(t, s); err != nil {
+		return err
+	}
+	if in.Payment == nil {
+		return nil
+	}
+	payWayID, err := resolvePayWay(
+		ctx, h.deps.Django, t, s.Fulfillment, in.Payment)
+	if err != nil {
+		return err
+	}
+	s.PayWayID = payWayID
+	return nil
 }
 
 func (h *handlers) updateCheckout(
@@ -160,10 +174,31 @@ func (h *handlers) updateCheckout(
 	}
 	defer release()
 
-	if s.Terminal() || s.Status == checkout.StatusRequiresEscalation {
+	if s.Terminal() || s.Status == checkout.StatusRequiresEscalation ||
+		s.Status == checkout.StatusCompleteInProgress {
 		return nil, zero, fmt.Errorf(
 			"checkout %s is %s and can no longer be updated",
 			s.ID, s.Status)
+	}
+	// line_items is full-state on update: the submitted list replaces
+	// the cart's lines. Ignoring it would complete the old order.
+	if in.Checkout.LineItems != nil {
+		lines, err := in.Checkout.lines()
+		if err != nil {
+			return nil, zero, err
+		}
+		if len(lines) == 0 {
+			return nil, zero, errors.New(
+				"checkout.line_items must not be empty; cancel the " +
+					"checkout to abandon it")
+		}
+		if err := checkout.SyncCartLines(
+			ctx, h.deps.Django, t, s.CartID, lines,
+		); err != nil {
+			return nil, zero, upstreamErr(err,
+				"the line items could not be applied; the checkout is "+
+					"unchanged")
+		}
 	}
 	codes, hasCodes := in.Checkout.discountCodes()
 	if hasCodes {
@@ -176,18 +211,8 @@ func (h *handlers) updateCheckout(
 		}
 	}
 	in.Checkout.applyTo(s)
-	if err := in.Checkout.applyHostedSelection(t, s); err != nil {
+	if err := h.applyPayment(ctx, t, s, &in.Checkout); err != nil {
 		return nil, zero, err
-	}
-	// payment is optional before completion, but selecting it early
-	// changes the totals through the method's fee, so honour it now.
-	if in.Checkout.Payment != nil {
-		payWayID, err := resolvePayWay(
-			ctx, h.deps.Django, t, in.Checkout.Payment)
-		if err != nil {
-			return nil, zero, err
-		}
-		s.PayWayID = payWayID
 	}
 	s.Recompute()
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
@@ -215,35 +240,39 @@ func (h *handlers) completeCheckout(
 	}
 	defer release()
 
-	// A completed or escalated session re-renders its final state
-	// (idempotent reads); the escalation resolves through the order
-	// event, never through a second complete.
-	if s.Status == checkout.StatusCompleted ||
-		s.Status == checkout.StatusRequiresEscalation {
+	switch s.Status {
+	case checkout.StatusCompleted:
+		return h.checkoutResult(ctx, t, s)
+	case checkout.StatusCompleteInProgress:
+		return nil, zero, checkout.ErrCompletionInProgress
+	case checkout.StatusRequiresEscalation:
+		// The escalation resolves through the order event, never through
+		// a second complete — except to retry a payment link that could
+		// not be created, for an order that already exists.
+		if _, err := h.deps.Flow.ResumePayment(ctx, t, s); err != nil {
+			return nil, zero, paymentLinkErr(s)
+		}
+		if err := h.deps.Checkout.Save(ctx, s); err != nil {
+			return nil, zero, errors.New(
+				"checkout is temporarily unavailable; retry shortly")
+		}
 		return h.checkoutResult(ctx, t, s)
 	}
 
-	if err := in.Checkout.applyHostedSelection(t, s); err != nil {
-		return nil, zero, err
-	}
 	// The submitted instrument decides how this order settles. Resolving
 	// it here — rather than trusting a pay-way set earlier — is what
 	// makes the payment object authoritative, and it rejects an
 	// instrument the store cannot honour instead of placing an order the
 	// buyer has no way to pay for.
-	if in.Checkout.Payment != nil {
-		payWayID, err := resolvePayWay(
-			ctx, h.deps.Django, t, in.Checkout.Payment)
-		if err != nil {
-			return nil, zero, err
-		}
-		s.PayWayID = payWayID
-		s.Recompute()
-	} else if s.PayWayID <= 0 {
+	if err := h.applyPayment(ctx, t, s, &in.Checkout); err != nil {
+		return nil, zero, err
+	}
+	if s.PayWayID <= 0 {
 		return nil, zero, errors.New(
 			"checkout.payment.instruments is required to complete: " +
 				"submit one of the instruments the checkout advertised")
 	}
+	s.Recompute()
 
 	idemKey := in.Meta.IdempotencyKey
 	claimed, err := h.deps.Checkout.ClaimCompletion(
@@ -261,24 +290,26 @@ func (h *handlers) completeCheckout(
 	}
 
 	_, err = h.deps.Flow.Complete(ctx, t, s)
+	if err != nil && s.OrderUUID != "" {
+		// The order exists whatever failed after it: spend the key so a
+		// retry re-renders instead of placing a second order.
+		_ = h.deps.Checkout.MarkCompleted(ctx, t.SchemaName, s.ID, idemKey)
+		_ = h.deps.Checkout.Save(ctx, s)
+		return nil, zero, paymentLinkErr(s)
+	}
 	if err != nil {
 		h.deps.Checkout.ReleaseCompletion(ctx, t.SchemaName, s.ID, idemKey)
 		_ = h.deps.Checkout.Save(ctx, s)
-		var shortfall *django.StockShortfall
 		switch {
-		case errors.As(err, &shortfall):
-			var lines []string
-			for _, item := range shortfall.FailedItems {
-				lines = append(lines, fmt.Sprintf(
-					"%s (product %d): requested %d, only %d available",
-					item.ProductName, item.ProductID,
-					item.Requested, item.Available))
-			}
-			return nil, zero, fmt.Errorf(
-				"not enough stock: %s — adjust quantities and retry",
-				strings.Join(lines, "; "))
-		case errors.Is(err, checkout.ErrNotReady):
+		case errors.As(err, new(*django.StockShortfall)):
+			return nil, zero, stockShortfallErr(err)
+		case errors.Is(err, checkout.ErrNotReady),
+			errors.Is(err, checkout.ErrCompletionInProgress):
 			return nil, zero, err
+		case errors.Is(err, checkout.ErrPayWayUnavailable):
+			return nil, zero, errors.New(
+				"the selected payment method is not offered for this " +
+					"delivery; submit another advertised instrument")
 		case errors.Is(err, checkout.ErrPaymentMethodUnsupported):
 			return nil, zero, errors.New(
 				"this payment method needs the buyer to pay on the " +
@@ -291,15 +322,41 @@ func (h *handlers) completeCheckout(
 		}
 	}
 
+	// The order exists now, whatever the save or render below does: the
+	// key is spent first so a retry re-renders, never places a second
+	// order.
+	_ = h.deps.Checkout.MarkCompleted(ctx, t.SchemaName, s.ID, idemKey)
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
 		return nil, zero, errors.New(
 			"the order was placed but checkout state could not be saved; " +
 				"track it with track_order using orderUuid " + s.OrderUUID)
 	}
-	// The order exists now, whatever the render below does: a retried
-	// key must re-render, never place a second order.
-	_ = h.deps.Checkout.MarkCompleted(ctx, t.SchemaName, s.ID, idemKey)
 	return h.checkoutResult(ctx, t, s)
+}
+
+// paymentLinkErr is the truthful answer when the order exists but its
+// hosted payment link could not be created: saying the order failed
+// would send the buyer to check out again and order twice.
+func paymentLinkErr(s *checkout.Session) error {
+	return fmt.Errorf(
+		"order %s is placed, but its payment link could not be created; "+
+			"call complete_checkout again for checkout %s to retry the "+
+			"payment link — do not start a new checkout",
+		s.OrderUUID, s.ID)
+}
+
+func stockShortfallErr(err error) error {
+	shortfall, _ := errors.AsType[*django.StockShortfall](err)
+	lines := make([]string, 0, len(shortfall.FailedItems))
+	for _, item := range shortfall.FailedItems {
+		lines = append(lines, fmt.Sprintf(
+			"%s (product %d): requested %d, only %d available",
+			item.ProductName, item.ProductID,
+			item.Requested, item.Available))
+	}
+	return fmt.Errorf(
+		"not enough stock: %s — adjust quantities and retry",
+		strings.Join(lines, "; "))
 }
 
 func (h *handlers) lockedSession(
@@ -424,8 +481,7 @@ func (h *handlers) getCheckout(
 //
 // A terminal session is re-rendered rather than refused: cancel is
 // idempotent by nature, and a platform retrying after a lost response
-// must not receive an error for work already done. An escalated session
-// stays cancellable — the buyer may simply never pay.
+// must not receive an error for work already done.
 func (h *handlers) cancelCheckout(
 	ctx context.Context, _ *mcp.CallToolRequest, in CancelCheckoutIn,
 ) (*mcp.CallToolResult, ucp.Checkout, error) {
@@ -446,10 +502,14 @@ func (h *handlers) cancelCheckout(
 	if s.Status == checkout.StatusCanceled {
 		return h.checkoutResult(ctx, t, s)
 	}
-	if s.Status == checkout.StatusCompleted {
+	// Once an order exists — completed, or escalated awaiting payment —
+	// canceling the checkout would not cancel the order: the buyer could
+	// still pay it, and the session would read canceled over a paid order.
+	if s.OrderUUID != "" || s.Status == checkout.StatusCompleteInProgress {
 		return nil, zero, fmt.Errorf(
-			"checkout %s is already completed and cannot be canceled; "+
-				"the order exists", s.ID)
+			"checkout %s already placed order %s and cannot be canceled "+
+				"here; the order is managed by the store",
+			s.ID, s.OrderUUID)
 	}
 	s.Status = checkout.StatusCanceled
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {

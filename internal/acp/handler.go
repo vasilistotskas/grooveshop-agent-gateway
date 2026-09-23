@@ -156,8 +156,12 @@ type idemRecord struct {
 	Status    int    `json:"status"`
 }
 
-func idemRedisKey(schema, op, key string) string {
-	return "ag:" + schema + ":acp:idem:" + op + ":" + key
+// idemRedisKey scopes a key to one endpoint: "create", or an operation
+// on one session ("complete:<id>"). The spec scopes keys per endpoint, and
+// a key reused on another session is a new request, not a replay of the
+// first session's response.
+func idemRedisKey(schema, scope, key string) string {
+	return "ag:" + schema + ":acp:idem:" + scope + ":" + key
 }
 
 func bodyHash(raw []byte) string {
@@ -165,11 +169,26 @@ func bodyHash(raw []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// claimIdem implements create/cancel idempotency: the first caller claims
-// the key, replays return the stored record, concurrent attempts get 409,
-// and a different body under the same key gets 422.
+// maxIdempotencyKeyLen is the spec's bound on the header.
+const maxIdempotencyKeyLen = 255
+
+// idemRetryAfter is the Retry-After (seconds) sent with a 409 for a key
+// whose first request is still running.
+const idemRetryAfter = "2"
+
+func writeInFlight(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", idemRetryAfter)
+	writeError(w, http.StatusConflict, Error{
+		Type: "invalid_request", Code: "idempotency_in_flight",
+		Message: "A request with this Idempotency-Key is in flight.",
+	})
+}
+
+// claimIdem implements POST idempotency: the first caller claims the key,
+// replays return the stored record, concurrent attempts get 409, and a
+// different body under the same key gets 422.
 func (h *Handler) claimIdem(
-	w http.ResponseWriter, r *http.Request, schema, op string, raw []byte,
+	w http.ResponseWriter, r *http.Request, schema, scope string, raw []byte,
 ) (key string, claimed bool, prior *idemRecord, handled bool) {
 	key = r.Header.Get("Idempotency-Key")
 	if key == "" {
@@ -179,7 +198,15 @@ func (h *Handler) claimIdem(
 		})
 		return "", false, nil, true
 	}
-	redisKey := idemRedisKey(schema, op, key)
+	if len(key) > maxIdempotencyKeyLen {
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: "invalid",
+			Param:   "Idempotency-Key",
+			Message: "The Idempotency-Key header exceeds 255 characters.",
+		})
+		return "", false, nil, true
+	}
+	redisKey := idemRedisKey(schema, scope, key)
 	ok, err := h.rdb.SetNX(r.Context(), redisKey, "inflight", time.Minute).
 		Result()
 	if err != nil {
@@ -192,18 +219,12 @@ func (h *Handler) claimIdem(
 	}
 	stored, err := h.rdb.Get(r.Context(), redisKey).Result()
 	if err != nil || stored == "inflight" {
-		writeError(w, http.StatusConflict, Error{
-			Type: "invalid_request", Code: "idempotency_in_flight",
-			Message: "A request with this Idempotency-Key is in flight.",
-		})
+		writeInFlight(w)
 		return "", false, nil, true
 	}
 	var rec idemRecord
 	if json.Unmarshal([]byte(stored), &rec) != nil {
-		writeError(w, http.StatusConflict, Error{
-			Type: "invalid_request", Code: "idempotency_in_flight",
-			Message: "A request with this Idempotency-Key is in flight.",
-		})
+		writeInFlight(w)
 		return "", false, nil, true
 	}
 	if rec.BodyHash != bodyHash(raw) {
@@ -219,19 +240,19 @@ func (h *Handler) claimIdem(
 }
 
 func (h *Handler) storeIdem(
-	r *http.Request, schema, op, key string, rec idemRecord,
+	r *http.Request, schema, scope, key string, rec idemRecord,
 ) {
 	raw, err := json.Marshal(rec)
 	if err != nil {
 		return
 	}
-	_ = h.rdb.Set(r.Context(), idemRedisKey(schema, op, key), raw,
+	_ = h.rdb.Set(r.Context(), idemRedisKey(schema, scope, key), raw,
 		24*time.Hour).Err()
 }
 
 // releaseIdem clears an inflight claim after a failed attempt.
-func (h *Handler) releaseIdem(r *http.Request, schema, op, key string) {
-	_ = h.rdb.Del(r.Context(), idemRedisKey(schema, op, key)).Err()
+func (h *Handler) releaseIdem(r *http.Request, schema, scope, key string) {
+	_ = h.rdb.Del(r.Context(), idemRedisKey(schema, scope, key)).Err()
 }
 
 // --- Input mapping ---------------------------------------------------------
@@ -320,53 +341,52 @@ func splitStreetNumber(line string) (street, number string) {
 	return strings.TrimSpace(line[:i]), tail
 }
 
-// syncCartLines reconciles the Django cart with the requested item list:
-// quantities update, new products append, omitted lines are removed.
-func (h *Handler) syncCartLines(
-	r *http.Request, t *tenant.Tenant, cartID string, items []ItemRef,
-) error {
-	ctx := r.Context()
-	cart, err := h.dj.GetCart(ctx, t.Domain, t.DefaultLocale, cartID)
-	if err != nil {
-		return err
-	}
-	existing := map[int64]django.CartItem{}
-	for _, it := range cart.Items {
-		existing[it.Product.ID] = it
-	}
-	wanted := map[int64]bool{}
+// cartLines maps ACP item refs onto product lines.
+func cartLines(items []ItemRef) ([]checkout.Line, error) {
+	lines := make([]checkout.Line, 0, len(items))
 	for _, ref := range items {
 		productID, err := strconv.ParseInt(ref.ID, 10, 64)
 		if err != nil {
-			return fmt.Errorf("%w: unknown item id %q",
+			return nil, fmt.Errorf("%w: unknown item id %q",
 				django.ErrNotFound, ref.ID)
 		}
 		qty := ref.Quantity
 		if qty <= 0 {
 			qty = 1
 		}
-		wanted[productID] = true
-		if line, ok := existing[productID]; ok {
-			if line.Quantity != qty {
-				if _, err := h.dj.UpdateCartItem(ctx, t.Domain,
-					t.DefaultLocale, cartID, line.ID, qty); err != nil {
-					return err
-				}
-			}
-			continue
-		}
-		if _, err := h.dj.AddCartItem(ctx, t.Domain, t.DefaultLocale,
-			cartID, productID, qty); err != nil {
-			return err
-		}
+		lines = append(lines,
+			checkout.Line{ProductID: productID, Quantity: qty})
 	}
-	for productID, line := range existing {
-		if !wanted[productID] {
-			if err := h.dj.RemoveCartItem(ctx, t.Domain, t.DefaultLocale,
-				cartID, line.ID); err != nil {
-				return err
-			}
-		}
+	return lines, nil
+}
+
+func (h *Handler) syncCart(
+	r *http.Request, t *tenant.Tenant, cartID string, items []ItemRef,
+) error {
+	lines, err := cartLines(items)
+	if err != nil {
+		return err
+	}
+	return checkout.SyncCartLines(r.Context(), h.dj, t, cartID, lines)
+}
+
+// selectPayWay picks the collect-later method completion will use as soon
+// as the delivery is known. Pricing adds a payment-method fee only for a
+// selected pay way, so without this the ready_for_payment total the buyer
+// approved lacked the cash-on-delivery fee the order then charged.
+func (h *Handler) selectPayWay(
+	r *http.Request, t *tenant.Tenant, s *checkout.Session,
+) error {
+	s.PayWayID = 0
+	if !s.Fulfillment.Complete() {
+		return nil
+	}
+	pw, err := checkout.OfflinePayWay(r.Context(), h.dj, t, s.Fulfillment)
+	if err != nil {
+		return err
+	}
+	if pw != nil {
+		s.PayWayID = pw.ID
 	}
 	return nil
 }
@@ -431,7 +451,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		upstreamError(w, err)
 		return
 	}
-	if err := h.syncCartLines(r, t, cart.UUID, req.LineItems); err != nil {
+	if err := h.syncCart(r, t, cart.UUID, req.LineItems); err != nil {
 		h.releaseIdem(r, t.SchemaName, "create", key)
 		upstreamError(w, err)
 		return
@@ -452,6 +472,11 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
 	applyFulfillment(s, req.FulfillmentDetails, nil)
+	if err := h.selectPayWay(r, t, s); err != nil {
+		h.releaseIdem(r, t.SchemaName, "create", key)
+		upstreamError(w, err)
+		return
+	}
 	s.Recompute()
 	if err := h.store.Save(r.Context(), s); err != nil {
 		h.releaseIdem(r, t.SchemaName, "create", key)
@@ -487,12 +512,29 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
+	raw, _ := json.Marshal(req)
+	scope := "update:" + r.PathValue("id")
+	key, claimed, _, handled := h.claimIdem(w, r, t.SchemaName, scope, raw)
+	if handled {
+		return
+	}
+	fail := func() {
+		if claimed {
+			h.releaseIdem(r, t.SchemaName, scope, key)
+		}
+	}
 	s, release, ok := h.lockSession(w, r, t, r.PathValue("id"))
 	if !ok {
+		fail()
 		return
 	}
 	defer release()
+	if !claimed {
+		h.render(w, r, t, s, http.StatusOK)
+		return
+	}
 	if s.Terminal() {
+		fail()
 		writeError(w, http.StatusConflict, Error{
 			Type: "invalid_request", Code: "conflict",
 			Message: fmt.Sprintf("Session is %s and cannot change.", s.Status),
@@ -501,7 +543,8 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.LineItems != nil {
-		if err := h.syncCartLines(r, t, s.CartID, req.LineItems); err != nil {
+		if err := h.syncCart(r, t, s.CartID, req.LineItems); err != nil {
+			fail()
 			upstreamError(w, err)
 			return
 		}
@@ -510,6 +553,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		if err := checkout.ApplyDiscountCodes(
 			r.Context(), h.dj, t, s, req.Discounts.Codes,
 		); err != nil {
+			fail()
 			upstreamError(w, err)
 			return
 		}
@@ -517,11 +561,20 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
 	applyFulfillment(s, req.FulfillmentDetails,
 		req.SelectedFulfillmentOptions)
+	if err := h.selectPayWay(r, t, s); err != nil {
+		fail()
+		upstreamError(w, err)
+		return
+	}
 	s.Recompute()
 	if err := h.store.Save(r.Context(), s); err != nil {
+		fail()
 		writeUnavailable(w, "Checkout is temporarily unavailable.")
 		return
 	}
+	h.storeIdem(r, t.SchemaName, scope, key, idemRecord{
+		SessionID: s.ID, BodyHash: bodyHash(raw), Status: http.StatusOK,
+	})
 	h.render(w, r, t, s, http.StatusOK)
 }
 
@@ -547,8 +600,8 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, claimed, _, handled := h.claimIdem(w, r, t.SchemaName,
-		"complete", raw)
+	scope := "complete:" + s.ID
+	key, claimed, _, handled := h.claimIdem(w, r, t.SchemaName, scope, raw)
 	if handled {
 		return
 	}
@@ -561,7 +614,7 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.PaymentData == nil {
-		h.releaseIdem(r, t.SchemaName, "complete", key)
+		h.releaseIdem(r, t.SchemaName, scope, key)
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "missing",
 			Param: "$.payment_data", Message: "payment_data is required.",
@@ -572,7 +625,7 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	// until then only handler-less completion (cash on delivery) works.
 	if req.PaymentData.HandlerID != "" ||
 		len(req.PaymentData.Instrument) > 0 {
-		h.releaseIdem(r, t.SchemaName, "complete", key)
+		h.releaseIdem(r, t.SchemaName, scope, key)
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "unsupported",
 			Message: "Delegated card payment is not enabled for this " +
@@ -582,16 +635,13 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pw, err := offlinePayWay(
-		r.Context(), h.dj, t, s.Fulfillment.ProviderCode, s.Fulfillment.Kind,
-	)
-	if err != nil {
-		h.releaseIdem(r, t.SchemaName, "complete", key)
+	if err := h.selectPayWay(r, t, s); err != nil {
+		h.releaseIdem(r, t.SchemaName, scope, key)
 		upstreamError(w, err)
 		return
 	}
-	if pw == nil {
-		h.releaseIdem(r, t.SchemaName, "complete", key)
+	if s.PayWayID == 0 {
+		h.releaseIdem(r, t.SchemaName, scope, key)
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "unsupported",
 			Message: "This store has no agent-completable payment " +
@@ -599,25 +649,32 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-
 	applyBuyer(s, req.Buyer, nil)
-	s.PayWayID = pw.ID
 	s.Recompute()
 
+	record := idemRecord{
+		SessionID: s.ID, BodyHash: bodyHash(raw), Status: http.StatusOK,
+	}
 	if _, err := h.flow.Complete(r.Context(), t, s); err != nil {
-		h.releaseIdem(r, t.SchemaName, "complete", key)
+		// Once the order exists the key is spent, whatever failed after
+		// it: a retry must re-render, never place a second order.
+		if s.OrderUUID != "" {
+			h.storeIdem(r, t.SchemaName, scope, key, record)
+		} else {
+			h.releaseIdem(r, t.SchemaName, scope, key)
+		}
 		_ = h.store.Save(r.Context(), s)
 		h.completeError(w, err)
 		return
 	}
+	// Recorded before the save: the order exists now, and a failed save
+	// must not leave the key retryable against a ready session.
+	h.storeIdem(r, t.SchemaName, scope, key, record)
 	if err := h.store.Save(r.Context(), s); err != nil {
 		writeUnavailable(w, "The order was placed but the session could not be "+
 			"saved; retrieve it again shortly.")
 		return
 	}
-	h.storeIdem(r, t.SchemaName, "complete", key, idemRecord{
-		SessionID: s.ID, BodyHash: bodyHash(raw), Status: http.StatusOK,
-	})
 	h.render(w, r, t, s, http.StatusOK)
 }
 
@@ -626,7 +683,8 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	key, claimed, _, handled := h.claimIdem(w, r, t.SchemaName, "cancel",
+	scope := "cancel:" + r.PathValue("id")
+	key, claimed, _, handled := h.claimIdem(w, r, t.SchemaName, scope,
 		[]byte(r.PathValue("id")))
 	if handled {
 		return
@@ -634,7 +692,7 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	s, release, ok := h.lockSession(w, r, t, r.PathValue("id"))
 	if !ok {
 		if claimed {
-			h.releaseIdem(r, t.SchemaName, "cancel", key)
+			h.releaseIdem(r, t.SchemaName, scope, key)
 		}
 		return
 	}
@@ -645,7 +703,7 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.Terminal() {
-		h.releaseIdem(r, t.SchemaName, "cancel", key)
+		h.releaseIdem(r, t.SchemaName, scope, key)
 		writeError(w, http.StatusMethodNotAllowed, Error{
 			Type: "invalid_request", Code: "conflict",
 			Message: fmt.Sprintf("Session is already %s.", s.Status),
@@ -654,11 +712,11 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Status = checkout.StatusCanceled
 	if err := h.store.Save(r.Context(), s); err != nil {
-		h.releaseIdem(r, t.SchemaName, "cancel", key)
+		h.releaseIdem(r, t.SchemaName, scope, key)
 		writeUnavailable(w, "Checkout is temporarily unavailable.")
 		return
 	}
-	h.storeIdem(r, t.SchemaName, "cancel", key, idemRecord{
+	h.storeIdem(r, t.SchemaName, scope, key, idemRecord{
 		SessionID: s.ID, BodyHash: bodyHash([]byte(r.PathValue("id"))),
 		Status: http.StatusOK,
 	})
@@ -720,6 +778,14 @@ func (h *Handler) completeError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "missing",
 			Message: "The session is missing buyer or fulfillment data.",
+		})
+	case errors.Is(err, checkout.ErrCompletionInProgress):
+		writeInFlight(w)
+	case errors.Is(err, checkout.ErrPayWayUnavailable):
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: "unsupported",
+			Message: "No agent-completable payment method serves this " +
+				"delivery; send the buyer to continue_url.",
 		})
 	default:
 		upstreamError(w, err)

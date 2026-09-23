@@ -143,13 +143,13 @@ func (c *UCPCheckoutIn) buyer() (checkout.Buyer, bool) {
 	}, true
 }
 
-// productQuantities flattens the requested lines into product/quantity
-// pairs. Item ids are strings on the wire and integers in the catalog.
-func (c *UCPCheckoutIn) productQuantities() ([]productQuantity, error) {
+// lines flattens the requested line items into product lines. Item ids
+// are strings on the wire and integers in the catalog.
+func (c *UCPCheckoutIn) lines() ([]checkout.Line, error) {
 	if c == nil {
 		return nil, nil
 	}
-	out := make([]productQuantity, 0, len(c.LineItems))
+	out := make([]checkout.Line, 0, len(c.LineItems))
 	for i, li := range c.LineItems {
 		id, err := strconv.ParseInt(li.Item.ID, 10, 64)
 		if err != nil {
@@ -161,15 +161,9 @@ func (c *UCPCheckoutIn) productQuantities() ([]productQuantity, error) {
 		if qty <= 0 {
 			qty = 1
 		}
-		out = append(out, productQuantity{ProductID: id, Quantity: qty})
+		out = append(out, checkout.Line{ProductID: id, Quantity: qty})
 	}
 	return out, nil
-}
-
-// productQuantity is one requested product line.
-type productQuantity struct {
-	ProductID int64
-	Quantity  int
 }
 
 // resolvePayWay maps a submitted instrument onto the merchant pay-way
@@ -179,9 +173,13 @@ type productQuantity struct {
 // A type the store cannot settle is rejected rather than silently
 // ignored: completing against an unhonourable instrument would place an
 // order the buyer never authorised a way to pay for.
+//
+// The candidates are the methods offered for the session's delivery, so
+// an instrument the chosen carrier cannot settle is refused here rather
+// than by Django at order creation.
 func resolvePayWay(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant,
-	payment *UCPPaymentIn,
+	f checkout.Fulfillment, payment *UCPPaymentIn,
 ) (int64, error) {
 	if payment == nil || len(payment.Instruments) == 0 {
 		return 0, errors.New(
@@ -203,12 +201,12 @@ func resolvePayWay(
 			chosen.HandlerID, ucp.HandlerID)
 	}
 
-	page, err := dj.PayWays(ctx, t.Domain, t.DefaultLocale, "", "")
+	pws, err := checkout.PayWaysFor(ctx, dj, t, f)
 	if err != nil {
 		return 0, fmt.Errorf("pay ways unavailable: %w", err)
 	}
-	for i := range page.Results {
-		pw := &page.Results[i]
+	for i := range pws {
+		pw := &pws[i]
 		// Positive test, not "not online". An ONLINE pay way is not an
 		// agent-payable instrument (it needs the store's hosted flow),
 		// and neither is one whose settlement we cannot read — the
@@ -270,6 +268,12 @@ func (c *UCPCheckoutIn) applyHostedSelection(
 ) error {
 	if c == nil || c.PayWayID <= 0 {
 		return nil
+	}
+	if c.Payment != nil && len(c.Payment.Instruments) > 0 {
+		return errors.New(
+			"send either checkout.pay_way_id or checkout.payment." +
+				"instruments, not both: they select competing payment " +
+				"methods")
 	}
 	if !t.HostedPaymentOn() {
 		return fmt.Errorf(

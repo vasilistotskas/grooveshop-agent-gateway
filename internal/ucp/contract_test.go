@@ -125,6 +125,8 @@ func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/cart", fixture(cart))
 	mux.HandleFunc("GET /api/v1/pay_way", fixture("pay_way.json"))
+	mux.HandleFunc("GET /api/v1/pay_way/1", fixture("pay_way_1.json"))
+	mux.HandleFunc("GET /api/v1/pay_way/2", fixture("pay_way_2.json"))
 	mux.HandleFunc("GET /api/v1/shipping/options",
 		fixture("shipping_options.json"))
 	srv := httptest.NewServer(mux)

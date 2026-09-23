@@ -80,6 +80,8 @@ func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/cart", fixture(cart))
 	mux.HandleFunc("GET /api/v1/pay_way", fixture("pay_way.json"))
+	mux.HandleFunc("GET /api/v1/pay_way/1", fixture("pay_way_1.json"))
+	mux.HandleFunc("GET /api/v1/pay_way/2", fixture("pay_way_2.json"))
 	mux.HandleFunc("GET /api/v1/shipping/options",
 		fixture("shipping_options.json"))
 	srv := httptest.NewServer(mux)
@@ -140,9 +142,11 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 				CountryCode:  "GR", City: "Αθήνα", Zipcode: "10431",
 				Street: "Πανεπιστημίου", StreetNumber: "12",
 			}
-			// No pay way selected: on ACP that is the platform's concern,
-			// so readiness derives from buyer + fulfillment alone.
+			// Readiness derives from buyer + fulfillment alone on ACP;
+			// the handler then selects the store's collect-later method
+			// for the delivery (the fixture's cash on delivery, id 1).
 			s.Recompute()
+			s.PayWayID = 1
 			require.Equal(t, checkout.StatusReadyForComplete, s.Status)
 
 			payload, err := Render(context.Background(), dj, tn, s)

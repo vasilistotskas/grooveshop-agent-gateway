@@ -53,23 +53,23 @@ func TestMetaValidateRequiresIdempotencyKeyWhereItMatters(t *testing.T) {
 	assert.NoError(t, agentMeta("key-1").validate(true))
 }
 
-func TestCheckoutInProductQuantities(t *testing.T) {
+func TestCheckoutInLines(t *testing.T) {
 	in := &UCPCheckoutIn{LineItems: []UCPLineItemReqIn{
 		{Item: UCPItemIn{ID: "5"}, Quantity: 2},
 		// Quantity is optional on the wire; one unit is the sane read.
 		{Item: UCPItemIn{ID: "7"}},
 	}}
-	lines, err := in.productQuantities()
+	lines, err := in.lines()
 	require.NoError(t, err)
 	require.Len(t, lines, 2)
-	assert.Equal(t, productQuantity{ProductID: 5, Quantity: 2}, lines[0])
-	assert.Equal(t, productQuantity{ProductID: 7, Quantity: 1}, lines[1])
+	assert.Equal(t, checkout.Line{ProductID: 5, Quantity: 2}, lines[0])
+	assert.Equal(t, checkout.Line{ProductID: 7, Quantity: 1}, lines[1])
 
 	// A non-numeric id is a caller error, not an empty checkout.
 	bad := &UCPCheckoutIn{LineItems: []UCPLineItemReqIn{
 		{Item: UCPItemIn{ID: "not-a-product"}},
 	}}
-	_, err = bad.productQuantities()
+	_, err = bad.lines()
 	assert.ErrorContains(t, err, "line_items[0].item.id")
 }
 
@@ -145,7 +145,8 @@ func payWayTenant() *tenant.Tenant {
 // the store's; only the business bridges them.
 func TestResolvePayWayMapsAdvertisedInstrument(t *testing.T) {
 	id, err := resolvePayWay(context.Background(), payWayDjango(t),
-		payWayTenant(), &UCPPaymentIn{Instruments: []UCPInstrumentIn{{
+		payWayTenant(), checkout.Fulfillment{},
+		&UCPPaymentIn{Instruments: []UCPInstrumentIn{{
 			HandlerID: ucp.HandlerID,
 			Type:      ucp.InstrumentCashOnDelivery,
 		}}})
@@ -158,16 +159,17 @@ func TestResolvePayWayRejectsWhatTheStoreCannotSettle(t *testing.T) {
 
 	// Nothing submitted: completing would place an order with no way to
 	// pay for it.
-	_, err := resolvePayWay(context.Background(), dj, tn, nil)
+	_, err := resolvePayWay(context.Background(), dj, tn,
+		checkout.Fulfillment{}, nil)
 	assert.ErrorContains(t, err, "payment.instruments is required")
 
 	// A type this store never advertised.
-	_, err = resolvePayWay(context.Background(), dj, tn,
+	_, err = resolvePayWay(context.Background(), dj, tn, checkout.Fulfillment{},
 		&UCPPaymentIn{Instruments: []UCPInstrumentIn{{Type: "card"}}})
 	assert.ErrorContains(t, err, "not available")
 
 	// A handler that is not ours — the id must match what we advertised.
-	_, err = resolvePayWay(context.Background(), dj, tn,
+	_, err = resolvePayWay(context.Background(), dj, tn, checkout.Fulfillment{},
 		&UCPPaymentIn{Instruments: []UCPInstrumentIn{{
 			HandlerID: "com.stripe.payments",
 			Type:      ucp.InstrumentCashOnDelivery,
@@ -209,7 +211,8 @@ func TestResolvePayWayWithholdsUnreadableSettlements(t *testing.T) {
 				obs.NewMetrics())
 
 			_, err := resolvePayWay(context.Background(), dj,
-				payWayTenant(), &UCPPaymentIn{
+				payWayTenant(), checkout.Fulfillment{},
+				&UCPPaymentIn{
 					Instruments: []UCPInstrumentIn{{
 						HandlerID: ucp.HandlerID,
 						Type:      ucp.InstrumentCashOnDelivery,
@@ -225,7 +228,8 @@ func TestResolvePayWayWithholdsUnreadableSettlements(t *testing.T) {
 // whichever happens to be first.
 func TestResolvePayWayHonoursTheSelectedInstrument(t *testing.T) {
 	id, err := resolvePayWay(context.Background(), payWayDjango(t),
-		payWayTenant(), &UCPPaymentIn{Instruments: []UCPInstrumentIn{
+		payWayTenant(), checkout.Fulfillment{},
+		&UCPPaymentIn{Instruments: []UCPInstrumentIn{
 			{Type: "some_unmodelled_type"},
 			{Type: ucp.InstrumentCashOnDelivery, Selected: true},
 		}})

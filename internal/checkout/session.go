@@ -114,12 +114,10 @@ type Session struct {
 	OrderUUID  string `json:"orderUuid,omitempty"`
 	PaymentURL string `json:"paymentUrl,omitempty"`
 
-	// WebhookURL and WebhookSecret are the platform's order-update
-	// delivery target, registered at create time.
-	WebhookURL    string `json:"webhookUrl,omitempty"`
-	WebhookSecret string `json:"webhookSecret,omitempty"`
+	// WebhookURL is the platform's order-update delivery target,
+	// registered at create time.
+	WebhookURL string `json:"webhookUrl,omitempty"`
 
-	Version   int       `json:"version"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }

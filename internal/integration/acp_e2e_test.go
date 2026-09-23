@@ -41,7 +41,7 @@ func acpCall(
 }
 
 func TestACPEndToEnd(t *testing.T) {
-	gw, _ := startUCPGateway(t)
+	gw := startUCPGateway(t).gw
 	base := gw.URL + "/acp/checkout_sessions"
 
 	buyer := map[string]any{
@@ -105,15 +105,22 @@ func TestACPEndToEnd(t *testing.T) {
 		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 		assert.Equal(t, "idempotency_conflict", conflict["code"])
 
+		updateBody := map[string]any{
+			"buyer":               buyer,
+			"fulfillment_details": fulfillment,
+			"selected_fulfillment_options": []map[string]any{{
+				"type": "shipping", "option_id": "acs:home_delivery",
+				"item_ids": []string{"410"},
+			}},
+		}
+		// Every POST carries a key, update included.
+		resp, missing := acpCall(t, http.MethodPost, base+"/"+sessionID,
+			updateBody, "")
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.Equal(t, "idempotency_key_required", missing["code"])
+
 		resp, updated := acpCall(t, http.MethodPost, base+"/"+sessionID,
-			map[string]any{
-				"buyer":               buyer,
-				"fulfillment_details": fulfillment,
-				"selected_fulfillment_options": []map[string]any{{
-					"type": "shipping", "option_id": "acs:home_delivery",
-					"item_ids": []string{"410"},
-				}},
-			}, "")
+			updateBody, uuid.NewString())
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Equal(t, "ready_for_payment", updated["status"])
 		opts := updated["fulfillment_options"].([]any)

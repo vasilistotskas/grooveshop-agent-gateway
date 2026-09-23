@@ -198,7 +198,9 @@ func (c *Client) ListProductsPage(
 func (c *Client) PayWays(
 	ctx context.Context, host, lang, shippingProviderCode, shippingKind string,
 ) (*Page[PayWay], error) {
-	q := url.Values{}
+	// One page holds every method a store could plausibly configure; the
+	// paginator's default of 12 would silently hide the rest.
+	q := url.Values{"pageSize": {"100"}}
 	if shippingProviderCode != "" {
 		q.Set("shippingProviderCode", shippingProviderCode)
 	}
