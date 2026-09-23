@@ -141,8 +141,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		// The status line alone is undebuggable — surface the model
 		// API's error body and the failing request shape.
 		message := messageFor(t.DefaultLocale, msgTurnFailed)
-		var apierr *openai.Error
-		if errors.As(err, &apierr) {
+		if apierr, ok := errors.AsType[*openai.Error](err); ok {
 			upstream := string(apierr.DumpResponse(true))
 			attrs = append(attrs,
 				slog.Int("upstream_status", apierr.StatusCode),

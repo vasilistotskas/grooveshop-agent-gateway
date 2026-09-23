@@ -120,7 +120,10 @@ func payWayDjango(t *testing.T) *django.Client {
 	mux.HandleFunc("GET /api/v1/pay_way", func(w http.ResponseWriter, _ *http.Request) {
 		b, err := os.ReadFile(filepath.Join("..", "..", "testdata",
 			"fixtures", "django", "pay_way.json"))
-		require.NoError(t, err)
+		if !assert.NoError(t, err) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(b)
 	})
@@ -133,9 +136,7 @@ func payWayDjango(t *testing.T) *django.Client {
 
 func payWayTenant() *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			SchemaName: "public", DefaultLocale: "el",
-		},
+		SchemaName: "public", DefaultLocale: "el",
 		Domain: "shop.test",
 	}
 }
@@ -234,10 +235,8 @@ func TestResolvePayWayHonoursTheSelectedInstrument(t *testing.T) {
 
 func gatedTenant(hosted bool) *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			AgentCommerceEnabled:      true,
-			AgentHostedPaymentEnabled: hosted,
-		},
+		AgentCommerceEnabled:      true,
+		AgentHostedPaymentEnabled: hosted,
 	}
 }
 

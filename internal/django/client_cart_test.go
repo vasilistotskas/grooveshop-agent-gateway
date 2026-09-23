@@ -17,11 +17,11 @@ func TestApplyCouponReturnsUpdatedCart(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			require.Equal(t, "/api/v1/cart/coupon", r.URL.Path)
+			assert.Equal(t, "/api/v1/cart/coupon", r.URL.Path)
 			gotMethod = r.Method
 			gotCartID = r.Header.Get("X-Cart-Id")
 			gotGateway = r.Header.Get("X-Internal-Gateway")
-			require.NoError(t,
+			assert.NoError(t,
 				json.NewDecoder(r.Body).Decode(&gotBody))
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(fixture(t, "cart_with_coupon.json"))
@@ -117,7 +117,7 @@ func TestRemoveCouponReturnsUpdatedCart(t *testing.T) {
 	var gotMethod, gotCartID string
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			require.Equal(t, "/api/v1/cart/coupon", r.URL.Path)
+			assert.Equal(t, "/api/v1/cart/coupon", r.URL.Path)
 			gotMethod = r.Method
 			gotCartID = r.Header.Get("X-Cart-Id")
 			w.Header().Set("Content-Type", "application/json")

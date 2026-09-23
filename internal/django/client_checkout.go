@@ -49,8 +49,8 @@ func (c *Client) ReserveStock(
 		out:      &out,
 	})
 	if err != nil {
-		var apiErr *APIError
-		if errors.Is(err, ErrConflict) && errors.As(err, &apiErr) {
+		apiErr, ok := errors.AsType[*APIError](err)
+		if ok && errors.Is(err, ErrConflict) {
 			var shortfall StockShortfall
 			if json.Unmarshal(apiErr.Body, &shortfall) == nil &&
 				len(shortfall.FailedItems) > 0 {

@@ -137,12 +137,10 @@ func TestResolveSingleflightCollapsesConcurrentMisses(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 25 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_, err := r.Resolve(context.Background(), "shop.example.test")
 			assert.NoError(t, err)
-		}()
+		})
 	}
 	wg.Wait()
 	assert.Equal(t, int32(1), f.calls.Load(),

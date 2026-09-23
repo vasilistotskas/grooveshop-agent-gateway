@@ -2,6 +2,7 @@ package ucp
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
@@ -105,9 +106,7 @@ func BuildProfile(
 	// The hosted-payment extension is a per-tenant capability: a store
 	// with the gate off must not advertise a member the business would
 	// then refuse.
-	for name, caps := range HostedSelection(t) {
-		profile.UCP.Capabilities[name] = caps
-	}
+	maps.Copy(profile.UCP.Capabilities, HostedSelection(t))
 	return profile
 }
 

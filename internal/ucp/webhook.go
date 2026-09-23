@@ -120,13 +120,11 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	jobs := make(chan string, deliveryWorkers)
 	var wg sync.WaitGroup
 	for range deliveryWorkers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for raw := range jobs {
 				d.deliver(ctx, raw)
 			}
-		}()
+		})
 	}
 	// Drain in-flight deliveries before returning so a shutdown does not
 	// strand events in the processing list any longer than a crash would.

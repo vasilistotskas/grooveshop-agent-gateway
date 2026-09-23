@@ -67,17 +67,15 @@ func roundTrip(t *testing.T, v any) any {
 
 func testTenant() *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			SchemaName:      "public",
-			StoreName:       "Test Store",
-			DefaultLocale:   "el",
-			DefaultCurrency: "EUR",
-			PrimaryDomain:   "shop.example.test",
-			// The fixture store accepts cash on delivery, so the
-			// profile advertises a payment handler.
-			AgentPaymentInstruments: []string{"cash_on_delivery"},
-		},
-		Domain: "shop.example.test",
+		SchemaName:      "public",
+		StoreName:       "Test Store",
+		DefaultLocale:   "el",
+		DefaultCurrency: "EUR",
+		PrimaryDomain:   "shop.example.test",
+		// The fixture store accepts cash on delivery, so the
+		// profile advertises a payment handler.
+		AgentPaymentInstruments: []string{"cash_on_delivery"},
+		Domain:                  "shop.example.test",
 	}
 }
 
@@ -112,7 +110,10 @@ func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
 		return func(w http.ResponseWriter, _ *http.Request) {
 			b, err := os.ReadFile(filepath.Join("..", "..", "testdata",
 				"fixtures", "django", name))
-			require.NoError(t, err)
+			if !assert.NoError(t, err) {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(b)
 		}

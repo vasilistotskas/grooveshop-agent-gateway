@@ -29,12 +29,10 @@ func startRedis(t *testing.T) *redis.Client {
 	ctx := context.Background()
 	container, err := testcontainers.GenericContainer(ctx,
 		testcontainers.GenericContainerRequest{
-			ContainerRequest: testcontainers.ContainerRequest{
-				Image:        "redis:8-alpine",
-				ExposedPorts: []string{"6379/tcp"},
-				WaitingFor:   wait.ForListeningPort("6379/tcp"),
-			},
-			Started: true,
+			Image:        "redis:8-alpine",
+			ExposedPorts: []string{"6379/tcp"},
+			WaitingFor:   wait.ForListeningPort("6379/tcp"),
+			Started:      true,
 		})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = container.Terminate(context.Background()) })

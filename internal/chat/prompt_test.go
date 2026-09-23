@@ -5,19 +5,16 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
 func testTenant() *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			SchemaName:      "demostore",
-			StoreName:       "Demo Store",
-			DefaultLocale:   "el",
-			DefaultCurrency: "EUR",
-		},
-		Domain: "shop.example.test",
+		SchemaName:      "demostore",
+		StoreName:       "Demo Store",
+		DefaultLocale:   "el",
+		DefaultCurrency: "EUR",
+		Domain:          "shop.example.test",
 	}
 }
 

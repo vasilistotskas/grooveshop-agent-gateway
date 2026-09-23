@@ -15,7 +15,7 @@ func TestReserveStockDecodesResult(t *testing.T) {
 	var gotMethod, gotCartID, gotGateway string
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			require.Equal(t, "/api/v1/cart/reserve-stock", r.URL.Path)
+			assert.Equal(t, "/api/v1/cart/reserve-stock", r.URL.Path)
 			gotMethod = r.Method
 			gotCartID = r.Header.Get("X-Cart-Id")
 			gotGateway = r.Header.Get("X-Internal-Gateway")

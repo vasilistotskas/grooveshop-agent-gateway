@@ -14,12 +14,10 @@ import (
 
 func cartTenant() *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			SchemaName:      "public",
-			DefaultLocale:   "el",
-			DefaultCurrency: "EUR",
-		},
-		Domain: "shop.example.test",
+		SchemaName:      "public",
+		DefaultLocale:   "el",
+		DefaultCurrency: "EUR",
+		Domain:          "shop.example.test",
 	}
 }
 

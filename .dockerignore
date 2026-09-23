@@ -1,0 +1,10 @@
+# Allowlist: the build stage needs only the module files and the Go
+# sources (internal/ also holds embedded docs). Everything else — .git,
+# a local .env, editor and agent config, testdata — stays out of the
+# build context and cannot invalidate the cached source layer.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/
+**/*_test.go

@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
@@ -69,12 +68,10 @@ func TestProfilePublishesOnlyOwnKey(t *testing.T) {
 
 	serve := func(schema string) []map[string]string {
 		tn := &tenant.Tenant{
-			TenantConfig: django.TenantConfig{
-				SchemaName:      schema,
-				DefaultLocale:   "el",
-				DefaultCurrency: "EUR",
-			},
-			Domain: schema + ".example.test",
+			SchemaName:      schema,
+			DefaultLocale:   "el",
+			DefaultCurrency: "EUR",
+			Domain:          schema + ".example.test",
 		}
 		req := httptest.NewRequest(http.MethodGet, "/.well-known/ucp", nil)
 		req = req.WithContext(tenant.NewContext(req.Context(), tn))

@@ -50,8 +50,8 @@ func upstreamErr(err error, notFound string) error {
 		return errors.New(
 			"the store is rate limiting requests; wait a minute and retry")
 	case errors.Is(err, django.ErrValidation):
-		var apiErr *django.APIError
-		if errors.As(err, &apiErr) && apiErr.Detail != "" {
+		if apiErr, ok := errors.AsType[*django.APIError](err); ok &&
+			apiErr.Detail != "" {
 			return fmt.Errorf("the store rejected the request: %s",
 				apiErr.Detail)
 		}

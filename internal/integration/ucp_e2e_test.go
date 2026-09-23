@@ -78,17 +78,17 @@ func fakeCheckoutDjango(t *testing.T) http.Handler {
 	outer.HandleFunc("POST /api/v1/order",
 		func(w http.ResponseWriter, r *http.Request) {
 			// The cart rides the header, never the body.
-			require.Equal(t, fixtureCartID, r.Header.Get("X-Cart-Id"))
+			assert.Equal(t, fixtureCartID, r.Header.Get("X-Cart-Id"))
 			var body map[string]any
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-			require.NotEmpty(t, body["payWayId"])
-			require.NotEmpty(t, body["email"])
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.NotEmpty(t, body["payWayId"])
+			assert.NotEmpty(t, body["email"])
 			serveFixture(t, w, "order_by_uuid.json")
 		})
 	outer.HandleFunc("POST /api/v1/order/684/create_checkout_session",
 		func(w http.ResponseWriter, r *http.Request) {
 			// Guest authorization rides ?uuid=.
-			require.Equal(t, fixtureOrderUUID, r.URL.Query().Get("uuid"))
+			assert.Equal(t, fixtureOrderUUID, r.URL.Query().Get("uuid"))
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{
 				"sessionId": "vivasession42",

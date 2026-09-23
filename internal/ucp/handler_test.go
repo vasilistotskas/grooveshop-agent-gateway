@@ -7,15 +7,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
 func tenantWith(codes ...string) *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			AgentPaymentInstruments: codes,
-		},
+		AgentPaymentInstruments: codes,
 	}
 }
 
@@ -102,10 +99,8 @@ func TestHandlerDocumentsAreAuthorityBound(t *testing.T) {
 
 func hostedTenant(commerce, hosted bool) *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			AgentCommerceEnabled:      commerce,
-			AgentHostedPaymentEnabled: hosted,
-		},
+		AgentCommerceEnabled:      commerce,
+		AgentHostedPaymentEnabled: hosted,
 	}
 }
 

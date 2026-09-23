@@ -31,7 +31,7 @@ func fakeDjango(t *testing.T, hits *atomic.Int64) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			require.Equal(t, "/api/v1/agent/me", r.URL.Path)
+			assert.Equal(t, "/api/v1/agent/me", r.URL.Path)
 			hits.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			switch r.Header.Get("Authorization") {
@@ -49,11 +49,9 @@ func fakeDjango(t *testing.T, hits *atomic.Int64) *httptest.Server {
 
 func testTenant() *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			SchemaName:    "demostore",
-			DefaultLocale: "el",
-		},
-		Domain: "shop.example.test",
+		SchemaName:    "demostore",
+		DefaultLocale: "el",
+		Domain:        "shop.example.test",
 	}
 }
 
@@ -171,11 +169,9 @@ func TestMiddlewareInvalidBearerGets401WithChallenge(t *testing.T) {
 // every tenant's ingress targets the same Service.
 func otherTenant() *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			SchemaName:    "acme",
-			DefaultLocale: "en",
-		},
-		Domain: "acme.example.test",
+		SchemaName:    "acme",
+		DefaultLocale: "en",
+		Domain:        "acme.example.test",
 	}
 }
 

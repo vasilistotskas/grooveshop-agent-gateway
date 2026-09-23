@@ -41,7 +41,7 @@ func TestResolveTenantDecodesFixture(t *testing.T) {
 	var gotProto, gotHost, gotDomain string
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			require.Equal(t, "/api/v1/tenant/resolve", r.URL.Path)
+			assert.Equal(t, "/api/v1/tenant/resolve", r.URL.Path)
 			gotProto = r.Header.Get("X-Forwarded-Proto")
 			gotHost = r.Header.Get("X-Forwarded-Host")
 			gotDomain = r.URL.Query().Get("domain")

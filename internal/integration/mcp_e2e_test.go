@@ -33,7 +33,10 @@ func fixturePath(name string) string {
 func serveFixture(t *testing.T, w http.ResponseWriter, name string) {
 	t.Helper()
 	b, err := os.ReadFile(fixturePath(name))
-	require.NoError(t, err)
+	if !assert.NoError(t, err) {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(b)
 }

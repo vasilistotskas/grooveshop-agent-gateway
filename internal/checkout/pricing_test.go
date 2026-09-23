@@ -21,13 +21,11 @@ import (
 
 func pricingTenant() *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			SchemaName:      "public",
-			DefaultLocale:   "el",
-			DefaultCurrency: "EUR",
-			PrimaryDomain:   "shop.example.test",
-		},
-		Domain: "shop.example.test",
+		SchemaName:      "public",
+		DefaultLocale:   "el",
+		DefaultCurrency: "EUR",
+		PrimaryDomain:   "shop.example.test",
+		Domain:          "shop.example.test",
 	}
 }
 

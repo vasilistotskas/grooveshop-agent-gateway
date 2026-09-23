@@ -11,17 +11,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
 func authTenant(schema, token string) *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			SchemaName:     schema,
-			ACPBearerToken: token,
-		},
-		Domain: schema + ".example.test",
+		SchemaName:     schema,
+		ACPBearerToken: token,
+		Domain:         schema + ".example.test",
 	}
 }
 

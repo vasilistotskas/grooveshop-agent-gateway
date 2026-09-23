@@ -63,7 +63,7 @@ func feedsFakeDjango(t *testing.T) http.Handler {
 			}
 			var n int
 			_, _ = fmt.Sscanf(page, "%d", &n)
-			require.LessOrEqual(t, n, 3)
+			assert.LessOrEqual(t, n, 3)
 			first := (n-1)*2 + 1
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprintf(w, `{

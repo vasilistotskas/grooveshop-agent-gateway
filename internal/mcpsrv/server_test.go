@@ -40,7 +40,7 @@ func TestServerCacheReusesPerSchema(t *testing.T) {
 
 func TestServerCacheIsBounded(t *testing.T) {
 	c := &serverCache{deps: Deps{Version: "test"}, servers: map[string]*mcp.Server{}}
-	for i := 0; i < maxCachedServers+5; i++ {
+	for i := range maxCachedServers + 5 {
 		c.get(fmt.Sprintf("tenant_%d", i), "Store")
 	}
 	assert.LessOrEqual(t, len(c.servers), maxCachedServers)

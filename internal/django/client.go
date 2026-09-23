@@ -101,7 +101,7 @@ func (c *Client) get(ctx context.Context, req request) error {
 	req.method = http.MethodGet
 
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			delay := time.Duration(100*(1<<(attempt-1)))*time.Millisecond +
 				time.Duration(rand.IntN(100))*time.Millisecond
@@ -233,12 +233,10 @@ func (c *Client) apiError(resp *http.Response) error {
 }
 
 func retryable(err error) bool {
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
 		return apiErr.Status >= 500
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if _, ok := errors.AsType[net.Error](err); ok {
 		return true
 	}
 	return errors.Is(err, ErrUpstreamDown)

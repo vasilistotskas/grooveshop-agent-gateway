@@ -85,8 +85,7 @@ func ApplyDiscountCodes(
 	}
 
 	_, err := dj.ApplyCoupon(ctx, t.Domain, t.DefaultLocale, s.CartID, first)
-	var rejected *django.CouponRejectedError
-	if errors.As(err, &rejected) {
+	if rejected, ok := errors.AsType[*django.CouponRejectedError](err); ok {
 		s.RejectedDiscounts = append([]DiscountRejection{{
 			Code:    first,
 			Reason:  mapDiscountReason(rejected.Reason),
