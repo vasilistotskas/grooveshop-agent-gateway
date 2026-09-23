@@ -5,16 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -114,51 +110,9 @@ func NewDispatcher(
 	return &Dispatcher{
 		rdb:      rdb,
 		keys:     keys,
-		hc:       webhookClient(allowLocal),
+		hc:       platformClient(allowLocal, 15*time.Second),
 		log:      log,
 		consumer: consumer,
-	}
-}
-
-// webhookClient calls platform endpoints. ValidateWebhookURL vets the
-// registered URL, but only its text: the checks that matter happen here,
-// on what is actually connected to.
-func webhookClient(allowLocal bool) *http.Client {
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	if !allowLocal {
-		// The resolved address, not the hostname: a public name can
-		// resolve to a private address, or rebind to one after
-		// registration.
-		dialer.Control = func(_, address string, _ syscall.RawConn) error {
-			host, _, err := net.SplitHostPort(address)
-			if err != nil {
-				return err
-			}
-			addr, err := netip.ParseAddr(host)
-			if err != nil || !publicAddr(addr) {
-				return fmt.Errorf("%w: %s is not publicly routable",
-					ErrWebhookURL, host)
-			}
-			return nil
-		}
-	}
-	return &http.Client{
-		Timeout: 15 * time.Second,
-		// A redirect would carry a signed request to a target no check
-		// ever saw — an in-cluster service or the metadata address, over
-		// plain http. A 3xx is a failed delivery.
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Transport: &http.Transport{
-			// No proxy: the dial check must see the platform's address.
-			Proxy:               nil,
-			DialContext:         dialer.DialContext,
-			TLSHandshakeTimeout: 5 * time.Second,
-			MaxIdleConnsPerHost: deliveryWorkers,
-			IdleConnTimeout:     90 * time.Second,
-			ForceAttemptHTTP2:   true,
-		},
 	}
 }
 

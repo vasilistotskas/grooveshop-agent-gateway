@@ -85,16 +85,8 @@ func TestHandlerDocumentsAreAuthorityBound(t *testing.T) {
 			"%s = %q must sit under %s", field, url, handlerBase)
 	}
 
-	// Reversing the schema host must reproduce the handler name exactly.
-	host, _, found := strings.Cut(
-		strings.TrimPrefix(handlerBase, "https://"), "/")
-	require.True(t, found, "handlerBase must carry a path")
-	labels := strings.Split(host, ".")
-	for i, j := 0, len(labels)-1; i < j; i, j = i+1, j-1 {
-		labels[i], labels[j] = labels[j], labels[i]
-	}
-	assert.Equal(t, HandlerName, strings.Join(labels, "."),
-		"schema host must reverse to the handler name")
+	assert.True(t, authorityBound(HandlerName, h.Schema),
+		"schema host must bind the handler name")
 }
 
 func hostedTenant(commerce, hosted bool) *tenant.Tenant {
@@ -130,8 +122,8 @@ func TestHostedSelectionRespectsBothGateTiers(t *testing.T) {
 // handler: its name extends space.grooveshop.payments, whose reversed
 // host is payments.grooveshop.space.
 func TestHostedSelectionCapabilityIsAuthorityBound(t *testing.T) {
-	assert.True(t, strings.HasPrefix(
-		HostedSelectionCapability, "space.grooveshop.payments."),
-		"the name must sit under the handler's namespace or the schema "+
-			"host stops matching it")
+	c := HostedSelection(hostedTenant(true, true))[HostedSelectionCapability]
+	require.Len(t, c, 1)
+	assert.True(t, authorityBound(HostedSelectionCapability, c[0].Schema),
+		"the schema host must bind the capability name")
 }

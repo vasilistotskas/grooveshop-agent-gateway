@@ -10,6 +10,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
@@ -22,14 +23,12 @@ import (
 type CreateCheckoutIn struct {
 	Meta     *MetaIn       `json:"meta"`
 	Checkout UCPCheckoutIn `json:"checkout"`
-	// CartID and WebhookURL are additive members. UCP models neither: a
-	// canonical caller sends line_items and discovers webhooks from the
-	// platform profile, which this business does not yet dereference.
-	// Consumers ignore members they do not recognise, so carrying them
-	// costs conformance nothing while keeping the cart tools usable as a
-	// path into checkout.
-	CartID     string `json:"cart_id,omitempty" jsonschema:"an existing cart from the cart tools; omit when sending line_items"`
-	WebhookURL string `json:"webhook_url,omitempty" jsonschema:"platform endpoint for signed order lifecycle webhooks"`
+	// CartID is an additive member UCP does not model: a canonical
+	// caller sends line_items. Consumers ignore members they do not
+	// recognise, so carrying it costs conformance nothing while keeping
+	// the cart tools usable as a path into checkout. (Order webhooks are
+	// discovered from the platform profile, never taken from a request.)
+	CartID string `json:"cart_id,omitempty" jsonschema:"an existing cart from the cart tools; omit when sending line_items"`
 }
 
 // GetCheckoutIn is the get_checkout tool's arguments.
@@ -61,14 +60,21 @@ type CancelCheckoutIn struct {
 
 func (h *handlers) createCheckout(
 	ctx context.Context, _ *mcp.CallToolRequest, in CreateCheckoutIn,
-) (*mcp.CallToolResult, ucp.Checkout, error) {
-	var zero ucp.Checkout
+) (*mcp.CallToolResult, CheckoutResult, error) {
+	var zero CheckoutResult
 	t, err := h.tenantFor(ctx)
 	if err != nil {
 		return nil, zero, err
 	}
 	if err := in.Meta.validate(false); err != nil {
 		return nil, zero, err
+	}
+	neg, err := h.negotiate(ctx, t, in.Meta, storefront.Cart(t.Domain))
+	if err != nil {
+		return nil, zero, err
+	}
+	if !neg.Has(ucp.CapabilityCheckout) {
+		return nil, incompatibleCheckout(t), nil
 	}
 	lines, err := in.Checkout.lines()
 	if err != nil {
@@ -100,18 +106,11 @@ func (h *handlers) createCheckout(
 		}
 	}
 
-	// Reject an unusable endpoint here rather than queueing deliveries
-	// to it: this tool is reachable anonymously, and the dispatcher
-	// POSTs to whatever is stored on every order transition.
-	if err := ucp.ValidateWebhookURL(
-		in.WebhookURL, h.deps.AllowLocalWebhooks,
-	); err != nil {
-		return nil, zero, fmt.Errorf(
-			"webhookUrl rejected: %w", err)
-	}
-
 	s := checkout.NewSession(t.SchemaName, t.Domain, checkout.ProtocolUCP, cartID)
-	s.WebhookURL = in.WebhookURL
+	// The platform's order-event endpoint, from its profile's negotiated
+	// order capability (vetted by negotiate); none when it negotiated
+	// no order capability.
+	s.WebhookURL = neg.OrderWebhookURL()
 	codes, hasCodes := in.Checkout.discountCodes()
 	if hasCodes {
 		if err := checkout.ApplyDiscountCodes(
@@ -123,7 +122,7 @@ func (h *handlers) createCheckout(
 		}
 	}
 	in.Checkout.applyTo(s)
-	if err := h.applyPayment(ctx, t, s, &in.Checkout); err != nil {
+	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
 		return nil, zero, err
 	}
 	s.Recompute()
@@ -131,7 +130,7 @@ func (h *handlers) createCheckout(
 		return nil, zero, errors.New(
 			"checkout is temporarily unavailable; retry shortly")
 	}
-	res, out, err := h.checkoutResult(ctx, t, s)
+	res, out, err := h.checkoutResult(ctx, t, s, neg)
 	return h.discountAnnotated(res, out, err, s, hasCodes)
 }
 
@@ -140,9 +139,9 @@ func (h *handlers) createCheckout(
 // and an advertised instrument are mutually exclusive.
 func (h *handlers) applyPayment(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
-	in *UCPCheckoutIn,
+	in *UCPCheckoutIn, neg ucp.Negotiated,
 ) error {
-	if err := in.applyHostedSelection(t, s); err != nil {
+	if err := in.applyHostedSelection(s, neg); err != nil {
 		return err
 	}
 	if in.Payment == nil {
@@ -159,14 +158,21 @@ func (h *handlers) applyPayment(
 
 func (h *handlers) updateCheckout(
 	ctx context.Context, _ *mcp.CallToolRequest, in UpdateCheckoutIn,
-) (*mcp.CallToolResult, ucp.Checkout, error) {
-	var zero ucp.Checkout
+) (*mcp.CallToolResult, CheckoutResult, error) {
+	var zero CheckoutResult
 	t, err := h.tenantFor(ctx)
 	if err != nil {
 		return nil, zero, err
 	}
 	if err := in.Meta.validate(false); err != nil {
 		return nil, zero, err
+	}
+	neg, err := h.negotiate(ctx, t, in.Meta, storefront.Cart(t.Domain))
+	if err != nil {
+		return nil, zero, err
+	}
+	if !neg.Has(ucp.CapabilityCheckout) {
+		return nil, incompatibleCheckout(t), nil
 	}
 	s, release, err := h.lockedSession(ctx, t, in.ID)
 	if err != nil {
@@ -211,7 +217,7 @@ func (h *handlers) updateCheckout(
 		}
 	}
 	in.Checkout.applyTo(s)
-	if err := h.applyPayment(ctx, t, s, &in.Checkout); err != nil {
+	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
 		return nil, zero, err
 	}
 	s.Recompute()
@@ -219,20 +225,27 @@ func (h *handlers) updateCheckout(
 		return nil, zero, errors.New(
 			"checkout is temporarily unavailable; retry shortly")
 	}
-	res, out, err := h.checkoutResult(ctx, t, s)
+	res, out, err := h.checkoutResult(ctx, t, s, neg)
 	return h.discountAnnotated(res, out, err, s, hasCodes)
 }
 
 func (h *handlers) completeCheckout(
 	ctx context.Context, _ *mcp.CallToolRequest, in CompleteCheckoutIn,
-) (*mcp.CallToolResult, ucp.Checkout, error) {
-	var zero ucp.Checkout
+) (*mcp.CallToolResult, CheckoutResult, error) {
+	var zero CheckoutResult
 	t, err := h.tenantFor(ctx)
 	if err != nil {
 		return nil, zero, err
 	}
 	if err := in.Meta.validate(true); err != nil {
 		return nil, zero, err
+	}
+	neg, err := h.negotiate(ctx, t, in.Meta, storefront.Cart(t.Domain))
+	if err != nil {
+		return nil, zero, err
+	}
+	if !neg.Has(ucp.CapabilityCheckout) {
+		return nil, incompatibleCheckout(t), nil
 	}
 	s, release, err := h.lockedSession(ctx, t, in.ID)
 	if err != nil {
@@ -242,7 +255,7 @@ func (h *handlers) completeCheckout(
 
 	switch s.Status {
 	case checkout.StatusCompleted:
-		return h.checkoutResult(ctx, t, s)
+		return h.checkoutResult(ctx, t, s, neg)
 	case checkout.StatusCompleteInProgress:
 		return nil, zero, checkout.ErrCompletionInProgress
 	case checkout.StatusRequiresEscalation:
@@ -256,7 +269,7 @@ func (h *handlers) completeCheckout(
 			return nil, zero, errors.New(
 				"checkout is temporarily unavailable; retry shortly")
 		}
-		return h.checkoutResult(ctx, t, s)
+		return h.checkoutResult(ctx, t, s, neg)
 	}
 
 	// The submitted instrument decides how this order settles. Resolving
@@ -264,7 +277,7 @@ func (h *handlers) completeCheckout(
 	// makes the payment object authoritative, and it rejects an
 	// instrument the store cannot honour instead of placing an order the
 	// buyer has no way to pay for.
-	if err := h.applyPayment(ctx, t, s, &in.Checkout); err != nil {
+	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
 		return nil, zero, err
 	}
 	if s.PayWayID <= 0 {
@@ -286,7 +299,7 @@ func (h *handlers) completeCheckout(
 	}
 	if !claimed {
 		// A prior attempt finished; render the session's current state.
-		return h.checkoutResult(ctx, t, s)
+		return h.checkoutResult(ctx, t, s, neg)
 	}
 
 	_, err = h.deps.Flow.Complete(ctx, t, s)
@@ -341,7 +354,7 @@ func (h *handlers) completeCheckout(
 			"the order was placed but checkout state could not be saved; " +
 				"track it with track_order using orderUuid " + s.OrderUUID)
 	}
-	return h.checkoutResult(ctx, t, s)
+	return h.checkoutResult(ctx, t, s, neg)
 }
 
 // paymentLinkErr is the truthful answer when the order exists but its
@@ -399,9 +412,11 @@ func (h *handlers) lockedSession(
 
 func (h *handlers) checkoutResult(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
-) (*mcp.CallToolResult, ucp.Checkout, error) {
-	var zero ucp.Checkout
-	payload, err := h.deps.UCP.BuildCheckout(ctx, t, s)
+	neg ucp.Negotiated,
+) (*mcp.CallToolResult, CheckoutResult, error) {
+	var zero CheckoutResult
+	payload, err := h.deps.UCP.BuildCheckout(ctx, t, s,
+		neg.Declaration(ucp.CapabilityCheckout))
 	if err != nil {
 		return nil, zero, upstreamErr(err,
 			"checkout state could not be rendered; retry")
@@ -430,16 +445,16 @@ func (h *handlers) checkoutResult(
 	default:
 		text = fmt.Sprintf("Checkout %s status: %s.", s.ID, s.Status)
 	}
-	return textResult("%s", text), *payload, nil
+	return textResult("%s", text), CheckoutResult{checkout: payload}, nil
 }
 
 // discountAnnotated appends the outcome of a discount submission to the
 // tool's summary text so the agent sees rejections without digging into
 // the session state.
 func (h *handlers) discountAnnotated(
-	res *mcp.CallToolResult, out ucp.Checkout, err error,
+	res *mcp.CallToolResult, out CheckoutResult, err error,
 	s *checkout.Session, submitted bool,
-) (*mcp.CallToolResult, ucp.Checkout, error) {
+) (*mcp.CallToolResult, CheckoutResult, error) {
 	if err != nil || !submitted || len(s.RejectedDiscounts) == 0 {
 		return res, out, err
 	}
@@ -462,14 +477,21 @@ func (h *handlers) discountAnnotated(
 // no idempotency key.
 func (h *handlers) getCheckout(
 	ctx context.Context, _ *mcp.CallToolRequest, in GetCheckoutIn,
-) (*mcp.CallToolResult, ucp.Checkout, error) {
-	var zero ucp.Checkout
+) (*mcp.CallToolResult, CheckoutResult, error) {
+	var zero CheckoutResult
 	t, err := h.tenantFor(ctx)
 	if err != nil {
 		return nil, zero, err
 	}
 	if err := in.Meta.validate(false); err != nil {
 		return nil, zero, err
+	}
+	neg, err := h.negotiate(ctx, t, in.Meta, storefront.Cart(t.Domain))
+	if err != nil {
+		return nil, zero, err
+	}
+	if !neg.Has(ucp.CapabilityCheckout) {
+		return nil, incompatibleCheckout(t), nil
 	}
 	if in.ID == "" {
 		return nil, zero, errors.New("id is required")
@@ -484,7 +506,7 @@ func (h *handlers) getCheckout(
 		return nil, zero, errors.New(
 			"checkout is temporarily unavailable; retry shortly")
 	}
-	return h.checkoutResult(ctx, t, s)
+	return h.checkoutResult(ctx, t, s, neg)
 }
 
 // cancelCheckout abandons a session the buyer is no longer pursuing.
@@ -494,14 +516,21 @@ func (h *handlers) getCheckout(
 // must not receive an error for work already done.
 func (h *handlers) cancelCheckout(
 	ctx context.Context, _ *mcp.CallToolRequest, in CancelCheckoutIn,
-) (*mcp.CallToolResult, ucp.Checkout, error) {
-	var zero ucp.Checkout
+) (*mcp.CallToolResult, CheckoutResult, error) {
+	var zero CheckoutResult
 	t, err := h.tenantFor(ctx)
 	if err != nil {
 		return nil, zero, err
 	}
 	if err := in.Meta.validate(true); err != nil {
 		return nil, zero, err
+	}
+	neg, err := h.negotiate(ctx, t, in.Meta, storefront.Cart(t.Domain))
+	if err != nil {
+		return nil, zero, err
+	}
+	if !neg.Has(ucp.CapabilityCheckout) {
+		return nil, incompatibleCheckout(t), nil
 	}
 	s, release, err := h.lockedSession(ctx, t, in.ID)
 	if err != nil {
@@ -510,7 +539,7 @@ func (h *handlers) cancelCheckout(
 	defer release()
 
 	if s.Status == checkout.StatusCanceled {
-		return h.checkoutResult(ctx, t, s)
+		return h.checkoutResult(ctx, t, s, neg)
 	}
 	// Once an order exists — completed, or escalated awaiting payment —
 	// canceling the checkout would not cancel the order: the buyer could
@@ -529,5 +558,13 @@ func (h *handlers) cancelCheckout(
 		return nil, zero, errors.New(
 			"checkout is temporarily unavailable; retry shortly")
 	}
-	return h.checkoutResult(ctx, t, s)
+	return h.checkoutResult(ctx, t, s, neg)
+}
+
+// incompatibleCheckout is the negotiation-failure result: the platform
+// shares no version of the checkout capability.
+func incompatibleCheckout(t *tenant.Tenant) CheckoutResult {
+	return CheckoutResult{
+		failure: ucp.CapabilitiesIncompatible(storefront.Cart(t.Domain)),
+	}
 }

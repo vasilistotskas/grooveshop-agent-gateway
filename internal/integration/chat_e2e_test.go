@@ -138,6 +138,7 @@ func startChatGateway(t *testing.T, fake *fakeChatAPI) *httptest.Server {
 	handler := server.New(server.Deps{
 		Cfg: cfg, Log: log, Metrics: metrics, Redis: rdb,
 		Django: dj, Resolver: resolver, Version: "test",
+		Profiles: newProfiles(t),
 		ChatOpts: []option.RequestOption{
 			option.WithBaseURL(modelSrv.URL),
 		},

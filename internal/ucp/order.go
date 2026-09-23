@@ -28,7 +28,8 @@ type Order struct {
 // OrderEnvelope is the order response's protocol metadata. The order
 // response schema carries no payment handlers: nothing is left to pay.
 type OrderEnvelope struct {
-	Version string `json:"version"`
+	Version      string                     `json:"version"`
+	Capabilities map[string][]CapabilityRef `json:"capabilities"`
 }
 
 // OrderLineItem is one purchased line. `status` is DERIVED from
@@ -67,6 +68,7 @@ type OrderFulfillment struct{}
 // that rather than pass an empty string.
 func BuildOrder(
 	t *tenant.Tenant, o *django.Order, checkoutID string,
+	capabilities map[string][]CapabilityRef,
 ) (*Order, error) {
 	if checkoutID == "" {
 		return nil, fmt.Errorf(
@@ -79,7 +81,9 @@ func BuildOrder(
 	}
 
 	out := &Order{
-		UCP:          OrderEnvelope{Version: Version},
+		UCP: OrderEnvelope{
+			Version: Version, Capabilities: capabilities,
+		},
 		ID:           o.UUID,
 		Label:        fmt.Sprintf("Order %d", o.ID),
 		CheckoutID:   checkoutID,

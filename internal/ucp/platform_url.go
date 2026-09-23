@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// ErrWebhookURL reports a webhook endpoint the gateway refuses to call.
-var ErrWebhookURL = errors.New("ucp: unusable webhook url")
+// ErrPlatformURL reports a platform URL the gateway refuses to call.
+var ErrPlatformURL = errors.New("ucp: unusable platform url")
 
 // internalSuffixes are hostnames that only resolve inside a cluster.
 var internalSuffixes = []string{
@@ -20,64 +20,63 @@ var internalSuffixes = []string{
 	".svc",
 }
 
-// ValidateWebhookURL checks an endpoint BEFORE it is stored on a session.
+// ValidatePlatformURL checks a URL a platform gave us — its profile, the
+// order webhook endpoint in it — BEFORE the gateway calls it.
 //
-// webhookUrl arrives on the create_checkout MCP tool, which is reachable
-// anonymously — identity is optional on /mcp. Whatever is stored here is
-// later POSTed to by the dispatcher on every order transition, so an
-// unvalidated value makes the gateway originate requests to arbitrary
-// addresses on behalf of an anonymous caller: an in-cluster service, a
-// link-local metadata endpoint, or simply a blackhole that occupies a
-// delivery worker for the full retry budget.
-//
-// Validation happens at registration rather than at delivery so the
-// caller gets an actionable error instead of a silent non-delivery, and
-// so a bad value never reaches the queue at all.
+// Both arrive on MCP tools that are reachable anonymously (identity is
+// optional on /mcp), so an unvalidated value makes the gateway originate
+// requests to arbitrary addresses on behalf of an anonymous caller: an
+// in-cluster service, a link-local metadata endpoint, or simply a
+// blackhole that occupies a worker for its full timeout.
 //
 // This is a hostname/scheme check, not a DNS check: resolving here would
-// add a round trip to every checkout and would still be
-// time-of-check/time-of-use racy. It rejects the reachable shapes —
-// literal special-use addresses and names that only exist inside a
-// cluster — while leaving public endpoints alone; the dispatcher checks
-// the address it actually connects to.
+// add a round trip to every call and would still be time-of-check/
+// time-of-use racy. It rejects the reachable shapes — literal special-use
+// addresses and names that only exist inside a cluster — while leaving
+// public endpoints alone; platformClient checks the address it actually
+// connects to.
 //
 // allowLocal relaxes it to any http(s) host. It is driven by the ENV
-// config value: development and the e2e suite legitimately register
-// httptest servers on 127.0.0.1, while production must never call
+// config value: development and the e2e suite legitimately serve
+// httptest platforms on 127.0.0.1, while production must never call
 // anything but a public https endpoint.
-func ValidateWebhookURL(raw string, allowLocal bool) error {
+func ValidatePlatformURL(raw string, allowLocal bool) error {
 	if raw == "" {
-		return nil // no endpoint registered — nothing to deliver
+		return fmt.Errorf("%w: missing", ErrPlatformURL)
 	}
 
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("%w: not a url", ErrWebhookURL)
+		return fmt.Errorf("%w: not a url", ErrPlatformURL)
+	}
+	// Userinfo hides the real host from a reader: https://a.example@b.
+	if u.User != nil {
+		return fmt.Errorf("%w: must not carry credentials", ErrPlatformURL)
 	}
 	if allowLocal {
 		if u.Scheme != "http" && u.Scheme != "https" {
 			return fmt.Errorf(
-				"%w: must be http(s) (got %q)", ErrWebhookURL, u.Scheme)
+				"%w: must be http(s) (got %q)", ErrPlatformURL, u.Scheme)
 		}
 		if u.Hostname() == "" {
-			return fmt.Errorf("%w: missing host", ErrWebhookURL)
+			return fmt.Errorf("%w: missing host", ErrPlatformURL)
 		}
 		return nil
 	}
 	if u.Scheme != "https" {
 		return fmt.Errorf(
-			"%w: must be https (got %q)", ErrWebhookURL, u.Scheme)
+			"%w: must be https (got %q)", ErrPlatformURL, u.Scheme)
 	}
 
 	host := u.Hostname()
 	if host == "" {
-		return fmt.Errorf("%w: missing host", ErrWebhookURL)
+		return fmt.Errorf("%w: missing host", ErrPlatformURL)
 	}
 
 	if addr, err := netip.ParseAddr(host); err == nil {
 		if !publicAddr(addr) {
 			return fmt.Errorf(
-				"%w: %s is not publicly routable", ErrWebhookURL, host)
+				"%w: %s is not publicly routable", ErrPlatformURL, host)
 		}
 		return nil
 	}
@@ -87,13 +86,13 @@ func ValidateWebhookURL(raw string, allowLocal bool) error {
 	// "backend-service", "redis", "localhost".
 	if !strings.Contains(lower, ".") {
 		return fmt.Errorf(
-			"%w: %q is not a public hostname", ErrWebhookURL, host)
+			"%w: %q is not a public hostname", ErrPlatformURL, host)
 	}
 	for _, suffix := range internalSuffixes {
 		if strings.HasSuffix(lower, suffix) {
 			return fmt.Errorf(
 				"%w: %q is a cluster-internal hostname",
-				ErrWebhookURL, host)
+				ErrPlatformURL, host)
 		}
 	}
 	return nil

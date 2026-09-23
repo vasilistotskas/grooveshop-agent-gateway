@@ -2,7 +2,6 @@ package ucp
 
 import (
 	"encoding/json"
-	"maps"
 	"net/http"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
@@ -87,26 +86,13 @@ func BuildProfile(
 						"/services/shopping/mcp.openrpc.json",
 				}},
 			},
-			Capabilities: map[string][]Capability{
-				"dev.ucp.shopping.checkout": {{
-					Version: Version,
-					Spec:    specBase + "/specification/shopping/checkout/",
-					Schema:  specBase + "/schemas/shopping/checkout.json",
-				}},
-				"dev.ucp.shopping.order": {{
-					Version: Version,
-					Spec:    specBase + "/specification/shopping/order/",
-					Schema:  specBase + "/schemas/shopping/order.json",
-				}},
-			},
+			// The same registry negotiation intersects with, so the
+			// profile can never advertise what a request would refuse.
+			Capabilities:    BusinessCapabilities(t),
 			PaymentHandlers: paymentHandlers(t, env),
 		},
 		Keys: []map[string]string{key.JWK()},
 	}
-	// The hosted-payment extension is a per-tenant capability: a store
-	// with the gate off must not advertise a member the business would
-	// then refuse.
-	maps.Copy(profile.UCP.Capabilities, HostedSelection(t))
 	return profile
 }
 

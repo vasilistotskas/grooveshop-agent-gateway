@@ -46,6 +46,9 @@ type Deps struct {
 	Keys *ucp.Keys
 	// Dispatcher delivers queued order webhooks (Run started by main).
 	Dispatcher *ucp.Dispatcher
+	// Profiles resolves calling platforms' UCP profiles for capability
+	// negotiation.
+	Profiles *ucp.ProfileResolver
 }
 
 func New(d Deps) http.Handler {
@@ -85,6 +88,7 @@ func New(d Deps) http.Handler {
 		MediaURLTemplate:   d.Cfg.MediaURLTemplate,
 		AssetsHost:         d.Cfg.AssetsHost,
 		AllowLocalWebhooks: d.Cfg.AllowLocalWebhooks,
+		Profiles:           d.Profiles,
 		Log:                d.Log,
 		Version:            d.Version,
 	}

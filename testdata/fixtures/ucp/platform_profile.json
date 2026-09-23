@@ -1,0 +1,43 @@
+{
+  "ucp": {
+    "version": "2026-08-25",
+    "services": {
+      "dev.ucp.shopping": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/overview/",
+          "transport": "mcp",
+          "schema": "https://ucp.dev/2026-08-25/services/shopping/mcp.openrpc.json"
+        }
+      ]
+    },
+    "capabilities": {
+      "dev.ucp.shopping.checkout": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/shopping/checkout",
+          "schema": "https://ucp.dev/2026-08-25/schemas/shopping/checkout.json"
+        }
+      ],
+      "dev.ucp.shopping.order": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/shopping/order",
+          "schema": "https://ucp.dev/2026-08-25/schemas/shopping/order.json",
+          "config": {
+            "webhook_url": "{{webhook_url}}"
+          }
+        }
+      ],
+      "space.grooveshop.payments.hosted_selection": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://payments.grooveshop.space/2026-08-25/",
+          "schema": "https://payments.grooveshop.space/2026-08-25/hosted_selection.json",
+          "extends": "dev.ucp.shopping.checkout"
+        }
+      ]
+    },
+    "payment_handlers": {}
+  }
+}

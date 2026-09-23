@@ -96,7 +96,21 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   true}` with actionable text. Returning a plain Go error from a typed
   tool handler is fine — the SDK wraps it into exactly that; only a
   `*jsonrpc.Error` becomes a protocol error, so never return one for a
-  business condition.
+  business condition. The single exception is UCP discovery: a platform
+  profile that cannot be fetched, validated or version-matched is the
+  spec's transport error `-32001` (`mcpsrv.negotiate`).
+- **Every canonical UCP tool negotiates** (`internal/ucp/negotiate.go`,
+  `profiles.go`): the `meta.ucp-agent.profile` is fetched (https, no
+  redirects, public addresses, 256 KiB, cached ≥60s, failures backed
+  off, global rate budget), validated against the embedded spec schema
+  (`internal/ucp/spec/`), version-checked, and intersected with
+  `BusinessCapabilities` — the same registry the profile publishes.
+  Responses declare the negotiated capabilities; a missing root
+  capability returns the `error_response` branch
+  (`capabilities_incompatible`) of the tool's `oneOf` output schema.
+  The order webhook URL comes ONLY from the negotiated order
+  capability's `config.webhook_url`, and `pay_way_id` needs the
+  hosted-selection extension negotiated, not just the tenant gate.
 - **The canonical UCP tools take the wire shapes from the OpenRPC document**
   (`create_checkout`, `get_checkout`, `update_checkout`,
   `complete_checkout`, `cancel_checkout`): `meta` (with

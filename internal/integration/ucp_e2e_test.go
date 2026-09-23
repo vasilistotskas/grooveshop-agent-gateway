@@ -10,12 +10,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -24,6 +26,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -46,6 +49,37 @@ const (
 	// tenant_resolve_demostore.json.
 	acpBearerToken = "acp-bearer-demostore-fixture"
 )
+
+// newProfiles resolves platform profiles the way ENV=test does: loopback
+// http allowed, everything else per the spec's fetch rules.
+func newProfiles(t *testing.T) *ucp.ProfileResolver {
+	t.Helper()
+	p, err := ucp.NewProfileResolver(true)
+	require.NoError(t, err)
+	return p
+}
+
+// servePlatformProfile hosts the recorded platform profile fixture with
+// its order webhook pointed at webhookURL; edit rewrites it first.
+func servePlatformProfile(
+	t *testing.T, webhookURL string, edit func(string) string,
+) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata",
+		"fixtures", "ucp", "platform_profile.json"))
+	require.NoError(t, err)
+	body := strings.ReplaceAll(string(raw), "{{webhook_url}}", webhookURL)
+	if edit != nil {
+		body = edit(body)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/profile.json"
+}
 
 // receivedWebhook is one order webhook as a platform receives it.
 type receivedWebhook struct {
@@ -250,7 +284,7 @@ func startUCPGateway(t *testing.T) ucpStack {
 	handler := server.New(server.Deps{
 		Cfg: cfg, Log: log, Metrics: metrics, Redis: rdb,
 		Django: dj, Resolver: resolver, Version: "test",
-		Keys: keys, Dispatcher: dispatcher,
+		Keys: keys, Dispatcher: dispatcher, Profiles: newProfiles(t),
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -273,11 +307,12 @@ func TestUCPEndToEnd(t *testing.T) {
 		"first_name": "Μαρία", "last_name": "Παπαδοπούλου",
 		"email": "maria@example.test", "phone_number": "+306912345678",
 	}
+	// The platform's profile names its order-event endpoint: that is
+	// where webhooks go, never a request member.
+	profileURL := servePlatformProfile(t, platform.URL+"/ucp/orders", nil)
 	meta := func(idem string) map[string]any {
 		m := map[string]any{
-			"ucp-agent": map[string]any{
-				"profile": "https://agent.example.test/profile.json",
-			},
+			"ucp-agent": map[string]any{"profile": profileURL},
 		}
 		if idem != "" {
 			m["idempotency-key"] = idem
@@ -372,9 +407,8 @@ func TestUCPEndToEnd(t *testing.T) {
 	t.Run("viva checkout escalates, then the order event completes it "+
 		"and signs the platform webhook", func(t *testing.T) {
 		res := callTool(t, session, "create_checkout", map[string]any{
-			"meta":        meta(""),
-			"cart_id":     fixtureCartID,
-			"webhook_url": platform.URL + "/ucp/orders",
+			"meta":    meta(""),
+			"cart_id": fixtureCartID,
 			"checkout": map[string]any{
 				"buyer":       buyer,
 				"fulfillment": fulfillment,
@@ -599,6 +633,85 @@ func TestUCPEndToEnd(t *testing.T) {
 			assert.Equal(t, before+1, stack.faults.orderCreates.Load(),
 				"exactly one order creation attempt")
 		})
+
+	t.Run("an unreachable profile is a -32001 discovery error",
+		func(t *testing.T) {
+			dead := httptest.NewServer(http.NotFoundHandler())
+			t.Cleanup(dead.Close)
+			_, err := session.CallTool(context.Background(),
+				&mcp.CallToolParams{Name: "get_checkout", Arguments: map[string]any{
+					"meta": map[string]any{"ucp-agent": map[string]any{
+						"profile": dead.URL + "/profile.json"}},
+					"id": uuid.NewString(),
+				}})
+			rpcErr, ok := errors.AsType[*jsonrpc.Error](err)
+			require.True(t, ok, "want a JSON-RPC error, got %v", err)
+			assert.EqualValues(t, -32001, rpcErr.Code)
+			var data map[string]string
+			require.NoError(t, json.Unmarshal(rpcErr.Data, &data))
+			assert.Equal(t, "profile_unreachable", data["code"])
+			assert.Contains(t, data["continue_url"], "/cart")
+		})
+
+	t.Run("an unsupported protocol version is refused", func(t *testing.T) {
+		old := servePlatformProfile(t, platform.URL+"/ucp/orders",
+			func(s string) string {
+				return strings.Replace(s, `"version": "2026-08-25"`,
+					`"version": "2026-01-23"`, 1)
+			})
+		_, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+			Name: "get_checkout", Arguments: map[string]any{
+				"meta": map[string]any{"ucp-agent": map[string]any{
+					"profile": old}},
+				"id": uuid.NewString(),
+			}})
+		rpcErr, ok := errors.AsType[*jsonrpc.Error](err)
+		require.True(t, ok, "want a JSON-RPC error, got %v", err)
+		var data map[string]string
+		require.NoError(t, json.Unmarshal(rpcErr.Data, &data))
+		assert.Equal(t, "version_unsupported", data["code"])
+	})
+
+	t.Run("no shared checkout version is capabilities_incompatible",
+		func(t *testing.T) {
+			// Same protocol version, but the platform's checkout entry is
+			// an older capability version this business does not offer.
+			noCheckout := servePlatformProfile(t, platform.URL+"/ucp/orders",
+				func(s string) string {
+					return strings.Replace(s,
+						`"dev.ucp.shopping.checkout": [
+        {
+          "version": "2026-08-25"`,
+						`"dev.ucp.shopping.checkout": [
+        {
+          "version": "2026-01-23"`, 1)
+				})
+			res := callTool(t, session, "create_checkout", map[string]any{
+				"meta": map[string]any{"ucp-agent": map[string]any{
+					"profile": noCheckout}},
+				"cart_id":  fixtureCartID,
+				"checkout": map[string]any{},
+			})
+			require.False(t, res.IsError, "a negotiation outcome, not a failure")
+			out := structured(t, res)
+			assert.Equal(t, "error", out["ucp"].(map[string]any)["status"])
+			msg := out["messages"].([]any)[0].(map[string]any)
+			assert.Equal(t, "capabilities_incompatible", msg["code"])
+			assert.Contains(t, out["continue_url"], "/cart")
+		})
+
+	t.Run("responses declare the negotiated capabilities", func(t *testing.T) {
+		res := callTool(t, session, "create_checkout", map[string]any{
+			"meta": meta(""), "cart_id": fixtureCartID,
+			"checkout": map[string]any{},
+		})
+		require.False(t, res.IsError)
+		caps := structured(t, res)["ucp"].(map[string]any)["capabilities"].(map[string]any)
+		assert.Contains(t, caps, "dev.ucp.shopping.checkout")
+		assert.Contains(t, caps, ucp.HostedSelectionCapability)
+		assert.NotContains(t, caps, "dev.ucp.shopping.order",
+			"order belongs to other operations")
+	})
 
 	t.Run("internal events route rejects a bad token", func(t *testing.T) {
 		req, err := http.NewRequest(http.MethodPost,

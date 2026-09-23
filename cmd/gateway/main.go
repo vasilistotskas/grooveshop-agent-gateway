@@ -63,6 +63,10 @@ func run() error {
 	}
 	dispatcher := ucp.NewDispatcher(rdb, keys, log, consumer,
 		cfg.AllowLocalWebhooks)
+	profiles, err := ucp.NewProfileResolver(cfg.AllowLocalWebhooks)
+	if err != nil {
+		return err
+	}
 
 	handler := server.New(server.Deps{
 		Cfg:        cfg,
@@ -74,6 +78,7 @@ func run() error {
 		Version:    version,
 		Keys:       keys,
 		Dispatcher: dispatcher,
+		Profiles:   profiles,
 	})
 
 	srv := &http.Server{

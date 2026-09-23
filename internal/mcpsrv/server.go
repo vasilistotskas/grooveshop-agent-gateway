@@ -30,8 +30,11 @@ type Deps struct {
 	// development and the e2e suite, which register httptest servers on
 	// 127.0.0.1. Production keeps the strict public-https rule.
 	AllowLocalWebhooks bool
-	Log                *slog.Logger
-	Version            string
+	// Profiles resolves the calling platform's UCP profile for
+	// capability negotiation on every canonical tool.
+	Profiles *ucp.ProfileResolver
+	Log      *slog.Logger
+	Version  string
 }
 
 // NewServer builds the MCP server with the full commerce toolset.
@@ -216,7 +219,8 @@ func NewServer(d Deps, title string) *mcp.Server {
 	// carries the domain object. Structured output is the UCP checkout
 	// session.
 	mcp.AddTool(srv, &mcp.Tool{
-		Name: "create_checkout",
+		Name:         "create_checkout",
+		OutputSchema: checkoutResultSchema,
 		Description: "UCP: start a checkout session. Send " +
 			"checkout.line_items (or cart_id for a cart built with the " +
 			"cart tools). Collect buyer, fulfillment and payment with " +
@@ -225,7 +229,8 @@ func NewServer(d Deps, title string) *mcp.Server {
 	}, h.createCheckout)
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name: "get_checkout",
+		Name:         "get_checkout",
+		OutputSchema: checkoutResultSchema,
 		Description: "UCP: read the current state of a checkout " +
 			"session, including its totals, messages and the payment " +
 			"instruments available for it. Requires " +
@@ -233,7 +238,8 @@ func NewServer(d Deps, title string) *mcp.Server {
 	}, h.getCheckout)
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name: "update_checkout",
+		Name:         "update_checkout",
+		OutputSchema: checkoutResultSchema,
 		Description: "UCP: add or change buyer details, delivery " +
 			"(address or ACS/BOX NOW pickup point), payment and " +
 			"discount codes on a checkout session. Requires " +
@@ -241,7 +247,8 @@ func NewServer(d Deps, title string) *mcp.Server {
 	}, h.updateCheckout)
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name: "complete_checkout",
+		Name:         "complete_checkout",
+		OutputSchema: checkoutResultSchema,
 		Description: "UCP: place the order. Send " +
 			"checkout.payment.instruments naming one instrument the " +
 			"checkout advertised. Offline methods (cash on delivery) " +
@@ -254,7 +261,8 @@ func NewServer(d Deps, title string) *mcp.Server {
 	// UCP order capability (dev.ucp.shopping.order), MCP transport
 	// binding. Its conformance section requires exactly this tool.
 	mcp.AddTool(srv, &mcp.Tool{
-		Name: "get_order",
+		Name:         "get_order",
+		OutputSchema: orderResultSchema,
 		Description: "UCP: the current state of an order placed through " +
 			"this surface — line items with per-line fulfilment status, " +
 			"totals and the permalink. Use track_order for shipment " +
@@ -263,7 +271,8 @@ func NewServer(d Deps, title string) *mcp.Server {
 	}, h.getOrder)
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name: "cancel_checkout",
+		Name:         "cancel_checkout",
+		OutputSchema: checkoutResultSchema,
 		Description: "UCP: abandon a checkout session the buyer is no " +
 			"longer pursuing. Already-canceled sessions succeed " +
 			"unchanged. Requires meta.ucp-agent.profile and " +

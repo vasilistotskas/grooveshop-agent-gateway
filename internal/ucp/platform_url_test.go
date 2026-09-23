@@ -6,25 +6,28 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestValidateWebhookURLAcceptsPublicHTTPS(t *testing.T) {
+func TestValidatePlatformURLAcceptsPublicHTTPS(t *testing.T) {
 	for _, raw := range []string{
 		"https://platform.example.com/hooks/orders",
 		"https://hooks.acme.co.uk/x?y=1",
 		"https://1.1.1.1/hook",
 		"https://[2606:4700:4700::1111]/hook",
 	} {
-		assert.NoError(t, ValidateWebhookURL(raw, false), raw)
+		assert.NoError(t, ValidatePlatformURL(raw, false), raw)
 	}
 }
 
-func TestValidateWebhookURLAllowsEmpty(t *testing.T) {
-	// No endpoint registered is a normal checkout, not an error.
-	require.NoError(t, ValidateWebhookURL("", false))
+func TestValidatePlatformURLRejectsEmptyAndCredentials(t *testing.T) {
+	assert.ErrorIs(t, ValidatePlatformURL("", false), ErrPlatformURL)
+	// The host a reader sees is not the host dialled.
+	assert.ErrorIs(t, ValidatePlatformURL(
+		"https://ucp.dev@evil.example/profile.json", false), ErrPlatformURL)
 }
 
 // create_checkout is reachable ANONYMOUSLY, and the dispatcher POSTs to
@@ -32,7 +35,7 @@ func TestValidateWebhookURLAllowsEmpty(t *testing.T) {
 // value turns the gateway into a blind request origin for in-cluster
 // addresses, and a blackhole endpoint occupies a delivery worker for the
 // full retry budget.
-func TestValidateWebhookURLRejectsInternalTargets(t *testing.T) {
+func TestValidatePlatformURLRejectsInternalTargets(t *testing.T) {
 	cases := map[string]string{
 		"plain http":      "http://platform.example.com/hook",
 		"in-cluster host": "https://backend-service/api/v1/health",
@@ -55,22 +58,22 @@ func TestValidateWebhookURLRejectsInternalTargets(t *testing.T) {
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
-			err := ValidateWebhookURL(raw, false)
+			err := ValidatePlatformURL(raw, false)
 			require.Error(t, err, raw)
-			assert.ErrorIs(t, err, ErrWebhookURL)
+			assert.ErrorIs(t, err, ErrPlatformURL)
 		})
 	}
 }
 
 // Development and the e2e suite point webhooks at httptest servers on
 // 127.0.0.1; production must not.
-func TestValidateWebhookURLAllowLocal(t *testing.T) {
+func TestValidatePlatformURLAllowLocal(t *testing.T) {
 	local := "http://127.0.0.1:54321/ucp/orders"
-	require.Error(t, ValidateWebhookURL(local, false))
-	require.NoError(t, ValidateWebhookURL(local, true))
+	require.Error(t, ValidatePlatformURL(local, false))
+	require.NoError(t, ValidatePlatformURL(local, true))
 
 	// Even relaxed, a nonsense scheme is still refused.
-	require.Error(t, ValidateWebhookURL("ftp://127.0.0.1/x", true))
+	require.Error(t, ValidatePlatformURL("ftp://127.0.0.1/x", true))
 }
 
 // A redirect would carry the signed request to a target no check saw.
@@ -88,7 +91,7 @@ func TestWebhookClientDoesNotFollowRedirects(t *testing.T) {
 	req, err := http.NewRequestWithContext(context.Background(),
 		http.MethodPost, redirector.URL, nil)
 	require.NoError(t, err)
-	resp, err := webhookClient(true).Do(req)
+	resp, err := platformClient(true, 5*time.Second).Do(req)
 	require.NoError(t, err)
 	_ = resp.Body.Close()
 	assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
@@ -104,6 +107,6 @@ func TestWebhookClientRefusesSpecialUseAddresses(t *testing.T) {
 	req, err := http.NewRequestWithContext(context.Background(),
 		http.MethodPost, srv.URL, nil)
 	require.NoError(t, err)
-	_, err = webhookClient(false).Do(req)
-	assert.ErrorIs(t, err, ErrWebhookURL)
+	_, err = platformClient(false, 5*time.Second).Do(req)
+	assert.ErrorIs(t, err, ErrPlatformURL)
 }

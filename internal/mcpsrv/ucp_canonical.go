@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
@@ -37,17 +36,14 @@ type MetaIn struct {
 }
 
 // validate enforces the binding's metadata rules. needIdempotency is set
-// for the two operations the spec singles out for retry safety.
+// for the two operations the spec singles out for retry safety. The
+// profile URL itself is vetted when it is resolved (negotiate), where
+// the fetch-safety rules live.
 func (m *MetaIn) validate(needIdempotency bool) error {
 	if m == nil || m.UCPAgent == nil || m.UCPAgent.Profile == "" {
 		return errors.New(
 			"meta.ucp-agent.profile is required: it identifies the " +
 				"calling platform so capabilities can be negotiated")
-	}
-	if !strings.HasPrefix(m.UCPAgent.Profile, "https://") {
-		return fmt.Errorf(
-			"meta.ucp-agent.profile must be an https URL, got %q",
-			m.UCPAgent.Profile)
 	}
 	if needIdempotency && m.IdempotencyKey == "" {
 		return errors.New(
@@ -257,14 +253,16 @@ func (c *UCPCheckoutIn) applyTo(s *checkout.Session) {
 	}
 }
 
-// applyHostedSelection honours a submitted pay-way id, refusing it when
-// the tenant's hosted-payment gate is off.
+// applyHostedSelection honours a submitted pay-way id, refusing it unless
+// the hosted-selection extension is negotiated for this request — which
+// needs the tenant's gate on (the business declares it only then) and
+// the platform declaring it too.
 //
 // Refusing beats ignoring: a platform that named a method and got a
 // silent no-op would complete against whatever was selected before, and
 // the buyer could be charged a different way than the agent chose.
 func (c *UCPCheckoutIn) applyHostedSelection(
-	t *tenant.Tenant, s *checkout.Session,
+	s *checkout.Session, neg ucp.Negotiated,
 ) error {
 	if c == nil || c.PayWayID <= 0 {
 		return nil
@@ -275,10 +273,11 @@ func (c *UCPCheckoutIn) applyHostedSelection(
 				"instruments, not both: they select competing payment " +
 				"methods")
 	}
-	if !t.HostedPaymentOn() {
+	if !neg.Has(ucp.HostedSelectionCapability) {
 		return fmt.Errorf(
-			"checkout.pay_way_id is not accepted by this store: it "+
-				"advertises no %s capability. Submit one of the "+
+			"checkout.pay_way_id is not accepted: the %s capability is "+
+				"not negotiated (this store may not offer it, or your "+
+				"profile does not declare it). Submit one of the "+
 				"instruments the checkout advertises, or hand the buyer "+
 				"to continue_url", ucp.HostedSelectionCapability)
 	}

@@ -159,7 +159,8 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 			retry("order event order fetch failed", err)
 			return
 		}
-		entity, err := ucp.BuildOrder(t, order, link.CheckoutID)
+		entity, err := ucp.BuildOrder(t, order, link.CheckoutID,
+			ucp.OrderCapabilities())
 		if err != nil {
 			drop("order event order unrenderable", err)
 			return

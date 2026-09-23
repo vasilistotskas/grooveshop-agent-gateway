@@ -112,6 +112,7 @@ func TestFeedsEndToEnd(t *testing.T) {
 	handler := server.New(server.Deps{
 		Cfg: cfg, Log: log, Metrics: metrics, Redis: rdb,
 		Django: dj, Resolver: resolver, Version: "test",
+		Profiles: newProfiles(t),
 	})
 	gw := httptest.NewServer(handler)
 	t.Cleanup(gw.Close)

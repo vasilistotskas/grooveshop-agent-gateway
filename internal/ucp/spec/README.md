@@ -26,5 +26,5 @@ releases — `/specification/checkout/` became
 Validate the snapshot with the official CLI (`cargo install ucp-schema`):
 
 ```bash
-ucp-schema lint testdata/schemas/ucp/2026-08-25
+ucp-schema lint internal/ucp/spec/2026-08-25
 ```

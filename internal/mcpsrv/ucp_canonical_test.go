@@ -2,6 +2,7 @@ package mcpsrv
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -38,10 +39,7 @@ func TestMetaValidateRequiresAgentProfile(t *testing.T) {
 		})
 	}
 
-	// A non-https profile cannot be fetched safely.
-	http := &MetaIn{UCPAgent: &UCPAgentIn{Profile: "http://agent.test/p"}}
-	assert.ErrorContains(t, http.validate(false), "https")
-
+	// The URL itself is vetted where it is fetched (ucp.ProfileResolver).
 	require.NoError(t, agentMeta("").validate(false))
 }
 
@@ -244,35 +242,59 @@ func gatedTenant(hosted bool) *tenant.Tenant {
 	}
 }
 
-// A store with the gate off must REFUSE a submitted pay-way id, not
-// ignore it: a silent no-op would complete against whatever was selected
-// before, so the buyer could be charged a different way than the agent
-// chose.
-func TestApplyHostedSelectionRefusesWhenGateIsOff(t *testing.T) {
-	s := &checkout.Session{PayWayID: 7}
-	in := &UCPCheckoutIn{PayWayID: 2}
-
-	err := in.applyHostedSelection(gatedTenant(false), s)
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "pay_way_id is not accepted")
-	assert.EqualValues(t, 7, s.PayWayID, "the prior selection must stand")
+// negotiatedFor intersects a tenant's capabilities with a platform that
+// declares checkout, plus the hosted-selection extension when asked.
+func negotiatedFor(
+	t *testing.T, tn *tenant.Tenant, platformDeclaresHosted bool,
+) ucp.Negotiated {
+	t.Helper()
+	caps := `"dev.ucp.shopping.checkout":[{"version":"` + ucp.Version +
+		`","schema":"https://ucp.dev/schemas/shopping/checkout.json"}]`
+	if platformDeclaresHosted {
+		caps += `,"` + ucp.HostedSelectionCapability + `":[{"version":"` +
+			ucp.HandlerVersion + `","schema":` +
+			`"https://payments.grooveshop.space/hosted_selection.json",` +
+			`"extends":"dev.ucp.shopping.checkout"}]`
+	}
+	var p ucp.PlatformProfile
+	require.NoError(t, json.Unmarshal([]byte(`{"ucp":{"version":"`+
+		ucp.Version+`","capabilities":{`+caps+`}}}`), &p))
+	return ucp.Negotiate(ucp.BusinessCapabilities(tn), &p)
 }
 
-func TestApplyHostedSelectionHonoursWhenGateIsOn(t *testing.T) {
-	s := &checkout.Session{PayWayID: 7}
-	in := &UCPCheckoutIn{PayWayID: 2}
+// A submitted pay-way id is REFUSED, not ignored, unless the extension is
+// negotiated — the store's gate on AND the platform declaring it: a silent
+// no-op would complete against whatever was selected before, so the buyer
+// could be charged a different way than the agent chose.
+func TestApplyHostedSelectionRefusesUnlessNegotiated(t *testing.T) {
+	for name, neg := range map[string]ucp.Negotiated{
+		"store gate off":            negotiatedFor(t, gatedTenant(false), true),
+		"platform does not declare": negotiatedFor(t, gatedTenant(true), false),
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := &checkout.Session{PayWayID: 7}
+			err := (&UCPCheckoutIn{PayWayID: 2}).applyHostedSelection(s, neg)
+			assert.ErrorContains(t, err, "pay_way_id is not accepted")
+			assert.EqualValues(t, 7, s.PayWayID,
+				"the prior selection must stand")
+		})
+	}
+}
 
-	require.NoError(t, in.applyHostedSelection(gatedTenant(true), s))
+func TestApplyHostedSelectionHonoursWhenNegotiated(t *testing.T) {
+	s := &checkout.Session{PayWayID: 7}
+	require.NoError(t, (&UCPCheckoutIn{PayWayID: 2}).applyHostedSelection(
+		s, negotiatedFor(t, gatedTenant(true), true)))
 	assert.EqualValues(t, 2, s.PayWayID)
 }
 
-// A caller that never mentions the member is unaffected by the gate —
-// the common case for a canonical platform, which uses instruments.
+// A caller that never mentions the member is unaffected — the common case
+// for a canonical platform, which uses instruments.
 func TestApplyHostedSelectionIgnoresAbsentMember(t *testing.T) {
 	for _, hosted := range []bool{true, false} {
 		s := &checkout.Session{PayWayID: 7}
-		require.NoError(t,
-			(&UCPCheckoutIn{}).applyHostedSelection(gatedTenant(hosted), s))
+		require.NoError(t, (&UCPCheckoutIn{}).applyHostedSelection(
+			s, negotiatedFor(t, gatedTenant(hosted), hosted)))
 		assert.EqualValues(t, 7, s.PayWayID)
 	}
 }

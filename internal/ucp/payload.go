@@ -12,12 +12,44 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
-// Wire types mirror testdata/schemas/ucp/2026-08-25 (amounts are integer
+// Wire types mirror internal/ucp/spec/2026-08-25 (amounts are integer
 // minor units; field sets follow shopping/checkout.json and friends).
 
 type Envelope struct {
-	Version         string                      `json:"version"`
+	Version string `json:"version"`
+	// Capabilities declares what is active for this response: the
+	// negotiated checkout capability and its negotiated extensions.
+	Capabilities    map[string][]CapabilityRef  `json:"capabilities"`
 	PaymentHandlers map[string][]PaymentHandler `json:"payment_handlers"`
+}
+
+// ErrorResponse is common/types/error_response: returned in place of a
+// checkout or an order when no valid resource can be established.
+type ErrorResponse struct {
+	UCP         ErrorEnvelope `json:"ucp"`
+	Messages    []Message     `json:"messages"`
+	ContinueURL string        `json:"continue_url,omitempty"`
+}
+
+// ErrorEnvelope is the ucp member of an error response.
+type ErrorEnvelope struct {
+	Version string `json:"version"`
+	Status  string `json:"status"`
+}
+
+// CapabilitiesIncompatible is the negotiation-failure response: the
+// platform's profile is valid, but it shares no version of the
+// capability the operation needs. continueURL is the web handoff.
+func CapabilitiesIncompatible(continueURL string) *ErrorResponse {
+	return &ErrorResponse{
+		UCP: ErrorEnvelope{Version: Version, Status: "error"},
+		Messages: []Message{{
+			Type: "error", Code: "capabilities_incompatible",
+			Text:     "No compatible capabilities in the intersection",
+			Severity: "unrecoverable",
+		}},
+		ContinueURL: continueURL,
+	}
 }
 
 type PaymentHandler struct {
@@ -80,6 +112,9 @@ type Message struct {
 	Type string `json:"type"`
 	Code string `json:"code,omitempty"`
 	Text string `json:"content,omitempty"`
+	// Severity is required on error messages (message_error.json) and
+	// absent on info ones.
+	Severity string `json:"severity,omitempty"`
 }
 
 // Checkout is the UCP checkout session response payload.
@@ -121,6 +156,7 @@ func NewBuilder(
 // payment fee).
 func (b *Builder) BuildCheckout(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	capabilities map[string][]CapabilityRef,
 ) (*Checkout, error) {
 	pricing, _, err := checkout.ComputePricing(ctx, b.dj, t, s)
 	if err != nil {
@@ -144,6 +180,7 @@ func (b *Builder) BuildCheckout(
 	out := &Checkout{
 		UCP: Envelope{
 			Version:         Version,
+			Capabilities:    capabilities,
 			PaymentHandlers: handlers,
 		},
 		ID: s.ID,
@@ -230,6 +267,7 @@ func (b *Builder) BuildCheckout(
 				Type: "error", Code: "payment_link_unavailable",
 				Text: "The order is placed but its payment link could not " +
 					"be created; call complete_checkout again to retry.",
+				Severity: "recoverable",
 			})
 		default:
 			out.ContinueURL = storefront.CartClaim(t.Domain, s.CartID)

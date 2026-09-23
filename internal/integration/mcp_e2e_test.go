@@ -189,6 +189,7 @@ func startGateway(t *testing.T) *httptest.Server {
 	handler := server.New(server.Deps{
 		Cfg: cfg, Log: log, Metrics: metrics, Redis: rdb,
 		Django: dj, Resolver: resolver, Version: "test",
+		Profiles: newProfiles(t),
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
