@@ -3,9 +3,8 @@ package feeds
 import (
 	"bytes"
 	"fmt"
-	"net/url"
+	"html"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
@@ -24,9 +23,12 @@ import (
 //     template pins 1000x1000 JPEG on white
 //   - g:id equals the pixel/CAPI content_ids — always the product id,
 //     never sku/uuid
+//   - text limits are the strictest of the three so one document serves
+//     them all: Google and TikTok cap titles at 150, Google caps
+//     descriptions at 5000 (Meta allows 200 / 9999)
 const (
-	feedTitleMax       = 200
-	feedDescriptionMax = 9999
+	feedTitleMax       = 150
+	feedDescriptionMax = 5000
 )
 
 // feedContext carries per-generation tenant data every writer needs.
@@ -75,7 +77,7 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 		return nil, nil
 	}
 	title := text.Runes(tr.Name, feedTitleMax)
-	desc := strings.TrimSpace(decodeHTMLEntities(stripHTMLTags(tr.Description)))
+	desc := plainText(tr.Description)
 	if desc == "" {
 		desc = tr.Name
 	}
@@ -104,8 +106,9 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 	return &feedItem{
 		ID:    p.ID,
 		Title: title, Description: desc,
-		Link:         storefront.Product(ctx.Domain, p.ID, p.Slug),
-		ImageLink:    feedImageURL(ctx, p.MainImagePath),
+		Link: storefront.Product(ctx.Domain, p.ID, p.Slug),
+		ImageLink: media.ImageURL(ctx.ImageURLTemplate, ctx.AssetsHost,
+			ctx.Schema, p.MainImagePath),
 		InStock:      p.Stock > 0,
 		RegularMinor: regular,
 		SaleMinor:    final,
@@ -117,9 +120,8 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 	}, nil
 }
 
-// rssWriter accumulates one RSS-dialect feed. All three RSS kinds share it;
-// the kind only namespaces the cache and is the seam for future divergence
-// (e.g. TikTok g:video_link).
+// rssWriter accumulates the RSS-dialect feed google.xml, meta.xml and
+// tiktok.xml all serve.
 type rssWriter struct {
 	buf bytes.Buffer
 }
@@ -132,7 +134,7 @@ func newRSSWriter(ctx *feedContext) *rssWriter {
 	w.buf.WriteString("  <channel>\n")
 	fmt.Fprintf(&w.buf, "    <title>%s</title>\n", escapeXML(ctx.StoreName))
 	fmt.Fprintf(&w.buf, "    <link>%s</link>\n",
-		escapeXML("https://"+ctx.Domain))
+		escapeXML(storefront.Origin(ctx.Domain)))
 	fmt.Fprintf(&w.buf, "    <description>%s</description>\n",
 		escapeXML(ctx.StoreName))
 	return w
@@ -187,10 +189,24 @@ func formatFeedPrice(minor int64, currency string) string {
 	return money.Format(minor) + " " + currency
 }
 
-// escapeXML matches the storefront's escapeXml byte-for-byte (named
-// entities including &apos;, which encoding/xml would encode differently).
+// escapeXML matches the storefront's escapeXml (named entities including
+// &apos;, which encoding/xml would encode differently) and drops runes
+// outside the XML 1.0 Char production: one vertical tab pasted from a
+// spreadsheet would otherwise make the whole document unparseable, and
+// the platforms reject the catalog, not the item.
 func escapeXML(v string) string {
-	return xmlReplacer.Replace(v)
+	return xmlReplacer.Replace(strings.Map(xmlChar, v))
+}
+
+func xmlChar(r rune) rune {
+	switch {
+	case r == '\t', r == '\n', r == '\r',
+		r >= 0x20 && r <= 0xD7FF,
+		r >= 0xE000 && r <= 0xFFFD,
+		r >= 0x10000 && r <= 0x10FFFF:
+		return r
+	}
+	return -1
 }
 
 var xmlReplacer = strings.NewReplacer(
@@ -201,52 +217,19 @@ var xmlReplacer = strings.NewReplacer(
 	"'", "&apos;",
 )
 
-var htmlTagRe = regexp.MustCompile(`<[^>]*>`)
-
-func stripHTMLTags(v string) string {
-	return htmlTagRe.ReplaceAllString(v, "")
-}
-
 var (
-	hexEntityRe = regexp.MustCompile(`(?i)&#x([0-9a-f]+);`)
-	decEntityRe = regexp.MustCompile(`&#(\d+);`)
+	// Block-level tags separate words; inline ones (<b>, <a>) do not.
+	blockTagRe = regexp.MustCompile(`(?i)</?(?:br|p|div|li|ul|ol|h[1-6]|` +
+		`tr|td|th|table|blockquote|hr)\b[^>]*>`)
+	htmlTagRe = regexp.MustCompile(`<[^>]*>`)
 )
 
-// decodeHTMLEntities resolves entities that survive tag stripping so
-// escapeXML doesn't double-encode them into the feed.
-func decodeHTMLEntities(v string) string {
-	v = hexEntityRe.ReplaceAllStringFunc(v, func(m string) string {
-		n, err := strconv.ParseInt(hexEntityRe.FindStringSubmatch(m)[1], 16, 32)
-		if err != nil {
-			return m
-		}
-		return string(rune(n))
-	})
-	v = decEntityRe.ReplaceAllStringFunc(v, func(m string) string {
-		n, err := strconv.Atoi(decEntityRe.FindStringSubmatch(m)[1])
-		if err != nil {
-			return m
-		}
-		return string(rune(n))
-	})
-	return strings.NewReplacer(
-		"&nbsp;", " ",
-		"&quot;", `"`,
-		"&apos;", "'",
-		"&lt;", "<",
-		"&gt;", ">",
-		"&amp;", "&",
-	).Replace(v)
-}
-
-// feedImageURL expands the feed image template, percent-encoding each path
-// segment (social crawlers reject raw unicode in URLs). An unresolved
-// media origin yields no URL rather than an unreachable one.
-func feedImageURL(ctx *feedContext, path string) string {
-	segments := strings.Split(path, "/")
-	for i, s := range segments {
-		segments[i] = url.PathEscape(s)
-	}
-	return media.ImageURL(ctx.ImageURLTemplate, ctx.AssetsHost, ctx.Schema,
-		strings.Join(segments, "/"))
+// plainText turns a rich-text description into one line of plain text.
+// Block tags become spaces so "a<br>b" or "</li><li>" keep their words
+// apart; entities are decoded after stripping so an encoded "&lt;b&gt;"
+// stays text, and escapeXML encodes the result exactly once.
+func plainText(v string) string {
+	v = blockTagRe.ReplaceAllString(v, " ")
+	v = html.UnescapeString(htmlTagRe.ReplaceAllString(v, ""))
+	return strings.Join(strings.Fields(v), " ")
 }

@@ -2,6 +2,7 @@ package feeds
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"flag"
 	"os"
 	"path/filepath"
@@ -28,8 +29,6 @@ func goldenCompare(t *testing.T, name string, got []byte) {
 		"golden file missing — regenerate with: go test ./internal/feeds/ -update")
 	assert.Equal(t, string(want), string(got))
 }
-
-func ptr[T any](v T) *T { return &v }
 
 func testFeedContext() *feedContext {
 	return &feedContext{
@@ -65,7 +64,7 @@ func fixtureProducts() []django.Product {
 				Name: "Θήκη Κινητού", Description: "",
 			}},
 			Slug: "thiki-kinitou", Category: 262,
-			VariantGroup: ptr[int64](77), BrandName: ptr("Spigen"),
+			VariantGroup: new(int64(77)), BrandName: new("Spigen"),
 			Price: "20.00", VatValue: "4.80", FinalPrice: "22.32",
 			DiscountPercent: "10.0", Stock: 0, Active: true,
 			MainImagePath: "media/uploads/products/case.jpg",
@@ -157,4 +156,47 @@ func TestACPGoldenValidatesAgainstSchema(t *testing.T) {
 	var doc any
 	require.NoError(t, json.Unmarshal(raw, &doc))
 	require.NoError(t, validateACP(t, "ProductsResponse", doc))
+}
+
+func TestPlainText(t *testing.T) {
+	for in, want := range map[string]string{
+		"a<br>b":                            "a b",
+		"<ul><li>one</li><li>two</li></ul>": "one two",
+		"<p>x</p><p>y</p>":                  "x y",
+		"bold <b>USB-C</b>.":                "bold USB-C.",
+		"&lt;b&gt; &amp;amp; &eacute;":      "<b> &amp; é",
+		"  spaced\n\tout  ":                 "spaced out",
+	} {
+		assert.Equal(t, want, plainText(in), in)
+	}
+}
+
+// One control character pasted from a spreadsheet must not make the
+// whole document unparseable: the platforms reject the catalog, not the
+// item.
+func TestRSSDocumentParsesWithHostileText(t *testing.T) {
+	ctx := testFeedContext()
+	ctx.StoreName = "Demo\x0bStore"
+	p := fixtureProducts()[0]
+	p.Translations = map[string]django.Translation{"el": {
+		Name:        "Form\x0cfeed ￾",
+		Description: "vtab &#11; nul &#0; nonchar &#xFFFE; end",
+	}}
+	it, err := newFeedItem(&p, ctx)
+	require.NoError(t, err)
+	w := newRSSWriter(ctx)
+	w.Item(it)
+
+	var doc struct {
+		Title string `xml:"channel>title"`
+		Items []struct {
+			Title       string `xml:"title"`
+			Description string `xml:"description"`
+		} `xml:"channel>item"`
+	}
+	require.NoError(t, xml.Unmarshal(w.Bytes(), &doc))
+	assert.Equal(t, "DemoStore", doc.Title)
+	require.Len(t, doc.Items, 1)
+	assert.Equal(t, "Formfeed ", doc.Items[0].Title)
+	assert.NotContains(t, doc.Items[0].Description, "\x0b")
 }

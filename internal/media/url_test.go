@@ -21,6 +21,20 @@ func TestImageURL(t *testing.T) {
 	assert.Empty(t, ImageURL(tpl, "assets.platform.test", "demostore", ""))
 }
 
+// Django sends the raw storage name; a Greek filename must come out as
+// a valid URI with its separators intact.
+func TestImageURLEscapesPathSegments(t *testing.T) {
+	tpl := "https://{assets_host}/media_stream-image/{path}/800/800.jpeg"
+	got := ImageURL(tpl, "assets.platform.test", "demostore",
+		"media/uploads/products/φορτιστής 2.jpg")
+	assert.Equal(t,
+		"https://assets.platform.test/media_stream-image/"+
+			"media/uploads/products/"+
+			"%CF%86%CE%BF%CF%81%CF%84%CE%B9%CF%83%CF%84%CE%AE%CF%82%202.jpg"+
+			"/800/800.jpeg",
+		got)
+}
+
 func TestImageURLSchemaPlaceholder(t *testing.T) {
 	// The multi-tenant media-stream URL shape embeds the schema; flipping
 	// the template env at cutover must be the only change required.

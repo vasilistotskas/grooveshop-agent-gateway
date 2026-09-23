@@ -28,14 +28,38 @@ const (
 	KindACP    = "acp"
 )
 
-var kinds = []string{KindGoogle, KindMeta, KindTikTok, KindACP}
+// The three RSS kinds serve one document (see rss.go), so it is
+// rendered, compressed and cached once; a kind only picks its format.
+const (
+	formatRSS = "rss"
+	formatACP = "acp"
+)
+
+var formats = []string{formatRSS, formatACP}
+
+func formatOf(kind string) string {
+	if kind == KindACP {
+		return formatACP
+	}
+	return formatRSS
+}
 
 // generationSlots bounds concurrent catalog sweeps per pod (memory
 // guard); the semaphore is shared by every tenant.
 var generationSlots = make(chan struct{}, 2)
 
+// generationTimeout bounds one sweep, including its wait for a slot.
+const generationTimeout = 5 * time.Minute
+
+// storeAttempts bounds the optimistic cache write against concurrent
+// invalidations; each retry means another invalidation landed mid-write.
+const storeAttempts = 3
+
 type Meta struct {
-	ETag        string    `json:"etag"`
+	ETag string `json:"etag"`
+	// GeneratedAt is when the sweep that produced the feed STARTED — the
+	// catalog is as of then. Zero marks a feed an invalidation overtook:
+	// servable, but stale on arrival.
 	GeneratedAt time.Time `json:"generatedAt"`
 	Size        int       `json:"size"`
 }
@@ -65,47 +89,70 @@ func NewService(
 	}
 }
 
-func dataKey(schema, kind string) string {
-	return "ag:" + schema + ":feed:" + kind
+func dataKey(schema, format string) string {
+	return "ag:" + schema + ":feed:" + format
 }
 
-func metaKey(schema, kind string) string {
-	return dataKey(schema, kind) + ":meta"
+func metaKey(schema, format string) string {
+	return dataKey(schema, format) + ":meta"
+}
+
+// epochKey counts invalidations, so a sweep can tell whether one landed
+// while it was reading the catalog.
+func epochKey(schema string) string {
+	return "ag:" + schema + ":feed:epoch"
 }
 
 // Get returns the gzipped feed. Fresh cache serves directly; a stale entry
-// serves immediately while a background refresh runs; a miss generates
-// synchronously. One generation pass renders every kind.
+// serves immediately while a background refresh runs; a miss waits for a
+// generation. One generation pass renders every kind.
 func (s *Service) Get(
 	ctx context.Context, t *tenant.Tenant, kind string,
 ) ([]byte, Meta, error) {
-	gz, meta, ok := s.fromCache(ctx, t.SchemaName, kind)
+	format := formatOf(kind)
+	gz, meta, ok := s.fromCache(ctx, t.SchemaName, format)
 	if ok {
-		age := time.Since(meta.GeneratedAt)
-		if age < s.freshTTL {
-			return gz, meta, nil
+		if time.Since(meta.GeneratedAt) >= s.freshTTL {
+			s.refresh(t)
 		}
-		s.refreshAsync(t)
 		return gz, meta, nil
 	}
 
-	if _, err, _ := s.sf.Do(t.SchemaName, func() (any, error) {
-		return nil, s.generate(ctx, t)
-	}); err != nil {
-		return nil, Meta{}, err
+	select {
+	case res := <-s.refresh(t):
+		if res.Err != nil {
+			return nil, Meta{}, res.Err
+		}
+	case <-ctx.Done():
+		return nil, Meta{}, ctx.Err()
 	}
-	gz, meta, ok = s.fromCache(ctx, t.SchemaName, kind)
+	gz, meta, ok = s.fromCache(ctx, t.SchemaName, format)
 	if !ok {
 		return nil, Meta{}, errors.New("feeds: generation produced no cache")
 	}
 	return gz, meta, nil
 }
 
+// refresh starts (or joins) the tenant's generation. The sweep is
+// decoupled from any request: on a large catalog it can outlast a
+// crawler's timeout, and tying it to the first caller would cancel it
+// for every waiter and restart it from zero on the next request — a
+// feed that never lands. An abandoned sweep still fills the cache the
+// next crawler reads, and singleflight keeps it to one per tenant.
+func (s *Service) refresh(t *tenant.Tenant) <-chan singleflight.Result {
+	return s.sf.DoChan(t.SchemaName, func() (any, error) {
+		ctx, cancel := context.WithTimeout(
+			context.Background(), generationTimeout)
+		defer cancel()
+		return nil, s.generate(ctx, t)
+	})
+}
+
 func (s *Service) fromCache(
-	ctx context.Context, schema, kind string,
+	ctx context.Context, schema, format string,
 ) ([]byte, Meta, bool) {
-	vals, err := s.rdb.MGet(ctx, dataKey(schema, kind), metaKey(schema, kind)).
-		Result()
+	vals, err := s.rdb.MGet(ctx,
+		dataKey(schema, format), metaKey(schema, format)).Result()
 	if err != nil || len(vals) != 2 || vals[0] == nil || vals[1] == nil {
 		return nil, Meta{}, false
 	}
@@ -130,42 +177,35 @@ func (s *Service) fromCache(
 // to six hours to reach Google, Meta and TikTok. The cache survives pod
 // restarts, so restarting the gateway did not help either.
 //
+// Bumping the epoch in the same transaction is what stops a sweep that
+// read the catalog BEFORE the change from writing it back as fresh
+// afterwards (see store).
+//
 // Returns the number of keys removed. Deliberately NOT a full
 // regeneration: generating is a Django round trip per tenant, and the
-// next feed request will do it anyway (or serve stale-while-revalidate
-// if a stale entry somehow remains).
+// next feed request will do it anyway.
 func (s *Service) Invalidate(ctx context.Context, schema string) (int64, error) {
-	keys := make([]string, 0, len(kinds)*2)
-	for _, kind := range kinds {
-		keys = append(keys, dataKey(schema, kind), metaKey(schema, kind))
+	keys := make([]string, 0, len(formats)*2)
+	for _, format := range formats {
+		keys = append(keys, dataKey(schema, format), metaKey(schema, format))
 	}
-	// UNLINK, not DEL: a feed payload is a multi-megabyte gzip blob and
-	// reclaiming it must not block the event loop.
-	return s.rdb.Unlink(ctx, keys...).Result()
+	var removed *redis.IntCmd
+	_, err := s.rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		p.Incr(ctx, epochKey(schema))
+		// UNLINK, not DEL: a feed payload is a multi-megabyte gzip blob
+		// and reclaiming it must not block the event loop.
+		removed = p.Unlink(ctx, keys...)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return removed.Val(), nil
 }
 
-// refreshAsync regenerates in the background, decoupled from the request
-// context; singleflight collapses concurrent refreshes per tenant.
-func (s *Service) refreshAsync(t *tenant.Tenant) {
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		_, _, _ = s.sf.Do(t.SchemaName, func() (any, error) {
-			return nil, s.generate(ctx, t)
-		})
-	}()
-}
-
-// generate sweeps the catalog once, rendering all kinds, and stores them
-// gzipped with the stale TTL as the Redis expiry.
+// generate sweeps the catalog once, rendering every format, and stores
+// them gzipped with the stale TTL as the Redis expiry.
 func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
-	// Wait for a slot OR for the caller to go away. A bare send ignored
-	// cancellation: when a client gave up on a cold feed, the goroutine
-	// kept queuing, eventually took a slot, and ran a full catalog sweep
-	// against Django for a request nobody was listening to. A burst of
-	// cold feed requests across tenants therefore queued an unbounded
-	// pile of sweeps behind a two-slot semaphore that is shared by every
-	// tenant.
 	select {
 	case generationSlots <- struct{}{}:
 	case <-ctx.Done():
@@ -173,7 +213,13 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 	}
 	defer func() { <-generationSlots }()
 
-	start := time.Now()
+	// The epoch is read before the first catalog page so an invalidation
+	// at any point during the sweep is visible at write time.
+	epoch, err := readEpoch(ctx, s.rdb, t.SchemaName)
+	if err != nil {
+		return fmt.Errorf("feeds: epoch: %w", err)
+	}
+	start := time.Now().UTC()
 	fctx := &feedContext{
 		StoreName:        storeName(t),
 		Domain:           t.Domain,
@@ -192,11 +238,7 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 		fctx.CategoryNames[c.ID] = c.Translations[t.DefaultLocale].Name
 	}
 
-	rss := map[string]*rssWriter{
-		KindGoogle: newRSSWriter(fctx),
-		KindMeta:   newRSSWriter(fctx),
-		KindTikTok: newRSSWriter(fctx),
-	}
+	rss := newRSSWriter(fctx)
 	acp := newACPWriter()
 
 	var skipped int
@@ -214,9 +256,7 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 				skipped++
 				return nil
 			}
-			for _, w := range rss {
-				w.Item(item)
-			}
+			rss.Item(item)
 			acp.Item(item)
 			return nil
 		})
@@ -229,45 +269,98 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 			slog.Int("pages", maxPages))
 	}
 
-	outputs := make(map[string][]byte, len(kinds))
-	for kind, w := range rss {
-		outputs[kind] = w.Bytes()
-	}
-	if outputs[KindACP], err = acp.Bytes(); err != nil {
+	acpBytes, err := acp.Bytes()
+	if err != nil {
 		return fmt.Errorf("feeds: acp encode: %w", err)
 	}
-
-	pipe := s.rdb.Pipeline()
-	now := time.Now().UTC()
-	for _, kind := range kinds {
-		gz, err := gzipBytes(outputs[kind])
+	outputs := map[string][]byte{formatRSS: rss.Bytes(), formatACP: acpBytes}
+	entries := make(map[string]cacheEntry, len(outputs))
+	for format, raw := range outputs {
+		gz, err := gzipBytes(raw)
 		if err != nil {
 			return err
 		}
-		sum := sha256.Sum256(outputs[kind])
-		meta := Meta{
-			ETag:        `"` + hex.EncodeToString(sum[:16]) + `"`,
-			GeneratedAt: now,
-			Size:        len(outputs[kind]),
-		}
-		rawMeta, err := json.Marshal(meta)
-		if err != nil {
-			return err
-		}
-		pipe.Set(ctx, dataKey(t.SchemaName, kind), gz, s.staleTTL)
-		pipe.Set(ctx, metaKey(t.SchemaName, kind), rawMeta, s.staleTTL)
+		sum := sha256.Sum256(raw)
+		entries[format] = cacheEntry{gz: gz, meta: Meta{
+			ETag: `"` + hex.EncodeToString(sum[:16]) + `"`,
+			Size: len(raw),
+		}}
 	}
-	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("feeds: cache write: %w", err)
+	overtaken, err := s.store(ctx, t.SchemaName, epoch, start, entries)
+	if err != nil {
+		return err
 	}
 
 	s.log.Info("feeds generated",
 		slog.String("tenant", t.SchemaName),
 		slog.Int("products", count),
 		slog.Int("skipped_no_name_or_image", skipped),
+		slog.Bool("overtaken_by_invalidation", overtaken),
 		slog.Int64("duration_ms", time.Since(start).Milliseconds()),
 	)
 	return nil
+}
+
+type cacheEntry struct {
+	gz   []byte
+	meta Meta
+}
+
+// store writes the rendered formats unless an invalidation landed since
+// epoch was read — WATCH makes that check and the write one atomic step.
+// An overtaken sweep is still written, because it is the newest complete
+// feed there is, but stamped stale so the next request regenerates
+// instead of serving pre-change prices as fresh for FEED_FRESH_TTL.
+func (s *Service) store(
+	ctx context.Context, schema string, epoch int64, start time.Time,
+	entries map[string]cacheEntry,
+) (bool, error) {
+	var overtaken bool
+	write := func(tx *redis.Tx) error {
+		current, err := readEpoch(ctx, tx, schema)
+		if err != nil {
+			return err
+		}
+		overtaken = current != epoch
+		generatedAt := start
+		if overtaken {
+			generatedAt = time.Time{}
+		}
+		_, err = tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
+			for format, e := range entries {
+				meta := e.meta
+				meta.GeneratedAt = generatedAt
+				rawMeta, err := json.Marshal(meta)
+				if err != nil {
+					return err
+				}
+				p.Set(ctx, dataKey(schema, format), e.gz, s.staleTTL)
+				p.Set(ctx, metaKey(schema, format), rawMeta, s.staleTTL)
+			}
+			return nil
+		})
+		return err
+	}
+	for range storeAttempts {
+		err := s.rdb.Watch(ctx, write, epochKey(schema))
+		if !errors.Is(err, redis.TxFailedErr) {
+			if err != nil {
+				return false, fmt.Errorf("feeds: cache write: %w", err)
+			}
+			return overtaken, nil
+		}
+	}
+	return false, errors.New("feeds: cache write kept losing to invalidations")
+}
+
+func readEpoch(
+	ctx context.Context, c redis.Cmdable, schema string,
+) (int64, error) {
+	n, err := c.Get(ctx, epochKey(schema)).Int64()
+	if errors.Is(err, redis.Nil) {
+		return 0, nil
+	}
+	return n, err
 }
 
 func storeName(t *tenant.Tenant) string {
