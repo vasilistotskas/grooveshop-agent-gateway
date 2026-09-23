@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"time"
+	"strings"
+
+	"github.com/google/uuid"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
@@ -41,9 +43,26 @@ func requireInternalToken(secret string, next http.Handler) http.Handler {
 // status transitions. Only the order is read from it: the webhook carries
 // the order entity as Django reports it now, not the event's fields.
 type orderEventBody struct {
-	SchemaName    string `json:"schemaName"`
-	OrderUUID     string `json:"orderUuid"`
-	PaymentStatus string `json:"paymentStatus"`
+	SchemaName     string `json:"schemaName"`
+	OrderUUID      string `json:"orderUuid"`
+	Status         string `json:"status"`
+	PaymentStatus  string `json:"paymentStatus"`
+	TrackingNumber string `json:"trackingNumber"`
+}
+
+// webhookIDSpace namespaces event-derived Webhook-Ids (UUIDv5).
+var webhookIDSpace = uuid.MustParse("8c6b8e0e-5f3a-4f1e-9a57-2f0d3b6c1a44")
+
+// webhookID identifies one order event. Celery re-pushes an event whose
+// acknowledgement was lost, and Standard Webhooks requires the id to stay
+// the same across retries so the platform can dedupe, so it is derived
+// from the event's own content rather than minted per push. Two pushes of
+// the same state are the same event: the body is a state snapshot.
+func (b orderEventBody) webhookID() string {
+	return uuid.NewSHA1(webhookIDSpace, []byte(strings.Join([]string{
+		b.SchemaName, b.OrderUUID, b.Status, b.PaymentStatus,
+		b.TrackingNumber,
+	}, "\x00"))).String()
 }
 
 // orderEventDeps is what the order-event route drives.
@@ -151,11 +170,11 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 			return
 		}
 		if err := d.Dispatcher.Enqueue(ctx, ucp.Delivery{
-			Schema:     t.SchemaName,
-			Domain:     t.Domain,
-			TargetURL:  link.WebhookURL,
-			OccurredAt: time.Now().UTC(),
-			Body:       raw,
+			ID:        body.webhookID(),
+			Schema:    t.SchemaName,
+			Domain:    t.Domain,
+			TargetURL: link.WebhookURL,
+			Body:      raw,
 		}); err != nil {
 			retry("order event enqueue failed", err)
 			return

@@ -68,11 +68,11 @@ func TestDispatcherSurvivesShutdownMidDelivery(t *testing.T) {
 	body := json.RawMessage(`{"id":"b9be45e5-6062-4976-ae7b-2c31eb2ad689"}`)
 	require.NoError(t, ucp.NewDispatcher(rdb, keys, quietLogger(),
 		consumer, true).Enqueue(ctx, ucp.Delivery{
-		Schema:     "demostore",
-		Domain:     "shop.example.test",
-		TargetURL:  server.URL + "/ucp/orders",
-		OccurredAt: time.Now(),
-		Body:       body,
+		ID:        "7d1f4c2e-0b8a-5c3e-9f61-2a4b6c8d0e12",
+		Schema:    "demostore",
+		Domain:    "shop.example.test",
+		TargetURL: server.URL + "/ucp/orders",
+		Body:      body,
 	}))
 
 	// Boot #1: the platform holds the request, parking a worker.

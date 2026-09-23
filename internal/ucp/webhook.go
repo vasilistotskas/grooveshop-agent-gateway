@@ -17,7 +17,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpsig"
@@ -79,14 +78,15 @@ func signedComponents(withQuery bool) []string {
 // under the same Webhook-Id.
 type Delivery struct {
 	// ID is the Webhook-Id platforms dedupe at-least-once delivery on.
+	// Standard Webhooks requires it to stay the same across every retry
+	// of one event, so the caller derives it from the event.
 	ID string `json:"id"`
 	// Schema selects the signing key; Domain names the business profile
 	// in UCP-Agent.
-	Schema     string          `json:"schema"`
-	Domain     string          `json:"domain"`
-	TargetURL  string          `json:"targetUrl"`
-	OccurredAt time.Time       `json:"occurredAt"`
-	Body       json.RawMessage `json:"body"`
+	Schema    string          `json:"schema"`
+	Domain    string          `json:"domain"`
+	TargetURL string          `json:"targetUrl"`
+	Body      json.RawMessage `json:"body"`
 }
 
 // Dispatcher delivers order webhooks from a Redis stream consumer group,
@@ -165,11 +165,8 @@ func webhookClient(allowLocal bool) *http.Client {
 // Enqueue queues a delivery. Callers only acknowledge upstream (Django's
 // Celery push) after this returns nil.
 func (d *Dispatcher) Enqueue(ctx context.Context, dl Delivery) error {
-	if dl.TargetURL == "" {
-		return errors.New("ucp: delivery without a target")
-	}
-	if dl.ID == "" {
-		dl.ID = uuid.NewString()
+	if dl.TargetURL == "" || dl.ID == "" {
+		return errors.New("ucp: delivery without a target or id")
 	}
 	raw, err := json.Marshal(dl)
 	if err != nil {
@@ -398,15 +395,18 @@ func (d *Dispatcher) post(
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Webhook-Id", dl.ID)
-	req.Header.Set("Webhook-Timestamp",
-		strconv.FormatInt(dl.OccurredAt.Unix(), 10))
+	// The attempt time, per Standard Webhooks: verifiers reject a stale
+	// timestamp as a replay, and a delivery can be retried, backlogged or
+	// taken over minutes after its event.
+	now := time.Now()
+	req.Header.Set("Webhook-Timestamp", strconv.FormatInt(now.Unix(), 10))
 	req.Header.Set("UCP-Agent",
 		`profile="`+storefront.UCPProfile(dl.Domain)+`"`)
 	req.Header.Set("Content-Digest", httpsig.ContentDigest(dl.Body))
 
 	if err := httpsig.Sign(req, "sig1",
 		signedComponents(req.URL.RawQuery != ""),
-		httpsig.Params{Created: time.Now().Unix()}, key); err != nil {
+		httpsig.Params{Created: now.Unix()}, key); err != nil {
 		d.log.Error("webhook signing failed",
 			slog.String("delivery", dl.ID), slog.String("error", err.Error()))
 		return false

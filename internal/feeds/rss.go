@@ -24,8 +24,8 @@ import (
 //   - g:id equals the pixel/CAPI content_ids — always the product id,
 //     never sku/uuid
 //   - text limits are the strictest of the three so one document serves
-//     them all: Google and TikTok cap titles at 150, Google caps
-//     descriptions at 5000 (Meta allows 200 / 9999)
+//     them all: Google caps titles at 150 and descriptions at 5000 (Meta
+//     allows 200 / 9999; TikTok's catalog spec states no limit)
 const (
 	feedTitleMax       = 150
 	feedDescriptionMax = 5000

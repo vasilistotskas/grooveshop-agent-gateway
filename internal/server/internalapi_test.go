@@ -120,3 +120,24 @@ func TestInternalFeedInvalidateRedisFailureIsRetryable(t *testing.T) {
 
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
+
+// Celery re-pushes an event whose acknowledgement was lost; the platform
+// must see the same Webhook-Id so it can dedupe, while a new state is a
+// new event.
+func TestWebhookIDIsDerivedFromTheEvent(t *testing.T) {
+	ev := orderEventBody{
+		SchemaName: "demostore", OrderUUID: "b9be45e5-6062-4976-ae7b-2c31eb2ad689",
+		Status: "PROCESSING", PaymentStatus: "COMPLETED",
+	}
+	again := ev
+	assert.Equal(t, ev.webhookID(), again.webhookID())
+
+	shipped := ev
+	shipped.Status, shipped.TrackingNumber = "SHIPPED", "ACS123"
+	assert.NotEqual(t, ev.webhookID(), shipped.webhookID())
+
+	other := ev
+	other.SchemaName = "acme"
+	assert.NotEqual(t, ev.webhookID(), other.webhookID(),
+		"the same order uuid in another store is another event")
+}
