@@ -290,6 +290,16 @@ func (h *handlers) completeCheckout(
 	}
 
 	_, err = h.deps.Flow.Complete(ctx, t, s)
+	if errors.Is(err, checkout.ErrOrderOutcomeUnknown) {
+		// The order may exist: the key stays spent and the session stays
+		// in progress, so nothing — this key or another — can place it
+		// a second time.
+		_ = h.deps.Checkout.MarkCompleted(ctx, t.SchemaName, s.ID, idemKey)
+		return nil, zero, errors.New(
+			"the store did not confirm whether the order was placed; do " +
+				"not retry or start a new checkout — the buyer receives " +
+				"a confirmation email if it was, and track_order finds it")
+	}
 	if err != nil && s.OrderUUID != "" {
 		// The order exists whatever failed after it: spend the key so a
 		// retry re-renders instead of placing a second order.
@@ -505,7 +515,10 @@ func (h *handlers) cancelCheckout(
 	// Once an order exists — completed, or escalated awaiting payment —
 	// canceling the checkout would not cancel the order: the buyer could
 	// still pay it, and the session would read canceled over a paid order.
-	if s.OrderUUID != "" || s.Status == checkout.StatusCompleteInProgress {
+	if s.Status == checkout.StatusCompleteInProgress {
+		return nil, zero, checkout.ErrCompletionInProgress
+	}
+	if s.OrderUUID != "" {
 		return nil, zero, fmt.Errorf(
 			"checkout %s already placed order %s and cannot be canceled "+
 				"here; the order is managed by the store",

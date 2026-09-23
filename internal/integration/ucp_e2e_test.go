@@ -134,10 +134,20 @@ func verifyWebhook(t *testing.T, hook receivedWebhook, jwk map[string]string) {
 		"webhook signature must verify against the profile JWK")
 }
 
+// checkoutFaults injects upstream failures into the checkout fake.
+type checkoutFaults struct {
+	// paymentLink makes Viva's payment-session creation fail: the order
+	// exists, its payment link does not.
+	paymentLink atomic.Bool
+	// orderCreate makes order creation answer 502 — an outcome the
+	// gateway cannot know.
+	orderCreate  atomic.Bool
+	orderCreates atomic.Int32
+}
+
 // fakeCheckoutDjango extends the shared fake with the order-placement
-// endpoints the checkout flow drives. failPaymentLink makes Viva's
-// payment-session creation fail, for the order-exists-without-link path.
-func fakeCheckoutDjango(t *testing.T, failPaymentLink *atomic.Bool) http.Handler {
+// endpoints the checkout flow drives.
+func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	t.Helper()
 	outer := http.NewServeMux()
 	outer.HandleFunc("POST /api/v1/cart/reserve-stock",
@@ -148,6 +158,11 @@ func fakeCheckoutDjango(t *testing.T, failPaymentLink *atomic.Bool) http.Handler
 		})
 	outer.HandleFunc("POST /api/v1/order",
 		func(w http.ResponseWriter, r *http.Request) {
+			faults.orderCreates.Add(1)
+			if faults.orderCreate.Load() {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
 			// The cart rides the header, never the body.
 			assert.Equal(t, fixtureCartID, r.Header.Get("X-Cart-Id"))
 			var body map[string]any
@@ -160,7 +175,7 @@ func fakeCheckoutDjango(t *testing.T, failPaymentLink *atomic.Bool) http.Handler
 		func(w http.ResponseWriter, r *http.Request) {
 			// Guest authorization rides ?uuid=.
 			assert.Equal(t, fixtureOrderUUID, r.URL.Query().Get("uuid"))
-			if failPaymentLink.Load() {
+			if faults.paymentLink.Load() {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
@@ -184,17 +199,16 @@ type ucpStack struct {
 	gw  *httptest.Server
 	key *ucp.SigningKey
 	rdb *redis.Client
-	// failPaymentLink toggles Viva payment-session failures upstream.
-	failPaymentLink *atomic.Bool
+	// faults toggles upstream failures.
+	faults *checkoutFaults
 }
 
 // startUCPGateway boots the full stack with real Redis, the webhook
 // dispatcher running, and the internal events route armed.
 func startUCPGateway(t *testing.T) ucpStack {
 	t.Helper()
-	failPaymentLink := new(atomic.Bool)
-	djangoSrv := httptest.NewServer(
-		fakeCheckoutDjango(t, failPaymentLink))
+	faults := new(checkoutFaults)
+	djangoSrv := httptest.NewServer(fakeCheckoutDjango(t, faults))
 	t.Cleanup(djangoSrv.Close)
 	rdb := startRedis(t)
 
@@ -241,7 +255,7 @@ func startUCPGateway(t *testing.T) ucpStack {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return ucpStack{
-		gw: srv, key: key, rdb: rdb, failPaymentLink: failPaymentLink,
+		gw: srv, key: key, rdb: rdb, faults: faults,
 	}
 }
 
@@ -496,7 +510,7 @@ func TestUCPEndToEnd(t *testing.T) {
 
 	t.Run("a failed payment link keeps the order and retries the link",
 		func(t *testing.T) {
-			stack.failPaymentLink.Store(true)
+			stack.faults.paymentLink.Store(true)
 			res := callTool(t, session, "create_checkout", map[string]any{
 				"meta":    meta(""),
 				"cart_id": fixtureCartID,
@@ -528,7 +542,7 @@ func TestUCPEndToEnd(t *testing.T) {
 				"/checkout/success/"+fixtureOrderUUID,
 				"never the cart: claiming it would order twice")
 
-			stack.failPaymentLink.Store(false)
+			stack.faults.paymentLink.Store(false)
 			res = callTool(t, session, "complete_checkout", map[string]any{
 				"meta":     meta(uuid.NewString()),
 				"id":       checkoutID,
@@ -546,6 +560,44 @@ func TestUCPEndToEnd(t *testing.T) {
 			require.True(t, res.IsError)
 			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
 				"cannot be canceled")
+		})
+
+	t.Run("an unconfirmed order creation can never be placed twice",
+		func(t *testing.T) {
+			stack.faults.orderCreate.Store(true)
+			t.Cleanup(func() { stack.faults.orderCreate.Store(false) })
+			res := callTool(t, session, "create_checkout", map[string]any{
+				"meta":    meta(""),
+				"cart_id": fixtureCartID,
+				"checkout": map[string]any{
+					"buyer": buyer, "fulfillment": fulfillment,
+					"pay_way_id": 2,
+				},
+			})
+			require.False(t, res.IsError)
+			checkoutID := structured(t, res)["id"].(string)
+			before := stack.faults.orderCreates.Load()
+
+			res = callTool(t, session, "complete_checkout", map[string]any{
+				"meta":     meta(uuid.NewString()),
+				"id":       checkoutID,
+				"checkout": map[string]any{},
+			})
+			require.True(t, res.IsError)
+			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
+				"did not confirm whether the order was placed")
+
+			// Upstream recovers; a retry under a NEW key must still not
+			// place the order a second time.
+			stack.faults.orderCreate.Store(false)
+			res = callTool(t, session, "complete_checkout", map[string]any{
+				"meta":     meta(uuid.NewString()),
+				"id":       checkoutID,
+				"checkout": map[string]any{},
+			})
+			require.True(t, res.IsError)
+			assert.Equal(t, before+1, stack.faults.orderCreates.Load(),
+				"exactly one order creation attempt")
 		})
 
 	t.Run("internal events route rejects a bad token", func(t *testing.T) {

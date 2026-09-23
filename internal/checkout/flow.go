@@ -19,8 +19,31 @@ var ErrNotReady = errors.New("checkout: session is not ready to complete")
 var ErrPaymentMethodUnsupported = errors.New(
 	"checkout: this payment method cannot be completed by an agent yet")
 
+// ErrOrderOutcomeUnknown marks an order creation whose result never
+// arrived — a timeout, a dropped connection, a 5xx after the commit, an
+// unreadable success. The order may exist, and Django keeps the cart of
+// an order awaiting online payment, so a retry could place it twice: the
+// session stays complete_in_progress and callers must not free the
+// completion for another attempt.
+var ErrOrderOutcomeUnknown = errors.New(
+	"checkout: the store did not confirm whether the order was placed")
+
 // ErrPaymentSessionFailed marks an order that exists but whose hosted
 // payment link could not be created. The session stays escalated and
+// refused reports whether Django definitively rejected a request (a 4xx),
+// so nothing was created and it is safe to try again.
+func refused(err error) bool {
+	for _, sentinel := range []error{
+		django.ErrValidation, django.ErrConflict, django.ErrNotFound,
+		django.ErrThrottled, django.ErrUnauthorized, django.ErrForbidden,
+	} {
+		if errors.Is(err, sentinel) {
+			return true
+		}
+	}
+	return false
+}
+
 // ResumePayment mints a fresh link; callers must never report it as a
 // failed order — the buyer would check out again and order twice.
 var ErrPaymentSessionFailed = errors.New(
@@ -135,6 +158,9 @@ func (f *Flow) Complete(
 			BoxnowCompartmentSz:  s.Fulfillment.BoxnowCompartmentSize,
 		})
 	if err != nil {
+		if !refused(err) {
+			return nil, fmt.Errorf("%w: %w", ErrOrderOutcomeUnknown, err)
+		}
 		s.Status = StatusReadyForComplete
 		return nil, err
 	}

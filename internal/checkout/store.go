@@ -19,7 +19,9 @@ var (
 	// ErrCompletionInProgress marks a duplicate complete while the first
 	// is still running.
 	ErrCompletionInProgress = errors.New(
-		"checkout: completion already in progress, retry shortly")
+		"checkout: a completion of this checkout is in progress or " +
+			"unconfirmed; check its status shortly instead of starting " +
+			"another")
 )
 
 const (

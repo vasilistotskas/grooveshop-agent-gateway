@@ -89,17 +89,18 @@ func run() error {
 	)
 	defer stop()
 
-	// Order-webhook delivery. It stops after the HTTP server (no new
-	// events are enqueued by then) and is waited for before Redis closes:
-	// the deferred Close must not race its final acknowledgements.
-	dispatchCtx, stopDispatch := context.WithCancel(context.Background())
+	// Order-webhook delivery stops consuming at the signal, so its drain
+	// runs alongside the HTTP shutdown inside the pod's grace period;
+	// deliveries enqueued meanwhile wait in the stream for another pod.
+	// It is waited for before Redis closes: the deferred Close must not
+	// race its final acknowledgements.
 	dispatched := make(chan struct{})
 	go func() {
 		defer close(dispatched)
-		dispatcher.Run(dispatchCtx)
+		dispatcher.Run(ctx)
 	}()
 	defer func() {
-		stopDispatch()
+		stop() // a listen failure returns without the signal
 		<-dispatched
 	}()
 

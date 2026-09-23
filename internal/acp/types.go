@@ -20,7 +20,6 @@ type Protocol struct {
 }
 
 type Capabilities struct {
-	Payment *Payment `json:"payment,omitempty"`
 	// Extensions declares the active extensions on responses
 	// (ExtensionDeclaration objects per schema.extension.json; agents
 	// send plain identifier strings in requests instead).
@@ -34,16 +33,6 @@ type ExtensionDeclaration struct {
 	Extends []string `json:"extends,omitempty"`
 	Schema  string   `json:"schema,omitempty"`
 	Spec    string   `json:"spec,omitempty"`
-}
-
-type Payment struct {
-	Handlers []PaymentHandler `json:"handlers"`
-}
-
-type PaymentHandler struct {
-	ID   string `json:"id,omitempty"`
-	Name string `json:"name,omitempty"`
-	PSP  string `json:"psp,omitempty"`
 }
 
 type Buyer struct {

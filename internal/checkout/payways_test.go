@@ -2,6 +2,8 @@ package checkout
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -126,4 +128,21 @@ func TestComputePricingAddsTheSelectedPayWayFee(t *testing.T) {
 	assert.True(t, p.HasPaymentFee)
 	assert.EqualValues(t, 200, p.PaymentFee)
 	assert.EqualValues(t, 20200, p.Total)
+}
+
+// Only a definitive 4xx proves nothing was created; anything else leaves
+// the order's existence unknown.
+func TestRefusedIsOnlyADefinitiveRejection(t *testing.T) {
+	for _, err := range []error{
+		django.ErrValidation, django.ErrConflict, django.ErrNotFound,
+		django.ErrThrottled, django.ErrUnauthorized, django.ErrForbidden,
+	} {
+		assert.True(t, refused(fmt.Errorf("create: %w", err)), err.Error())
+	}
+	for _, err := range []error{
+		django.ErrUpstreamDown, context.DeadlineExceeded,
+		errors.New("decode: unexpected EOF"),
+	} {
+		assert.False(t, refused(err), err.Error())
+	}
 }

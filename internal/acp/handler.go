@@ -533,6 +533,11 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		h.render(w, r, t, s, http.StatusOK)
 		return
 	}
+	if s.Status == checkout.StatusCompleteInProgress {
+		fail()
+		writeInFlight(w)
+		return
+	}
 	if s.Terminal() {
 		fail()
 		writeError(w, http.StatusConflict, Error{
@@ -595,8 +600,12 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	if s.Status == checkout.StatusCompleted {
+	switch s.Status {
+	case checkout.StatusCompleted:
 		h.render(w, r, t, s, http.StatusOK)
+		return
+	case checkout.StatusCompleteInProgress:
+		writeInFlight(w)
 		return
 	}
 
@@ -656,14 +665,21 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		SessionID: s.ID, BodyHash: bodyHash(raw), Status: http.StatusOK,
 	}
 	if _, err := h.flow.Complete(r.Context(), t, s); err != nil {
-		// Once the order exists the key is spent, whatever failed after
-		// it: a retry must re-render, never place a second order.
-		if s.OrderUUID != "" {
-			h.storeIdem(r, t.SchemaName, scope, key, record)
-		} else {
+		switch {
+		case errors.Is(err, checkout.ErrCompletionInProgress):
+			// Another attempt owns the session; this snapshot is stale
+			// and must not overwrite it.
 			h.releaseIdem(r, t.SchemaName, scope, key)
+		case s.OrderUUID != "",
+			errors.Is(err, checkout.ErrOrderOutcomeUnknown):
+			// The order exists, or may: the key is spent so a retry
+			// re-renders, never places a second order.
+			h.storeIdem(r, t.SchemaName, scope, key, record)
+			_ = h.store.Save(r.Context(), s)
+		default:
+			h.releaseIdem(r, t.SchemaName, scope, key)
+			_ = h.store.Save(r.Context(), s)
 		}
-		_ = h.store.Save(r.Context(), s)
 		h.completeError(w, err)
 		return
 	}
@@ -700,6 +716,11 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 
 	if !claimed {
 		h.render(w, r, t, s, http.StatusOK)
+		return
+	}
+	if s.Status == checkout.StatusCompleteInProgress {
+		h.releaseIdem(r, t.SchemaName, scope, key)
+		writeInFlight(w)
 		return
 	}
 	if s.Terminal() {
@@ -781,6 +802,12 @@ func (h *Handler) completeError(w http.ResponseWriter, err error) {
 		})
 	case errors.Is(err, checkout.ErrCompletionInProgress):
 		writeInFlight(w)
+	case errors.Is(err, checkout.ErrOrderOutcomeUnknown):
+		writeError(w, http.StatusBadGateway, Error{
+			Type: "processing_error", Code: "order_outcome_unknown",
+			Message: "The store did not confirm whether the order was " +
+				"placed; do not retry — retrieve the session later.",
+		})
 	case errors.Is(err, checkout.ErrPayWayUnavailable):
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "unsupported",
