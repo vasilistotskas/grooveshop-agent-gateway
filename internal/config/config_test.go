@@ -76,6 +76,27 @@ func TestLoadInvalidInt(t *testing.T) {
 	assert.Contains(t, err.Error(), "CHAT_MAX_TURNS")
 }
 
+// Zero is never a working TTL, timeout or limit: TENANT_CACHE_TTL=0
+// would write tenant config to Redis with no expiry.
+func TestLoadRejectsNonPositiveValues(t *testing.T) {
+	for key, v := range map[string]string{
+		"TENANT_CACHE_TTL":          "0s",
+		"TENANT_NEGATIVE_CACHE_TTL": "-1m",
+		"UPSTREAM_TIMEOUT":          "0",
+		"RATE_LIMIT_PER_MIN":        "0",
+		"CHAT_MAX_ITERATIONS":       "-3",
+		"FEED_STALE_TTL":            "0h",
+	} {
+		t.Run(key, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv(key, v)
+			_, err := Load()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), key+" must be positive")
+		})
+	}
+}
+
 // ASSETS_HOST is required, not defaulted: the gateway used to derive
 // assets.<tenant-domain>, a hostname the documented onboarding never
 // creates, and the resulting URLs went straight into product feeds and

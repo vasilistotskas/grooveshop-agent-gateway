@@ -83,13 +83,32 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (*Tenant, error) {
 		return t, err
 	}
 
-	v, err, _ := r.sf.Do(domain, func() (any, error) {
+	v, err := r.shared(ctx, domain, func(ctx context.Context) (any, error) {
 		return r.resolveSlow(ctx, domain)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return v.(*Tenant), nil
+}
+
+// shared runs fn once per key for every concurrent caller. The work is
+// detached from the leader's cancellation — the first agent hanging up
+// must not fail the resolve for every healthy request waiting on it —
+// and stays bounded by the Django client's per-attempt timeout. Each
+// caller still stops waiting when its own context ends.
+func (r *Resolver) shared(
+	ctx context.Context, key string, fn func(context.Context) (any, error),
+) (any, error) {
+	detached := context.WithoutCancel(ctx)
+	select {
+	case res := <-r.sf.DoChan(key, func() (any, error) {
+		return fn(detached)
+	}):
+		return res.Val, res.Err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (r *Resolver) resolveSlow(ctx context.Context, domain string) (*Tenant, error) {
@@ -128,6 +147,12 @@ func (r *Resolver) resolveSlow(ctx context.Context, domain string) (*Tenant, err
 		if t, ok, memErr := r.fromMemory(domain, true); ok && memErr == nil {
 			stale := *t
 			stale.Stale = true
+			// Re-cache for the negative TTL: otherwise every request
+			// re-probes a Django that may be hanging rather than refusing,
+			// paying the full retry budget before getting this answer.
+			r.storeMemory(domain, memEntry{
+				tenant: &stale, expires: time.Now().Add(r.negTTL),
+			})
 			r.count("stale")
 			r.log.WarnContext(ctx, "serving stale tenant config",
 				slog.String("tenant", stale.SchemaName),
@@ -298,19 +323,26 @@ func (r *Resolver) EnsureSecrets(
 	if t == nil || t.SecretsLoaded {
 		return t, nil
 	}
-	cfg, err := r.django.ResolveTenant(ctx, t.Domain)
+	v, err := r.shared(ctx, t.Domain+"|secrets",
+		func(ctx context.Context) (any, error) {
+			cfg, err := r.django.ResolveTenant(ctx, t.Domain)
+			if err != nil {
+				return nil, err
+			}
+			full := &Tenant{
+				TenantConfig:  *cfg,
+				Domain:        t.Domain,
+				ResolvedAt:    time.Now(),
+				SecretsLoaded: true,
+			}
+			r.storeMemory(t.Domain, memEntry{
+				tenant:  full,
+				expires: time.Now().Add(r.ttl),
+			})
+			return full, nil
+		})
 	if err != nil {
 		return nil, err
 	}
-	full := &Tenant{
-		TenantConfig:  *cfg,
-		Domain:        t.Domain,
-		ResolvedAt:    time.Now(),
-		SecretsLoaded: true,
-	}
-	r.storeMemory(t.Domain, memEntry{
-		tenant:  full,
-		expires: time.Now().Add(r.ttl),
-	})
-	return full, nil
+	return v.(*Tenant), nil
 }

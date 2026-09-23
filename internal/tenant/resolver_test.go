@@ -83,9 +83,9 @@ func newFakeDjango(t *testing.T) *fakeDjango {
 	return f
 }
 
-func (f *fakeDjango) setFail(v bool) {
+func (f *fakeDjango) goDown() {
 	f.mu.Lock()
-	f.fail = v
+	f.fail = true
 	f.mu.Unlock()
 }
 
@@ -155,7 +155,7 @@ func TestResolveServesStaleWhenDjangoDown(t *testing.T) {
 	require.NoError(t, err)
 
 	time.Sleep(20 * time.Millisecond) // let the memory entry expire
-	f.setFail(true)
+	f.goDown()
 
 	got, err := r.Resolve(context.Background(), "shop.example.test")
 	require.NoError(t, err)
@@ -163,9 +163,69 @@ func TestResolveServesStaleWhenDjangoDown(t *testing.T) {
 	assert.Equal(t, "demostore", got.SchemaName)
 }
 
+// A Django that hangs rather than refuses must not be re-probed by every
+// request: the stale answer is cached for the negative TTL.
+func TestResolveStaleAnswerBacksOffDjango(t *testing.T) {
+	f := newFakeDjango(t)
+	r := newTestResolver(t, f, 10*time.Millisecond)
+
+	_, err := r.Resolve(context.Background(), "shop.example.test")
+	require.NoError(t, err)
+	time.Sleep(20 * time.Millisecond)
+	f.goDown()
+
+	_, err = r.Resolve(context.Background(), "shop.example.test")
+	require.NoError(t, err)
+	probes := f.calls.Load()
+	for range 5 {
+		got, err := r.Resolve(context.Background(), "shop.example.test")
+		require.NoError(t, err)
+		assert.True(t, got.Stale)
+	}
+	assert.Equal(t, probes, f.calls.Load(),
+		"stale answers within the negative TTL must not reach Django")
+}
+
+// The first caller giving up must not fail the resolve for the others
+// waiting on the same singleflight.
+func TestResolveLeaderCancellationDoesNotFailFollowers(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			once.Do(func() { close(entered) })
+			<-release
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(demostoreJSON))
+		}))
+	t.Cleanup(srv.Close)
+	dj := django.New(srv.URL+"/api/v1", "api.example.test", "test-secret",
+		5*time.Second, testLogger(), nil)
+	r := NewResolver(dj, unreachableRedis(), time.Minute,
+		50*time.Millisecond, testLogger(), nil)
+
+	leaderCtx, cancel := context.WithCancel(context.Background())
+	leader := make(chan error, 1)
+	go func() {
+		_, err := r.Resolve(leaderCtx, "shop.example.test")
+		leader <- err
+	}()
+	<-entered
+	follower := make(chan error, 1)
+	go func() {
+		_, err := r.Resolve(context.Background(), "shop.example.test")
+		follower <- err
+	}()
+	cancel()
+	require.ErrorIs(t, <-leader, context.Canceled)
+	close(release)
+	assert.NoError(t, <-follower)
+}
+
 func TestResolveErrorsWithoutStaleEntry(t *testing.T) {
 	f := newFakeDjango(t)
-	f.setFail(true)
+	f.goDown()
 	r := newTestResolver(t, f, time.Minute)
 
 	_, err := r.Resolve(context.Background(), "shop.example.test")

@@ -69,7 +69,7 @@ func TestMiddlewareIgnoresForwardedHost(t *testing.T) {
 
 func TestMiddlewareResolverError503(t *testing.T) {
 	f := newFakeDjango(t)
-	f.setFail(true)
+	f.goDown()
 	r := newTestResolver(t, f, time.Minute)
 
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

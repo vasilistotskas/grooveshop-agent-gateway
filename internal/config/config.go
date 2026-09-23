@@ -159,46 +159,46 @@ func Load() (Config, error) {
 	}
 
 	var err error
-	if cfg.TenantCacheTTL, err = parseOr("TENANT_CACHE_TTL", 5*time.Minute, time.ParseDuration); err != nil {
+	if cfg.TenantCacheTTL, err = positiveOr("TENANT_CACHE_TTL", 5*time.Minute, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
-	if cfg.NegativeCacheTTL, err = parseOr("TENANT_NEGATIVE_CACHE_TTL", time.Minute, time.ParseDuration); err != nil {
+	if cfg.NegativeCacheTTL, err = positiveOr("TENANT_NEGATIVE_CACHE_TTL", time.Minute, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
-	if cfg.UpstreamTimeout, err = parseOr("UPSTREAM_TIMEOUT", 10*time.Second, time.ParseDuration); err != nil {
+	if cfg.UpstreamTimeout, err = positiveOr("UPSTREAM_TIMEOUT", 10*time.Second, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
-	if cfg.RateLimitPerMin, err = parseOr("RATE_LIMIT_PER_MIN", 120, strconv.Atoi); err != nil {
+	if cfg.RateLimitPerMin, err = positiveOr("RATE_LIMIT_PER_MIN", 120, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.RateLimitBurst, err = parseOr("RATE_LIMIT_BURST", 40, strconv.Atoi); err != nil {
+	if cfg.RateLimitBurst, err = positiveOr("RATE_LIMIT_BURST", 40, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.ChatMaxTokens, err = parseOr("CHAT_MAX_TOKENS", 2048, strconv.Atoi); err != nil {
+	if cfg.ChatMaxTokens, err = positiveOr("CHAT_MAX_TOKENS", 2048, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.ChatMaxTurns, err = parseOr("CHAT_MAX_TURNS", 40, strconv.Atoi); err != nil {
+	if cfg.ChatMaxTurns, err = positiveOr("CHAT_MAX_TURNS", 40, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.ChatMaxIterations, err = parseOr("CHAT_MAX_ITERATIONS", 6, strconv.Atoi); err != nil {
+	if cfg.ChatMaxIterations, err = positiveOr("CHAT_MAX_ITERATIONS", 6, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.ChatRatePerMin, err = parseOr("CHAT_RATE_LIMIT_PER_MIN", 20, strconv.Atoi); err != nil {
+	if cfg.ChatRatePerMin, err = positiveOr("CHAT_RATE_LIMIT_PER_MIN", 20, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.ChatRateBurst, err = parseOr("CHAT_RATE_LIMIT_BURST", 5, strconv.Atoi); err != nil {
+	if cfg.ChatRateBurst, err = positiveOr("CHAT_RATE_LIMIT_BURST", 5, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.ChatMaxMessageLen, err = parseOr("CHAT_MAX_MESSAGE_LEN", 2000, strconv.Atoi); err != nil {
+	if cfg.ChatMaxMessageLen, err = positiveOr("CHAT_MAX_MESSAGE_LEN", 2000, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
-	if cfg.ConversationTTL, err = parseOr("CHAT_CONVERSATION_TTL", 24*time.Hour, time.ParseDuration); err != nil {
+	if cfg.ConversationTTL, err = positiveOr("CHAT_CONVERSATION_TTL", 24*time.Hour, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
-	if cfg.FeedFreshTTL, err = parseOr("FEED_FRESH_TTL", 6*time.Hour, time.ParseDuration); err != nil {
+	if cfg.FeedFreshTTL, err = positiveOr("FEED_FRESH_TTL", 6*time.Hour, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
-	if cfg.FeedStaleTTL, err = parseOr("FEED_STALE_TTL", 24*time.Hour, time.ParseDuration); err != nil {
+	if cfg.FeedStaleTTL, err = positiveOr("FEED_STALE_TTL", 24*time.Hour, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
 
@@ -240,17 +240,24 @@ func envOr(key, def string) string {
 	return def
 }
 
-// parseOr reads key through parse, returning def when the variable is
-// unset and a key-labelled error when it is set but malformed.
-func parseOr[T any](key string, def T, parse func(string) (T, error)) (T, error) {
+// positiveOr reads key through parse, returning def when the variable is
+// unset and a key-labelled error when it is set but malformed or not
+// positive. Every numeric setting is a TTL, timeout or limit, and zero
+// is never a working value for one: a 0 TTL writes Redis keys that never
+// expire, a 0 rate blocks each client forever after its burst.
+func positiveOr[T int | time.Duration](
+	key string, def T, parse func(string) (T, error),
+) (T, error) {
 	v := os.Getenv(key)
 	if v == "" {
 		return def, nil
 	}
 	out, err := parse(v)
 	if err != nil {
-		var zero T
-		return zero, fmt.Errorf("config: %s: %w", key, err)
+		return 0, fmt.Errorf("config: %s: %w", key, err)
+	}
+	if out <= 0 {
+		return 0, fmt.Errorf("config: %s must be positive (got %q)", key, v)
 	}
 	return out, nil
 }

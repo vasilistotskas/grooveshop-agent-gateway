@@ -57,10 +57,9 @@ const cacheTTL = 60 * time.Second
 const cacheMax = 4096
 
 type cacheEntry struct {
-	profile   *django.AgentProfile
-	unauth    bool // token invalid/expired
-	scopeless bool // token valid but lacks the profile scope
-	expires   time.Time
+	profile *django.AgentProfile
+	unauth  bool // token invalid/expired
+	expires time.Time
 }
 
 // Verifier validates bearer tokens against Django with a small
@@ -117,7 +116,6 @@ func (v *Verifier) Verify(
 		// Valid token without the `profile` scope: the /agent/me probe
 		// is denied, but scoped resources the token DOES carry still
 		// work — pass the bearer through without a profile.
-		entry.scopeless = true
 	default:
 		return nil, err
 	}

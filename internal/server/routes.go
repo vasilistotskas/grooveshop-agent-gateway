@@ -8,6 +8,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/openai/openai-go/v3/option"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -167,9 +168,27 @@ func New(d Deps) http.Handler {
 	)
 	var h http.Handler = mux
 	h = httpmw.Metrics(d.Metrics)(h)
-	h = limiter.Middleware()(h)
+	h = exceptInternal(limiter.Middleware(), h)
 	h = httpmw.Logging(d.Log)(h)
 	h = httpmw.RequestID()(h)
 	h = httpmw.Recover(d.Log)(h)
 	return h
+}
+
+// exceptInternal applies mw to every route but /internal/*. Those are
+// Django's own workers pushing over the cluster Service (no ingress
+// routes them) and authenticated by the shared secret; a per-IP bucket
+// would throttle a status burst from one Celery pod, and Django treats
+// a 4xx as final and drops the event.
+func exceptInternal(
+	mw func(http.Handler) http.Handler, next http.Handler,
+) http.Handler {
+	limited := mw(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		limited.ServeHTTP(w, r)
+	})
 }
