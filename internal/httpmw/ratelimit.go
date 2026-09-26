@@ -121,35 +121,44 @@ func limiterKey(r *http.Request) string {
 	return host + "|" + clientIP(r)
 }
 
-// clientIP resolves the real caller for rate-limit bucketing.
+// clientIP resolves the caller for rate-limit bucketing from the one
+// header Traefik vouches for: X-Forwarded-For.
 //
-// The order matters and mirrors what the storefront already does
-// (server/utils/auth.ts): these hosts sit behind Cloudflare, so the
-// address Traefik puts in X-Real-Ip is its immediate peer — the CF edge.
-// Bucketing on that collapses every client behind one PoP into a single
-// bucket, which is the exact mistake the Traefik middleware config
-// documents rejecting when it chose ipStrategy depth 2. One aggressive
-// agent then exhausts the limit for every legitimate agent sharing that
-// edge, while a distributed scraper gets a fresh bucket per PoP.
+// Traefik deletes X-Forwarded-For from every peer outside Cloudflare's
+// published ranges (forwardedHeaders.trustedIPs), then appends its own TCP
+// peer. So the header reaching us is either
 //
-// Cloudflare overwrites CF-Connecting-IP at its edge, so a client cannot
-// forge it from outside; in-cluster callers reach the gateway through
-// Traefik on the same path. Falls back through the standard headers to
-// the socket address.
+//	"<cloudflare's chain…>, <visitor>, <cf-edge>"  — a Cloudflare peer
+//	"<caller>"                                     — anyone else
+//
+// and the hop left of Traefik's is the visitor Cloudflare appended, or,
+// with a single hop, the caller's own address. Neither can be chosen by a
+// caller hitting a node IP. The rightmost hop alone would be the edge
+// node, collapsing every agent behind one PoP into one bucket.
+//
+// CF-Connecting-IP, True-Client-IP and X-Real-Ip are deliberately not
+// read. Traefik strips none of the first two, so a caller at a node IP
+// could send a fresh value per request and never be limited; X-Real-Ip is
+// Traefik's peer, the edge node again. The infrastructure side is
+// docs/edge-trust-boundary.md in grooveshop-infrastructure.
+//
+// Without the header (in-cluster callers that skip Traefik) the socket
+// address is the caller.
 func clientIP(r *http.Request) string {
-	for _, h := range []string{"CF-Connecting-IP", "True-Client-IP"} {
-		if ip := strings.TrimSpace(r.Header.Get(h)); ip != "" {
-			return ip
+	var hops []string
+	for _, value := range r.Header.Values("X-Forwarded-For") {
+		for hop := range strings.SplitSeq(value, ",") {
+			if hop = strings.TrimSpace(hop); hop != "" {
+				hops = append(hops, hop)
+			}
 		}
 	}
-	// XFF is a list, client-first: "<client>, <cf-edge>".
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
-			return first
-		}
-	}
-	if ip := strings.TrimSpace(r.Header.Get("X-Real-Ip")); ip != "" {
-		return ip
+	switch len(hops) {
+	case 0:
+	case 1:
+		return hops[0]
+	default:
+		return hops[len(hops)-2]
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

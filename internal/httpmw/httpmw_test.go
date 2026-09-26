@@ -62,7 +62,7 @@ func TestRateLimiterRejectsBurstOverflow(t *testing.T) {
 
 	do := func(ip string) int {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.Header.Set("X-Real-Ip", ip)
+		req.Header.Set("X-Forwarded-For", ip)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		return rec.Code
@@ -88,7 +88,7 @@ func TestRateLimiterPartitionsPerTenantHost(t *testing.T) {
 	do := func(host string) int {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Host = host
-		req.Header.Set("X-Real-Ip", "9.9.9.9")
+		req.Header.Set("X-Forwarded-For", "9.9.9.9")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		return rec.Code

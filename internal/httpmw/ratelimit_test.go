@@ -8,11 +8,12 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// These hosts sit behind Cloudflare, so X-Real-Ip carries the CF EDGE
-// address: bucketing on it collapses every client behind one PoP into a
-// single bucket — one aggressive agent then exhausts the limit for
-// everyone sharing that edge, while a distributed scraper gets a fresh
-// bucket per PoP. The storefront already resolves callers this way.
+// Traefik keeps X-Forwarded-For only from a Cloudflare peer and then
+// appends that peer, so the hop left of the last one is the visitor
+// Cloudflare appended. The last hop alone is the CF EDGE: bucketing on it
+// collapses every client behind one PoP into one bucket. And the headers
+// Traefik does not strip must not decide the bucket, or a caller at a node
+// IP picks a fresh one per request.
 func TestClientIPPrefersTheRealCaller(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -20,7 +21,7 @@ func TestClientIPPrefersTheRealCaller(t *testing.T) {
 		want    string
 	}{
 		{
-			name: "cloudflare connecting ip wins over the edge hop",
+			name: "through cloudflare: the visitor, not the edge hop",
 			headers: map[string]string{
 				"CF-Connecting-IP": "203.0.113.7",
 				"X-Real-Ip":        "172.71.0.1",
@@ -29,19 +30,26 @@ func TestClientIPPrefersTheRealCaller(t *testing.T) {
 			want: "203.0.113.7",
 		},
 		{
-			name:    "true-client-ip is honoured next",
-			headers: map[string]string{"True-Client-IP": "203.0.113.8", "X-Real-Ip": "172.71.0.1"},
-			want:    "203.0.113.8",
+			name: "entries a visitor added left of cloudflare's are ignored",
+			headers: map[string]string{
+				"X-Forwarded-For": "6.6.6.6, 203.0.113.9, 172.71.0.1",
+			},
+			want: "203.0.113.9",
 		},
 		{
-			name:    "forwarded-for falls back to the client-most entry",
-			headers: map[string]string{"X-Forwarded-For": "203.0.113.9, 172.71.0.1", "X-Real-Ip": "172.71.0.1"},
-			want:    "203.0.113.9",
+			name: "direct caller: forged cloudflare headers do not pick the bucket",
+			headers: map[string]string{
+				"CF-Connecting-IP": "1.2.3.4",
+				"True-Client-IP":   "1.2.3.5",
+				"X-Real-Ip":        "198.51.100.4",
+				"X-Forwarded-For":  "198.51.100.4",
+			},
+			want: "198.51.100.4",
 		},
 		{
-			name:    "x-real-ip still used when nothing better exists",
+			name:    "x-real-ip alone is not believed",
 			headers: map[string]string{"X-Real-Ip": "198.51.100.4"},
-			want:    "198.51.100.4",
+			want:    "10.42.0.1",
 		},
 	}
 	for _, tc := range cases {
