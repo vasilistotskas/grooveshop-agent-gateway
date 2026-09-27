@@ -86,6 +86,15 @@ type OrderCreate struct {
 	BoxnowCompartmentSz  int    `json:"boxnowCompartmentSize,omitempty"`
 
 	CustomerNotes string `json:"customerNotes,omitempty"`
+
+	Attribution *OrderAttribution `json:"attribution,omitempty"`
+}
+
+// OrderAttribution records which agent surface placed the order, so Django
+// books it with the "agent" source type. AgentProtocol is the owning
+// checkout session's protocol: "ucp" or "acp".
+type OrderAttribution struct {
+	AgentProtocol string `json:"agentProtocol"`
 }
 
 // CreateOrder places a guest order from the cart. Never retried: the

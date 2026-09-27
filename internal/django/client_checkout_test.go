@@ -2,6 +2,7 @@ package django
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -100,6 +101,38 @@ func TestReserveStockDoesNotRetry(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUpstreamDown)
 	assert.Equal(t, 1, calls)
+}
+
+// The attribution rides the body camelCase, so Django books the order
+// with the agent source type; without one the key is left out entirely.
+func TestCreateOrderSendsAttribution(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodPost, r.Method)
+			assert.Equal(t, "/api/v1/order", r.URL.Path)
+			assert.Equal(t, "cart-uuid", r.Header.Get("X-Cart-Id"))
+			got = nil
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(fixture(t, "order_by_uuid.json"))
+		}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL)
+
+	_, err := c.CreateOrder(context.Background(),
+		"shop.example.test", "el", "cart-uuid", OrderCreate{
+			PayWayID:    1,
+			Attribution: &OrderAttribution{AgentProtocol: "acp"},
+		})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"agentProtocol": "acp"},
+		got["attribution"])
+
+	_, err = c.CreateOrder(context.Background(),
+		"shop.example.test", "el", "cart-uuid", OrderCreate{PayWayID: 1})
+	require.NoError(t, err)
+	assert.NotContains(t, got, "attribution")
 }
 
 func TestLocalized(t *testing.T) {

@@ -41,7 +41,8 @@ func acpCall(
 }
 
 func TestACPEndToEnd(t *testing.T) {
-	gw := startUCPGateway(t).gw
+	stack := startUCPGateway(t)
+	gw := stack.gw
 	base := gw.URL + "/acp/checkout_sessions"
 
 	buyer := map[string]any{
@@ -135,6 +136,8 @@ func TestACPEndToEnd(t *testing.T) {
 		order := completed["order"].(map[string]any)
 		assert.Equal(t, fixtureOrderUUID, order["id"])
 		assert.Equal(t, sessionID, order["checkout_session_id"])
+		// The order is attributed to the surface owning the session.
+		assert.Equal(t, "acp", stack.faults.agentProtocol.Load())
 
 		// Completing again just re-renders the final state.
 		resp, again := acpCall(t, http.MethodPost,
