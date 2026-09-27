@@ -177,6 +177,8 @@ type checkoutFaults struct {
 	// gateway cannot know.
 	orderCreate  atomic.Bool
 	orderCreates atomic.Int32
+	// agentProtocol is the attribution the last order create carried.
+	agentProtocol atomic.Value
 }
 
 // fakeCheckoutDjango extends the shared fake with the order-placement
@@ -203,6 +205,9 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			assert.NotEmpty(t, body["payWayId"])
 			assert.NotEmpty(t, body["email"])
+			if attribution, ok := body["attribution"].(map[string]any); ok {
+				faults.agentProtocol.Store(attribution["agentProtocol"])
+			}
 			serveFixture(t, w, "order_by_uuid.json")
 		})
 	outer.HandleFunc("POST /api/v1/order/684/create_checkout_session",
@@ -393,6 +398,8 @@ func TestUCPEndToEnd(t *testing.T) {
 			assert.Equal(t, fixtureOrderUUID, order["id"])
 			assert.Contains(t, order["permalink_url"],
 				"/checkout/success/"+fixtureOrderUUID)
+			// The order is attributed to the surface owning the session.
+			assert.Equal(t, "ucp", stack.faults.agentProtocol.Load())
 
 			// Repeat completes are idempotent reads of the final state.
 			res = callTool(t, session, "complete_checkout", map[string]any{

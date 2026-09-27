@@ -156,6 +156,9 @@ func (f *Flow) Complete(
 			AcsStationBranch:     s.Fulfillment.AcsStationBranch,
 			BoxnowLockerID:       s.Fulfillment.BoxnowLockerID,
 			BoxnowCompartmentSz:  s.Fulfillment.BoxnowCompartmentSize,
+			Attribution: &django.OrderAttribution{
+				AgentProtocol: s.Protocol,
+			},
 		})
 	if err != nil {
 		if !refused(err) {
