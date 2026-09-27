@@ -2,6 +2,7 @@ package checkout
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
@@ -133,12 +134,16 @@ func deliveryFee(
 			CountryCode:      f.CountryCode,
 			OrderValueAmount: cart.TotalPrice.String(),
 			Currency:         t.DefaultCurrency,
+			WeightGrams:      strconv.Itoa(cart.TotalWeightGrams),
 		})
 	if err != nil {
 		return 0, false
 	}
 	for _, o := range opts {
 		if o.ProviderCode == f.ProviderCode && o.Kind == f.Kind {
+			if o.ExceedsMaxWeight {
+				return 0, false
+			}
 			fee, err := money.MinorUnits(o.Price.String())
 			return fee, err == nil
 		}

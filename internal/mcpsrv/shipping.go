@@ -58,6 +58,11 @@ func (h *handlers) getShippingOptions(
 		return nil, out, upstreamErr(err, "shipping options are unavailable")
 	}
 	for _, o := range opts {
+		// Listed upstream so a storefront can explain the greyed-out
+		// option; an agent can only act on options it may choose.
+		if o.ExceedsMaxWeight {
+			continue
+		}
 		out.Options = append(out.Options, ShippingOptionOut{
 			ProviderCode: o.ProviderCode,
 			ProviderName: o.ProviderName,

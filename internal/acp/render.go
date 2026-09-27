@@ -199,12 +199,15 @@ func renderFulfillment(
 			CountryCode:      f.CountryCode,
 			OrderValueAmount: cart.TotalPrice.String(),
 			Currency:         t.DefaultCurrency,
+			WeightGrams:      strconv.Itoa(cart.TotalWeightGrams),
 		})
 	if err != nil {
 		return // advisory: options re-render on the next call
 	}
 	for _, o := range opts {
-		if o.Kind != checkout.FulfillmentHomeDelivery {
+		// Over the rate's weight cap Django refuses the order, so the
+		// agent must never be offered it.
+		if o.Kind != checkout.FulfillmentHomeDelivery || o.ExceedsMaxWeight {
 			continue
 		}
 		fee, ok := shippingFeeMinor(o)
