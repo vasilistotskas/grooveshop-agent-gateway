@@ -13,7 +13,7 @@ import (
 type ShippingOptionsIn struct {
 	CountryCode string `json:"countryCode" jsonschema:"ISO 3166-1 alpha-2 destination, e.g. GR"`
 	OrderValue  string `json:"orderValue,omitempty" jsonschema:"cart total as decimal string, used for free-shipping checks"`
-	WeightGrams int    `json:"weightGrams,omitempty"`
+	WeightGrams int    `json:"weightGrams,omitempty" jsonschema:"the cart's totalWeightGrams from get_cart; without it no option is left out for its weight cap"`
 }
 
 type ShippingOptionOut struct {
@@ -58,6 +58,11 @@ func (h *handlers) getShippingOptions(
 		return nil, out, upstreamErr(err, "shipping options are unavailable")
 	}
 	for _, o := range opts {
+		// Listed upstream so a storefront can explain the greyed-out
+		// option; an agent can only act on options it may choose.
+		if o.ExceedsMaxWeight {
+			continue
+		}
 		out.Options = append(out.Options, ShippingOptionOut{
 			ProviderCode: o.ProviderCode,
 			ProviderName: o.ProviderName,

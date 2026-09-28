@@ -34,6 +34,7 @@ type CartOut struct {
 	TotalDiscountValue string   `json:"totalDiscountValue,omitempty" jsonschema:"product markdown savings already included in item prices"`
 	AppliedCouponCodes []string `json:"appliedCouponCodes,omitempty"`
 	FreeShipping       bool     `json:"freeShipping,omitempty" jsonschema:"a promotion grants free delivery on this cart"`
+	TotalWeightGrams   int      `json:"totalWeightGrams" jsonschema:"cart weight; pass it to get_shipping_options so options over a weight cap are left out"`
 }
 
 func (h *handlers) cartOut(t *tenant.Tenant, c *django.Cart) CartOut {
@@ -47,6 +48,7 @@ func (h *handlers) cartOut(t *tenant.Tenant, c *django.Cart) CartOut {
 		TotalDiscountValue: posNum(c.TotalDiscountValue),
 		AppliedCouponCodes: c.AppliedCouponCodes,
 		FreeShipping:       c.PromotionFreeShipping,
+		TotalWeightGrams:   c.TotalWeightGrams,
 	}
 	for _, it := range c.Items {
 		tr := django.Localized(it.Product.Translations, t.DefaultLocale)

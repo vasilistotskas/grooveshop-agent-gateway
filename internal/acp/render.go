@@ -199,18 +199,23 @@ func renderFulfillment(
 			CountryCode:      f.CountryCode,
 			OrderValueAmount: cart.TotalPrice.String(),
 			Currency:         t.DefaultCurrency,
+			WeightGrams:      strconv.Itoa(cart.TotalWeightGrams),
 		})
 	if err != nil {
 		return // advisory: options re-render on the next call
 	}
+	offered := map[string]bool{}
 	for _, o := range opts {
-		if o.Kind != checkout.FulfillmentHomeDelivery {
+		// Over the rate's weight cap Django refuses the order, so the
+		// agent must never be offered it.
+		if o.Kind != checkout.FulfillmentHomeDelivery || o.ExceedsMaxWeight {
 			continue
 		}
 		fee, ok := shippingFeeMinor(o)
 		if !ok {
 			continue
 		}
+		offered[o.ProviderCode+":"+o.Kind] = true
 		out.FulfillmentOptions = append(out.FulfillmentOptions,
 			FulfillmentOption{
 				Type:  "shipping",
@@ -222,10 +227,14 @@ func renderFulfillment(
 			})
 	}
 
-	if f.ProviderCode != "" && f.Kind == checkout.FulfillmentHomeDelivery {
+	// A selection whose option was filtered out (the cart outgrew its
+	// weight cap) is not echoed: the buyer could not choose it again.
+	selected := f.ProviderCode + ":" + f.Kind
+	if f.ProviderCode != "" && f.Kind == checkout.FulfillmentHomeDelivery &&
+		offered[selected] {
 		out.SelectedFulfillmentOptions = []SelectedFulfillmentOption{{
 			Type:     "shipping",
-			OptionID: f.ProviderCode + ":" + f.Kind,
+			OptionID: selected,
 			ItemIDs:  lineIDs,
 		}}
 	}

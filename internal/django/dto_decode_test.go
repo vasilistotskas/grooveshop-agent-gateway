@@ -210,6 +210,9 @@ func TestDecodeShippingOptions(t *testing.T) {
 	assert.Equal(t, "home_delivery", opts[0].Kind)
 	assert.Equal(t, "EUR", opts[0].Currency)
 	assert.Equal(t, "boxnow", opts[2].ProviderCode)
+	assert.Equal(t, "GR", opts[0].CountryCode)
+	assert.Nil(t, opts[0].MaxWeightGrams, "no weight cap on the rate")
+	assert.False(t, opts[0].ExceedsMaxWeight)
 	assert.NotEmpty(t, opts[0].Metadata)
 }
 
@@ -217,6 +220,7 @@ func TestDecodeFreeShippingInfo(t *testing.T) {
 	info := decodeFixture[FreeShippingInfo](t, "free_shipping_info.json")
 	assert.Equal(t, "30.0", info.MinThreshold.String())
 	assert.Equal(t, "EUR", info.Currency)
+	assert.Equal(t, "GR", info.CountryCode)
 	require.Len(t, info.Providers, 3)
 }
 

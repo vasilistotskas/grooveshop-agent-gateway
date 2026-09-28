@@ -174,14 +174,21 @@ func (p PayWay) HasKnownSettlement() bool {
 	return p.IsOnlineSettlement() || p.IsCollectedLater()
 }
 
+// ShippingOption is one (provider, kind) row priced by the store's
+// shipping rate for CountryCode. An option over its rate's weight cap is
+// still listed (ExceedsMaxWeight) so a storefront can explain why it is
+// unavailable; Django refuses to create an order with it.
 type ShippingOption struct {
-	ProviderCode string          `json:"providerCode"`
-	ProviderName string          `json:"providerName"`
-	Kind         string          `json:"kind"`
-	Price        json.Number     `json:"price"`
-	Currency     string          `json:"currency"`
-	Priority     int             `json:"priority"`
-	Metadata     json.RawMessage `json:"metadata"`
+	ProviderCode     string          `json:"providerCode"`
+	ProviderName     string          `json:"providerName"`
+	Kind             string          `json:"kind"`
+	Price            json.Number     `json:"price"`
+	Currency         string          `json:"currency"`
+	Priority         int             `json:"priority"`
+	CountryCode      string          `json:"countryCode"`
+	MaxWeightGrams   *int            `json:"maxWeightGrams"`
+	ExceedsMaxWeight bool            `json:"exceedsMaxWeight"`
+	Metadata         json.RawMessage `json:"metadata"`
 }
 
 type FreeShippingInfo struct {
@@ -195,6 +202,9 @@ type FreeShippingInfo struct {
 	MinThreshold json.Number `json:"minThreshold"`
 	MaxThreshold json.Number `json:"maxThreshold"`
 	Currency     string      `json:"currency"`
+	// CountryCode is the destination the thresholds were resolved for —
+	// the requested one, or the store's first shippable country.
+	CountryCode string `json:"countryCode"`
 }
 
 // AcsStation: coordinates and weights arrive as strings from ACS.
@@ -273,6 +283,7 @@ type Cart struct {
 	AppliedCouponCodes    []string    `json:"appliedCouponCodes"`
 	TotalItems            int         `json:"totalItems"`
 	TotalItemsUnique      int         `json:"totalItemsUnique"`
+	TotalWeightGrams      int         `json:"totalWeightGrams"`
 	Currency              string      `json:"currency"`
 }
 
