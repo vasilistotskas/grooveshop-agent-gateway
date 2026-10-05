@@ -343,7 +343,7 @@ func TestMCPEndToEnd(t *testing.T) {
 			methods[0].(map[string]any)["label"].(string),
 			methods[1].(map[string]any)["label"].(string),
 		}
-		assert.Contains(t, labels, "VIVA_WALLET")
+		assert.Equal(t, []string{"Αντικαταβολή", "Viva Wallet"}, labels)
 	})
 
 	t.Run("add_to_cart creates a cart implicitly", func(t *testing.T) {
