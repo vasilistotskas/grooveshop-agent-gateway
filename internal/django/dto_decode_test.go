@@ -124,6 +124,7 @@ func TestDecodePayWayDetail(t *testing.T) {
 	pw := decodeFixture[PayWay](t, "pay_way_detail.json")
 
 	assert.EqualValues(t, 3, pw.ID)
+	assert.Equal(t, "PAY_ON_DELIVERY", pw.Key)
 	assert.True(t, pw.Active)
 	assert.Equal(t, "cash_on_delivery", pw.ProviderCode)
 	assert.Equal(t, SettlementCourierCash, pw.Settlement)
@@ -136,12 +137,14 @@ func TestDecodePayWays(t *testing.T) {
 
 	require.Len(t, page.Results, 2)
 	viva := page.Results[1]
+	assert.Equal(t, "VIVA_WALLET", viva.Key)
 	assert.Equal(t, "viva_wallet", viva.ProviderCode)
 	assert.Equal(t, SettlementOnline, viva.Settlement)
 	assert.True(t, viva.IsOnlineSettlement())
 	assert.False(t, viva.IsCollectedLater())
 	assert.Equal(t, "1.0", viva.Cost.String())
 	cod := page.Results[0]
+	assert.Equal(t, "PAY_ON_DELIVERY", cod.Key)
 	assert.Equal(t, "cash_on_delivery", cod.ProviderCode)
 	assert.Equal(t, SettlementCourierCash, cod.Settlement)
 	assert.False(t, cod.IsOnlineSettlement())

@@ -114,16 +114,18 @@ type Category struct {
 	TreeID       int64                  `json:"treeId"`
 }
 
-// PayWayTranslation: name is an identifier-style label (e.g. VIVA_WALLET);
-// description/instructions are customer-facing copy.
+// PayWayTranslation is the customer-facing copy; the method's name is
+// not translated upstream — it is derived from PayWay.Key (Label).
 type PayWayTranslation struct {
-	Name         string `json:"name"`
 	Description  string `json:"description"`
 	Instructions string `json:"instructions"`
 }
 
 type PayWay struct {
-	ID            int64                        `json:"id"`
+	ID int64 `json:"id"`
+	// Key is the language-independent PayWayEnum value (VIVA_WALLET,
+	// PAY_ON_DELIVERY, ...). Render it through Label, never raw.
+	Key           string                       `json:"key"`
 	Translations  map[string]PayWayTranslation `json:"translations"`
 	Active        bool                         `json:"active"`
 	Cost          json.Number                  `json:"cost"`

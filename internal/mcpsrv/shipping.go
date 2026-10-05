@@ -241,10 +241,14 @@ func (h *handlers) getPaymentMethods(
 		if !pw.Active {
 			continue
 		}
+		label, err := pw.Label(t.DefaultLocale)
+		if err != nil {
+			return nil, out, err
+		}
 		tr := django.Localized(pw.Translations, t.DefaultLocale)
 		out.Methods = append(out.Methods, PaymentMethodOut{
 			ID:            pw.ID,
-			Label:         tr.Name,
+			Label:         label,
 			Description:   tr.Description,
 			Cost:          num(pw.Cost),
 			FreeThreshold: num(pw.FreeThreshold),
