@@ -339,3 +339,49 @@ func TestChatRejectsMalformedInput(t *testing.T) {
 	}
 	assert.Zero(t, fake.calls.Load(), "no model call for rejected input")
 }
+
+// Product cards come from the real tool results, after the tool's done
+// event, deduplicated across the turn: identities only, so the storefront
+// loads the shopper's own prices.
+func TestChatEmitsProductsFromToolResults(t *testing.T) {
+	fake := &fakeChatAPI{scripts: []string{
+		toolUseTurnSSE("search_products", `{"query": "θήκη"}`),
+		toolUseTurnSSE("get_product", `{"productId": 1}`),
+		toolUseTurnSSE("get_product", `{"productId": 1}`),
+		textTurnSSE("Βρήκα θήκες και τον φορτιστή."),
+	}}
+	gw := startChatGateway(t, fake) // ChatMaxIterations: 4
+
+	events := postChat(t, gw.URL, map[string]any{"message": "θήκες"})
+
+	var products []map[string]any
+	for i, e := range events {
+		if e.name != "products" {
+			continue
+		}
+		products = append(products, e.data)
+		require.Positive(t, i)
+		prev := events[i-1]
+		assert.Equal(t, "tool", prev.name)
+		assert.Equal(t, "done", prev.data["status"],
+			"products follow the tool's done event")
+		assert.Equal(t, e.data["tool"], prev.data["name"])
+	}
+	require.Len(t, products, 2,
+		"the repeated get_product names nothing new")
+
+	// search_product.json: hits are translation rows; master is the id.
+	assert.Equal(t, map[string]any{
+		"tool":  "search_products",
+		"query": "θήκη",
+		"total": float64(123270),
+		"products": []any{
+			map[string]any{"id": float64(510)},
+			map[string]any{"id": float64(7141)},
+		},
+	}, products[0])
+	assert.Equal(t, map[string]any{
+		"tool":     "get_product",
+		"products": []any{map[string]any{"id": float64(1)}},
+	}, products[1])
+}

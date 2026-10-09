@@ -58,6 +58,8 @@ type bridge struct {
 	mu          sync.Mutex
 	cartID      string
 	cartMutated bool
+	// productsSent dedupes product cards across the turn's tool calls.
+	productsSent map[int64]bool
 }
 
 // newBridge connects an MCP client to the shared server over in-memory
@@ -119,17 +121,18 @@ func (b *bridge) tools(
 }
 
 // call executes one tool through the MCP session and renders the result
-// as the plain text a tool-role message carries. Business failures come
+// as the plain text a tool-role message carries, plus the products event
+// for the widget when the result names products. Business failures come
 // back as "ERROR: …" text so the model can react, and so does a protocol
 // error (an unknown tool, arguments that fail the input schema): those
 // are the model's mistakes, and aborting would throw away the prose the
 // shopper has already seen. Only a dead request context is fatal.
 func (b *bridge) call(
 	ctx context.Context, name string, input map[string]any,
-) (string, error) {
+) (string, *productsEvent, error) {
 	if !b.offered[name] {
 		return "ERROR: unknown tool " + strconv.Quote(name) +
-			"; call only the tools you were given", nil
+			"; call only the tools you were given", nil, nil
 	}
 	res, err := b.session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      name,
@@ -137,12 +140,13 @@ func (b *bridge) call(
 	})
 	if err != nil {
 		if ctx.Err() != nil {
-			return "", err
+			return "", nil, err
 		}
-		return "ERROR: " + err.Error(), nil
+		return "ERROR: " + err.Error(), nil, nil
 	}
 
 	var parts []string
+	var products *productsEvent
 	for _, c := range res.Content {
 		if tc, ok := c.(*mcp.TextContent); ok {
 			parts = append(parts, tc.Text)
@@ -153,6 +157,7 @@ func (b *bridge) call(
 			parts = append(parts, string(raw))
 			if !res.IsError {
 				b.recordCartState(name, raw)
+				products = b.recordProducts(name, input, raw)
 			}
 		}
 	}
@@ -160,7 +165,7 @@ func (b *bridge) call(
 	if res.IsError {
 		text = "ERROR: " + text
 	}
-	return text, nil
+	return text, products, nil
 }
 
 // recordCartState tracks the active cart id and whether this turn changed
