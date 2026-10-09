@@ -379,7 +379,7 @@ func (s *Service) runTurn(
 			sse.event("tool", map[string]string{
 				"name": tc.Function.Name, "status": "running",
 			})
-			result, err := br.call(ctx, tc.Function.Name, input)
+			result, products, err := br.call(ctx, tc.Function.Name, input)
 			if err != nil {
 				return "", "", false, fmt.Errorf(
 					"chat: tool %s: %w", tc.Function.Name, err)
@@ -387,6 +387,9 @@ func (s *Service) runTurn(
 			sse.event("tool", map[string]string{
 				"name": tc.Function.Name, "status": "done",
 			})
+			if products != nil {
+				sse.event("products", products)
+			}
 			messages = append(messages, openai.ToolMessage(result, tc.ID))
 		}
 	}

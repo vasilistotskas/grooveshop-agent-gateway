@@ -186,6 +186,16 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   `/mcp/server-card`;
   `.well-known/oauth-protected-resource[/mcp]` names the Django API as
   the OAuth authorization server (allauth.idp: auth-code + PKCE + DCR).
+- Nuxt chat widget (`app/composables/useShopChat.ts`) reads the `/chat`
+  SSE events: `delta {text}`, `tool {name, status: running|done}`,
+  `products {tool, query?, total?, products: [{id}]}`, `error {message}`,
+  `done {conversationId, cartId?, cartMutated}`. `products` follows the
+  `tool` done event of `search_products` (query + `totalHits` as total)
+  and `get_product` (the product, then its variants), decoded from the
+  tool's structured result (`internal/chat/products.go`), deduplicated
+  across the turn and capped per event. Ids only, never prices: the
+  storefront loads each card with the shopper's session, which is the
+  only place B2B pricing applies (see below).
 - Config gates: ACP and chat are per-tenant. The ACP platform bearer
   arrives as `acpBearerToken` and the chat model credential as
   `chatApiKey` on `tenant/resolve` — Django includes both only when the
