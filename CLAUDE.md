@@ -203,6 +203,14 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   secret as the order-event push). A tenant without a chat key gets a
   localized 404 from `/chat`; a tenant without an ACP token has ACP
   disabled — every bearer gets 401 from `/acp/*`.
+- Chat spend is bounded in three layers:
+  - Traefik's `rate-limit-chat`, per IP.
+  - The gateway's per-pod `(host, IP)` limiter (`CHAT_RATE_LIMIT_*`).
+  - The Redis turn quota in `internal/chat/quota.go`, shared by every pod and counted only for valid turns, before any model call:
+    - `CHAT_STORE_TURNS_PER_HOUR` per store per clock hour;
+    - `CHAT_VISITOR_TURNS_PER_DAY` per client IP per store per UTC day.
+  
+  A refused turn spends from neither budget and gets the store's localized `rate_limited` message with a 429.
 - Infra repo: manifests under `manifests/app-constructs/grooveshop/base/`,
   path rules on the storefront ingress.
 - B2B/wholesale pricing (Django `b2b/` app) is RETAIL-ONLY here by

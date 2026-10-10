@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -30,6 +31,7 @@ type Service struct {
 	cfg    config.Config
 	server *mcp.Server
 	store  *Store
+	quota  *Quota
 	// clientOpts hold everything but the credential — the API key is
 	// per-tenant (from tenant/resolve) and attached per turn.
 	clientOpts []option.RequestOption
@@ -42,7 +44,8 @@ type Service struct {
 // OpenRouter, … are config swaps). Extra options are passed to the client
 // (tests inject option.WithBaseURL for a fake API).
 func New(
-	cfg config.Config, server *mcp.Server, store *Store, log *slog.Logger,
+	cfg config.Config, server *mcp.Server, store *Store, quota *Quota,
+	log *slog.Logger,
 	opts ...option.RequestOption,
 ) *Service {
 	clientOpts := append([]option.RequestOption{
@@ -52,6 +55,7 @@ func New(
 		cfg:        cfg,
 		server:     server,
 		store:      store,
+		quota:      quota,
 		clientOpts: clientOpts,
 		log:        log,
 	}
@@ -134,6 +138,23 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusServiceUnavailable, msgUnavailable)
 		return
 	}
+	// Counted only once the request and its conversation are valid, so
+	// rejected calls spend nothing; refused before any model call.
+	allowed, err := s.quota.Allow(r.Context(), t.SchemaName,
+		httpmw.ClientIP(r), time.Now())
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "chat quota check failed",
+			slog.String("error", err.Error()))
+		fail(http.StatusServiceUnavailable, msgUnavailable)
+		return
+	}
+	if !allowed {
+		s.log.InfoContext(r.Context(), "chat turn refused by quota",
+			slog.String("tenant", t.SchemaName))
+		fail(http.StatusTooManyRequests, msgRateLimited)
+		return
+	}
+
 	// The widget's session cart wins: the bot must operate on the cart the
 	// shopper sees in the UI.
 	if req.CartID != "" {

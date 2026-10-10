@@ -111,8 +111,14 @@ type Config struct {
 	ChatMaxIterations int
 	ChatRatePerMin    int
 	ChatRateBurst     int
-	ConversationTTL   time.Duration
-	ChatMaxMessageLen int
+	// Cost ceilings shared by every gateway pod (Redis): turns per store
+	// per clock hour, and per visitor IP per store per day. The per-minute
+	// limiter above stops bursts; these bound what a patient or
+	// IP-rotating caller can spend on a store's model key.
+	ChatStoreTurnsPerHour  int
+	ChatVisitorTurnsPerDay int
+	ConversationTTL        time.Duration
+	ChatMaxMessageLen      int
 }
 
 // Load reads the environment and fails fast on missing or malformed
@@ -187,6 +193,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.ChatRateBurst, err = positiveOr("CHAT_RATE_LIMIT_BURST", 5, strconv.Atoi); err != nil {
+		return Config{}, err
+	}
+	if cfg.ChatStoreTurnsPerHour, err = positiveOr("CHAT_STORE_TURNS_PER_HOUR", 200, strconv.Atoi); err != nil {
+		return Config{}, err
+	}
+	if cfg.ChatVisitorTurnsPerDay, err = positiveOr("CHAT_VISITOR_TURNS_PER_DAY", 30, strconv.Atoi); err != nil {
 		return Config{}, err
 	}
 	if cfg.ChatMaxMessageLen, err = positiveOr("CHAT_MAX_MESSAGE_LEN", 2000, strconv.Atoi); err != nil {

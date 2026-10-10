@@ -118,10 +118,10 @@ func limiterKey(r *http.Request) string {
 	if host == "" {
 		host = "-"
 	}
-	return host + "|" + clientIP(r)
+	return host + "|" + ClientIP(r)
 }
 
-// clientIP resolves the caller for rate-limit bucketing from the one
+// ClientIP resolves the caller for rate-limit bucketing from the one
 // header Traefik vouches for: X-Forwarded-For.
 //
 // Traefik deletes X-Forwarded-For from every peer outside Cloudflare's
@@ -144,7 +144,7 @@ func limiterKey(r *http.Request) string {
 //
 // Without the header (in-cluster callers that skip Traefik) the socket
 // address is the caller.
-func clientIP(r *http.Request) string {
+func ClientIP(r *http.Request) string {
 	var hops []string
 	for _, value := range r.Header.Values("X-Forwarded-For") {
 		for hop := range strings.SplitSeq(value, ",") {

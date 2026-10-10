@@ -59,7 +59,7 @@ func TestClientIPPrefersTheRealCaller(t *testing.T) {
 			for k, v := range tc.headers {
 				r.Header.Set(k, v)
 			}
-			assert.Equal(t, tc.want, clientIP(r))
+			assert.Equal(t, tc.want, ClientIP(r))
 		})
 	}
 }
@@ -67,5 +67,5 @@ func TestClientIPPrefersTheRealCaller(t *testing.T) {
 func TestClientIPFallsBackToSocket(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/mcp", nil)
 	r.RemoteAddr = "198.51.100.9:44321"
-	assert.Equal(t, "198.51.100.9", clientIP(r))
+	assert.Equal(t, "198.51.100.9", ClientIP(r))
 }
