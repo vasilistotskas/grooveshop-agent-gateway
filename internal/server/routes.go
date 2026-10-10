@@ -161,6 +161,8 @@ func New(d Deps) http.Handler {
 	chatSvc := chat.New(d.Cfg,
 		mcpsrv.NewServer(mcpDeps, mcpsrv.BridgeIdentity),
 		chat.NewStore(d.Redis, d.Cfg.ConversationTTL, d.Cfg.ChatMaxTurns),
+		chat.NewQuota(d.Redis,
+			d.Cfg.ChatStoreTurnsPerHour, d.Cfg.ChatVisitorTurnsPerDay),
 		d.Log,
 		d.ChatOpts...,
 	)

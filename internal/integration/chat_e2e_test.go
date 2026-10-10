@@ -95,7 +95,9 @@ func (f *fakeChatAPI) handler() http.Handler {
 	})
 }
 
-func startChatGateway(t *testing.T, fake *fakeChatAPI) *httptest.Server {
+func startChatGateway(
+	t *testing.T, fake *fakeChatAPI, tune ...func(*config.Config),
+) *httptest.Server {
 	t.Helper()
 	djangoSrv := httptest.NewServer(fakeDjangoMux(t))
 	t.Cleanup(djangoSrv.Close)
@@ -129,6 +131,12 @@ func startChatGateway(t *testing.T, fake *fakeChatAPI) *httptest.Server {
 		ChatRateBurst:      100,
 		ChatMaxMessageLen:  2000,
 		ConversationTTL:    time.Hour,
+
+		ChatStoreTurnsPerHour:  1000,
+		ChatVisitorTurnsPerDay: 1000,
+	}
+	for _, apply := range tune {
+		apply(&cfg)
 	}
 	dj := django.New(cfg.DjangoBaseURL, cfg.DjangoPublicHost, "test-secret",
 		cfg.UpstreamTimeout, log, metrics)
