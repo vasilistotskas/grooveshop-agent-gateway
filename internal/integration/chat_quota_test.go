@@ -16,9 +16,15 @@ import (
 
 // postChatFrom sends a turn as the visitor Traefik would name in
 // X-Forwarded-For and returns the status plus the error body, if any.
-func postChatFrom(t *testing.T, gwURL, visitor string) (int, string) {
+func postChatFrom(
+	t *testing.T, gwURL, visitor string, body ...map[string]any,
+) (int, string) {
 	t.Helper()
-	raw, err := json.Marshal(map[string]any{"message": "γεια"})
+	payload := map[string]any{"message": "γεια"}
+	if len(body) > 0 {
+		payload = body[0]
+	}
+	raw, err := json.Marshal(payload)
 	require.NoError(t, err)
 	req, err := http.NewRequest(http.MethodPost, gwURL+"/chat",
 		bytes.NewReader(raw))
@@ -29,9 +35,9 @@ func postChatFrom(t *testing.T, gwURL, visitor string) (int, string) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		var payload map[string]string
-		require.NoError(t, json.NewDecoder(resp.Body).Decode(&payload))
-		return resp.StatusCode, payload["error"]
+		var refusal map[string]string
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&refusal))
+		return resp.StatusCode, refusal["error"]
 	}
 	var buf bytes.Buffer
 	_, _ = buf.ReadFrom(resp.Body)
@@ -82,4 +88,24 @@ func TestChatVisitorDailyCapIsPerVisitorAndRefusalsAreFree(t *testing.T) {
 	status, _ = postChatFrom(t, gw.URL, "198.51.100.8")
 	assert.Equal(t, http.StatusOK, status)
 	assert.EqualValues(t, 2, fake.calls.Load())
+}
+
+// A request rejected for its conversation (a forged id) spends nothing,
+// so it cannot be used to lock a visitor or a store out.
+func TestChatRejectedConversationSpendsNoQuota(t *testing.T) {
+	fake := &fakeChatAPI{scripts: []string{textTurnSSE("ένα")}}
+	gw := startChatGateway(t, fake, func(c *config.Config) {
+		c.ChatVisitorTurnsPerDay = 1
+		c.ChatStoreTurnsPerHour = 1
+	})
+
+	for range 3 {
+		status, _ := postChatFrom(t, gw.URL, "192.0.2.4", map[string]any{
+			"message": "γεια", "conversationId": "../evil",
+		})
+		assert.Equal(t, http.StatusBadRequest, status)
+	}
+	status, _ := postChatFrom(t, gw.URL, "192.0.2.4")
+	assert.Equal(t, http.StatusOK, status)
+	assert.EqualValues(t, 1, fake.calls.Load())
 }

@@ -124,8 +124,22 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Counted only once the request is valid, so malformed calls spend
-	// nothing; refused before any model call is made.
+	conv, err := s.store.Load(r.Context(), t.SchemaName, req.ConversationID)
+	switch {
+	case errors.Is(err, ErrInvalidConversation):
+		fail(http.StatusBadRequest, msgBadRequest)
+		return
+	case errors.Is(err, ErrConversationFull):
+		fail(http.StatusConflict, msgConversation)
+		return
+	case err != nil:
+		s.log.ErrorContext(r.Context(), "chat load failed",
+			slog.String("error", err.Error()))
+		fail(http.StatusServiceUnavailable, msgUnavailable)
+		return
+	}
+	// Counted only once the request and its conversation are valid, so
+	// rejected calls spend nothing; refused before any model call.
 	allowed, err := s.quota.Allow(r.Context(), t.SchemaName,
 		httpmw.ClientIP(r), time.Now())
 	if err != nil {
@@ -141,20 +155,6 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conv, err := s.store.Load(r.Context(), t.SchemaName, req.ConversationID)
-	switch {
-	case errors.Is(err, ErrInvalidConversation):
-		fail(http.StatusBadRequest, msgBadRequest)
-		return
-	case errors.Is(err, ErrConversationFull):
-		fail(http.StatusConflict, msgConversation)
-		return
-	case err != nil:
-		s.log.ErrorContext(r.Context(), "chat load failed",
-			slog.String("error", err.Error()))
-		fail(http.StatusServiceUnavailable, msgUnavailable)
-		return
-	}
 	// The widget's session cart wins: the bot must operate on the cart the
 	// shopper sees in the UI.
 	if req.CartID != "" {
