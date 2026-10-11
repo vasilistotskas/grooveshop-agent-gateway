@@ -274,19 +274,42 @@ type CartItem struct {
 // PromotionDiscount is the server-evaluated promotion/coupon discount
 // still to subtract from TotalPrice.
 type Cart struct {
-	ID                    int64       `json:"id"`
-	UUID                  string      `json:"uuid"`
-	Items                 []CartItem  `json:"items"`
-	TotalPrice            json.Number `json:"totalPrice"`
-	TotalVatValue         json.Number `json:"totalVatValue"`
-	TotalDiscountValue    json.Number `json:"totalDiscountValue"`
-	PromotionDiscount     json.Number `json:"promotionDiscount"`
-	PromotionFreeShipping bool        `json:"promotionFreeShipping"`
-	AppliedCouponCodes    []string    `json:"appliedCouponCodes"`
-	TotalItems            int         `json:"totalItems"`
-	TotalItemsUnique      int         `json:"totalItemsUnique"`
-	TotalWeightGrams      int         `json:"totalWeightGrams"`
-	Currency              string      `json:"currency"`
+	ID                    int64              `json:"id"`
+	UUID                  string             `json:"uuid"`
+	Items                 []CartItem         `json:"items"`
+	TotalPrice            json.Number        `json:"totalPrice"`
+	TotalVatValue         json.Number        `json:"totalVatValue"`
+	TotalDiscountValue    json.Number        `json:"totalDiscountValue"`
+	PromotionDiscount     json.Number        `json:"promotionDiscount"`
+	PromotionFreeShipping bool               `json:"promotionFreeShipping"`
+	AppliedPromotions     []AppliedPromotion `json:"appliedPromotions"`
+	AppliedCoupons        []AppliedCoupon    `json:"appliedCoupons"`
+	TotalItems            int                `json:"totalItems"`
+	TotalItemsUnique      int                `json:"totalItemsUnique"`
+	TotalWeightGrams      int                `json:"totalWeightGrams"`
+	Currency              string             `json:"currency"`
+}
+
+// AppliedPromotion is one offer that took money off the cart, with its
+// own amount; the amounts sum to Cart.PromotionDiscount. Code is the
+// coupon that earned it, empty for an automatic promotion.
+type AppliedPromotion struct {
+	PromotionID int64       `json:"promotionId"`
+	Name        string      `json:"name"`
+	Code        string      `json:"code"`
+	Amount      json.Number `json:"amount"`
+}
+
+// AppliedCoupon is Django's verdict on one attached coupon code: the money
+// it takes off, the free shipping or gift it earns, or Rejection — the
+// discount_code_* reason it is refused with now, empty while it applies.
+// Django refuses a code that would change nothing, so exactly one holds.
+type AppliedCoupon struct {
+	Code         string      `json:"code"`
+	Amount       json.Number `json:"amount"`
+	FreeShipping bool        `json:"freeShipping"`
+	Gift         bool        `json:"gift"`
+	Rejection    string      `json:"rejection"`
 }
 
 type OrderItem struct {

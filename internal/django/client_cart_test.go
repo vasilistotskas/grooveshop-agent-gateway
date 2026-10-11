@@ -39,7 +39,8 @@ func TestApplyCouponReturnsUpdatedCart(t *testing.T) {
 	assert.Equal(t, map[string]any{"code": "SAVE10"}, gotBody)
 
 	assert.Equal(t, "92.94", cart.PromotionDiscount.String())
-	assert.Equal(t, []string{"SAVE10"}, cart.AppliedCouponCodes)
+	require.Len(t, cart.AppliedCoupons, 1)
+	assert.Equal(t, "SAVE10", cart.AppliedCoupons[0].Code)
 	assert.False(t, cart.PromotionFreeShipping)
 }
 
@@ -132,6 +133,6 @@ func TestRemoveCouponReturnsUpdatedCart(t *testing.T) {
 
 	assert.Equal(t, http.MethodDelete, gotMethod)
 	assert.Equal(t, "cart-uuid", gotCartID)
-	assert.Empty(t, cart.AppliedCouponCodes)
+	assert.Empty(t, cart.AppliedCoupons)
 	assert.Equal(t, "0.0", cart.PromotionDiscount.String())
 }

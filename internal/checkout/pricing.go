@@ -20,6 +20,16 @@ type PricedLine struct {
 	TotalMinor int64
 }
 
+// PricedDiscount is one discount on the cart: an offer's share of
+// DiscountTotal (Code empty for an automatic promotion), or an attached
+// coupon whose benefit is not money — free shipping or a gift — at 0.
+type PricedDiscount struct {
+	PromotionID int64
+	Name        string
+	Code        string
+	Amount      int64
+}
+
 // Pricing is the protocol-neutral totals breakdown both the UCP and ACP
 // renderers serialize. Amounts are minor units; fees are present only when
 // the session has selected the option they derive from.
@@ -28,17 +38,24 @@ type PricedLine struct {
 // cart — it reduces Total. MarkdownTotal is the product-markdown savings
 // already baked into the line prices (informational only: emitting it as
 // a totals row would double-count). FreeShipping zeroes the delivery fee.
+//
+// Discounts says which offer earned what, so no coupon is credited with
+// an automatic promotion's money; RefusedCoupons are the attached codes
+// the store refuses now (an item left the cart, a better offer won), in
+// the ACP rejection vocabulary.
 type Pricing struct {
-	Lines         []PricedLine
-	ItemsSubtotal int64
-	DiscountTotal int64
-	MarkdownTotal int64
-	FreeShipping  bool
-	DeliveryFee   int64
-	HasDelivery   bool
-	PaymentFee    int64
-	HasPaymentFee bool
-	Total         int64
+	Lines          []PricedLine
+	ItemsSubtotal  int64
+	DiscountTotal  int64
+	Discounts      []PricedDiscount
+	RefusedCoupons []DiscountRejection
+	MarkdownTotal  int64
+	FreeShipping   bool
+	DeliveryFee    int64
+	HasDelivery    bool
+	PaymentFee     int64
+	HasPaymentFee  bool
+	Total          int64
 	// PayWay is the pay-way the buyer selected, or nil when none is
 	// selected yet or the lookup failed. Callers deciding whether an
 	// agent can settle a checkout unaided MUST read this rather than the
@@ -84,6 +101,9 @@ func ComputePricing(
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := p.addDiscounts(cart); err != nil {
+		return nil, nil, err
+	}
 	p.MarkdownTotal, err = money.MinorUnits(cart.TotalDiscountValue.String())
 	if err != nil {
 		return nil, nil, err
@@ -116,6 +136,43 @@ func ComputePricing(
 		p.Total = 0
 	}
 	return p, cart, nil
+}
+
+// addDiscounts copies Django's per-offer breakdown and its verdict on each
+// attached coupon. A coupon that applies with no money of its own (free
+// shipping, a gift) is listed at 0; one Django refuses is a rejection.
+func (p *Pricing) addDiscounts(cart *django.Cart) error {
+	monetary := map[string]bool{}
+	for _, ap := range cart.AppliedPromotions {
+		amount, err := money.MinorUnits(ap.Amount.String())
+		if err != nil {
+			return err
+		}
+		p.Discounts = append(p.Discounts, PricedDiscount{
+			PromotionID: ap.PromotionID,
+			Name:        ap.Name,
+			Code:        ap.Code,
+			Amount:      amount,
+		})
+		if ap.Code != "" {
+			monetary[ap.Code] = true
+		}
+	}
+	for _, c := range cart.AppliedCoupons {
+		switch {
+		case c.Rejection != "":
+			p.RefusedCoupons = append(p.RefusedCoupons, DiscountRejection{
+				Code:   c.Code,
+				Reason: mapDiscountReason(c.Rejection),
+			})
+		case !monetary[c.Code]:
+			p.Discounts = append(p.Discounts, PricedDiscount{
+				Name: c.Code,
+				Code: c.Code,
+			})
+		}
+	}
+	return nil
 }
 
 // deliveryFee resolves the chosen shipping option's price. Fee lookups are

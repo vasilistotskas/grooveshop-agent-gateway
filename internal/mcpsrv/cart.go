@@ -30,11 +30,19 @@ type CartOut struct {
 	Total      string        `json:"total" jsonschema:"VAT-inclusive items total, before promotionDiscount"`
 	Currency   string        `json:"currency"`
 	// Discount fields are present only when non-zero.
-	PromotionDiscount  string   `json:"promotionDiscount,omitempty" jsonschema:"promotion/coupon discount subtracted from total at checkout"`
-	TotalDiscountValue string   `json:"totalDiscountValue,omitempty" jsonschema:"product markdown savings already included in item prices"`
-	AppliedCouponCodes []string `json:"appliedCouponCodes,omitempty"`
-	FreeShipping       bool     `json:"freeShipping,omitempty" jsonschema:"a promotion grants free delivery on this cart"`
-	TotalWeightGrams   int      `json:"totalWeightGrams" jsonschema:"cart weight; pass it to get_shipping_options so options over a weight cap are left out"`
+	PromotionDiscount  string             `json:"promotionDiscount,omitempty" jsonschema:"promotion/coupon discount subtracted from total at checkout"`
+	TotalDiscountValue string             `json:"totalDiscountValue,omitempty" jsonschema:"product markdown savings already included in item prices"`
+	AppliedCouponCodes []string           `json:"appliedCouponCodes,omitempty" jsonschema:"coupon codes that currently apply to this cart"`
+	RefusedCoupons     []RefusedCouponOut `json:"refusedCoupons,omitempty" jsonschema:"coupon codes attached to the cart that do not apply now, with the store's reason"`
+	FreeShipping       bool               `json:"freeShipping,omitempty" jsonschema:"a promotion grants free delivery on this cart"`
+	TotalWeightGrams   int                `json:"totalWeightGrams" jsonschema:"cart weight; pass it to get_shipping_options so options over a weight cap are left out"`
+}
+
+// RefusedCouponOut is an attached coupon the store refuses now — its item
+// left the cart, a better automatic offer won, its gift ran out.
+type RefusedCouponOut struct {
+	Code   string `json:"code"`
+	Reason string `json:"reason" jsonschema:"the store's discount_code_* reason"`
 }
 
 func (h *handlers) cartOut(t *tenant.Tenant, c *django.Cart) CartOut {
@@ -46,9 +54,17 @@ func (h *handlers) cartOut(t *tenant.Tenant, c *django.Cart) CartOut {
 		Items:              make([]CartItemOut, 0, len(c.Items)),
 		PromotionDiscount:  posNum(c.PromotionDiscount),
 		TotalDiscountValue: posNum(c.TotalDiscountValue),
-		AppliedCouponCodes: c.AppliedCouponCodes,
 		FreeShipping:       c.PromotionFreeShipping,
 		TotalWeightGrams:   c.TotalWeightGrams,
+	}
+	for _, coupon := range c.AppliedCoupons {
+		if coupon.Rejection != "" {
+			out.RefusedCoupons = append(out.RefusedCoupons, RefusedCouponOut{
+				Code: coupon.Code, Reason: coupon.Rejection,
+			})
+			continue
+		}
+		out.AppliedCouponCodes = append(out.AppliedCouponCodes, coupon.Code)
 	}
 	for _, it := range c.Items {
 		tr := django.Localized(it.Product.Translations, t.DefaultLocale)
@@ -65,24 +81,28 @@ func (h *handlers) cartOut(t *tenant.Tenant, c *django.Cart) CartOut {
 }
 
 func (h *handlers) cartSummary(out CartOut) *mcp.CallToolResult {
-	discountNote := ""
+	var note strings.Builder
 	if out.PromotionDiscount != "" {
-		discountNote = fmt.Sprintf(" A promotion discount of %s %s",
+		fmt.Fprintf(&note, " A promotion discount of %s %s",
 			out.PromotionDiscount, out.Currency)
 		if len(out.AppliedCouponCodes) > 0 {
-			discountNote += fmt.Sprintf(" (coupon %s)",
+			fmt.Fprintf(&note, " (coupon %s)",
 				strings.Join(out.AppliedCouponCodes, ", "))
 		}
-		discountNote += " applies at checkout."
+		note.WriteString(" applies at checkout.")
 	}
 	if out.FreeShipping {
-		discountNote += " Shipping is free on this cart."
+		note.WriteString(" Shipping is free on this cart.")
+	}
+	for _, refused := range out.RefusedCoupons {
+		fmt.Fprintf(&note, " Coupon %s is attached but does not apply (%s).",
+			refused.Code, refused.Reason)
 	}
 	return textResult(
 		"Cart %s holds %d items totalling %s %s (VAT included).%s Persist "+
 			"cartId for later calls; hand the shopper get_checkout_link "+
 			"when they're ready to pay.",
-		out.CartID, out.TotalItems, out.Total, out.Currency, discountNote,
+		out.CartID, out.TotalItems, out.Total, out.Currency, note.String(),
 	)
 }
 

@@ -3,6 +3,7 @@ package django
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -94,7 +95,8 @@ func TestDecodeCartWithItems(t *testing.T) {
 	assert.Equal(t, "929.36", c.TotalPrice.String())
 	assert.Equal(t, "0.0", c.PromotionDiscount.String())
 	assert.False(t, c.PromotionFreeShipping)
-	assert.Empty(t, c.AppliedCouponCodes)
+	assert.Empty(t, c.AppliedPromotions)
+	assert.Empty(t, c.AppliedCoupons)
 	assert.Equal(t, "0.0", c.TotalDiscountValue.String())
 }
 
@@ -102,9 +104,31 @@ func TestDecodeCartWithCoupon(t *testing.T) {
 	c := decodeFixture[Cart](t, "cart_with_coupon.json")
 
 	assert.Equal(t, "92.94", c.PromotionDiscount.String())
-	assert.Equal(t, []string{"SAVE10"}, c.AppliedCouponCodes)
 	assert.False(t, c.PromotionFreeShipping)
 	assert.Equal(t, "929.36", c.TotalPrice.String())
+	assert.Equal(t, []AppliedPromotion{{
+		PromotionID: 7, Name: "Save 10%", Code: "SAVE10",
+		Amount: json.Number("92.94"),
+	}}, c.AppliedPromotions)
+	// A null rejection decodes to "": the code applies.
+	assert.Equal(t, []AppliedCoupon{{
+		Code: "SAVE10", Amount: json.Number("92.94"),
+	}}, c.AppliedCoupons)
+}
+
+func TestDecodeCartAppliedCouponRejection(t *testing.T) {
+	var c Cart
+	dec := json.NewDecoder(strings.NewReader(`{"appliedPromotions":` +
+		`[{"promotionId":3,"name":"2+1","code":null,"amount":10.79}],` +
+		`"appliedCoupons":[{"code":"GAN20","amount":0,"freeShipping":false,` +
+		`"gift":false,"rejection":"discount_code_not_applicable"}]}`))
+	dec.UseNumber()
+	require.NoError(t, dec.Decode(&c))
+
+	// An automatic promotion's null code decodes to "".
+	assert.Empty(t, c.AppliedPromotions[0].Code)
+	assert.Equal(t, "discount_code_not_applicable",
+		c.AppliedCoupons[0].Rejection)
 }
 
 func TestDecodeOrderPricingBreakdown(t *testing.T) {

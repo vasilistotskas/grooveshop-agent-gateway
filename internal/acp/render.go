@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -141,7 +142,7 @@ func Render(
 		Type: "total", DisplayText: "Total", Amount: pricing.Total,
 	})
 
-	renderDiscounts(s, cart, pricing, out)
+	renderDiscounts(s, pricing, out)
 
 	// An ACP session carries a pay way only when the store offers a
 	// collect-later method for its delivery (Handler.selectPayWay).
@@ -241,37 +242,44 @@ func renderFulfillment(
 }
 
 // renderDiscounts fills the session's discount-extension block: submitted
-// codes echo from the gateway session, applied discounts derive from the
-// Django cart (the store keeps one coupon per cart), and rejections from
-// the last submission surface both in discounts.rejected and as warning
-// messages (MessageWarning carries the discount_code_* vocabulary).
+// codes echo from the gateway session; applied discounts are Django's
+// per-offer breakdown, each with its own amount (a coupon is never
+// credited with an automatic promotion's money); rejections are the last
+// submission's plus the attached codes Django refuses now, and surface
+// both in discounts.rejected and as warning messages (MessageWarning
+// carries the discount_code_* vocabulary).
 func renderDiscounts(
-	s *checkout.Session, cart *django.Cart, pricing *checkout.Pricing,
-	out *Session,
+	s *checkout.Session, pricing *checkout.Pricing, out *Session,
 ) {
 	d := &Discounts{Codes: s.DiscountCodes}
-	for i, code := range cart.AppliedCouponCodes {
-		applied := AppliedDiscount{
-			ID:     code,
-			Code:   code,
-			Coupon: Coupon{ID: code, Name: code},
+	for _, disc := range pricing.Discounts {
+		if disc.Code == "" {
+			id := "promotion_" + strconv.FormatInt(disc.PromotionID, 10)
+			d.Applied = append(d.Applied, AppliedDiscount{
+				ID:        id,
+				Coupon:    Coupon{ID: id, Name: disc.Name},
+				Amount:    disc.Amount,
+				Automatic: true,
+			})
+			continue
 		}
-		// The store evaluates one promotion total, not per-code splits;
-		// with its one-coupon policy the first (only) code carries it.
-		if i == 0 {
-			applied.Amount = pricing.DiscountTotal
-		}
-		d.Applied = append(d.Applied, applied)
-	}
-	if len(cart.AppliedCouponCodes) == 0 && pricing.DiscountTotal > 0 {
 		d.Applied = append(d.Applied, AppliedDiscount{
-			ID:        "automatic",
-			Coupon:    Coupon{ID: "automatic", Name: "Automatic promotion"},
-			Amount:    pricing.DiscountTotal,
-			Automatic: true,
+			ID:     disc.Code,
+			Code:   disc.Code,
+			Coupon: Coupon{ID: disc.Code, Name: disc.Name},
+			Amount: disc.Amount,
 		})
 	}
-	for _, rej := range s.RejectedDiscounts {
+	rejections := slices.Clone(s.RejectedDiscounts)
+	for _, refused := range pricing.RefusedCoupons {
+		if !slices.ContainsFunc(rejections,
+			func(r checkout.DiscountRejection) bool {
+				return r.Code == refused.Code
+			}) {
+			rejections = append(rejections, refused)
+		}
+	}
+	for _, rej := range rejections {
 		d.Rejected = append(d.Rejected, RejectedDiscount{
 			Code: rej.Code, Reason: rej.Reason, Message: rej.Message,
 		})
