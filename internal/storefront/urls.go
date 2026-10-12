@@ -59,6 +59,12 @@ func MCP(domain string) string {
 	return Origin(domain) + "/mcp"
 }
 
+// MCPServerCard is this gateway's MCP Server Card, at the location the
+// Server Card extension reserves: the streamable-HTTP URL + /server-card.
+func MCPServerCard(domain string) string {
+	return MCP(domain) + "/server-card"
+}
+
 // UCPProfile is this gateway's UCP business profile on the tenant
 // domain — the identity order webhooks name in UCP-Agent.
 func UCPProfile(domain string) string {

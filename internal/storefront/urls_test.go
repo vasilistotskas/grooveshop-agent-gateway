@@ -23,6 +23,8 @@ func TestURLs(t *testing.T) {
 	assert.Equal(t, "https://shop.example.test/terms-of-use", Terms(d))
 	assert.Equal(t, "https://shop.example.test/privacy-policy", Privacy(d))
 	assert.Equal(t, "https://shop.example.test/mcp", MCP(d))
+	assert.Equal(t, "https://shop.example.test/mcp/server-card",
+		MCPServerCard(d))
 	assert.Equal(t,
 		"https://shop.example.test/.well-known/oauth-protected-resource/mcp",
 		OAuthResourceMetadata(d))
