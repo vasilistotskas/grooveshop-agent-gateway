@@ -35,33 +35,48 @@ var BridgeIdentity = Identity{Name: "grooveshop/agent-gateway", Title: "Storefro
 // IdentityFor derives a tenant's MCP identity from its primary domain —
 // the tenant's stable name, whichever of its hosts the request came in on.
 func IdentityFor(t *tenant.Tenant) Identity {
-	domain := t.PrimaryDomain
-	if domain == "" {
-		domain = t.Domain
-	}
 	title := t.StoreName
 	if title == "" {
 		title = t.Name
 	}
+	labels := strings.Split(publisher(t), ".")
+	slices.Reverse(labels)
 	// Bounded here, not in the card, so initialize reports the same title.
 	return Identity{
-		Name:  reverseDomain(domain) + "/store",
+		Name:  strings.Join(labels, ".") + "/store",
 		Title: text.Runes(title, serverCardDescriptionMax),
 	}
 }
 
-func reverseDomain(domain string) string {
+// Description is the summary the Server Card gives, and the discovery
+// entries repeat word for word.
+func (id Identity) Description() string {
+	return text.Runes("Shopping tools for "+id.Title+
+		": catalog, cart, checkout and order tracking.",
+		serverCardDescriptionMax)
+}
+
+// publisher is the tenant's primary domain as a lower-case ASCII FQDN:
+// the stem of its reverse-DNS server name and the authority segment of
+// its discovery identifier, which admits no IDN form.
+func publisher(t *tenant.Tenant) string {
+	domain := t.PrimaryDomain
+	if domain == "" {
+		domain = t.Domain
+	}
 	ascii, err := idna.Lookup.ToASCII(strings.TrimSuffix(domain, "."))
 	if err != nil {
 		ascii = domain
 	}
-	labels := strings.Split(strings.ToLower(ascii), ".")
-	slices.Reverse(labels)
-	return strings.Join(labels, ".")
+	return strings.ToLower(ascii)
 }
 
 // serverCardSchema is the only schema URL a v1 Server Card may declare.
 const serverCardSchema = "https://static.modelcontextprotocol.io/schemas/v1/server-card.schema.json"
+
+// serverCardMediaType names a Server Card: its Content-Type, and the
+// `type` of every discovery entry that points at one.
+const serverCardMediaType = "application/mcp-server-card+json"
 
 // serverCard is the SEP-2127 Server Card document: identity and
 // connection details only. It deliberately lists no tools — the spec
@@ -94,9 +109,36 @@ const serverCardDescriptionMax = 100
 // location the Server Card extension reserves, for the tenant resolved
 // from the host. version is the build that also answers `initialize`.
 func ServerCardHandler(version string) http.Handler {
+	return publicDocument(serverCardMediaType, func(t *tenant.Tenant) any {
+		id := IdentityFor(t)
+		card := serverCard{
+			Schema:      serverCardSchema,
+			Name:        id.Name,
+			Version:     version,
+			Description: id.Description(),
+			Title:       id.Title,
+			WebsiteURL:  storefront.Home(t.Domain),
+			Remotes: []remote{{
+				Type:                      "streamable-http",
+				URL:                       storefront.MCP(t.Domain),
+				SupportedProtocolVersions: mcp.SupportedProtocolVersions(),
+			}},
+		}
+		if t.FaviconURL != "" {
+			card.Icons = []icon{{Src: t.FaviconURL}}
+		}
+		return card
+	})
+}
+
+// publicDocument serves the metadata document build makes for the
+// tenant resolved from the host. It is public, so it is readable
+// cross-origin (the Server Card extension requires CORS for browser
+// clients) and cacheable, revalidated by ETag.
+func publicDocument(
+	contentType string, build func(*tenant.Tenant) any,
+) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Cards hold public metadata only; the extension requires CORS so
-		// browser-based clients can read them.
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", "*")
 		h.Set("Access-Control-Allow-Methods", "GET")
@@ -112,28 +154,9 @@ func ServerCardHandler(version string) http.Handler {
 			http.Error(w, "unknown store", http.StatusNotFound)
 			return
 		}
-		id := IdentityFor(t)
-		card := serverCard{
-			Schema:  serverCardSchema,
-			Name:    id.Name,
-			Version: version,
-			Description: text.Runes("Shopping tools for "+id.Title+
-				": catalog, cart, checkout and order tracking.",
-				serverCardDescriptionMax),
-			Title:      id.Title,
-			WebsiteURL: storefront.Home(t.Domain),
-			Remotes: []remote{{
-				Type:                      "streamable-http",
-				URL:                       storefront.MCP(t.Domain),
-				SupportedProtocolVersions: mcp.SupportedProtocolVersions(),
-			}},
-		}
-		if t.FaviconURL != "" {
-			card.Icons = []icon{{Src: t.FaviconURL}}
-		}
-		body, err := json.Marshal(card)
+		body, err := json.Marshal(build(t))
 		if err != nil {
-			http.Error(w, "server card unavailable",
+			http.Error(w, "document unavailable",
 				http.StatusInternalServerError)
 			return
 		}
@@ -145,7 +168,7 @@ func ServerCardHandler(version string) http.Handler {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
-		h.Set("Content-Type", "application/mcp-server-card+json")
+		h.Set("Content-Type", contentType)
 		_, _ = w.Write(body)
 	})
 }

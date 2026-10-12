@@ -101,13 +101,21 @@ func New(d Deps) http.Handler {
 	mux.Handle("/mcp",
 		tenantMW(tenant.RequireAgentCommerce(
 			identityMW(mcpsrv.Handler(mcpDeps, d.Log)))))
+	// Public documents describing the MCP endpoint, readable cross-origin
+	// (OPTIONS answers the CORS preflight). They share its gate: a store
+	// without an MCP endpoint has nothing to describe.
+	describeMCP := func(path string, h http.Handler) {
+		gated := tenantMW(tenant.RequireAgentCommerce(h))
+		mux.Handle("GET "+path, gated)
+		mux.Handle("OPTIONS "+path, gated)
+	}
 	// The Server Card extension's reserved location: the streamable-HTTP
-	// URL + /server-card. The storefront's /.well-known/ai-catalog.json
-	// points here.
-	serverCard := tenantMW(tenant.RequireAgentCommerce(
-		mcpsrv.ServerCardHandler(d.Version)))
-	mux.Handle("GET /mcp/server-card", serverCard)
-	mux.Handle("OPTIONS /mcp/server-card", serverCard)
+	// URL + /server-card. Both discovery documents point here.
+	describeMCP("/mcp/server-card", mcpsrv.ServerCardHandler(d.Version))
+	// The ARD manifest, which ARD consumers MUST fetch, and the AI
+	// Catalog, which MCP Server Card discovery goes through.
+	describeMCP("/.well-known/ard.json", mcpsrv.ARDHandler())
+	describeMCP("/.well-known/ai-catalog.json", mcpsrv.AICatalogHandler())
 
 	// Host-scoped so it cannot shadow a tenant path: Go's ServeMux
 	// prefers a pattern carrying a host over a path-only one. The

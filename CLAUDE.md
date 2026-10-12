@@ -14,6 +14,8 @@ cluster-only internal endpoint and the operational routes:
 |---|---|
 | `POST /mcp` | MCP server (stateless streamable HTTP): the UCP checkout capability's five canonical tools + ergonomic commerce tools + account tools (`my_orders`, `my_loyalty_points`, `my_favourites`) |
 | `GET /mcp/server-card` | MCP Server Card (SEP-2127): identity and remotes only — no tools, which clients read from `tools/list`. Name/title/version match `initialize` (`mcpsrv.IdentityFor`) |
+| `GET /.well-known/ard.json` | Agentic Resource Discovery manifest (ARD v0.91, `application/json`): one entry for the MCP server, with the card's title/description, the registered tool names as `capabilities` and `representativeQueries` |
+| `GET /.well-known/ai-catalog.json` | AI Catalog (`application/ai-catalog+json`): the same entry as `identifier`/`type`/`url` only, since the Server Card it points at is authoritative for name and description |
 | `GET /.well-known/ucp` | UCP business profile (spec 2026-08-25), incl. the `space.grooveshop.payments` handler |
 | `/acp/*` | ACP agentic checkout REST (spec 2026-04-17) |
 | `/feeds/*` | Product feeds: google.xml, meta.xml, tiktok.xml, acp.json |
@@ -182,10 +184,18 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   authorization via UCP `requires_escalation`+`continue_url`), Stripe
   tokenized behind per-tenant flag.
 - Nuxt repo: `/cart/claim?uuid=` claims a gateway-built cart into the
-  browser session; `/.well-known/ai-catalog.json` lists the gateway's
-  `/mcp/server-card`;
+  browser session;
   `.well-known/oauth-protected-resource[/mcp]` names the Django API as
   the OAuth authorization server (allauth.idp: auth-code + PKCE + DCR).
+- Agent discovery is the gateway's alone: `/.well-known/ard.json` and
+  `/.well-known/ai-catalog.json` are both cut from one entry
+  (`mcpsrv.storeEntry`), so they cannot drift from each other or from
+  the Server Card. `identifier` is `urn:air:<primary domain in
+  ASCII>:mcp:store`; `capabilities` come from the same `toolset` that
+  `NewServer` registers, so a new tool is advertised automatically;
+  `representativeQueries` sit beside the tool definitions. Both share
+  `/mcp`'s agent-commerce gate (a store without it gets the same 404),
+  and the Server Card's CORS, ETag and cache headers.
 - Nuxt chat widget (`app/composables/useShopChat.ts`) reads the `/chat`
   SSE events: `delta {text}`, `tool {name, status: running|done}`,
   `products {tool, query?, total?, products: [{id}]}`, `error {message}`,
