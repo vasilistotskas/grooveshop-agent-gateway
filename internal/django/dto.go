@@ -335,7 +335,6 @@ type PricingBreakdown struct {
 	LoyaltyDiscount  json.Number `json:"loyaltyDiscount"`
 	GiftCardAmount   json.Number `json:"giftCardAmount"`
 	GrandTotal       json.Number `json:"grandTotal"`
-	PaidAmount       json.Number `json:"paidAmount"`
 	Currency         string      `json:"currency"`
 }
 
