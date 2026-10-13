@@ -22,10 +22,6 @@
       "amount": 46468,
       "currency": "EUR"
      },
-     "list_price": {
-      "amount": 46468,
-      "currency": "EUR"
-     },
      "availability": {
       "available": true,
       "status": "in_stock"
@@ -79,6 +75,44 @@
       {
        "type": "image",
        "url": "https://assets.platform.test/media_stream-image/media/uploads/products/case.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "4",
+   "title": "Καλώδιο USB-C",
+   "description": {
+    "plain": "Καλώδιο USB-C"
+   },
+   "url": "https://shop.example.test/products/4/kalodio-usb-c",
+   "media": [
+    {
+     "type": "image",
+     "url": "https://assets.platform.test/media_stream-image/media/uploads/products/cable.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
+    }
+   ],
+   "variants": [
+    {
+     "id": "4",
+     "title": "Καλώδιο USB-C",
+     "url": "https://shop.example.test/products/4/kalodio-usb-c",
+     "price": {
+      "amount": 837,
+      "currency": "EUR"
+     },
+     "availability": {
+      "available": true,
+      "status": "in_stock"
+     },
+     "condition": [
+      "new"
+     ],
+     "media": [
+      {
+       "type": "image",
+       "url": "https://assets.platform.test/media_stream-image/media/uploads/products/cable.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg"
       }
      ]
     }

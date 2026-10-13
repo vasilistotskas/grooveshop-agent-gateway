@@ -29,7 +29,7 @@ type Translation struct {
 
 // Product covers list and detail shapes; money and percentages stay
 // json.Number end to end (COERCE_DECIMAL_TO_STRING=False upstream) and are
-// formatted only at protocol edges. FinalPrice is VAT-inclusive.
+// formatted only at protocol edges.
 type Product struct {
 	ID           int64                  `json:"id"`
 	Translations map[string]Translation `json:"translations"`
@@ -37,17 +37,14 @@ type Product struct {
 	Category     int64                  `json:"category"`
 	VariantGroup *int64                 `json:"variantGroup"`
 	BrandName    *string                `json:"brandName"`
-	Price        json.Number            `json:"price"`
-	VatValue     json.Number            `json:"vatValue"`
 	Stock        int                    `json:"stock"`
 	Active       bool                   `json:"active"`
 	Weight       *struct {
 		Unit  string      `json:"unit"`
 		Value json.Number `json:"value"`
 	} `json:"weight"`
-	DiscountPercent        json.Number `json:"discountPercent"`
-	VatPercent             json.Number `json:"vatPercent"`
-	FinalPrice             json.Number `json:"finalPrice"`
+	VatPercent json.Number `json:"vatPercent"`
+	Pricing
 	MainImagePath          string      `json:"mainImagePath"`
 	ReviewAverage          json.Number `json:"reviewAverage"`
 	ReviewCount            int         `json:"reviewCount"`
@@ -55,6 +52,19 @@ type Product struct {
 	ViewCount              int         `json:"viewCount"`
 	UUID                   string      `json:"uuid"`
 	PriceDropAlertsEnabled bool        `json:"priceDropAlertsEnabled"`
+}
+
+// Pricing is the consumer price of one unit as products and search hits
+// carry it (grooveshop-django-api docs/product-pricing.md). EffectivePrice
+// is VAT-inclusive and already net of unconditional automatic promotions:
+// the unit price checkout charges. PriorPrice is the EU Omnibus reference
+// (lowest price of the 30 days before the reduction began); it and
+// AnnouncedDiscountPercent are set together, and only then may a
+// reduction be shown. EffectivePrice is null until upstream records it.
+type Pricing struct {
+	EffectivePrice           json.Number `json:"effectivePrice"`
+	PriorPrice               json.Number `json:"priorPrice"`
+	AnnouncedDiscountPercent json.Number `json:"announcedDiscountPercent"`
 }
 
 // ProductVariants is the /product/{id}/variants payload. Axes stay raw: the
@@ -68,22 +78,20 @@ type ProductVariants struct {
 // The Meilisearch "formatted"/"matchesPosition" blobs are display sugar the
 // gateway does not consume.
 type SearchHit struct {
-	ID              int64       `json:"id"`
-	Slug            string      `json:"slug"`
-	LanguageCode    string      `json:"languageCode"`
-	Name            string      `json:"name"`
-	Description     string      `json:"description"`
-	Master          int64       `json:"master"`
-	MainImagePath   string      `json:"mainImagePath"`
-	ContentType     string      `json:"contentType"`
-	FinalPrice      json.Number `json:"finalPrice"`
-	Price           json.Number `json:"price"`
-	DiscountPercent json.Number `json:"discountPercent"`
-	Stock           int         `json:"stock"`
-	LikesCount      int         `json:"likesCount"`
-	ViewCount       int         `json:"viewCount"`
-	ReviewAverage   json.Number `json:"reviewAverage"`
-	VatPercent      json.Number `json:"vatPercent"`
+	ID            int64  `json:"id"`
+	Slug          string `json:"slug"`
+	LanguageCode  string `json:"languageCode"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Master        int64  `json:"master"`
+	MainImagePath string `json:"mainImagePath"`
+	ContentType   string `json:"contentType"`
+	Pricing
+	Stock         int         `json:"stock"`
+	LikesCount    int         `json:"likesCount"`
+	ViewCount     int         `json:"viewCount"`
+	ReviewAverage json.Number `json:"reviewAverage"`
+	VatPercent    json.Number `json:"vatPercent"`
 }
 
 type SearchProductResponse struct {
@@ -260,12 +268,11 @@ type Review struct {
 
 // CartItem is one cart line; Product is embedded in full by the API.
 type CartItem struct {
-	ID              int64       `json:"id"`
-	Product         Product     `json:"product"`
-	Quantity        int         `json:"quantity"`
-	FinalPrice      json.Number `json:"finalPrice"`
-	TotalPrice      json.Number `json:"totalPrice"`
-	DiscountPercent json.Number `json:"discountPercent"`
+	ID         int64       `json:"id"`
+	Product    Product     `json:"product"`
+	Quantity   int         `json:"quantity"`
+	FinalPrice json.Number `json:"finalPrice"`
+	TotalPrice json.Number `json:"totalPrice"`
 }
 
 // Cart is identified by UUID; the API resolves it from the X-Cart-Id

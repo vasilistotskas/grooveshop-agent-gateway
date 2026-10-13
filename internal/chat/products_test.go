@@ -29,7 +29,7 @@ func searchOut(total int64, productIDs ...int64) mcpsrv.SearchProductsOut {
 	out := mcpsrv.SearchProductsOut{TotalHits: total}
 	for _, id := range productIDs {
 		out.Products = append(out.Products, mcpsrv.ProductSummary{
-			ID: id, Name: "p", FinalPrice: "9.90",
+			ID: id, Name: "p", EffectivePrice: "9.90",
 		})
 	}
 	return out

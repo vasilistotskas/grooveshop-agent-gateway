@@ -1,6 +1,7 @@
 package feeds
 
 import (
+	"bytes"
 	"encoding/json"
 	"encoding/xml"
 	"flag"
@@ -53,21 +54,37 @@ func fixtureProducts() []django.Product {
 				Description: "Γρήγορη φόρτιση &amp; ασφάλεια <b>USB-C</b>.",
 			}},
 			Slug: "fortistis-kinitou", Category: 262,
-			Price: "387.23", VatValue: "77.45", FinalPrice: "464.68",
-			DiscountPercent: "0.0", Stock: 186, Active: true,
+			Pricing: django.Pricing{EffectivePrice: "464.68"},
+			Stock:   186, Active: true,
 			MainImagePath: "media/uploads/products/φορτιστής.jpg",
 		},
 		{
-			// Discounted variant with a brand and item group.
+			// Announced reduction, with a brand and item group: the
+			// prior price is the regular price, the charged one the sale.
 			ID: 2,
 			Translations: map[string]django.Translation{"el": {
 				Name: "Θήκη Κινητού", Description: "",
 			}},
 			Slug: "thiki-kinitou", Category: 262,
 			VariantGroup: new(int64(77)), BrandName: new("Spigen"),
-			Price: "20.00", VatValue: "4.80", FinalPrice: "22.32",
-			DiscountPercent: "10.0", Stock: 0, Active: true,
+			Pricing: django.Pricing{
+				EffectivePrice: "22.32", PriorPrice: "24.80",
+				AnnouncedDiscountPercent: "10",
+			},
+			Stock: 0, Active: true,
 			MainImagePath: "media/uploads/products/case.jpg",
+		},
+		{
+			// Reduced (markdown or promotion) but not announceable yet:
+			// the charged price alone, no sale price.
+			ID: 4,
+			Translations: map[string]django.Translation{"el": {
+				Name: "Καλώδιο USB-C",
+			}},
+			Slug: "kalodio-usb-c", Category: 262,
+			Pricing: django.Pricing{EffectivePrice: "8.37"},
+			Stock:   12, Active: true,
+			MainImagePath: "media/uploads/products/cable.jpg",
 		},
 		{
 			// No image: the platforms reject it, so the writers skip it.
@@ -76,9 +93,20 @@ func fixtureProducts() []django.Product {
 				Name: "Αόρατο Προϊόν",
 			}},
 			Slug: "aorato", Category: 262,
-			Price: "10.00", VatValue: "2.40", FinalPrice: "12.40",
-			DiscountPercent: "0.0", Stock: 5, Active: true,
+			Pricing: django.Pricing{EffectivePrice: "12.40"},
+			Stock:   5, Active: true,
 			MainImagePath: "",
+		},
+		{
+			// Charged price not recorded upstream yet: skipped, never
+			// emitted at a price checkout would not charge.
+			ID: 5,
+			Translations: map[string]django.Translation{"el": {
+				Name: "Νέο Προϊόν",
+			}},
+			Slug: "neo", Category: 262,
+			Stock: 5, Active: true,
+			MainImagePath: "media/uploads/products/new.jpg",
 		},
 	}
 }
@@ -118,10 +146,10 @@ func TestRSSItemRules(t *testing.T) {
 	plain, err := newFeedItem(&products[0], ctx)
 	require.NoError(t, err)
 	require.NotNil(t, plain)
-	// Regular price is VAT-inclusive (price + vatValue), in minor units.
-	assert.EqualValues(t, 46468, plain.RegularMinor)
-	assert.Equal(t, "464.68 EUR", formatFeedPrice(plain.RegularMinor, "EUR"))
-	assert.False(t, plain.HasSalePrice)
+	// The charged price, VAT-inclusive, in minor units.
+	assert.EqualValues(t, 46468, plain.EffectiveMinor)
+	assert.Equal(t, "464.68 EUR", formatFeedPrice(plain.EffectiveMinor, "EUR"))
+	assert.Zero(t, plain.PriorMinor)
 	// HTML is stripped and entities decoded exactly once.
 	assert.Equal(t, "Γρήγορη φόρτιση & ασφάλεια USB-C.", plain.Description)
 	// Unicode path segments are percent-encoded, separators kept.
@@ -131,20 +159,118 @@ func TestRSSItemRules(t *testing.T) {
 	sale, err := newFeedItem(&products[1], ctx)
 	require.NoError(t, err)
 	require.NotNil(t, sale)
-	assert.True(t, sale.HasSalePrice)
+	assert.EqualValues(t, 2232, sale.EffectiveMinor)
+	assert.EqualValues(t, 2480, sale.PriorMinor)
 	assert.Equal(t, "Spigen", sale.Brand)
 	assert.False(t, sale.InStock)
 	// Empty description falls back to the name.
 	assert.Equal(t, "Θήκη Κινητού", sale.Description)
 
-	skipped, err := newFeedItem(&products[2], ctx)
+	skipped, err := newFeedItem(&products[3], ctx)
 	require.NoError(t, err)
 	assert.Nil(t, skipped, "no image -> skipped")
 
-	bad := products[0]
-	bad.Price = "not-money"
-	_, err = newFeedItem(&bad, ctx)
-	assert.Error(t, err, "malformed money aborts rather than emitting 0")
+	unpriced, err := newFeedItem(&products[4], ctx)
+	require.NoError(t, err)
+	assert.Nil(t, unpriced, "no effective price -> skipped")
+
+	for _, mutate := range []func(*django.Product){
+		func(p *django.Product) { p.EffectivePrice = "not-money" },
+		func(p *django.Product) { p.PriorPrice = "not-money" },
+	} {
+		bad := products[0]
+		mutate(&bad)
+		_, err = newFeedItem(&bad, ctx)
+		assert.Error(t, err, "malformed money aborts rather than emitting 0")
+	}
+}
+
+// The feeds price from the upstream Omnibus fields alone. A merchant
+// markdown or a promotion without an announceable prior price must not
+// surface as a sale, and the price stated is the one checkout charges
+// (promotions included), not the deprecated pre-promotion finalPrice.
+func TestFeedPricingFollowsOmnibus(t *testing.T) {
+	cases := []struct {
+		name, payload     string
+		price, salePrice  string
+		acpPrice, acpList int64
+	}{
+		{
+			name: "announced reduction",
+			payload: `"finalPrice":24.90,"discountPercent":20,` +
+				`"effectivePrice":24.90,"priorPrice":31.13,` +
+				`"announcedDiscountPercent":20`,
+			price: "31.13 EUR", salePrice: "24.90 EUR",
+			acpPrice: 2490, acpList: 3113,
+		},
+		{
+			name: "markdown not announceable",
+			payload: `"finalPrice":24.90,"discountPercent":20,` +
+				`"effectivePrice":24.90,"priorPrice":null,` +
+				`"announcedDiscountPercent":null`,
+			price: "24.90 EUR", acpPrice: 2490,
+		},
+		{
+			name: "automatic promotion lowers the charged price",
+			payload: `"finalPrice":30.00,"discountPercent":0,` +
+				`"effectivePrice":27.00,"priorPrice":null,` +
+				`"announcedDiscountPercent":null`,
+			price: "27.00 EUR", acpPrice: 2700,
+		},
+		{
+			name: "announced promotion",
+			payload: `"finalPrice":30.00,"discountPercent":0,` +
+				`"effectivePrice":27.00,"priorPrice":30.00,` +
+				`"announcedDiscountPercent":10`,
+			price: "30.00 EUR", salePrice: "27.00 EUR",
+			acpPrice: 2700, acpList: 3000,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dec := json.NewDecoder(bytes.NewReader([]byte(
+				`{"id":9,"translations":{"el":{"name":"Π"}},"slug":"p",` +
+					`"category":262,"stock":1,"active":true,` +
+					`"mainImagePath":"m.jpg",` + tc.payload + `}`)))
+			dec.UseNumber()
+			var p django.Product
+			require.NoError(t, dec.Decode(&p))
+
+			ctx := testFeedContext()
+			it, err := newFeedItem(&p, ctx)
+			require.NoError(t, err)
+			require.NotNil(t, it)
+
+			rss := newRSSWriter(ctx)
+			rss.Item(it)
+			var doc struct {
+				Items []struct {
+					Price     string  `xml:"http://base.google.com/ns/1.0 price"`
+					SalePrice *string `xml:"http://base.google.com/ns/1.0 sale_price"`
+				} `xml:"channel>item"`
+			}
+			require.NoError(t, xml.Unmarshal(rss.Bytes(), &doc))
+			require.Len(t, doc.Items, 1)
+			assert.Equal(t, tc.price, doc.Items[0].Price)
+			if tc.salePrice == "" {
+				assert.Nil(t, doc.Items[0].SalePrice)
+			} else {
+				require.NotNil(t, doc.Items[0].SalePrice)
+				assert.Equal(t, tc.salePrice, *doc.Items[0].SalePrice)
+			}
+
+			acp := newACPWriter()
+			acp.Item(it)
+			v := acp.feed.Products[0].Variants[0]
+			assert.Equal(t, tc.acpPrice, v.Price.Amount)
+			if tc.acpList == 0 {
+				assert.Nil(t, v.ListPrice)
+			} else {
+				require.NotNil(t, v.ListPrice)
+				assert.Equal(t, tc.acpList, v.ListPrice.Amount)
+			}
+		})
+	}
 }
 
 func TestACPGoldenValidatesAgainstSchema(t *testing.T) {

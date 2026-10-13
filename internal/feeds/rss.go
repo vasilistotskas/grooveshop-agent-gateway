@@ -57,23 +57,28 @@ type feedItem struct {
 	ImageLink   string
 	InStock     bool
 	// Prices are ISO 4217 minor units, like everywhere else in the
-	// gateway; formatFeedPrice renders them at the edge.
-	RegularMinor int64
-	SaleMinor    int64
-	HasSalePrice bool
-	Brand        string
-	CategoryName string
-	VariantGroup *int64
-	Currency     string
+	// gateway; formatFeedPrice renders them at the edge. EffectiveMinor
+	// is the unit price checkout charges. PriorMinor is the Omnibus
+	// reference of an announced reduction and zero when none may be
+	// announced: a feed regular price above the charged one is shown to
+	// consumers as a reduction, so it may only ever be the prior price.
+	EffectiveMinor int64
+	PriorMinor     int64
+	Brand          string
+	CategoryName   string
+	VariantGroup   *int64
+	Currency       string
 }
 
 // newFeedItem maps a product row; a nil item means the platforms would
-// reject the product anyway (no default-locale name or no image), so it
-// is skipped rather than emitted broken. A malformed money field is an
-// error: it would corrupt every consumer's feed.
+// reject the product anyway (no default-locale name or no image), or its
+// charged price is not recorded upstream yet, so it is skipped rather
+// than emitted broken or at a price checkout would not honour. A
+// malformed money field is an error: it would corrupt every consumer's
+// feed.
 func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 	tr := p.Translations[ctx.Locale]
-	if tr.Name == "" || p.MainImagePath == "" {
+	if tr.Name == "" || p.MainImagePath == "" || p.EffectivePrice == "" {
 		return nil, nil
 	}
 	title := text.Runes(tr.Name, feedTitleMax)
@@ -83,20 +88,16 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 	}
 	desc = text.Runes(desc, feedDescriptionMax)
 
-	price, err := money.MinorUnits(p.Price.String())
+	effective, err := money.MinorUnits(p.EffectivePrice.String())
 	if err != nil {
 		return nil, err
 	}
-	vat, err := money.MinorUnits(p.VatValue.String())
-	if err != nil {
-		return nil, err
+	var prior int64
+	if p.PriorPrice != "" {
+		if prior, err = money.MinorUnits(p.PriorPrice.String()); err != nil {
+			return nil, err
+		}
 	}
-	final, err := money.MinorUnits(p.FinalPrice.String())
-	if err != nil {
-		return nil, err
-	}
-	discount, _ := p.DiscountPercent.Float64()
-	regular := price + vat
 
 	brand := ctx.StoreName
 	if p.BrandName != nil && *p.BrandName != "" {
@@ -109,14 +110,13 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 		Link: storefront.Product(ctx.Domain, p.ID, p.Slug),
 		ImageLink: media.ImageURL(ctx.ImageURLTemplate, ctx.AssetsHost,
 			ctx.Schema, p.MainImagePath),
-		InStock:      p.Stock > 0,
-		RegularMinor: regular,
-		SaleMinor:    final,
-		HasSalePrice: discount > 0 && final < regular,
-		Brand:        brand,
-		CategoryName: ctx.CategoryNames[p.Category],
-		VariantGroup: p.VariantGroup,
-		Currency:     ctx.Currency,
+		InStock:        p.Stock > 0,
+		EffectiveMinor: effective,
+		PriorMinor:     prior,
+		Brand:          brand,
+		CategoryName:   ctx.CategoryNames[p.Category],
+		VariantGroup:   p.VariantGroup,
+		Currency:       ctx.Currency,
 	}, nil
 }
 
@@ -150,12 +150,19 @@ func (w *rssWriter) Item(it *feedItem) {
 		fmt.Sprintf("<g:image_link>%s</g:image_link>", escapeXML(it.ImageLink)),
 		fmt.Sprintf("<g:availability>%s</g:availability>", availability(it.InStock)),
 		"<g:condition>new</g:condition>",
-		fmt.Sprintf("<g:price>%s</g:price>",
-			formatFeedPrice(it.RegularMinor, it.Currency)),
 	)
-	if it.HasSalePrice {
-		fields = append(fields, fmt.Sprintf("<g:sale_price>%s</g:sale_price>",
-			formatFeedPrice(it.SaleMinor, it.Currency)))
+	// g:price is the regular price and g:sale_price the current one, shown
+	// against it as a reduction; without an announced reduction g:price
+	// carries the charged price alone.
+	if it.PriorMinor > 0 {
+		fields = append(fields,
+			fmt.Sprintf("<g:price>%s</g:price>",
+				formatFeedPrice(it.PriorMinor, it.Currency)),
+			fmt.Sprintf("<g:sale_price>%s</g:sale_price>",
+				formatFeedPrice(it.EffectiveMinor, it.Currency)))
+	} else {
+		fields = append(fields, fmt.Sprintf("<g:price>%s</g:price>",
+			formatFeedPrice(it.EffectiveMinor, it.Currency)))
 	}
 	fields = append(fields,
 		fmt.Sprintf("<g:brand>%s</g:brand>", escapeXML(it.Brand)))

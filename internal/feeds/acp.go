@@ -76,6 +76,12 @@ func (w *acpWriter) Item(it *feedItem) {
 	if it.Description != "" {
 		desc = &acpDescription{Plain: it.Description}
 	}
+	// list_price is the spec's pre-discount reference: only an announced
+	// reduction's prior price may stand there.
+	var listPrice *acpPrice
+	if it.PriorMinor > 0 {
+		listPrice = &acpPrice{Amount: it.PriorMinor, Currency: it.Currency}
+	}
 	w.feed.Products = append(w.feed.Products, acpProduct{
 		ID:          id,
 		Title:       it.Title,
@@ -87,11 +93,9 @@ func (w *acpWriter) Item(it *feedItem) {
 			Title: it.Title,
 			URL:   it.Link,
 			Price: &acpPrice{
-				Amount: it.SaleMinor, Currency: it.Currency,
+				Amount: it.EffectiveMinor, Currency: it.Currency,
 			},
-			ListPrice: &acpPrice{
-				Amount: it.RegularMinor, Currency: it.Currency,
-			},
+			ListPrice: listPrice,
 			Availability: &acpAvailability{
 				Available: it.InStock, Status: status,
 			},

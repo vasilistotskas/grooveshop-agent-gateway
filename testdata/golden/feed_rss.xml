@@ -30,5 +30,17 @@
       <g:product_type>Ηλεκτρονικά &amp; Gadgets</g:product_type>
       <g:item_group_id>77</g:item_group_id>
     </item>
+    <item>
+      <g:id>4</g:id>
+      <title>Καλώδιο USB-C</title>
+      <description>Καλώδιο USB-C</description>
+      <link>https://shop.example.test/products/4/kalodio-usb-c</link>
+      <g:image_link>https://assets.platform.test/media_stream-image/media/uploads/products/cable.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg</g:image_link>
+      <g:availability>in stock</g:availability>
+      <g:condition>new</g:condition>
+      <g:price>8.37 EUR</g:price>
+      <g:brand>Demo Store</g:brand>
+      <g:product_type>Ηλεκτρονικά &amp; Gadgets</g:product_type>
+    </item>
   </channel>
 </rss>
