@@ -27,6 +27,9 @@ type couponUpstream struct {
 
 	applyStatus int
 	applyBody   string
+	// removeStatus, when set, answers every DELETE (404: a store whose
+	// promotions plan flag is off).
+	removeStatus int
 }
 
 func (u *couponUpstream) client(t *testing.T) *django.Client {
@@ -60,6 +63,11 @@ func (u *couponUpstream) client(t *testing.T) *django.Client {
 			u.removes++
 			u.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
+			if u.removeStatus >= 400 {
+				w.WriteHeader(u.removeStatus)
+				_, _ = w.Write([]byte(`{"detail": "Not found."}`))
+				return
+			}
 			_, _ = w.Write([]byte(cartJSON))
 		})
 	srv := httptest.NewServer(mux)
@@ -199,4 +207,41 @@ func TestMapDiscountReason(t *testing.T) {
 		mapDiscountReason("discount_code_not_started"))
 	assert.Equal(t, DiscountCodeInvalid,
 		mapDiscountReason("something_new_from_upstream"))
+}
+
+// A store with promotions off takes no discount code: every code is
+// refused as invalid without being applied, and the coupon the cart kept
+// from before is cleared (replace semantics), even where that call 404s
+// because the promotions plan flag is off.
+func TestApplyDiscountCodesWithPromotionsOff(t *testing.T) {
+	for name, removeStatus := range map[string]int{
+		"store switch off": 0,
+		"plan flag off":    http.StatusNotFound,
+	} {
+		t.Run(name, func(t *testing.T) {
+			tn := pricingTenant()
+			tn.Features.Promotions = false
+			up := &couponUpstream{removeStatus: removeStatus}
+			dj := up.client(t)
+			s := NewSession("public", tn.Domain, "acp", "c-1")
+
+			err := ApplyDiscountCodes(context.Background(), dj, tn, s,
+				[]string{"SAVE10", "EXTRA1"})
+			require.NoError(t, err)
+
+			assert.Empty(t, up.applies)
+			assert.Equal(t, 1, up.removes)
+			assert.Equal(t, []string{"SAVE10", "EXTRA1"}, s.DiscountCodes)
+			require.Len(t, s.RejectedDiscounts, 2)
+			for i, code := range []string{"SAVE10", "EXTRA1"} {
+				assert.Equal(t, code, s.RejectedDiscounts[i].Code)
+				assert.Equal(t, DiscountCodeInvalid, s.RejectedDiscounts[i].Reason)
+			}
+
+			require.NoError(t,
+				ApplyDiscountCodes(context.Background(), dj, tn, s, nil))
+			assert.Equal(t, 2, up.removes)
+			assert.Empty(t, s.RejectedDiscounts)
+		})
+	}
 }

@@ -32,6 +32,16 @@ var discountExtension = ExtensionDeclaration{
 	Spec:   "https://agenticcommerce.dev/specs/discount",
 }
 
+// capabilitiesOf is what a store's sessions declare: the discount
+// extension only while it has promotions on, since otherwise every code
+// is refused.
+func capabilitiesOf(t *tenant.Tenant) Capabilities {
+	if !t.Features.Promotions {
+		return Capabilities{}
+	}
+	return Capabilities{Extensions: []ExtensionDeclaration{discountExtension}}
+}
+
 // statusOf maps the shared checkout lifecycle onto ACP's vocabulary.
 // ready_for_complete renders as ready_for_payment only when an offline
 // (agent-completable) pay way exists — otherwise the honest state is
@@ -63,9 +73,9 @@ func Render(
 	out := &Session{
 		ID:       s.ID,
 		Protocol: Protocol{Version: Version},
-		Capabilities: Capabilities{
-			Extensions: []ExtensionDeclaration{discountExtension},
-		},
+		// The discount extension is declared only by a store that takes
+		// discount codes (promotions on).
+		Capabilities:       capabilitiesOf(t),
 		Currency:           t.DefaultCurrency,
 		LineItems:          []LineItem{},
 		FulfillmentOptions: []FulfillmentOption{},

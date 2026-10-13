@@ -25,8 +25,8 @@ const demostoreJSON = `{
 	"defaultLocale": "el",
 	"defaultCurrency": "EUR",
 	"primaryDomain": "shop.example.test",
-	"loyaltyEnabled": true,
-	"blogEnabled": true
+	"features": {"productReviews": true, "favourites": true,
+		"loyalty": true, "promotions": false}
 }`
 
 func testLogger() *slog.Logger {

@@ -61,9 +61,11 @@ func storeEntry(t *tenant.Tenant) ardEntry {
 			Type:       serverCardMediaType,
 			URL:        storefront.MCPServerCard(t.Domain),
 		},
-		DisplayName:           id.Title,
-		Description:           id.Description(),
-		Capabilities:          registeredToolNames(),
+		DisplayName: id.Title,
+		Description: id.Description(),
+		// The tools this store is served: one it switched off is not
+		// advertised either.
+		Capabilities:          toolNamesFor(t.Features),
 		RepresentativeQueries: representativeQueries(id.Title),
 	}
 }

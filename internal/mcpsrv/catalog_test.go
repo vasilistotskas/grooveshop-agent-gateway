@@ -72,6 +72,29 @@ func TestSearchProductsPricing(t *testing.T) {
 	assert.Empty(t, plain.AnnouncedDiscountPercent)
 }
 
+// A product's rating is made of its reviews, so a store with reviews off
+// serves none.
+func TestSearchProductsRatingNeedsReviews(t *testing.T) {
+	h, _ := searchHandlers(t)
+	tn := cartTenant()
+
+	tn.Features.ProductReviews = true
+	_, out, err := h.searchProducts(tenant.NewContext(context.Background(), tn),
+		nil, SearchProductsIn{Query: "phone"})
+	require.NoError(t, err)
+	require.NotEmpty(t, out.Products)
+	assert.Equal(t, "0.0", out.Products[0].Rating)
+
+	tn.Features.ProductReviews = false
+	_, out, err = h.searchProducts(tenant.NewContext(context.Background(), tn),
+		nil, SearchProductsIn{Query: "phone"})
+	require.NoError(t, err)
+	require.NotEmpty(t, out.Products)
+	for _, p := range out.Products {
+		assert.Empty(t, p.Rating)
+	}
+}
+
 func TestSearchProductsSort(t *testing.T) {
 	ctx := tenant.NewContext(context.Background(), cartTenant())
 

@@ -10,6 +10,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/shared"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcpsrv"
 )
 
 // cartTools mutate the shopper's cart; a successful call flags the widget
@@ -85,11 +88,14 @@ func (b *bridge) close() {
 	_ = b.session.Close()
 }
 
-// tools converts every MCP tool into an OpenAI-protocol function tool.
-// The MCP input schema is already draft-07-compatible JSON Schema, which
-// is what the chat-completions `parameters` field expects.
+// tools converts every MCP tool the store is served into an
+// OpenAI-protocol function tool. The shared server carries every tool, so
+// a tool whose feature the store switched off is left out here
+// (mcpsrv.Offered). The MCP input schema is already draft-07-compatible
+// JSON Schema, which is what the chat-completions `parameters` field
+// expects.
 func (b *bridge) tools(
-	ctx context.Context,
+	ctx context.Context, features django.StoreFeatures,
 ) ([]openai.ChatCompletionToolUnionParam, error) {
 	list, err := b.session.ListTools(ctx, nil)
 	if err != nil {
@@ -98,7 +104,8 @@ func (b *bridge) tools(
 	tools := make([]openai.ChatCompletionToolUnionParam, 0, len(list.Tools))
 	b.offered = make(map[string]bool, len(list.Tools))
 	for _, t := range list.Tools {
-		if accountTools[t.Name] || checkoutTools[t.Name] {
+		if accountTools[t.Name] || checkoutTools[t.Name] ||
+			!mcpsrv.Offered(t.Name, features) {
 			continue
 		}
 		b.offered[t.Name] = true

@@ -56,6 +56,8 @@ func testTenant() *tenant.Tenant {
 		DefaultCurrency: "EUR",
 		PrimaryDomain:   "shop.example.test",
 		Domain:          "shop.example.test",
+		// A store that takes discount codes.
+		Features: django.StoreFeatures{Promotions: true},
 	}
 }
 
@@ -175,7 +177,7 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 			assert.Equal(t, s.ID, payload.Order.CheckoutSessionID)
 		})
 
-	t.Run("every response declares the discount extension", func(t *testing.T) {
+	t.Run("a store with promotions declares the discount extension", func(t *testing.T) {
 		s := newSession()
 		s.Recompute()
 		payload, err := Render(context.Background(), dj, tn, s)
@@ -186,6 +188,18 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 		assert.Contains(t, ext.Extends, "$.CheckoutSession.discounts")
 		require.NoError(t, sessionSchema.Validate(roundTrip(t, payload)))
 	})
+
+	t.Run("a store with promotions off declares no discount extension",
+		func(t *testing.T) {
+			off := testTenant()
+			off.Features.Promotions = false
+			s := newSession()
+			s.Recompute()
+			payload, err := Render(context.Background(), dj, off, s)
+			require.NoError(t, err)
+			assert.Empty(t, payload.Capabilities.Extensions)
+			require.NoError(t, sessionSchema.Validate(roundTrip(t, payload)))
+		})
 
 	t.Run("applied coupon renders discounts and totals", func(t *testing.T) {
 		couponDj := fixtureDjango(t, "cart_with_coupon.json")

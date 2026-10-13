@@ -37,6 +37,16 @@ func TestSystemPromptIsTenantNeutral(t *testing.T) {
 	assert.NotContains(t, p, "BOX NOW")
 }
 
+// Reviews are a store feature: the assistant offers them only to a store
+// that has them on, as only that store is served the review tool.
+func TestSystemPromptOffersReviewsOnlyWithThem(t *testing.T) {
+	tn := testTenant()
+	assert.NotContains(t, systemPrompt(tn, ""), "reviews")
+
+	tn.Features.ProductReviews = true
+	assert.Contains(t, systemPrompt(tn, ""), "categories, reviews, carts")
+}
+
 func TestSystemPromptWithCart(t *testing.T) {
 	p := systemPrompt(testTenant(), "cart-uuid-1")
 	assert.Contains(t, p, "cart-uuid-1")

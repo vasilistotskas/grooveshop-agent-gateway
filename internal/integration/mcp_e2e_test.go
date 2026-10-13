@@ -303,6 +303,11 @@ func TestMCPEndToEnd(t *testing.T) {
 		assert.EqualValues(t, 186, out["stock"])
 		assert.Equal(t, true, out["inStock"])
 		assert.Equal(t, "20.0", out["vatPercent"])
+		// The store has reviews on: its rating (1–10) and count are served.
+		assert.Equal(t, "5.0", out["rating"])
+		assert.EqualValues(t, 1, out["reviewCount"])
+		assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
+			"Rated 5.0/10 from 1 reviews.")
 	})
 
 	t.Run("get_product unknown id returns tool error", func(t *testing.T) {

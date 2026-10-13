@@ -414,9 +414,12 @@ type TenantConfig struct {
 	// instead of producing assets.<tenant-domain>, a hostname standard
 	// onboarding never creates.
 	AssetsDomain         string `json:"assetsDomain"`
-	LoyaltyEnabled       bool   `json:"loyaltyEnabled"`
-	BlogEnabled          bool   `json:"blogEnabled"`
 	StripePublishableKey string `json:"stripePublishableKey"`
+	// Features is each optional store feature's EFFECTIVE state (the
+	// plan flag AND the store's own settings), resolved by Django from
+	// one table (tenant/features.py). A tool or surface that serves a
+	// feature is offered only while it is on.
+	Features StoreFeatures `json:"features"`
 	// AgentCommerceEnabled / ProductFeedsEnabled gate this gateway's
 	// surfaces per tenant. Django serves the EFFECTIVE value (plan
 	// flag AND merchant extra-setting) on every resolve, and its cache
@@ -448,6 +451,15 @@ type TenantConfig struct {
 	// on /acp/*. Like ChatAPIKey it arrives only on internally
 	// authenticated resolves; empty means no platform is enrolled.
 	ACPBearerToken string `json:"acpBearerToken" contract:"undocumented"`
+}
+
+// StoreFeatures is the part of TenantConfig.features the gateway reads:
+// the features some tool or surface of it serves.
+type StoreFeatures struct {
+	ProductReviews bool `json:"productReviews"`
+	Favourites     bool `json:"favourites"`
+	Loyalty        bool `json:"loyalty"`
+	Promotions     bool `json:"promotions"`
 }
 
 // AgentCommerceOn reports whether the agent-commerce surface (MCP,

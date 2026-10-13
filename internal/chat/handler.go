@@ -269,7 +269,7 @@ func (s *Service) runTurn(
 	}
 	defer br.close()
 
-	tools, err := br.tools(ctx)
+	tools, err := br.tools(ctx, t.Features)
 	if err != nil {
 		return "", "", false, fmt.Errorf("chat: list tools: %w", err)
 	}
