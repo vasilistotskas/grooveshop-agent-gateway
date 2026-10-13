@@ -55,6 +55,7 @@ func TestFulfillmentComplete(t *testing.T) {
 			{"city", func(f *Fulfillment) { f.City = "" }},
 			{"zipcode", func(f *Fulfillment) { f.Zipcode = "" }},
 			{"street", func(f *Fulfillment) { f.Street = "" }},
+			{"street number", func(f *Fulfillment) { f.StreetNumber = "" }},
 		} {
 			f := homeDelivery()
 			tc.mutate(&f)

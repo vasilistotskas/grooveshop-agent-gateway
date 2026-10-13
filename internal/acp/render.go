@@ -330,6 +330,12 @@ func appendStateMessages(s *checkout.Session, out *Session) {
 		missing("$.fulfillment_details.address",
 			"A delivery address (line_one, city, postal_code, country) "+
 				"is required.")
+	} else if f.StreetNumber == "" {
+		// ACP has no house-number field; splitStreetNumber reads it off
+		// the end of line_one.
+		missing("$.fulfillment_details.address.line_one",
+			"line_one must end with the house number, e.g. "+
+				"\"Main Street 12\".")
 	}
 	if f.ProviderCode == "" || f.Kind == "" {
 		missing("$.selected_fulfillment_options",
