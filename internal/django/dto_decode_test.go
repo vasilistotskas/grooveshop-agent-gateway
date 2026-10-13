@@ -25,7 +25,7 @@ func decodeFixture[T any](t *testing.T, name string) T {
 }
 
 func TestDecodeProductDetail(t *testing.T) {
-	p := decodeFixture[Product](t, "product_detail.json")
+	p := decodeFixture[ProductDetail](t, "product_detail.json")
 
 	assert.Equal(t, int64(1), p.ID)
 	assert.Equal(t, "including-hope", p.Slug)

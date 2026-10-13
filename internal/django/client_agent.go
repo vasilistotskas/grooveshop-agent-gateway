@@ -23,9 +23,9 @@ type AgentProfile struct {
 type AgentOrder struct {
 	ID                   int64       `json:"id"`
 	UUID                 string      `json:"uuid"`
-	Status               string      `json:"status"`
+	Status               string      `json:"status" contract:"optional"`
 	StatusDisplay        string      `json:"statusDisplay"`
-	PaymentStatus        string      `json:"paymentStatus"`
+	PaymentStatus        string      `json:"paymentStatus" contract:"optional,untyped"`
 	PaymentStatusDisplay string      `json:"paymentStatusDisplay"`
 	IsPaid               bool        `json:"isPaid"`
 	CreatedAt            string      `json:"createdAt"`
@@ -39,7 +39,7 @@ type AgentLoyalty struct {
 	PointsBalance    json.Number `json:"pointsBalance"`
 	TotalXP          json.Number `json:"totalXp"`
 	Level            json.Number `json:"level"`
-	PointsToNextTier json.Number `json:"pointsToNextTier"`
+	PointsToNextTier json.Number `json:"pointsToNextTier" contract:"nullable"`
 	Tier             *struct {
 		Translations map[string]struct {
 			Name string `json:"name"`

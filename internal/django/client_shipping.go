@@ -60,13 +60,11 @@ func (c *Client) FreeShippingInfo(
 
 // AcsNearestStations matches by postcode prefix (5→3 digits) with a city
 // fallback upstream; coordinates are not supported by the ACS dataset.
+// postalCode is required upstream.
 func (c *Client) AcsNearestStations(
 	ctx context.Context, host, lang, postalCode, city string,
 ) ([]AcsStation, error) {
-	q := url.Values{}
-	if postalCode != "" {
-		q.Set("postalCode", postalCode)
-	}
+	q := url.Values{"postalCode": {postalCode}}
 	if city != "" {
 		q.Set("city", city)
 	}

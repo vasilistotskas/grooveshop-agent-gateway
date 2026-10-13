@@ -98,8 +98,8 @@ func (c *Client) Trending(
 
 func (c *Client) GetProduct(
 	ctx context.Context, host, lang string, id int64,
-) (*Product, error) {
-	var out Product
+) (*ProductDetail, error) {
+	var out ProductDetail
 	err := c.get(ctx, request{
 		path:     "/product/{id}",
 		rawPath:  fmt.Sprintf("/product/%d", id),

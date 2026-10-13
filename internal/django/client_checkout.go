@@ -64,7 +64,9 @@ func (c *Client) ReserveStock(
 }
 
 // OrderCreate is the guest checkout payload (camelCase on the wire). The
-// cart is taken from the X-Cart-Id header, never the body.
+// cart is taken from the X-Cart-Id header, never the body. StreetNumber
+// is required upstream and always sent: an empty one is Django's to
+// refuse, with the store's own message.
 type OrderCreate struct {
 	PayWayID     int64  `json:"payWayId"`
 	FirstName    string `json:"firstName"`
@@ -72,7 +74,7 @@ type OrderCreate struct {
 	Email        string `json:"email"`
 	Phone        string `json:"phone"`
 	Street       string `json:"street"`
-	StreetNumber string `json:"streetNumber,omitempty"`
+	StreetNumber string `json:"streetNumber"`
 	City         string `json:"city"`
 	Zipcode      string `json:"zipcode"`
 	CountryID    string `json:"countryId"`
@@ -140,9 +142,9 @@ func (c *Client) CreateOrderCheckoutSession(
 		host:     host,
 		language: lang,
 		query:    url.Values{"uuid": {orderUUID}},
-		body: map[string]any{
-			"successUrl": successURL,
-			"cancelUrl":  cancelURL,
+		body: checkoutSessionCreate{
+			SuccessURL: successURL,
+			CancelURL:  cancelURL,
 		},
 		out: &out,
 	})
@@ -150,6 +152,11 @@ func (c *Client) CreateOrderCheckoutSession(
 		return nil, err
 	}
 	return &out, nil
+}
+
+type checkoutSessionCreate struct {
+	SuccessURL string `json:"successUrl"`
+	CancelURL  string `json:"cancelUrl"`
 }
 
 // PayWayByID resolves one payment method (pricing needs its fee). The
@@ -160,7 +167,8 @@ func (c *Client) PayWayByID(
 ) (*PayWay, error) {
 	var out PayWay
 	err := c.get(ctx, request{
-		path:     "/pay_way/" + strconv.FormatInt(id, 10),
+		path:     "/pay_way/{id}",
+		rawPath:  "/pay_way/" + strconv.FormatInt(id, 10),
 		host:     host,
 		language: lang,
 		out:      &out,

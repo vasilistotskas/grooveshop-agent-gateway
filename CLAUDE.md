@@ -87,9 +87,9 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   literal in a renderer.
 - `internal/text` — rune-safe truncation. Byte-index cuts split Greek
   runes; use `text.Runes` / `text.Ellipsize`.
-- `testdata/fixtures/django/` — recorded upstream responses; DTO decode
-  tests guard drift. Refresh when `grooveshop-django-api/schema.yml`
-  changes a used endpoint.
+- `testdata/fixtures/django/` — recorded upstream responses for the DTO
+  decode tests. They are hand-recorded, so they prove decoding, not that
+  Django still sends a field: that is the consumer contract's job (below).
 
 ## Conventions
 
@@ -175,6 +175,52 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   arrive via tenant config. Tests use `demostore`/`acme`/`alpha`, and a
   literal schema name in non-test code is a bug.
 - 80-char-ish lines, comments only for non-obvious constraints.
+
+## Django consumer contract
+
+`encoding/json` zero-fills a field Django stops sending, so a removed or
+renamed field would serve wrong data (0 prices in feeds) with no error.
+`contract/django-consumer.openapi.json` is the OpenAPI 3.0.3 document of
+what the gateway needs from Django: every endpoint it calls, the query
+parameters and bodies it sends, and only the response properties its DTOs
+decode. It is the gateway's side of the infrastructure deploy gate
+(`api-contract.sh`): `oasdiff breaking <contract> <Django schema.yml>`
+for each gateway/Django pairing, as for the storefront, refusing a Django
+release that drops, loosens or retypes one of those properties.
+
+- **Generated, never edited.** `internal/django/contract_test.go` holds the
+  call registry (client method, method, path, success status, query
+  parameters, body/response DTO types, Django component names) and builds
+  the document by reflecting over the DTOs. After changing a DTO or a call:
+  `go test ./internal/django -run TestDjangoConsumerContract -update`, and
+  commit the file; without `-update` a stale file fails the test.
+- **Every call is registered.** `TestDjangoContractCoversEveryCall` parses
+  the `client*.go` sources and fails when a `c.get`/`c.send` call is missing
+  from the registry or differs from it (path, method, query keys and
+  whether each is always sent, body and response types). Paths must be
+  templated string literals (`/product/{id}`, concrete one in `rawPath`).
+- **Required/nullable** come from the Go type: a value field is required
+  and non-null; a pointer is optional, and nullable unless `omitempty`;
+  `omitempty` is optional. Where Django's schema is looser than the Go type,
+  the field says so with a tag the readers already honour (they treat the
+  zero value as "not set"): `contract:"optional"`, `contract:"nullable"`,
+  `contract:"untyped"` (Django declares a `oneOf` union),
+  `contract:"undocumented"` (read but absent from Django's schema — e.g.
+  the internal-only `chatApiKey`). Never tag a field to silence a real
+  break: fix the DTO or the call.
+- **How it is read.** oasdiff needs `--flatten-allof` (Django nests objects
+  as `allOf`) and `--severity-levels contract/oasdiff-levels.txt`: removing
+  an *optional* read property is an error too, while enum values, unions
+  and request value constraints (lengths, formats) — which Go types cannot
+  state — are informational. Check a pairing locally with:
+
+  ```bash
+  docker run --rm -v "$PWD/contract:/c" tufin/oasdiff:<pinned> breaking \
+    --flatten-allof --severity-levels /c/oasdiff-levels.txt \
+    --allow-external-refs=false --fail-on ERR -- \
+    /c/django-consumer.openapi.json \
+    https://raw.githubusercontent.com/vasilistotskas/grooveshop-django-api/<tag>/schema.yml
+  ```
 
 ## Cross-repo contracts
 
