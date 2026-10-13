@@ -72,7 +72,10 @@ func ApplyDiscountCodes(
 	// A store with promotions off takes no code. Django refuses one too,
 	// but with the plan flag off its coupon routes answer 404, which
 	// would fail the whole request: refuse every code here instead, as
-	// invalid, without asking Django. There is no coupon to clear either.
+	// invalid. Replace semantics still hold, so clear whatever coupon the
+	// cart kept from before, best effort as on a refusal below: it gives
+	// no discount while promotions are off, but would come back with
+	// them.
 	if !t.Features.Promotions {
 		for _, code := range codes {
 			s.RejectedDiscounts = append(s.RejectedDiscounts, DiscountRejection{
@@ -81,6 +84,7 @@ func ApplyDiscountCodes(
 				Message: "This store is not accepting discount codes.",
 			})
 		}
+		_, _ = dj.RemoveCoupon(ctx, t.Domain, t.DefaultLocale, s.CartID)
 		return nil
 	}
 

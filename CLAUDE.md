@@ -175,9 +175,10 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   through `mcpsrv.Offered`. With reviews off no rating or review count
   leaves the catalog tools either (ratings are on Django's 1–10 scale).
   With promotions off `checkout.ApplyDiscountCodes` refuses every code
-  as `discount_code_invalid` without calling Django (which answers 404
-  with the plan flag off, failing the request), and ACP sessions do not
-  declare the discount extension.
+  as `discount_code_invalid` without applying it (Django answers 404
+  with the plan flag off, which would fail the request) and clears the
+  cart's old coupon best effort, and ACP sessions do not declare the
+  discount extension.
 - Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:v2:{host}`,
   versioned with the cached `TenantConfig` shape: bump it when a field is
   added, or entries an older pod wrote decode it as its zero value.
