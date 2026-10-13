@@ -165,9 +165,10 @@ func New(d Deps) http.Handler {
 	// Chat calls the same toolset in-process. The title is only ever
 	// read from an MCP `initialize` response, which this path does not
 	// serve — the shopper sees the store name through the system prompt
-	// instead — so one shared instance is correct here.
+	// instead — so one shared instance is correct here. It carries every
+	// tool; the bridge offers each store only its own (mcpsrv.Offered).
 	chatSvc := chat.New(d.Cfg,
-		mcpsrv.NewServer(mcpDeps, mcpsrv.BridgeIdentity),
+		mcpsrv.NewServer(mcpDeps, mcpsrv.BridgeIdentity, mcpsrv.EveryFeature),
 		chat.NewStore(d.Redis, d.Cfg.ConversationTTL, d.Cfg.ChatMaxTurns),
 		chat.NewQuota(d.Redis,
 			d.Cfg.ChatStoreTurnsPerHour, d.Cfg.ChatVisitorTurnsPerDay),

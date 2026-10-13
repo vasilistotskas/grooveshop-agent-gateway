@@ -26,6 +26,8 @@ func pricingTenant() *tenant.Tenant {
 		DefaultCurrency: "EUR",
 		PrimaryDomain:   "shop.example.test",
 		Domain:          "shop.example.test",
+		// A store that takes discount codes.
+		Features: django.StoreFeatures{Promotions: true},
 	}
 }
 

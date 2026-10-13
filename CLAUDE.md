@@ -12,9 +12,9 @@ cluster-only internal endpoint and the operational routes:
 
 | Path | Surface |
 |---|---|
-| `POST /mcp` | MCP server (stateless streamable HTTP): the UCP checkout capability's five canonical tools + ergonomic commerce tools + account tools (`my_orders`, `my_loyalty_points`, `my_favourites`) |
+| `POST /mcp` | MCP server (stateless streamable HTTP): the UCP checkout capability's five canonical tools + ergonomic commerce tools + account tools (`my_orders`, `my_loyalty_points`, `my_favourites`); a tool whose store feature is off is neither listed nor callable |
 | `GET /mcp/server-card` | MCP Server Card (SEP-2127): identity and remotes only — no tools, which clients read from `tools/list`. Name/title/version match `initialize` (`mcpsrv.IdentityFor`) |
-| `GET /.well-known/ard.json` | Agentic Resource Discovery manifest (ARD v0.91, `application/json`): one entry for the MCP server, with the card's title/description, the registered tool names as `capabilities` and `representativeQueries` |
+| `GET /.well-known/ard.json` | Agentic Resource Discovery manifest (ARD v0.91, `application/json`): one entry for the MCP server, with the card's title/description, the tool names the store's `tools/list` serves as `capabilities` and `representativeQueries` |
 | `GET /.well-known/ai-catalog.json` | AI Catalog (`application/ai-catalog+json`): the same entry as `identifier`/`type`/`url` only, since the Server Card it points at is authoritative for name and description |
 | `GET /.well-known/ucp` | UCP business profile (spec 2026-08-25), incl. the `space.grooveshop.payments` handler |
 | `/acp/*` | ACP agentic checkout REST (spec 2026-04-17) |
@@ -62,7 +62,7 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   (60s in-memory cache, SHA-256 keys); invalid tokens get 401 + the
   RFC 9728 `WWW-Authenticate` challenge; anonymous requests pass
   through. Account tools forward the bearer — Django enforces scopes.
-- `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:{host}`
+- `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:v2:{host}`
   → Django; singleflight; 60s negative cache; stale-if-error) + middleware
   (tenant from the **real Host header only** — inbound X-Forwarded-Host is
   deliberately ignored; spoofing it must never switch tenants).
@@ -163,7 +163,24 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   pending entries replay on restart, and a dead consumer's are claimed
   after the visibility timeout. Delivery dials only public addresses and
   never follows redirects.
-- Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:{host}`.
+- **A store feature switched off is off on every surface.** Django
+  folds each into one boolean, the plan flag AND the store setting, under
+  `features` on `tenant/resolve` (`TenantConfig.Features`); read
+  nothing else. A tool serving a feature is registered with `onlyWith`
+  (`internal/mcpsrv/server.go`): `get_product_reviews` needs
+  `productReviews`, `my_loyalty_points` `loyalty`, `my_favourites`
+  `favourites`. The per-store server (cached per feature set) neither
+  lists nor serves it, discovery does not advertise it, and the chat
+  bridge, which shares one server built with `EveryFeature`, filters
+  through `mcpsrv.Offered`. With reviews off no rating or review count
+  leaves the catalog tools either (ratings are on Django's 1–10 scale).
+  With promotions off `checkout.ApplyDiscountCodes` refuses every code
+  as `discount_code_invalid` without calling Django (which answers 404
+  with the plan flag off, failing the request), and ACP sessions do not
+  declare the discount extension.
+- Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:v2:{host}`,
+  versioned with the cached `TenantConfig` shape: bump it when a field is
+  added, or entries an older pod wrote decode it as its zero value.
 - No tenant label on Prometheus metrics (unbounded cardinality) — tenant
   goes in logs.
 - **No fallback/legacy/backward-compat code paths.** Environment differences
@@ -244,7 +261,8 @@ release that drops, loosens or retypes one of those properties.
   (`mcpsrv.storeEntry`), so they cannot drift from each other or from
   the Server Card. `identifier` is `urn:air:<primary domain in
   ASCII>:mcp:store`; `capabilities` come from the same `toolset` that
-  `NewServer` registers, so a new tool is advertised automatically;
+  `NewServer` registers for the store's features (`toolNamesFor`), so a
+  new tool is advertised automatically and a switched-off one is not;
   `representativeQueries` sit beside the tool definitions. Both share
   `/mcp`'s agent-commerce gate (a store without it gets the same 404),
   and the Server Card's CORS, ETag and cache headers.

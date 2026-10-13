@@ -200,3 +200,31 @@ func TestMapDiscountReason(t *testing.T) {
 	assert.Equal(t, DiscountCodeInvalid,
 		mapDiscountReason("something_new_from_upstream"))
 }
+
+// A store with promotions off takes no discount code: every code is
+// refused as invalid, and Django (whose coupon routes answer 404 then) is
+// never asked, so the request does not fail.
+func TestApplyDiscountCodesWithPromotionsOff(t *testing.T) {
+	tn := pricingTenant()
+	tn.Features.Promotions = false
+	up := &couponUpstream{}
+	dj := up.client(t)
+	s := NewSession("public", tn.Domain, "acp", "c-1")
+
+	err := ApplyDiscountCodes(context.Background(), dj, tn, s,
+		[]string{"SAVE10", "EXTRA1"})
+	require.NoError(t, err)
+
+	assert.Empty(t, up.applies)
+	assert.Zero(t, up.removes)
+	assert.Equal(t, []string{"SAVE10", "EXTRA1"}, s.DiscountCodes)
+	require.Len(t, s.RejectedDiscounts, 2)
+	for i, code := range []string{"SAVE10", "EXTRA1"} {
+		assert.Equal(t, code, s.RejectedDiscounts[i].Code)
+		assert.Equal(t, DiscountCodeInvalid, s.RejectedDiscounts[i].Reason)
+	}
+
+	require.NoError(t, ApplyDiscountCodes(context.Background(), dj, tn, s, nil))
+	assert.Zero(t, up.removes, "no coupon to clear")
+	assert.Empty(t, s.RejectedDiscounts)
+}

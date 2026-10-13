@@ -1888,6 +1888,29 @@
         ],
         "type": "object"
       },
+      "StoreFeatures": {
+        "properties": {
+          "favourites": {
+            "type": "boolean"
+          },
+          "loyalty": {
+            "type": "boolean"
+          },
+          "productReviews": {
+            "type": "boolean"
+          },
+          "promotions": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "favourites",
+          "loyalty",
+          "productReviews",
+          "promotions"
+        ],
+        "type": "object"
+      },
       "TenantConfig": {
         "properties": {
           "agentCommerceEnabled": {
@@ -1905,9 +1928,6 @@
           "assetsDomain": {
             "type": "string"
           },
-          "blogEnabled": {
-            "type": "boolean"
-          },
           "defaultCurrency": {
             "type": "string"
           },
@@ -1917,14 +1937,14 @@
           "faviconUrl": {
             "type": "string"
           },
+          "features": {
+            "$ref": "#/components/schemas/StoreFeatures"
+          },
           "logoDarkUrl": {
             "type": "string"
           },
           "logoLightUrl": {
             "type": "string"
-          },
-          "loyaltyEnabled": {
-            "type": "boolean"
           },
           "name": {
             "type": "string"
@@ -1953,13 +1973,12 @@
           "agentHostedPaymentEnabled",
           "agentPaymentInstruments",
           "assetsDomain",
-          "blogEnabled",
           "defaultCurrency",
           "defaultLocale",
           "faviconUrl",
+          "features",
           "logoDarkUrl",
           "logoLightUrl",
-          "loyaltyEnabled",
           "name",
           "primaryDomain",
           "productFeedsEnabled",

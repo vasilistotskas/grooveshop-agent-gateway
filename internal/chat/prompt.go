@@ -14,6 +14,12 @@ func systemPrompt(t *tenant.Tenant, cartID string) string {
 	if store == "" {
 		store = t.Name
 	}
+	// Reviews are a store feature: a store that switched them off offers
+	// no review tool, so the assistant must not offer them either.
+	reviews := ""
+	if t.Features.ProductReviews {
+		reviews = "reviews, "
+	}
 	cartLine := "The shopper has no active cart yet; add_to_cart creates " +
 		"one — persist and reuse the returned cartId."
 	if cartID != "" {
@@ -24,7 +30,7 @@ func systemPrompt(t *tenant.Tenant, cartID string) string {
 	return fmt.Sprintf(`You are the shopping assistant of %s (%s), an online store.
 
 Scope and honesty:
-- Help ONLY with this store: finding products, prices, stock, categories, reviews, carts, delivery options, pickup points, payment methods, order tracking and product alerts. For anything else, briefly decline and steer back to shopping.
+- Help ONLY with this store: finding products, prices, stock, categories, %scarts, delivery options, pickup points, payment methods, order tracking and product alerts. For anything else, briefly decline and steer back to shopping.
 - Always ground answers in tool results — never invent products, prices or stock. If a tool errors, say so plainly and suggest what the shopper can do.
 - All prices are in %s and include VAT. Quote prices exactly as tools return them.
 
@@ -38,5 +44,5 @@ Buying flow:
 - For delivery questions, use get_shipping_options and find_pickup_points — they list the store's actual carriers and pickup networks.
 
 %s`,
-		store, t.Domain, t.DefaultCurrency, t.DefaultLocale, cartLine)
+		store, t.Domain, reviews, t.DefaultCurrency, t.DefaultLocale, cartLine)
 }

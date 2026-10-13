@@ -183,28 +183,38 @@ func TestARDEntryNamesWhatTheServerCardReports(t *testing.T) {
 	}
 }
 
-// The entry advertises the tools an agent will find in tools/list.
+// The entry advertises the tools an agent will find in tools/list, for a
+// store with every feature on and for one with none.
 func TestARDCapabilitiesAreTheRegisteredTools(t *testing.T) {
-	ctx := context.Background()
-	serverT, clientT := mcp.NewInMemoryTransports()
-	_, err := NewServer(Deps{Version: "test"}, IdentityFor(cardTenant())).
-		Connect(ctx, serverT, nil)
-	require.NoError(t, err)
-	session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).
-		Connect(ctx, clientT, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = session.Close() })
-	listed, err := session.ListTools(ctx, nil)
-	require.NoError(t, err)
-	var served []any
-	for _, tool := range listed.Tools {
-		served = append(served, tool.Name)
-	}
-	require.NotEmpty(t, served)
+	for name, features := range map[string]django.StoreFeatures{
+		"every feature": EveryFeature,
+		"no feature":    {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tn := cardTenant()
+			tn.Features = features
+			ctx := context.Background()
+			serverT, clientT := mcp.NewInMemoryTransports()
+			_, err := NewServer(Deps{Version: "test"}, IdentityFor(tn), tn.Features).
+				Connect(ctx, serverT, nil)
+			require.NoError(t, err)
+			session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).
+				Connect(ctx, clientT, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = session.Close() })
+			listed, err := session.ListTools(ctx, nil)
+			require.NoError(t, err)
+			var served []any
+			for _, tool := range listed.Tools {
+				served = append(served, tool.Name)
+			}
+			require.NotEmpty(t, served)
 
-	entry := firstEntry(t, decode(t, serve(t, ARDHandler(), cardTenant(),
-		http.MethodGet, nil)))
-	assert.ElementsMatch(t, served, entry["capabilities"])
+			entry := firstEntry(t, decode(t, serve(t, ARDHandler(), tn,
+				http.MethodGet, nil)))
+			assert.ElementsMatch(t, served, entry["capabilities"])
+		})
+	}
 }
 
 func TestARDManifestConformsToTheSpec(t *testing.T) {

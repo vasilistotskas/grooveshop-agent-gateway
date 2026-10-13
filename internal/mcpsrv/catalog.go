@@ -2,6 +2,7 @@ package mcpsrv
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
 // Price is the unit price every product-shaped tool result carries.
@@ -122,7 +124,7 @@ func (h *handlers) searchProducts(
 			Price:       priceOf(hit.Pricing, t.DefaultCurrency),
 			Stock:       hit.Stock,
 			InStock:     hit.Stock > 0,
-			Rating:      num(hit.ReviewAverage),
+			Rating:      ratingOf(t, hit.ReviewAverage),
 			URL:         storefront.Product(t.Domain, hit.Master, hit.Slug),
 			ImageURL:    h.imageURL(t, hit.MainImagePath),
 		}
@@ -145,7 +147,7 @@ type GetProductIn struct {
 type GetProductOut struct {
 	ProductSummary
 	VatPercent          string           `json:"vatPercent"`
-	ReviewCount         int              `json:"reviewCount"`
+	ReviewCount         *int             `json:"reviewCount,omitempty" jsonschema:"absent when the store has reviews off"`
 	Brand               string           `json:"brand,omitempty"`
 	PriceAlertAvailable bool             `json:"priceAlertAvailable"`
 	Variants            []ProductSummary `json:"variants,omitempty"`
@@ -178,12 +180,14 @@ func (h *handlers) getProduct(
 		Price:       priceOf(p.Pricing, t.DefaultCurrency),
 		Stock:       p.Stock,
 		InStock:     p.Stock > 0 && p.Active,
-		Rating:      num(p.ReviewAverage),
+		Rating:      ratingOf(t, p.ReviewAverage),
 		URL:         storefront.Product(t.Domain, p.ID, p.Slug),
 		ImageURL:    h.imageURL(t, p.MainImagePath),
 	}
 	out.VatPercent = num(p.VatPercent)
-	out.ReviewCount = p.ReviewCount
+	if t.Features.ProductReviews {
+		out.ReviewCount = &p.ReviewCount
+	}
 	if p.BrandName != nil {
 		out.Brand = *p.BrandName
 	}
@@ -213,10 +217,29 @@ func (h *handlers) getProduct(
 	}
 
 	return textResult(
-		"%s — %s, %s (%d units). Rating %s/5 from %d reviews. %s",
+		"%s — %s, %s (%d units).%s %s",
 		out.Name, priceNote(&out.Price), stockNote(out.InStock), out.Stock,
-		out.Rating, out.ReviewCount, out.URL,
+		ratingNote(t, out.Rating, p.ReviewCount), out.URL,
 	), out, nil
+}
+
+// ratingOf is a product's average review rating, on Django's 1–10 scale,
+// or empty for a store that switched reviews off: its reviews are not
+// served, so neither is a number made of them.
+func ratingOf(t *tenant.Tenant, average json.Number) string {
+	if !t.Features.ProductReviews {
+		return ""
+	}
+	return num(average)
+}
+
+// ratingNote is the rating sentence of a product's text, empty for a
+// store with reviews off.
+func ratingNote(t *tenant.Tenant, rating string, count int) string {
+	if !t.Features.ProductReviews {
+		return ""
+	}
+	return fmt.Sprintf(" Rated %s/10 from %d reviews.", rating, count)
 }
 
 func stockNote(inStock bool) string {
@@ -393,7 +416,7 @@ func (h *handlers) getProductReviews(
 		})
 	}
 	return textResult(
-		"Rating %s/5 across %d reviews; showing %d.",
+		"Rated %s/10 across %d reviews; showing %d.",
 		out.Average, out.Count, len(out.Reviews),
 	), out, nil
 }
