@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -150,12 +151,11 @@ type MyFavouritesOut struct {
 }
 
 type MyFavourite struct {
-	ProductID  int64  `json:"productId"`
-	Name       string `json:"name"`
-	FinalPrice string `json:"finalPrice"`
-	Currency   string `json:"currency"`
-	InStock    bool   `json:"inStock"`
-	AddedAt    string `json:"addedAt"`
+	ProductID int64  `json:"productId"`
+	Name      string `json:"name"`
+	Price
+	InStock bool   `json:"inStock"`
+	AddedAt string `json:"addedAt"`
 }
 
 func (h *handlers) myFavourites(
@@ -178,20 +178,24 @@ func (h *handlers) myFavourites(
 	}
 
 	out.Favourites = make([]MyFavourite, 0, len(favourites))
+	var lines strings.Builder
 	for _, f := range favourites {
-		out.Favourites = append(out.Favourites, MyFavourite{
-			ProductID:  f.ProductID,
-			Name:       f.Name,
-			FinalPrice: num(f.FinalPrice),
-			Currency:   f.Currency,
-			InStock:    f.InStock,
-			AddedAt:    f.AddedAt,
-		})
+		fav := MyFavourite{
+			ProductID: f.ProductID,
+			Name:      f.Name,
+			Price:     priceOf(f.Pricing, f.Currency),
+			InStock:   f.InStock,
+			AddedAt:   f.AddedAt,
+		}
+		out.Favourites = append(out.Favourites, fav)
+		fmt.Fprintf(&lines, "\n- %s (product %d): %s, %s", fav.Name,
+			fav.ProductID, priceNote(&fav.Price), stockNote(fav.InStock))
 	}
 
 	return textResult(
 		"The linked account has %d favourite products. Use them to "+
 			"personalise suggestions (get_product for details, "+
-			"add_to_cart to buy); prices are VAT-inclusive.",
-		len(out.Favourites)), out, nil
+			"add_to_cart to buy). Quote a previous price or discount "+
+			"only where priorPrice is given.%s",
+		len(out.Favourites), lines.String()), out, nil
 }

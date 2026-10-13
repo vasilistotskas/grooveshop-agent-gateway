@@ -102,14 +102,15 @@ func (c *Client) AgentLoyalty(
 	return &out, nil
 }
 
-// AgentFavourite is one favourited product (scope: favourites:read).
+// AgentFavourite is one favourited product (scope: favourites:read),
+// priced like a product detail.
 type AgentFavourite struct {
-	ProductID  int64       `json:"productId"`
-	Name       string      `json:"name"`
-	FinalPrice json.Number `json:"finalPrice"`
-	Currency   string      `json:"currency"`
-	InStock    bool        `json:"inStock"`
-	AddedAt    string      `json:"addedAt"`
+	ProductID int64  `json:"productId"`
+	Name      string `json:"name"`
+	Pricing
+	Currency string `json:"currency"`
+	InStock  bool   `json:"inStock"`
+	AddedAt  string `json:"addedAt"`
 }
 
 func (c *Client) AgentFavourites(

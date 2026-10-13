@@ -76,6 +76,23 @@ func TestDecodeSearchProduct(t *testing.T) {
 	assert.Equal(t, 250, hit.Stock)
 }
 
+func TestDecodeAgentFavourites(t *testing.T) {
+	favs := decodeFixture[[]AgentFavourite](t, "agent_favourites.json")
+
+	require.Len(t, favs, 3)
+	announced := favs[0]
+	assert.Equal(t, int64(6125), announced.ProductID)
+	assert.Equal(t, "428.72", announced.EffectivePrice.String())
+	assert.Equal(t, "476.35", announced.PriorPrice.String())
+	assert.Equal(t, "10", announced.AnnouncedDiscountPercent.String())
+	assert.Equal(t, "EUR", announced.Currency)
+	assert.True(t, announced.InStock)
+	assert.Equal(t, "17.91", favs[1].EffectivePrice.String())
+	assert.Empty(t, favs[1].PriorPrice, "null prior price: nothing announced")
+	assert.Empty(t, favs[1].AnnouncedDiscountPercent)
+	assert.Empty(t, favs[2].EffectivePrice, "null while not recorded")
+}
+
 func TestDecodeTrending(t *testing.T) {
 	res := decodeFixture[TrendingResponse](t, "search_trending.json")
 	assert.Equal(t, 24, res.WindowHours)

@@ -13,33 +13,43 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 )
 
-// ProductSummary is the compact product shape shared by search results and
-// variant listings. Prices are decimal strings, VAT-inclusive. A reduction
-// is stated only as upstream announces it (EU Omnibus: against the lowest
-// price of the 30 days before it began), never derived here.
-type ProductSummary struct {
-	ID                       int64  `json:"id" jsonschema:"product id for get_product"`
-	Name                     string `json:"name"`
-	Description              string `json:"description,omitempty"`
+// Price is the unit price every product-shaped tool result carries.
+// Prices are decimal strings, VAT-inclusive. A reduction is stated only as
+// upstream announces it (EU Omnibus: against the lowest price of the 30
+// days before it began), never derived here.
+type Price struct {
 	EffectivePrice           string `json:"effectivePrice,omitempty" jsonschema:"VAT-inclusive unit price the shopper pays now, automatic promotions included; absent while the store is re-pricing the product"`
 	PriorPrice               string `json:"priorPrice,omitempty" jsonschema:"present only for an announced reduction: the lowest price of the 30 days before it began, the only previous price that may be quoted"`
 	AnnouncedDiscountPercent string `json:"announcedDiscountPercent,omitempty" jsonschema:"percent off priorPrice, present only with it"`
 	Currency                 string `json:"currency"`
-	Stock                    int    `json:"stock"`
-	InStock                  bool   `json:"inStock"`
-	Rating                   string `json:"rating,omitempty"`
-	URL                      string `json:"url"`
-	ImageURL                 string `json:"imageUrl,omitempty"`
 }
 
-// summaryPricing copies upstream pricing verbatim: an absent prior price
-// means no reduction may be announced, whatever the merchant's markdown.
-func summaryPricing(s *ProductSummary, p django.Pricing) {
-	s.EffectivePrice = p.EffectivePrice.String()
-	if p.PriorPrice != "" {
-		s.PriorPrice = p.PriorPrice.String()
-		s.AnnouncedDiscountPercent = p.AnnouncedDiscountPercent.String()
+// ProductSummary is the compact product shape shared by search results and
+// variant listings.
+type ProductSummary struct {
+	ID          int64  `json:"id" jsonschema:"product id for get_product"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Price
+	Stock    int    `json:"stock"`
+	InStock  bool   `json:"inStock"`
+	Rating   string `json:"rating,omitempty"`
+	URL      string `json:"url"`
+	ImageURL string `json:"imageUrl,omitempty"`
+}
+
+// priceOf copies upstream pricing verbatim: an absent prior price means no
+// reduction may be announced, whatever the merchant's markdown.
+func priceOf(p django.Pricing, currency string) Price {
+	out := Price{
+		EffectivePrice: p.EffectivePrice.String(),
+		Currency:       currency,
 	}
+	if p.PriorPrice != "" {
+		out.PriorPrice = p.PriorPrice.String()
+		out.AnnouncedDiscountPercent = p.AnnouncedDiscountPercent.String()
+	}
+	return out
 }
 
 // searchSorts are the search sort values this tool offers, all accepted
@@ -109,14 +119,13 @@ func (h *handlers) searchProducts(
 			ID:          hit.Master,
 			Name:        hit.Name,
 			Description: truncate(hit.Description, 200),
-			Currency:    t.DefaultCurrency,
+			Price:       priceOf(hit.Pricing, t.DefaultCurrency),
 			Stock:       hit.Stock,
 			InStock:     hit.Stock > 0,
 			Rating:      num(hit.ReviewAverage),
 			URL:         storefront.Product(t.Domain, hit.Master, hit.Slug),
 			ImageURL:    h.imageURL(t, hit.MainImagePath),
 		}
-		summaryPricing(&s, hit.Pricing)
 		out.Products = append(out.Products, s)
 	}
 
@@ -166,14 +175,13 @@ func (h *handlers) getProduct(
 		ID:          p.ID,
 		Name:        tr.Name,
 		Description: truncate(tr.Description, 600),
-		Currency:    t.DefaultCurrency,
+		Price:       priceOf(p.Pricing, t.DefaultCurrency),
 		Stock:       p.Stock,
 		InStock:     p.Stock > 0 && p.Active,
 		Rating:      num(p.ReviewAverage),
 		URL:         storefront.Product(t.Domain, p.ID, p.Slug),
 		ImageURL:    h.imageURL(t, p.MainImagePath),
 	}
-	summaryPricing(&out.ProductSummary, p.Pricing)
 	out.VatPercent = num(p.VatPercent)
 	out.ReviewCount = p.ReviewCount
 	if p.BrandName != nil {
@@ -192,31 +200,33 @@ func (h *handlers) getProduct(
 			vs := ProductSummary{
 				ID:       v.ID,
 				Name:     vtr.Name,
-				Currency: t.DefaultCurrency,
+				Price:    priceOf(v.Pricing, t.DefaultCurrency),
 				Stock:    v.Stock,
 				InStock:  v.Stock > 0 && v.Active,
 				URL:      storefront.Product(t.Domain, v.ID, v.Slug),
 				ImageURL: h.imageURL(t, v.MainImagePath),
 			}
-			summaryPricing(&vs, v.Pricing)
 			out.Variants = append(out.Variants, vs)
 		}
 	}
 
-	stockNote := "in stock"
-	if !out.InStock {
-		stockNote = "OUT OF STOCK"
-	}
 	return textResult(
 		"%s — %s, %s (%d units). Rating %s/5 from %d reviews. %s",
-		out.Name, priceNote(&out.ProductSummary), stockNote, out.Stock,
+		out.Name, priceNote(&out.Price), stockNote(out.InStock), out.Stock,
 		out.Rating, out.ReviewCount, out.URL,
 	), out, nil
 }
 
+func stockNote(inStock bool) string {
+	if inStock {
+		return "in stock"
+	}
+	return "OUT OF STOCK"
+}
+
 // priceNote words the price for the tool's text result; the reduction
 // sentence exists only when upstream announced one.
-func priceNote(s *ProductSummary) string {
+func priceNote(s *Price) string {
 	if s.EffectivePrice == "" {
 		return "price being updated, see the product page"
 	}
