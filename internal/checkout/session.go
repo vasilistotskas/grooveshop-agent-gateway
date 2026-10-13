@@ -56,7 +56,7 @@ type Fulfillment struct {
 	City         string `json:"city"`
 	Zipcode      string `json:"zipcode"`
 	Street       string `json:"street"`
-	StreetNumber string `json:"streetNumber,omitempty"`
+	StreetNumber string `json:"streetNumber"`
 
 	AcsStationExternalID  string `json:"acsStationExternalId,omitempty"`
 	AcsStationBranch      string `json:"acsStationBranch,omitempty"`
@@ -65,10 +65,12 @@ type Fulfillment struct {
 }
 
 // Complete reports whether enough is present to place the order. Django
-// requires the postal address even for pickup points (billing/contact).
+// requires the postal address even for pickup points (billing/contact),
+// the street number included: without it a session would report itself
+// ready and then fail at order creation.
 func (f Fulfillment) Complete() bool {
 	if f.CountryCode == "" || f.City == "" || f.Zipcode == "" ||
-		f.Street == "" {
+		f.Street == "" || f.StreetNumber == "" {
 		return false
 	}
 	switch f.Kind {
@@ -161,7 +163,8 @@ func (s *Session) Missing() []string {
 	}
 	if !s.Fulfillment.Complete() {
 		out = append(out, "fulfillment (kind, providerCode, countryCode, "+
-			"city, zipcode, street; plus the pickup point ids for "+
+			"city, zipcode, street, streetNumber; plus the pickup point "+
+			"ids for "+
 			"pickup_point deliveries)")
 	}
 	if s.PayWayID <= 0 && s.payWaySelectionRequired() {

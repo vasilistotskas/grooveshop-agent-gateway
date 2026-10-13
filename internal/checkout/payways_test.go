@@ -73,6 +73,7 @@ func lockerDelivery() Fulfillment {
 	return Fulfillment{
 		Kind: FulfillmentPickupPoint, ProviderCode: django.ShippingProviderBoxNow,
 		CountryCode: "GR", City: "Αθήνα", Zipcode: "10431", Street: "Ερμού",
+		StreetNumber:   "5",
 		BoxnowLockerID: "4",
 	}
 }
