@@ -84,9 +84,8 @@ type ProductVariants struct {
 	Variants []ProductVariant `json:"variants"`
 }
 
-// ProductVariant is one sibling in a variant group. Upstream trims it to
-// a swatch card and carries no effective price, so a variant's price is
-// read from its own /product/{id}.
+// ProductVariant is one sibling in a variant group, trimmed upstream to a
+// swatch card that carries the sibling's own price fields.
 type ProductVariant struct {
 	ID            int64                  `json:"id"`
 	Translations  map[string]Translation `json:"translations"`
@@ -94,6 +93,7 @@ type ProductVariant struct {
 	Active        bool                   `json:"active"`
 	Stock         int                    `json:"stock"`
 	MainImagePath string                 `json:"mainImagePath"`
+	Pricing
 }
 
 // SearchHit is one /search/product result (ProductTranslationSerializer).
