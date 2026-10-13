@@ -32,8 +32,8 @@ func pagedCatalog(t *testing.T, totalPages int) (*django.Client, *atomic.Int32) 
 			_, _ = fmt.Fprintf(w, `{"links":{"next":null,"previous":null},
 				"count":%d,"totalPages":%d,"pageSize":1,"page":%s,
 				"results":[{"id":%s,"translations":{"el":{"name":"P"}},
-				"slug":"p","category":1,"price":1.00,"vatValue":0.24,
-				"finalPrice":1.24,"discountPercent":0.0,"stock":1,
+				"slug":"p","category":1,"effectivePrice":1.24,
+				"priorPrice":null,"announcedDiscountPercent":null,"stock":1,
 				"active":true,"mainImagePath":"m.jpg"}]}`,
 				totalPages, totalPages, page, page)
 		}))

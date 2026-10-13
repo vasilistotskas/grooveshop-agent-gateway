@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -12,19 +14,39 @@ import (
 )
 
 // ProductSummary is the compact product shape shared by search results and
-// variant listings. Prices are decimal strings, VAT-inclusive.
+// variant listings. Prices are decimal strings, VAT-inclusive. A reduction
+// is stated only as upstream announces it (EU Omnibus: against the lowest
+// price of the 30 days before it began), never derived here.
 type ProductSummary struct {
-	ID              int64  `json:"id" jsonschema:"product id for get_product"`
-	Name            string `json:"name"`
-	Description     string `json:"description,omitempty"`
-	FinalPrice      string `json:"finalPrice" jsonschema:"VAT-inclusive price"`
-	Currency        string `json:"currency"`
-	DiscountPercent string `json:"discountPercent,omitempty"`
-	Stock           int    `json:"stock"`
-	InStock         bool   `json:"inStock"`
-	Rating          string `json:"rating,omitempty"`
-	URL             string `json:"url"`
-	ImageURL        string `json:"imageUrl,omitempty"`
+	ID                       int64  `json:"id" jsonschema:"product id for get_product"`
+	Name                     string `json:"name"`
+	Description              string `json:"description,omitempty"`
+	EffectivePrice           string `json:"effectivePrice,omitempty" jsonschema:"VAT-inclusive unit price the shopper pays now, automatic promotions included; absent while the store is re-pricing the product"`
+	PriorPrice               string `json:"priorPrice,omitempty" jsonschema:"present only for an announced reduction: the lowest price of the 30 days before it began, the only previous price that may be quoted"`
+	AnnouncedDiscountPercent string `json:"announcedDiscountPercent,omitempty" jsonschema:"percent off priorPrice, present only with it"`
+	Currency                 string `json:"currency"`
+	Stock                    int    `json:"stock"`
+	InStock                  bool   `json:"inStock"`
+	Rating                   string `json:"rating,omitempty"`
+	URL                      string `json:"url"`
+	ImageURL                 string `json:"imageUrl,omitempty"`
+}
+
+// summaryPricing copies upstream pricing verbatim: an absent prior price
+// means no reduction may be announced, whatever the merchant's markdown.
+func summaryPricing(s *ProductSummary, p django.Pricing) {
+	s.EffectivePrice = p.EffectivePrice.String()
+	if p.PriorPrice != "" {
+		s.PriorPrice = p.PriorPrice.String()
+		s.AnnouncedDiscountPercent = p.AnnouncedDiscountPercent.String()
+	}
+}
+
+// searchSorts are the search sort values this tool offers, all accepted
+// by Django; the jsonschema tag on SearchProductsIn.Sort lists the same.
+var searchSorts = []string{
+	"effectivePrice", "-effectivePrice", "likesCount", "-likesCount",
+	"viewCount", "-viewCount", "createdAt", "-createdAt",
 }
 
 type SearchProductsIn struct {
@@ -32,7 +54,7 @@ type SearchProductsIn struct {
 	Categories []int64 `json:"categories,omitempty" jsonschema:"category ids from list_categories"`
 	PriceMin   string  `json:"priceMin,omitempty" jsonschema:"minimum VAT-inclusive price, decimal string"`
 	PriceMax   string  `json:"priceMax,omitempty" jsonschema:"maximum VAT-inclusive price, decimal string"`
-	Sort       string  `json:"sort,omitempty" jsonschema:"one of finalPrice,-finalPrice,likesCount,-likesCount,viewCount,-viewCount,createdAt,-createdAt"`
+	Sort       string  `json:"sort,omitempty" jsonschema:"one of effectivePrice,-effectivePrice,likesCount,-likesCount,viewCount,-viewCount,createdAt,-createdAt"`
 	Limit      int     `json:"limit,omitempty" jsonschema:"max results, default 10, cap 20"`
 	Offset     int     `json:"offset,omitempty"`
 }
@@ -52,6 +74,10 @@ func (h *handlers) searchProducts(
 	}
 	if in.Query == "" {
 		return nil, out, errors.New("query is required")
+	}
+	if in.Sort != "" && !slices.Contains(searchSorts, in.Sort) {
+		return nil, out, fmt.Errorf("sort must be one of %s",
+			strings.Join(searchSorts, ", "))
 	}
 	limit := in.Limit
 	if limit <= 0 {
@@ -78,26 +104,27 @@ func (h *handlers) searchProducts(
 	out.TotalHits = res.EstimatedTotalHits
 	out.Products = make([]ProductSummary, 0, len(res.Results))
 	for _, hit := range res.Results {
-		out.Products = append(out.Products, ProductSummary{
+		s := ProductSummary{
 			// Search hits are translation rows; Master is the product id.
-			ID:              hit.Master,
-			Name:            hit.Name,
-			Description:     truncate(hit.Description, 200),
-			FinalPrice:      num(hit.FinalPrice),
-			Currency:        t.DefaultCurrency,
-			DiscountPercent: num(hit.DiscountPercent),
-			Stock:           hit.Stock,
-			InStock:         hit.Stock > 0,
-			Rating:          num(hit.ReviewAverage),
-			URL:             storefront.Product(t.Domain, hit.Master, hit.Slug),
-			ImageURL:        h.imageURL(t, hit.MainImagePath),
-		})
+			ID:          hit.Master,
+			Name:        hit.Name,
+			Description: truncate(hit.Description, 200),
+			Currency:    t.DefaultCurrency,
+			Stock:       hit.Stock,
+			InStock:     hit.Stock > 0,
+			Rating:      num(hit.ReviewAverage),
+			URL:         storefront.Product(t.Domain, hit.Master, hit.Slug),
+			ImageURL:    h.imageURL(t, hit.MainImagePath),
+		}
+		summaryPricing(&s, hit.Pricing)
+		out.Products = append(out.Products, s)
 	}
 
 	return textResult(
 		"Found %d of %d matching products for %q. Prices are "+
-			"VAT-inclusive %s. Use get_product with a product id for "+
-			"full details.",
+			"VAT-inclusive %s. Quote a previous price or discount only "+
+			"where priorPrice is given. Use get_product with a product "+
+			"id for full details.",
 		len(out.Products), out.TotalHits, in.Query, t.DefaultCurrency,
 	), out, nil
 }
@@ -136,18 +163,17 @@ func (h *handlers) getProduct(
 
 	tr := django.Localized(p.Translations, t.DefaultLocale)
 	out.ProductSummary = ProductSummary{
-		ID:              p.ID,
-		Name:            tr.Name,
-		Description:     truncate(tr.Description, 600),
-		FinalPrice:      num(p.FinalPrice),
-		Currency:        t.DefaultCurrency,
-		DiscountPercent: num(p.DiscountPercent),
-		Stock:           p.Stock,
-		InStock:         p.Stock > 0 && p.Active,
-		Rating:          num(p.ReviewAverage),
-		URL:             storefront.Product(t.Domain, p.ID, p.Slug),
-		ImageURL:        h.imageURL(t, p.MainImagePath),
+		ID:          p.ID,
+		Name:        tr.Name,
+		Description: truncate(tr.Description, 600),
+		Currency:    t.DefaultCurrency,
+		Stock:       p.Stock,
+		InStock:     p.Stock > 0 && p.Active,
+		Rating:      num(p.ReviewAverage),
+		URL:         storefront.Product(t.Domain, p.ID, p.Slug),
+		ImageURL:    h.imageURL(t, p.MainImagePath),
 	}
+	summaryPricing(&out.ProductSummary, p.Pricing)
 	out.VatPercent = num(p.VatPercent)
 	out.ReviewCount = p.ReviewCount
 	if p.BrandName != nil {
@@ -163,16 +189,17 @@ func (h *handlers) getProduct(
 				continue
 			}
 			vtr := django.Localized(v.Translations, t.DefaultLocale)
-			out.Variants = append(out.Variants, ProductSummary{
-				ID:         v.ID,
-				Name:       vtr.Name,
-				FinalPrice: num(v.FinalPrice),
-				Currency:   t.DefaultCurrency,
-				Stock:      v.Stock,
-				InStock:    v.Stock > 0 && v.Active,
-				URL:        storefront.Product(t.Domain, v.ID, v.Slug),
-				ImageURL:   h.imageURL(t, v.MainImagePath),
-			})
+			vs := ProductSummary{
+				ID:       v.ID,
+				Name:     vtr.Name,
+				Currency: t.DefaultCurrency,
+				Stock:    v.Stock,
+				InStock:  v.Stock > 0 && v.Active,
+				URL:      storefront.Product(t.Domain, v.ID, v.Slug),
+				ImageURL: h.imageURL(t, v.MainImagePath),
+			}
+			summaryPricing(&vs, v.Pricing)
+			out.Variants = append(out.Variants, vs)
 		}
 	}
 
@@ -181,11 +208,25 @@ func (h *handlers) getProduct(
 		stockNote = "OUT OF STOCK"
 	}
 	return textResult(
-		"%s — %s %s (VAT included), %s (%d units). Rating %s/5 from %d "+
-			"reviews. %s",
-		out.Name, out.FinalPrice, out.Currency, stockNote, out.Stock,
+		"%s — %s, %s (%d units). Rating %s/5 from %d reviews. %s",
+		out.Name, priceNote(&out.ProductSummary), stockNote, out.Stock,
 		out.Rating, out.ReviewCount, out.URL,
 	), out, nil
+}
+
+// priceNote words the price for the tool's text result; the reduction
+// sentence exists only when upstream announced one.
+func priceNote(s *ProductSummary) string {
+	if s.EffectivePrice == "" {
+		return "price being updated, see the product page"
+	}
+	note := fmt.Sprintf("%s %s (VAT included)", s.EffectivePrice, s.Currency)
+	if s.PriorPrice != "" {
+		note += fmt.Sprintf(", %s%% off %s %s, its lowest price in the "+
+			"30 days before the reduction", s.AnnouncedDiscountPercent,
+			s.PriorPrice, s.Currency)
+	}
+	return note
 }
 
 // CategoryOut is deliberately flat: recursive types cannot carry an MCP

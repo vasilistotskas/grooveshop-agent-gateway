@@ -283,7 +283,12 @@ func TestMCPEndToEnd(t *testing.T) {
 		// The exposed id must be the master product id, not the
 		// translation row id.
 		assert.EqualValues(t, 510, first["id"])
-		assert.Equal(t, "934.61", first["finalPrice"])
+		assert.Equal(t, "934.61", first["effectivePrice"])
+		assert.Equal(t, "983.8", first["priorPrice"])
+		assert.Equal(t, "5", first["announcedDiscountPercent"])
+		second := products[1].(map[string]any)
+		assert.NotContains(t, second, "priorPrice")
+		assert.NotContains(t, second, "announcedDiscountPercent")
 		assert.Equal(t, "EUR", first["currency"])
 		assert.Contains(t, first["url"], "/products/510/")
 	})
@@ -293,7 +298,8 @@ func TestMCPEndToEnd(t *testing.T) {
 			map[string]any{"productId": 1})
 		require.False(t, res.IsError)
 		out := structured(t, res)
-		assert.Equal(t, "464.68", out["finalPrice"])
+		assert.Equal(t, "464.68", out["effectivePrice"])
+		assert.NotContains(t, out, "priorPrice")
 		assert.EqualValues(t, 186, out["stock"])
 		assert.Equal(t, true, out["inStock"])
 		assert.Equal(t, "20.0", out["vatPercent"])
