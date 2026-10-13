@@ -2,6 +2,7 @@ package django
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -35,10 +36,10 @@ type couponApply struct {
 }
 
 type productAlertCreate struct {
-	Kind        string `json:"kind"`
-	Product     int64  `json:"product"`
-	Email       string `json:"email"`
-	TargetPrice string `json:"targetPrice,omitempty"`
+	Kind        string      `json:"kind"`
+	Product     int64       `json:"product"`
+	Email       string      `json:"email" contract:"format=email"`
+	TargetPrice json.Number `json:"targetPrice,omitempty" contract:"format=double"`
 }
 
 // GetCart fetches the cart identified by cartID; with an empty id Django
@@ -180,7 +181,7 @@ func (c *Client) OrderByUUID(
 // Duplicate subscriptions surface as ErrConflict.
 func (c *Client) CreateProductAlert(
 	ctx context.Context, host, lang, kind string,
-	productID int64, email, targetPrice string,
+	productID int64, email string, targetPrice json.Number,
 ) (*ProductAlert, error) {
 	var out ProductAlert
 	err := c.send(ctx, http.MethodPost, request{

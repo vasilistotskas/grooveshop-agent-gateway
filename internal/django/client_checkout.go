@@ -71,7 +71,7 @@ type OrderCreate struct {
 	PayWayID     int64  `json:"payWayId"`
 	FirstName    string `json:"firstName"`
 	LastName     string `json:"lastName"`
-	Email        string `json:"email"`
+	Email        string `json:"email" contract:"format=email"`
 	Phone        string `json:"phone"`
 	Street       string `json:"street"`
 	StreetNumber string `json:"streetNumber"`
@@ -155,8 +155,8 @@ func (c *Client) CreateOrderCheckoutSession(
 }
 
 type checkoutSessionCreate struct {
-	SuccessURL string `json:"successUrl"`
-	CancelURL  string `json:"cancelUrl"`
+	SuccessURL string `json:"successUrl" contract:"format=uri"`
+	CancelURL  string `json:"cancelUrl" contract:"format=uri"`
 }
 
 // PayWayByID resolves one payment method (pricing needs its fee). The

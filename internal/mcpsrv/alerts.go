@@ -2,12 +2,14 @@ package mcpsrv
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
 )
 
 type SubscribeAlertIn struct {
@@ -43,9 +45,13 @@ func (h *handlers) subscribeProductAlert(
 		return nil, out, errors.New(
 			"targetPrice is required for price_drop alerts")
 	}
+	target, err := alertTargetPrice(in.TargetPrice)
+	if err != nil {
+		return nil, out, err
+	}
 
 	_, err = h.deps.Django.CreateProductAlert(ctx, t.Domain, t.DefaultLocale,
-		in.Kind, in.ProductID, in.Email, in.TargetPrice)
+		in.Kind, in.ProductID, in.Email, target)
 	out.Kind = in.Kind
 	out.ProductID = in.ProductID
 	switch {
@@ -64,7 +70,7 @@ func (h *handlers) subscribeProductAlert(
 	if in.Kind == "restock" {
 		msg += "is back in stock."
 	} else {
-		msg += fmt.Sprintf("drops to %s.", in.TargetPrice)
+		msg += fmt.Sprintf("drops to %s.", target)
 	}
 	if out.AlreadySubscribed {
 		msg = "That email is already subscribed to this alert for " +
@@ -72,4 +78,20 @@ func (h *handlers) subscribeProductAlert(
 		return textResult(msg, in.ProductID, in.Email), out, nil
 	}
 	return textResult(msg, in.Email, in.ProductID), out, nil
+}
+
+// alertTargetPrice turns the agent's decimal string into the JSON number
+// Django declares, normalised to 2dp so it is always a valid literal; an
+// absent target (restock alerts) stays empty and is not sent.
+func alertTargetPrice(decimal string) (json.Number, error) {
+	if decimal == "" {
+		return "", nil
+	}
+	minor, err := money.MinorUnits(decimal)
+	if err != nil || minor <= 0 {
+		return "", fmt.Errorf(
+			"targetPrice must be a positive amount like 19.90, got %q",
+			decimal)
+	}
+	return json.Number(money.Format(minor)), nil
 }

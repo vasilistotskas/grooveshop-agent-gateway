@@ -456,6 +456,9 @@ var (
 //   - untyped: Django declares a oneOf union, which oasdiff reports as a
 //     type change against any plain type; the contract asserts presence.
 //   - undocumented: read, but missing from Django's OpenAPI document.
+//   - format=<f>: the OpenAPI format Django declares for a sent value
+//     (email, uri, double); oasdiff counts a format change as a type
+//     change.
 type schemaGen struct {
 	t          *testing.T
 	names      map[string]string
@@ -582,8 +585,13 @@ func (g *schemaGen) fields(
 		// A pointer that is omitted when nil is never sent as null.
 		nullable := pointer && !omitempty
 		untyped, undocumented := false, false
+		format := ""
 		if ct := f.Tag.Get("contract"); ct != "" {
 			for v := range strings.SplitSeq(ct, ",") {
+				if fv, ok := strings.CutPrefix(v, "format="); ok {
+					format = fv
+					continue
+				}
 				switch v {
 				case "optional":
 					optional = true
@@ -607,6 +615,14 @@ func (g *schemaGen) fields(
 		s := map[string]any{}
 		if !untyped {
 			s = g.schema(f.Type)
+		}
+		if format != "" {
+			if _, scalar := s["type"].(string); !scalar ||
+				s["type"] == "object" || s["type"] == "array" {
+				g.t.Fatalf("%s.%s: format=%s needs a scalar field",
+					t, f.Name, format)
+			}
+			s["format"] = format
 		}
 		if nullable {
 			g.nullable(f.Type, s)

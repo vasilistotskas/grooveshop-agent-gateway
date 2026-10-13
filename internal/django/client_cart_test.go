@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -135,4 +136,53 @@ func TestRemoveCouponReturnsUpdatedCart(t *testing.T) {
 	assert.Equal(t, "cart-uuid", gotCartID)
 	assert.Empty(t, cart.AppliedCoupons)
 	assert.Equal(t, "0.0", cart.PromotionDiscount.String())
+}
+
+// Django declares targetPrice a number: it must go on the wire as a JSON
+// number, and a restock alert (no target) must not send the key at all.
+func TestCreateProductAlertSendsTargetPriceAsNumber(t *testing.T) {
+	cases := []struct {
+		name   string
+		kind   string
+		target json.Number
+		want   string
+	}{
+		{
+			name: "price drop", kind: "price_drop", target: "19.90",
+			want: `{"kind":"price_drop","product":7,` +
+				`"email":"a@example.test","targetPrice":19.90}`,
+		},
+		{
+			name: "restock", kind: "restock",
+			want: `{"kind":"restock","product":7,` +
+				`"email":"a@example.test"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var raw []byte
+			srv := httptest.NewServer(http.HandlerFunc(
+				func(w http.ResponseWriter, r *http.Request) {
+					assert.Equal(t, "/api/v1/product/alert", r.URL.Path)
+					var err error
+					raw, err = io.ReadAll(r.Body)
+					assert.NoError(t, err)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusCreated)
+					_, _ = w.Write(fixture(t, "product_alert_created.json"))
+				}))
+			defer srv.Close()
+
+			c := newTestClient(t, srv.URL)
+			_, err := c.CreateProductAlert(context.Background(),
+				"shop.example.test", "el", tc.kind, 7, "a@example.test",
+				tc.target)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.want, string(raw))
+			if tc.target != "" {
+				assert.Contains(t, string(raw), `"targetPrice":19.90`,
+					"a number, never a quoted string")
+			}
+		})
+	}
 }

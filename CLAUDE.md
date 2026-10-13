@@ -206,13 +206,19 @@ release that drops, loosens or retypes one of those properties.
   zero value as "not set"): `contract:"optional"`, `contract:"nullable"`,
   `contract:"untyped"` (Django declares a `oneOf` union),
   `contract:"undocumented"` (read but absent from Django's schema — e.g.
-  the internal-only `chatApiKey`). Never tag a field to silence a real
-  break: fix the DTO or the call.
+  the internal-only `chatApiKey`). A sent value carries Django's declared
+  format with `contract:"format=email|uri|double"`, and its Go type must
+  marshal to Django's JSON type (`targetPrice` is a `json.Number`, sent as
+  a number). Never tag a field to silence a real break: fix the DTO or the
+  call.
 - **How it is read.** oasdiff needs `--flatten-allof` (Django nests objects
   as `allOf`) and `--severity-levels contract/oasdiff-levels.txt`: removing
-  an *optional* read property is an error too, while enum values, unions
-  and request value constraints (lengths, formats) — which Go types cannot
-  state — are informational. Check a pairing locally with:
+  an *optional* read property is an error too, and so is a request body
+  property changing type or format. Informational only: enum values and
+  unions (Django's to grow), request lengths/ranges/enums (Go types cannot
+  state them), and query/path parameter types — parameters are declared as
+  strings on purpose, since that is what the URL carries and Django's
+  integer parameters accept it. Check a pairing locally with:
 
   ```bash
   docker run --rm -v "$PWD/contract:/c" tufin/oasdiff:<pinned> breaking \

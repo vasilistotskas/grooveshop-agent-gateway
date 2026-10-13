@@ -612,9 +612,11 @@
       "CreateCheckoutSessionRequestRequest": {
         "properties": {
           "cancelUrl": {
+            "format": "uri",
             "type": "string"
           },
           "successUrl": {
+            "format": "uri",
             "type": "string"
           }
         },
@@ -840,6 +842,7 @@
             "type": "string"
           },
           "email": {
+            "format": "email",
             "type": "string"
           },
           "firstName": {
@@ -1425,6 +1428,7 @@
       "ProductAlertRequest": {
         "properties": {
           "email": {
+            "format": "email",
             "type": "string"
           },
           "kind": {
@@ -1434,7 +1438,8 @@
             "type": "integer"
           },
           "targetPrice": {
-            "type": "string"
+            "format": "double",
+            "type": "number"
           }
         },
         "required": [
