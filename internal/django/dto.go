@@ -3,21 +3,25 @@ package django
 import "encoding/json"
 
 // DTOs are hand-written and hold only the fields the gateway consumes —
-// unknown upstream fields are ignored by encoding/json. Drift against
-// grooveshop-django-api/schema.yml is guarded by fixture-decode tests in
-// dto_decode_test.go; refresh testdata/fixtures/django/ whenever a used
-// endpoint's schema changes.
+// unknown upstream fields are ignored by encoding/json, and a missing one
+// silently zero-fills. contract/django-consumer.openapi.json is generated
+// from these types (contract_test.go) and the deploy gate diffs it against
+// each Django release's schema.yml, so a DTO change needs
+// `go test ./internal/django -run TestDjangoConsumerContract -update`.
+// `contract:"…"` tags record where Django's schema is looser than the Go
+// type (see schemaGen). Fixture-decode tests in dto_decode_test.go cover
+// decoding itself.
 
 // Page is the DRF pagination envelope shared by every list endpoint.
 type Page[T any] struct {
 	Links struct {
 		Next     *string `json:"next"`
 		Previous *string `json:"previous"`
-	} `json:"links"`
+	} `json:"links" contract:"optional"`
 	Count      int64 `json:"count"`
-	TotalPages int   `json:"totalPages"`
-	PageSize   int   `json:"pageSize"`
-	Page       int   `json:"page"`
+	TotalPages int   `json:"totalPages" contract:"optional"`
+	PageSize   int   `json:"pageSize" contract:"optional"`
+	Page       int   `json:"page" contract:"optional"`
 	Results    []T   `json:"results"`
 }
 
@@ -37,21 +41,27 @@ type Product struct {
 	Category     int64                  `json:"category"`
 	VariantGroup *int64                 `json:"variantGroup"`
 	BrandName    *string                `json:"brandName"`
-	Stock        int                    `json:"stock"`
-	Active       bool                   `json:"active"`
+	Stock        int                    `json:"stock" contract:"optional"`
+	Active       bool                   `json:"active" contract:"optional"`
 	Weight       *struct {
-		Unit  string      `json:"unit"`
-		Value json.Number `json:"value"`
+		Unit  string      `json:"unit" contract:"optional"`
+		Value json.Number `json:"value" contract:"optional"`
 	} `json:"weight"`
 	VatPercent json.Number `json:"vatPercent"`
 	Pricing
-	MainImagePath          string      `json:"mainImagePath"`
-	ReviewAverage          json.Number `json:"reviewAverage"`
-	ReviewCount            int         `json:"reviewCount"`
-	LikesCount             int         `json:"likesCount"`
-	ViewCount              int         `json:"viewCount"`
-	UUID                   string      `json:"uuid"`
-	PriceDropAlertsEnabled bool        `json:"priceDropAlertsEnabled"`
+	MainImagePath string      `json:"mainImagePath"`
+	ReviewAverage json.Number `json:"reviewAverage"`
+	ReviewCount   int         `json:"reviewCount"`
+	LikesCount    int         `json:"likesCount"`
+	ViewCount     int         `json:"viewCount"`
+	UUID          string      `json:"uuid"`
+}
+
+// ProductDetail is the /product/{id} shape: the price-drop alert switch
+// exists only on the single-product payload.
+type ProductDetail struct {
+	Product
+	PriceDropAlertsEnabled bool `json:"priceDropAlertsEnabled"`
 }
 
 // Pricing is the consumer price of one unit as products and search hits
@@ -62,16 +72,28 @@ type Product struct {
 // AnnouncedDiscountPercent are set together, and only then may a
 // reduction be shown. EffectivePrice is null until upstream records it.
 type Pricing struct {
-	EffectivePrice           json.Number `json:"effectivePrice"`
-	PriorPrice               json.Number `json:"priorPrice"`
-	AnnouncedDiscountPercent json.Number `json:"announcedDiscountPercent"`
+	EffectivePrice           json.Number `json:"effectivePrice" contract:"nullable"`
+	PriorPrice               json.Number `json:"priorPrice" contract:"nullable"`
+	AnnouncedDiscountPercent json.Number `json:"announcedDiscountPercent" contract:"nullable"`
 }
 
 // ProductVariants is the /product/{id}/variants payload. Axes stay raw: the
 // gateway forwards them verbatim and the shape varies per variant group.
 type ProductVariants struct {
-	Axes     json.RawMessage `json:"axes"`
-	Variants []Product       `json:"variants"`
+	Axes     json.RawMessage  `json:"axes"`
+	Variants []ProductVariant `json:"variants"`
+}
+
+// ProductVariant is one sibling in a variant group. Upstream trims it to
+// a swatch card and carries no effective price, so a variant's price is
+// read from its own /product/{id}.
+type ProductVariant struct {
+	ID            int64                  `json:"id"`
+	Translations  map[string]Translation `json:"translations"`
+	Slug          string                 `json:"slug"`
+	Active        bool                   `json:"active"`
+	Stock         int                    `json:"stock"`
+	MainImagePath string                 `json:"mainImagePath"`
 }
 
 // SearchHit is one /search/product result (ProductTranslationSerializer).
@@ -90,8 +112,8 @@ type SearchHit struct {
 	Stock         int         `json:"stock"`
 	LikesCount    int         `json:"likesCount"`
 	ViewCount     int         `json:"viewCount"`
-	ReviewAverage json.Number `json:"reviewAverage"`
-	VatPercent    json.Number `json:"vatPercent"`
+	ReviewAverage json.Number `json:"reviewAverage" contract:"nullable"`
+	VatPercent    json.Number `json:"vatPercent" contract:"nullable"`
 }
 
 type SearchProductResponse struct {
@@ -99,7 +121,7 @@ type SearchProductResponse struct {
 	Offset             int                         `json:"offset"`
 	EstimatedTotalHits int64                       `json:"estimatedTotalHits"`
 	Results            []SearchHit                 `json:"results"`
-	FacetDistribution  map[string]map[string]int64 `json:"facetDistribution"`
+	FacetDistribution  map[string]map[string]int64 `json:"facetDistribution" contract:"optional"`
 }
 
 type TrendingResponse struct {
@@ -116,7 +138,7 @@ type Category struct {
 	ID           int64                  `json:"id"`
 	Translations map[string]Translation `json:"translations"`
 	Slug         string                 `json:"slug"`
-	Active       bool                   `json:"active"`
+	Active       bool                   `json:"active" contract:"optional"`
 	Parent       *int64                 `json:"parent"`
 	Level        int                    `json:"level"`
 	TreeID       int64                  `json:"treeId"`
@@ -135,17 +157,17 @@ type PayWay struct {
 	// PAY_ON_DELIVERY, ...). Render it through Label, never raw.
 	Key           string                       `json:"key"`
 	Translations  map[string]PayWayTranslation `json:"translations"`
-	Active        bool                         `json:"active"`
+	Active        bool                         `json:"active" contract:"optional"`
 	Cost          json.Number                  `json:"cost"`
 	FreeThreshold json.Number                  `json:"freeThreshold"`
-	SortOrder     int                          `json:"sortOrder"`
-	ProviderCode  string                       `json:"providerCode"`
+	SortOrder     int                          `json:"sortOrder" contract:"nullable"`
+	ProviderCode  string                       `json:"providerCode" contract:"optional"`
 	// How the money changes hands. See the Settlement* constants in
 	// enums.go for why this replaced the isOnlinePayment /
 	// requiresConfirmation booleans outright. Branch on it through the
 	// predicates below, never by comparing the raw string, so an absent
 	// or unrecognised value stays fail-closed at every call site.
-	Settlement string `json:"settlement"`
+	Settlement string `json:"settlement" contract:"optional"`
 }
 
 // IsOnlineSettlement reports whether the shopper pays at checkout.
@@ -209,12 +231,12 @@ type FreeShippingInfo struct {
 		Threshold    json.Number `json:"threshold"`
 		Priority     int         `json:"priority"`
 	} `json:"providers"`
-	MinThreshold json.Number `json:"minThreshold"`
-	MaxThreshold json.Number `json:"maxThreshold"`
+	MinThreshold json.Number `json:"minThreshold" contract:"nullable"`
+	MaxThreshold json.Number `json:"maxThreshold" contract:"nullable"`
 	Currency     string      `json:"currency"`
 	// CountryCode is the destination the thresholds were resolved for —
 	// the requested one, or the store's first shippable country.
-	CountryCode string `json:"countryCode"`
+	CountryCode string `json:"countryCode" contract:"nullable"`
 }
 
 // AcsStation: coordinates and weights arrive as strings from ACS.
@@ -228,8 +250,8 @@ type AcsStation struct {
 	City         string `json:"city"`
 	PostalCode   string `json:"postalCode"`
 	CountryCode  string `json:"countryCode"`
-	Lat          string `json:"lat"`
-	Lng          string `json:"lng"`
+	Lat          string `json:"lat" contract:"nullable"`
+	Lng          string `json:"lng" contract:"nullable"`
 	MaxWeightKg  string `json:"maxWeightKg"`
 	WorkingHours string `json:"workingHours"`
 	IsActive     bool   `json:"isActive"`
@@ -270,7 +292,7 @@ type Review struct {
 type CartItem struct {
 	ID         int64       `json:"id"`
 	Product    Product     `json:"product"`
-	Quantity   int         `json:"quantity"`
+	Quantity   int         `json:"quantity" contract:"optional"`
 	FinalPrice json.Number `json:"finalPrice"`
 	TotalPrice json.Number `json:"totalPrice"`
 }
@@ -291,7 +313,7 @@ type Cart struct {
 	PromotionFreeShipping bool               `json:"promotionFreeShipping"`
 	AppliedPromotions     []AppliedPromotion `json:"appliedPromotions"`
 	AppliedCoupons        []AppliedCoupon    `json:"appliedCoupons"`
-	TotalItems            int                `json:"totalItems"`
+	TotalItems            int                `json:"totalItems" contract:"untyped"`
 	TotalItemsUnique      int                `json:"totalItemsUnique"`
 	TotalWeightGrams      int                `json:"totalWeightGrams"`
 	Currency              string             `json:"currency"`
@@ -301,10 +323,10 @@ type Cart struct {
 // own amount; the amounts sum to Cart.PromotionDiscount. Code is the
 // coupon that earned it, empty for an automatic promotion.
 type AppliedPromotion struct {
-	PromotionID int64       `json:"promotionId"`
-	Name        string      `json:"name"`
-	Code        string      `json:"code"`
-	Amount      json.Number `json:"amount"`
+	PromotionID int64       `json:"promotionId" contract:"optional"`
+	Name        string      `json:"name" contract:"optional"`
+	Code        string      `json:"code" contract:"optional,nullable"`
+	Amount      json.Number `json:"amount" contract:"optional"`
 }
 
 // AppliedCoupon is Django's verdict on one attached coupon code: the money
@@ -316,33 +338,33 @@ type AppliedCoupon struct {
 	Amount       json.Number `json:"amount"`
 	FreeShipping bool        `json:"freeShipping"`
 	Gift         bool        `json:"gift"`
-	Rejection    string      `json:"rejection"`
+	Rejection    string      `json:"rejection" contract:"nullable"`
 }
 
 type OrderItem struct {
 	Product    Product     `json:"product"`
-	Quantity   int         `json:"quantity"`
+	Quantity   int         `json:"quantity" contract:"optional"`
 	Price      json.Number `json:"price"`
 	TotalPrice json.Number `json:"totalPrice"`
 }
 
 type TrackingDetails struct {
-	TrackingNumber    string  `json:"trackingNumber"`
-	ShippingCarrier   string  `json:"shippingCarrier"`
-	HasTracking       bool    `json:"hasTracking"`
+	TrackingNumber    string  `json:"trackingNumber" contract:"optional,nullable"`
+	ShippingCarrier   string  `json:"shippingCarrier" contract:"optional,nullable"`
+	HasTracking       bool    `json:"hasTracking" contract:"optional"`
 	EstimatedDelivery *string `json:"estimatedDelivery"`
-	TrackingURL       string  `json:"trackingUrl"`
+	TrackingURL       string  `json:"trackingUrl" contract:"optional,nullable"`
 }
 
 type PricingBreakdown struct {
-	ItemsSubtotal    json.Number `json:"itemsSubtotal"`
-	ShippingCost     json.Number `json:"shippingCost"`
-	PaymentMethodFee json.Number `json:"paymentMethodFee"`
-	Discount         json.Number `json:"discount"`
-	LoyaltyDiscount  json.Number `json:"loyaltyDiscount"`
-	GiftCardAmount   json.Number `json:"giftCardAmount"`
-	GrandTotal       json.Number `json:"grandTotal"`
-	Currency         string      `json:"currency"`
+	ItemsSubtotal    json.Number `json:"itemsSubtotal" contract:"optional"`
+	ShippingCost     json.Number `json:"shippingCost" contract:"optional"`
+	PaymentMethodFee json.Number `json:"paymentMethodFee" contract:"optional"`
+	Discount         json.Number `json:"discount" contract:"optional"`
+	LoyaltyDiscount  json.Number `json:"loyaltyDiscount" contract:"optional"`
+	GiftCardAmount   json.Number `json:"giftCardAmount" contract:"optional"`
+	GrandTotal       json.Number `json:"grandTotal" contract:"optional"`
+	Currency         string      `json:"currency" contract:"optional"`
 }
 
 // Order decodes the guest-accessible detail shape. Recipient contact and
@@ -351,9 +373,9 @@ type PricingBreakdown struct {
 type Order struct {
 	ID                   int64            `json:"id"`
 	UUID                 string           `json:"uuid"`
-	Status               string           `json:"status"`
+	Status               string           `json:"status" contract:"optional"`
 	StatusDisplay        string           `json:"statusDisplay"`
-	PaymentStatus        string           `json:"paymentStatus"`
+	PaymentStatus        string           `json:"paymentStatus" contract:"optional,untyped"`
 	PaymentStatusDisplay string           `json:"paymentStatusDisplay"`
 	IsPaid               bool             `json:"isPaid"`
 	CanBeCanceled        bool             `json:"canBeCanceled"`
@@ -367,7 +389,7 @@ type ProductAlert struct {
 	ID          int64        `json:"id"`
 	Kind        string       `json:"kind"`
 	Product     int64        `json:"product"`
-	Email       string       `json:"email"`
+	Email       string       `json:"email" contract:"optional,nullable"`
 	TargetPrice *json.Number `json:"targetPrice"`
 	IsActive    bool         `json:"isActive"`
 }
@@ -407,7 +429,7 @@ type TenantConfig struct {
 	// ChatAPIKey is the tenant's own model-provider credential. Django
 	// includes it only on internally-authenticated resolves (the
 	// X-Internal-Token header); empty means chat is off for the tenant.
-	ChatAPIKey string `json:"chatApiKey"`
+	ChatAPIKey string `json:"chatApiKey" contract:"undocumented"`
 	// AgentPaymentInstruments lists the provider codes an agent can
 	// settle unaided, in the merchant's presentation order. Django
 	// derives it from the tenant's ACTIVE OFFLINE pay-ways, so every
@@ -425,7 +447,7 @@ type TenantConfig struct {
 	// ACPBearerToken authenticates the tenant's agentic-commerce platform
 	// on /acp/*. Like ChatAPIKey it arrives only on internally
 	// authenticated resolves; empty means no platform is enrolled.
-	ACPBearerToken string `json:"acpBearerToken"`
+	ACPBearerToken string `json:"acpBearerToken" contract:"undocumented"`
 }
 
 // AgentCommerceOn reports whether the agent-commerce surface (MCP,

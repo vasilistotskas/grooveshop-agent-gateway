@@ -2,6 +2,7 @@ package django
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,6 +18,28 @@ func (c *Client) cartHeaders(cartID string) map[string]string {
 		h["X-Cart-Id"] = cartID
 	}
 	return h
+}
+
+// Request bodies are typed so the consumer contract
+// (contract/django-consumer.openapi.json) is generated from them.
+type cartItemCreate struct {
+	Product  int64 `json:"product"`
+	Quantity int   `json:"quantity"`
+}
+
+type cartItemUpdate struct {
+	Quantity int `json:"quantity"`
+}
+
+type couponApply struct {
+	Code string `json:"code"`
+}
+
+type productAlertCreate struct {
+	Kind        string      `json:"kind"`
+	Product     int64       `json:"product"`
+	Email       string      `json:"email" contract:"format=email"`
+	TargetPrice json.Number `json:"targetPrice,omitempty" contract:"format=double"`
 }
 
 // GetCart fetches the cart identified by cartID; with an empty id Django
@@ -48,11 +71,8 @@ func (c *Client) AddCartItem(
 		host:     host,
 		language: lang,
 		headers:  c.cartHeaders(cartID),
-		body: map[string]any{
-			"product":  productID,
-			"quantity": qty,
-		},
-		out: &out,
+		body:     cartItemCreate{Product: productID, Quantity: qty},
+		out:      &out,
 	})
 	if err != nil {
 		return nil, err
@@ -70,7 +90,7 @@ func (c *Client) UpdateCartItem(
 		host:     host,
 		language: lang,
 		headers:  c.cartHeaders(cartID),
-		body:     map[string]any{"quantity": qty},
+		body:     cartItemUpdate{Quantity: qty},
 		out:      &out,
 	})
 	if err != nil {
@@ -104,7 +124,7 @@ func (c *Client) ApplyCoupon(
 		host:     host,
 		language: lang,
 		headers:  c.cartHeaders(cartID),
-		body:     map[string]any{"code": code},
+		body:     couponApply{Code: code},
 		out:      &out,
 	})
 	if err != nil {
@@ -161,24 +181,21 @@ func (c *Client) OrderByUUID(
 // Duplicate subscriptions surface as ErrConflict.
 func (c *Client) CreateProductAlert(
 	ctx context.Context, host, lang, kind string,
-	productID int64, email, targetPrice string,
+	productID int64, email string, targetPrice json.Number,
 ) (*ProductAlert, error) {
-	body := map[string]any{
-		"kind":    kind,
-		"product": productID,
-		"email":   email,
-	}
-	if targetPrice != "" {
-		body["targetPrice"] = targetPrice
-	}
 	var out ProductAlert
 	err := c.send(ctx, http.MethodPost, request{
 		path:     "/product/alert",
 		host:     host,
 		language: lang,
 		headers:  map[string]string{"X-Internal-Gateway": c.internalSecret},
-		body:     body,
-		out:      &out,
+		body: productAlertCreate{
+			Kind:        kind,
+			Product:     productID,
+			Email:       email,
+			TargetPrice: targetPrice,
+		},
+		out: &out,
 	})
 	if err != nil {
 		return nil, err
