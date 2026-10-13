@@ -1768,11 +1768,23 @@
           "active": {
             "type": "boolean"
           },
+          "announcedDiscountPercent": {
+            "nullable": true,
+            "type": "number"
+          },
+          "effectivePrice": {
+            "nullable": true,
+            "type": "number"
+          },
           "id": {
             "type": "integer"
           },
           "mainImagePath": {
             "type": "string"
+          },
+          "priorPrice": {
+            "nullable": true,
+            "type": "number"
           },
           "slug": {
             "type": "string"
@@ -1801,8 +1813,11 @@
         },
         "required": [
           "active",
+          "announcedDiscountPercent",
+          "effectivePrice",
           "id",
           "mainImagePath",
+          "priorPrice",
           "slug",
           "stock",
           "translations"

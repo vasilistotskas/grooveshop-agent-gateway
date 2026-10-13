@@ -201,12 +201,10 @@ func (h *handlers) getProduct(
 				continue
 			}
 			vtr := django.Localized(v.Translations, t.DefaultLocale)
-			// Upstream variants carry no effective price; the agent
-			// reads one with get_product on the variant's id.
 			vs := ProductSummary{
 				ID:       v.ID,
 				Name:     vtr.Name,
-				Price:    Price{Currency: t.DefaultCurrency},
+				Price:    priceOf(v.Pricing, t.DefaultCurrency),
 				Stock:    v.Stock,
 				InStock:  v.Stock > 0 && v.Active,
 				URL:      storefront.Product(t.Domain, v.ID, v.Slug),
