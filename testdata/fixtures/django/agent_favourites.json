@@ -1,5 +1,8 @@
 [
   {
+    "effectivePrice": 428.72,
+    "priorPrice": 476.35,
+    "announcedDiscountPercent": 10,
     "productId": 6125,
     "name": "Pressure Cooker Final",
     "finalPrice": "476.35",
@@ -8,11 +11,25 @@
     "addedAt": "2026-08-10T09:00:00+03:00"
   },
   {
+    "effectivePrice": 17.91,
+    "priorPrice": null,
+    "announcedDiscountPercent": null,
     "productId": 2,
     "name": "Multivitamin Supplements",
     "finalPrice": "19.90",
     "currency": "EUR",
     "inStock": false,
     "addedAt": "2026-07-01T12:30:00+03:00"
+  },
+  {
+    "effectivePrice": null,
+    "priorPrice": null,
+    "announcedDiscountPercent": null,
+    "productId": 37,
+    "name": "Ceramic Teapot",
+    "finalPrice": "32.00",
+    "currency": "EUR",
+    "inStock": true,
+    "addedAt": "2026-06-15T18:45:00+03:00"
   }
 ]

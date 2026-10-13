@@ -18,17 +18,18 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
-// searchHandlers serves the recorded search fixture and reports the sort
-// value each request carried upstream.
-func searchHandlers(t *testing.T) (*handlers, *[]string) {
+// fixtureHandlers answers every Django call with one recorded fixture,
+// passing each request to seen first.
+func fixtureHandlers(
+	t *testing.T, name string, seen func(*http.Request),
+) *handlers {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join(
-		"..", "..", "testdata", "fixtures", "django", "search_product.json"))
+		"..", "..", "testdata", "fixtures", "django", name))
 	require.NoError(t, err)
-	var sorts []string
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			sorts = append(sorts, r.URL.Query().Get("sort"))
+			seen(r)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(body)
 		}))
@@ -37,7 +38,18 @@ func searchHandlers(t *testing.T) (*handlers, *[]string) {
 		&slog.HandlerOptions{Level: slog.LevelError + 1}))
 	dj := django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, log, obs.NewMetrics())
-	return &handlers{deps: Deps{Django: dj}}, &sorts
+	return &handlers{deps: Deps{Django: dj}}
+}
+
+// searchHandlers serves the recorded search fixture and reports the sort
+// value each request carried upstream.
+func searchHandlers(t *testing.T) (*handlers, *[]string) {
+	t.Helper()
+	var sorts []string
+	h := fixtureHandlers(t, "search_product.json", func(r *http.Request) {
+		sorts = append(sorts, r.URL.Query().Get("sort"))
+	})
+	return h, &sorts
 }
 
 func TestSearchProductsPricing(t *testing.T) {
@@ -81,7 +93,7 @@ func TestSearchProductsSort(t *testing.T) {
 	}
 }
 
-func TestSummaryPricing(t *testing.T) {
+func TestPriceOf(t *testing.T) {
 	cases := []struct {
 		name                  string
 		in                    django.Pricing
@@ -109,8 +121,8 @@ func TestSummaryPricing(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := ProductSummary{Currency: "EUR"}
-			summaryPricing(&s, tc.in)
+			s := priceOf(tc.in, "EUR")
+			assert.Equal(t, "EUR", s.Currency)
 			assert.Equal(t, tc.effective, s.EffectivePrice)
 			assert.Equal(t, tc.prior, s.PriorPrice)
 			assert.Equal(t, tc.pct, s.AnnouncedDiscountPercent)
