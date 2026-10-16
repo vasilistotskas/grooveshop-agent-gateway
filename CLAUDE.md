@@ -71,7 +71,12 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   `X-Language`). GETs retry twice on 5xx/network; mutations never retry at
   transport level. Errors unwrap to sentinels (`ErrNotFound`, `ErrConflict`,
   `ErrThrottled`, `ErrValidation`, `ErrUpstreamDown`) — branch with
-  `errors.Is`, never on status literals.
+  `errors.Is`, never on status literals. Django never refuses a cart an
+  anonymous caller cannot reach (a signed-in shopper's, or a guest cart
+  since deleted): it answers 200/201 with a new guest cart and acts on
+  that one. Every cart call that names a cart therefore checks the cart
+  that answered (`servedNamed`) and returns `ErrCartUnreachable` for
+  another.
 - `internal/httpmw` — recover, request-id, access log, RED metrics, per-IP
   rate limit. Metrics wraps the mux directly so `r.Pattern` is populated;
   tenant middleware runs *inside* routing (per route group), and enriches

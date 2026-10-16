@@ -7,11 +7,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// fixtureCartID is the cart every cart fixture serves.
+const fixtureCartID = "29eb4495-e018-45e7-b59c-6646302bd4ef"
 
 func TestApplyCouponReturnsUpdatedCart(t *testing.T) {
 	var gotMethod, gotCartID, gotGateway string
@@ -31,11 +35,11 @@ func TestApplyCouponReturnsUpdatedCart(t *testing.T) {
 
 	c := newTestClient(t, srv.URL)
 	cart, err := c.ApplyCoupon(context.Background(),
-		"shop.example.test", "el", "cart-uuid", "SAVE10")
+		"shop.example.test", "el", fixtureCartID, "SAVE10")
 	require.NoError(t, err)
 
 	assert.Equal(t, http.MethodPost, gotMethod)
-	assert.Equal(t, "cart-uuid", gotCartID)
+	assert.Equal(t, fixtureCartID, gotCartID)
 	assert.Equal(t, "test-secret", gotGateway)
 	assert.Equal(t, map[string]any{"code": "SAVE10"}, gotBody)
 
@@ -82,7 +86,7 @@ func TestApplyCouponRejectionSurfacesReason(t *testing.T) {
 
 			c := newTestClient(t, srv.URL)
 			_, err := c.ApplyCoupon(context.Background(),
-				"shop.example.test", "el", "cart-uuid", "X")
+				"shop.example.test", "el", fixtureCartID, "X")
 			require.Error(t, err)
 
 			var rejected *CouponRejectedError
@@ -106,7 +110,7 @@ func TestApplyCouponReasonlessBadRequestStaysAPIError(t *testing.T) {
 
 	c := newTestClient(t, srv.URL)
 	_, err := c.ApplyCoupon(context.Background(),
-		"shop.example.test", "el", "cart-uuid", "")
+		"shop.example.test", "el", fixtureCartID, "")
 	require.Error(t, err)
 
 	var rejected *CouponRejectedError
@@ -129,11 +133,11 @@ func TestRemoveCouponReturnsUpdatedCart(t *testing.T) {
 
 	c := newTestClient(t, srv.URL)
 	cart, err := c.RemoveCoupon(context.Background(),
-		"shop.example.test", "el", "cart-uuid")
+		"shop.example.test", "el", fixtureCartID)
 	require.NoError(t, err)
 
 	assert.Equal(t, http.MethodDelete, gotMethod)
-	assert.Equal(t, "cart-uuid", gotCartID)
+	assert.Equal(t, fixtureCartID, gotCartID)
 	assert.Empty(t, cart.AppliedCoupons)
 	assert.Equal(t, "0.0", cart.PromotionDiscount.String())
 }
@@ -185,4 +189,40 @@ func TestCreateProductAlertSendsTargetPriceAsNumber(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Django serves a new guest cart in place of one an anonymous caller
+// cannot reach, and adds to that one: a call naming a cart fails when
+// another cart answers it.
+func TestCartCallsRefuseAnotherCartServedForTheNamedOne(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.HasPrefix(r.URL.Path, "/api/v1/cart/item") {
+				_, _ = w.Write(fixture(t, "cart_item_created.json"))
+				return
+			}
+			_, _ = w.Write(fixture(t, "cart_empty.json"))
+		}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL)
+	ctx := context.Background()
+	const host, other = "shop.example.test", "6f1c1f3e-2d6a-4b0f-9a3e-2f6d6c1b9a10"
+
+	_, err := c.GetCart(ctx, host, "el", other)
+	require.ErrorIs(t, err, ErrCartUnreachable)
+	_, err = c.AddCartItem(ctx, host, "el", other, 1, 1)
+	require.ErrorIs(t, err, ErrCartUnreachable)
+	_, err = c.UpdateCartItem(ctx, host, "el", other, 410, 2)
+	require.ErrorIs(t, err, ErrCartUnreachable)
+	_, err = c.ApplyCoupon(ctx, host, "el", other, "SAVE10")
+	require.ErrorIs(t, err, ErrCartUnreachable)
+	_, err = c.RemoveCoupon(ctx, host, "el", other)
+	require.ErrorIs(t, err, ErrCartUnreachable)
+
+	cart, err := c.GetCart(ctx, host, "el", strings.ToUpper(fixtureCartID))
+	require.NoError(t, err)
+	assert.Equal(t, fixtureCartID, cart.UUID)
+	_, err = c.GetCart(ctx, host, "el", "")
+	require.NoError(t, err)
 }

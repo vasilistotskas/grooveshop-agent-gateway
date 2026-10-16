@@ -36,7 +36,8 @@ func (h *handlers) tenantFor(ctx context.Context) (*tenant.Tenant, error) {
 // errors. The SDK packs returned errors into CallToolResult.IsError.
 func upstreamErr(err error, notFound string) error {
 	switch {
-	case errors.Is(err, django.ErrNotFound):
+	case errors.Is(err, django.ErrNotFound),
+		errors.Is(err, django.ErrCartUnreachable):
 		return errors.New(notFound)
 	// Guest-flow 403s (e.g. a wrong order UUID) are "not yours to see" —
 	// for an agent that is indistinguishable from not found.

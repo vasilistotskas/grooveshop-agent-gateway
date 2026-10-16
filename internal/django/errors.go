@@ -19,6 +19,11 @@ var (
 	// ErrForbidden: the credential is valid but lacks the required scope
 	// or permission.
 	ErrForbidden = errors.New("django: forbidden")
+	// ErrCartUnreachable: Django served another cart than the one named.
+	// It never refuses a cart an anonymous caller cannot reach (a
+	// signed-in shopper's, or a guest cart since deleted): it serves a
+	// new guest cart in its place, and acts on that one.
+	ErrCartUnreachable = errors.New("django: cart unreachable")
 )
 
 // APIError carries the upstream status and DRF "detail" message. It unwraps

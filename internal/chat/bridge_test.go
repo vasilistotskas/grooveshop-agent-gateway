@@ -54,8 +54,8 @@ func TestBridgeOffersOnlyTheStoreTools(t *testing.T) {
 // A cart tool that fails reaches the model as a failure, with the cause
 // the tool knows, and the turn does not tell the widget the cart
 // changed: the assistant had claimed adds the shopper's cart never got.
-// Django adds to a new guest cart when it cannot reach the one named, so
-// here the add succeeds and the named cart cannot be read back.
+// Django adds to a new guest cart when it cannot reach the one named (a
+// signed-in shopper's cart is one) and answers 201 for it, as here.
 func TestBridgeReportsAFailedCartToolAsAFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
@@ -63,12 +63,13 @@ func TestBridgeReportsAFailedCartToolAsAFailure(t *testing.T) {
 			if r.Method == http.MethodPost &&
 				strings.HasSuffix(r.URL.Path, "/cart/item") {
 				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(`{"id": 7, "product": {"id": 64},
-					"quantity": 1, "finalPrice": 9.9, "totalPrice": 9.9}`))
+				_, _ = w.Write([]byte(`{"id": 7,
+					"cartId": "0b7d5a52-8f6e-4c1d-9d2a-5e4f3c2b1a09",
+					"product": {"id": 64}, "quantity": 1,
+					"finalPrice": 9.9, "totalPrice": 9.9}`))
 				return
 			}
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"detail": "Not found."}`))
+			w.WriteHeader(http.StatusInternalServerError)
 		}))
 	t.Cleanup(srv.Close)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))

@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -155,4 +157,15 @@ func TestAuthWithoutTenantIs404(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}).ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// A session's cart Django no longer serves (a guest cart since deleted)
+// is a missing resource, not an outage.
+func TestUpstreamErrorReportsAnUnreachableCartAsNotFound(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	upstreamError(rec, fmt.Errorf("sync: %w", django.ErrCartUnreachable))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"code":"not_found"`)
 }

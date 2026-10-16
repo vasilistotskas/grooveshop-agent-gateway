@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+
+	"github.com/google/uuid"
 )
 
 // cartHeaders builds the per-call header set for cart operations. The
@@ -18,6 +20,21 @@ func (c *Client) cartHeaders(cartID string) map[string]string {
 		h["X-Cart-Id"] = cartID
 	}
 	return h
+}
+
+// servedNamed checks that Django acted on the cart the call named, not
+// on the new guest cart it serves in place of one the caller cannot
+// reach. An empty name asks for that new cart.
+func servedNamed(named, served string) error {
+	if named == "" {
+		return nil
+	}
+	n, nerr := uuid.Parse(named)
+	s, serr := uuid.Parse(served)
+	if nerr != nil || serr != nil || n != s {
+		return ErrCartUnreachable
+	}
+	return nil
 }
 
 // Request bodies are typed so the consumer contract
@@ -58,6 +75,9 @@ func (c *Client) GetCart(
 	if err != nil {
 		return nil, err
 	}
+	if err := servedNamed(cartID, out.UUID); err != nil {
+		return nil, err
+	}
 	return &out, nil
 }
 
@@ -77,6 +97,9 @@ func (c *Client) AddCartItem(
 	if err != nil {
 		return nil, err
 	}
+	if err := servedNamed(cartID, out.CartID); err != nil {
+		return nil, err
+	}
 	return &out, nil
 }
 
@@ -94,6 +117,9 @@ func (c *Client) UpdateCartItem(
 		out:      &out,
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := servedNamed(cartID, out.CartID); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -136,6 +162,9 @@ func (c *Client) ApplyCoupon(
 		}
 		return nil, err
 	}
+	if err := servedNamed(cartID, out.UUID); err != nil {
+		return nil, err
+	}
 	return &out, nil
 }
 
@@ -153,6 +182,9 @@ func (c *Client) RemoveCoupon(
 		out:      &out,
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := servedNamed(cartID, out.UUID); err != nil {
 		return nil, err
 	}
 	return &out, nil

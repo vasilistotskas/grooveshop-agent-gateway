@@ -2,6 +2,7 @@ package mcpsrv
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -107,4 +108,12 @@ func TestPosNum(t *testing.T) {
 	for _, tc := range cases {
 		assert.Equal(t, tc.want, posNum(tc.in), "posNum(%q)", tc.in)
 	}
+}
+
+// A cart Django no longer serves for its id is the tool's "not found".
+func TestUpstreamErrReportsAnUnreachableCartAsNotFound(t *testing.T) {
+	err := upstreamErr(fmt.Errorf("get: %w", django.ErrCartUnreachable),
+		"that cart no longer exists")
+
+	assert.EqualError(t, err, "that cart no longer exists")
 }

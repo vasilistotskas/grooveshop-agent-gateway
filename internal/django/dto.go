@@ -291,6 +291,7 @@ type Review struct {
 // CartItem is one cart line; Product is embedded in full by the API.
 type CartItem struct {
 	ID         int64       `json:"id"`
+	CartID     string      `json:"cartId"`
 	Product    Product     `json:"product"`
 	Quantity   int         `json:"quantity" contract:"optional"`
 	FinalPrice json.Number `json:"finalPrice"`
