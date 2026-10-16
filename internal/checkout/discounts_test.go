@@ -32,9 +32,13 @@ type couponUpstream struct {
 	removeStatus int
 }
 
+// sessionCartID is the cart each test session names and upstream serves.
+const sessionCartID = "4f0e2a8c-6b1d-4c3e-9a7f-1d2c3b4a5e6f"
+
 func (u *couponUpstream) client(t *testing.T) *django.Client {
 	t.Helper()
-	const cartJSON = `{"id":1,"uuid":"c-1","items":[],"totalPrice":0.0,` +
+	const cartJSON = `{"id":1,"uuid":"` + sessionCartID + `","items":[],` +
+		`"totalPrice":0.0,` +
 		`"totalDiscountValue":0.0,"promotionDiscount":0.0,` +
 		`"promotionFreeShipping":false,"appliedCouponCodes":[],` +
 		`"totalItems":0,"totalItemsUnique":0,"currency":"EUR"}`
@@ -85,7 +89,7 @@ func TestApplyDiscountCodes(t *testing.T) {
 	t.Run("first code applies, extras reject as combination", func(t *testing.T) {
 		up := &couponUpstream{}
 		dj := up.client(t)
-		s := NewSession("public", tn.Domain, "acp", "c-1")
+		s := NewSession("public", tn.Domain, "acp", sessionCartID)
 
 		err := ApplyDiscountCodes(context.Background(), dj, tn, s,
 			[]string{"SAVE10", "EXTRA1", "EXTRA2"})
@@ -106,7 +110,7 @@ func TestApplyDiscountCodes(t *testing.T) {
 	t.Run("empty list clears the coupon", func(t *testing.T) {
 		up := &couponUpstream{}
 		dj := up.client(t)
-		s := NewSession("public", tn.Domain, "acp", "c-1")
+		s := NewSession("public", tn.Domain, "acp", sessionCartID)
 		s.DiscountCodes = []string{"OLD"}
 		s.RejectedDiscounts = []DiscountRejection{{Code: "stale"}}
 
@@ -146,7 +150,7 @@ func TestApplyDiscountCodes(t *testing.T) {
 							tc.djangoReason + `"}`,
 					}
 					dj := up.client(t)
-					s := NewSession("public", tn.Domain, "acp", "c-1")
+					s := NewSession("public", tn.Domain, "acp", sessionCartID)
 
 					err := ApplyDiscountCodes(context.Background(), dj, tn,
 						s, []string{"NOPE"})
@@ -172,7 +176,7 @@ func TestApplyDiscountCodes(t *testing.T) {
 					` "reason": "discount_code_expired"}`,
 			}
 			dj := up.client(t)
-			s := NewSession("public", tn.Domain, "acp", "c-1")
+			s := NewSession("public", tn.Domain, "acp", sessionCartID)
 
 			err := ApplyDiscountCodes(context.Background(), dj, tn, s,
 				[]string{"DEAD", "EXTRA"})
@@ -190,7 +194,7 @@ func TestApplyDiscountCodes(t *testing.T) {
 			applyBody:   `{"detail": "boom"}`,
 		}
 		dj := up.client(t)
-		s := NewSession("public", tn.Domain, "acp", "c-1")
+		s := NewSession("public", tn.Domain, "acp", sessionCartID)
 
 		err := ApplyDiscountCodes(context.Background(), dj, tn, s,
 			[]string{"SAVE10"})
@@ -223,7 +227,7 @@ func TestApplyDiscountCodesWithPromotionsOff(t *testing.T) {
 			tn.Features.Promotions = false
 			up := &couponUpstream{removeStatus: removeStatus}
 			dj := up.client(t)
-			s := NewSession("public", tn.Domain, "acp", "c-1")
+			s := NewSession("public", tn.Domain, "acp", sessionCartID)
 
 			err := ApplyDiscountCodes(context.Background(), dj, tn, s,
 				[]string{"SAVE10", "EXTRA1"})

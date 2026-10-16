@@ -106,7 +106,8 @@ func writeSession(w http.ResponseWriter, status int, s *Session) {
 // upstreamError maps Django client failures onto the protocol Error body.
 func upstreamError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, django.ErrNotFound):
+	case errors.Is(err, django.ErrNotFound),
+		errors.Is(err, django.ErrCartUnreachable):
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "not_found",
 			Message: "A referenced resource was not found.",

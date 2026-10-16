@@ -15,7 +15,7 @@ cluster-only internal endpoint and the operational routes:
 | `POST /mcp` | MCP server (stateless streamable HTTP): the UCP checkout capability's five canonical tools + ergonomic commerce tools + account tools (`my_orders`, `my_loyalty_points`, `my_favourites`); a tool whose store feature is off is neither listed nor callable |
 | `GET /mcp/server-card` | MCP Server Card (SEP-2127): identity and remotes only — no tools, which clients read from `tools/list`. Name/title/version match `initialize` (`mcpsrv.IdentityFor`) |
 | `GET /.well-known/ard.json` | Agentic Resource Discovery manifest (ARD v0.91, `application/json`): one entry for the MCP server, with the card's title/description, the tool names the store's `tools/list` serves as `capabilities` and `representativeQueries` |
-| `GET /.well-known/ai-catalog.json` | AI Catalog (`application/ai-catalog+json`): the same entry as `identifier`/`type`/`url` only, since the Server Card it points at is authoritative for name and description |
+| `GET /.well-known/ai-catalog.json` | AI Catalog (`application/ai-catalog+json`): the same entry as `ard.json`, name and description included, because Lighthouse validates this document against the ARD schema |
 | `GET /.well-known/ucp` | UCP business profile (spec 2026-08-25), incl. the `space.grooveshop.payments` handler |
 | `/acp/*` | ACP agentic checkout REST (spec 2026-04-17) |
 | `/feeds/*` | Product feeds: google.xml, meta.xml, tiktok.xml, acp.json |
@@ -71,7 +71,12 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   `X-Language`). GETs retry twice on 5xx/network; mutations never retry at
   transport level. Errors unwrap to sentinels (`ErrNotFound`, `ErrConflict`,
   `ErrThrottled`, `ErrValidation`, `ErrUpstreamDown`) — branch with
-  `errors.Is`, never on status literals.
+  `errors.Is`, never on status literals. Django never refuses a cart an
+  anonymous caller cannot reach (a signed-in shopper's, or a guest cart
+  since deleted): it answers 200/201 with a new guest cart and acts on
+  that one. Every cart call that names a cart therefore checks the cart
+  that answered (`servedNamed`) and returns `ErrCartUnreachable` for
+  another.
 - `internal/httpmw` — recover, request-id, access log, RED metrics, per-IP
   rate limit. Metrics wraps the mux directly so `r.Pattern` is populated;
   tenant middleware runs *inside* routing (per route group), and enriches
