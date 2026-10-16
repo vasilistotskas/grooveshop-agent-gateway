@@ -11,8 +11,8 @@ import (
 // in the two forms agents resolve: the ARD manifest
 // (https://agenticresourcediscovery.org/spec/, v0.91), and the AI Catalog
 // (https://github.com/Agent-Card/ai-catalog) through which MCP Server
-// Card discovery (SEP-2127) goes. Both are cut from storeEntry, so they
-// cannot disagree about what they describe.
+// Card discovery (SEP-2127) goes. Both carry the same entry, storeEntry,
+// so they cannot disagree about what they describe.
 const (
 	// aiCatalogSpecVersion is the AI Catalog version both documents
 	// follow: an ARD entry is a well-formed catalog entry (ARD §4).
@@ -22,10 +22,10 @@ const (
 	ardMediaType = "application/json"
 )
 
-type catalog[E any] struct {
-	SpecVersion string      `json:"specVersion"`
-	Host        catalogHost `json:"host"`
-	Entries     []E         `json:"entries"`
+type catalog struct {
+	SpecVersion string         `json:"specVersion"`
+	Host        catalogHost    `json:"host"`
+	Entries     []catalogEntry `json:"entries"`
 }
 
 // catalogHost identifies the catalog's operator: the merchant.
@@ -34,33 +34,29 @@ type catalogHost struct {
 	Identifier  string `json:"identifier"`
 }
 
-// catalogEntry is the AI Catalog entry for the MCP server. It carries no
-// name or description: the catalog spec makes the Server Card it points
-// at authoritative for both, and says to omit them to avoid drift.
+// catalogEntry is the MCP server as an ARD entry: ARD requires
+// displayName and builds its search index from the rest. The AI Catalog
+// would leave name and description to the Server Card, but Lighthouse
+// validates /.well-known/ai-catalog.json against the ARD schema, so the
+// catalog serves the full entry too; the catalog spec allows both keys
+// and has consumers ignore the ones they do not know. Name and
+// description are the Server Card's own, so neither drifts from it.
 type catalogEntry struct {
-	Identifier string `json:"identifier"`
-	Type       string `json:"type"`
-	URL        string `json:"url"`
-}
-
-// ardEntry adds what ARD requires (displayName) and what its search
-// index is built from. Name and description are the Server Card's own.
-type ardEntry struct {
-	catalogEntry
+	Identifier            string   `json:"identifier"`
+	Type                  string   `json:"type"`
+	URL                   string   `json:"url"`
 	DisplayName           string   `json:"displayName"`
 	Description           string   `json:"description"`
 	Capabilities          []string `json:"capabilities"`
 	RepresentativeQueries []string `json:"representativeQueries"`
 }
 
-func storeEntry(t *tenant.Tenant) ardEntry {
+func storeEntry(t *tenant.Tenant) catalogEntry {
 	id := IdentityFor(t)
-	return ardEntry{
-		catalogEntry: catalogEntry{
-			Identifier: "urn:air:" + publisher(t) + ":mcp:store",
-			Type:       serverCardMediaType,
-			URL:        storefront.MCPServerCard(t.Domain),
-		},
+	return catalogEntry{
+		Identifier:  "urn:air:" + publisher(t) + ":mcp:store",
+		Type:        serverCardMediaType,
+		URL:         storefront.MCPServerCard(t.Domain),
 		DisplayName: id.Title,
 		Description: id.Description(),
 		// The tools this store is served: one it switched off is not
@@ -70,30 +66,25 @@ func storeEntry(t *tenant.Tenant) ardEntry {
 	}
 }
 
-func hostOf(t *tenant.Tenant) catalogHost {
-	return catalogHost{DisplayName: IdentityFor(t).Title, Identifier: publisher(t)}
+func storeCatalog(t *tenant.Tenant) any {
+	return catalog{
+		SpecVersion: aiCatalogSpecVersion,
+		Host: catalogHost{
+			DisplayName: IdentityFor(t).Title,
+			Identifier:  publisher(t),
+		},
+		Entries: []catalogEntry{storeEntry(t)},
+	}
 }
 
 // ARDHandler serves GET /.well-known/ard.json, the manifest every ARD
 // consumer MUST fetch (§5.1).
 func ARDHandler() http.Handler {
-	return publicDocument(ardMediaType, func(t *tenant.Tenant) any {
-		return catalog[ardEntry]{
-			SpecVersion: aiCatalogSpecVersion,
-			Host:        hostOf(t),
-			Entries:     []ardEntry{storeEntry(t)},
-		}
-	})
+	return publicDocument(ardMediaType, storeCatalog)
 }
 
 // AICatalogHandler serves GET /.well-known/ai-catalog.json, the AI
 // Catalog's well-known location.
 func AICatalogHandler() http.Handler {
-	return publicDocument(aiCatalogMediaType, func(t *tenant.Tenant) any {
-		return catalog[catalogEntry]{
-			SpecVersion: aiCatalogSpecVersion,
-			Host:        hostOf(t),
-			Entries:     []catalogEntry{storeEntry(t).catalogEntry},
-		}
-	})
+	return publicDocument(aiCatalogMediaType, storeCatalog)
 }

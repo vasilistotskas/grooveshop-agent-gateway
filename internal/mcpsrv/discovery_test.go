@@ -126,7 +126,15 @@ func TestDiscoveryDocuments(t *testing.T) {
 				"entries": [{
 					"identifier": "urn:air:shop.example.test:mcp:store",
 					"type": "application/mcp-server-card+json",
-					"url": "https://www.shop.example.test/mcp/server-card"
+					"url": "https://www.shop.example.test/mcp/server-card",
+					"displayName": "Demo Store",
+					"description": "Shopping tools for Demo Store: catalog, cart, checkout and order tracking.",
+					"representativeQueries": [
+						"What does Demo Store sell, and how much does it cost?",
+						"Which delivery and parcel-locker pickup options does Demo Store offer near my postal code?",
+						"Add this product to my Demo Store cart and give me the checkout link",
+						"Where is my Demo Store order, and what is its tracking link?"
+					]
 				}]
 			}`,
 		},
@@ -217,34 +225,46 @@ func TestARDCapabilitiesAreTheRegisteredTools(t *testing.T) {
 	}
 }
 
-func TestARDManifestConformsToTheSpec(t *testing.T) {
+// Both documents: Lighthouse validates /.well-known/ai-catalog.json
+// against the ARD schema too, and PageSpeed failed the bare catalog
+// entry (2026-10-16).
+func TestDiscoveryDocumentsConformToARD(t *testing.T) {
 	manifest, entry := compileARDSchema(t)
-	for _, tn := range []*tenant.Tenant{cardTenant(), idnTenant()} {
-		body := serve(t, ARDHandler(), tn, http.MethodGet, nil).Body.String()
+	for name, handler := range map[string]http.Handler{
+		"ard.json":        ARDHandler(),
+		"ai-catalog.json": AICatalogHandler(),
+	} {
+		for _, tn := range []*tenant.Tenant{cardTenant(), idnTenant()} {
+			body := serve(t, handler, tn, http.MethodGet, nil).Body.String()
 
-		doc, err := jsonschema.UnmarshalJSON(strings.NewReader(body))
-		require.NoError(t, err)
-		require.NoError(t, manifest.Validate(doc))
-		for _, e := range doc.(map[string]any)["entries"].([]any) {
-			require.NoError(t, entry.Validate(e))
+			doc, err := jsonschema.UnmarshalJSON(strings.NewReader(body))
+			require.NoError(t, err)
+			require.NoError(t, manifest.Validate(doc), name)
+			for _, e := range doc.(map[string]any)["entries"].([]any) {
+				require.NoError(t, entry.Validate(e), name)
+			}
+
+			errs, warnings := ardConformance(t, body)
+			assert.Empty(t, errs, name+" "+tn.SchemaName)
+			assert.Empty(t, warnings, name+" "+tn.SchemaName)
+			queries := firstEntry(t, decode(t, serve(t, handler, tn,
+				http.MethodGet, nil)))["representativeQueries"]
+			assert.GreaterOrEqual(t, len(queries.([]any)), 2)
+			assert.LessOrEqual(t, len(queries.([]any)), 5)
 		}
-
-		errs, warnings := ardConformance(t, body)
-		assert.Empty(t, errs, tn.SchemaName)
-		assert.Empty(t, warnings, tn.SchemaName)
-		queries := firstEntry(t, decode(t, serve(t, ARDHandler(), tn,
-			http.MethodGet, nil)))["representativeQueries"]
-		assert.GreaterOrEqual(t, len(queries.([]any)), 2)
-		assert.LessOrEqual(t, len(queries.([]any)), 5)
 	}
 }
 
-// The checks have teeth: the AI Catalog entry, which leaves its name to
-// the Server Card, is exactly what PageSpeed rejected as an ARD manifest.
+// The checks have teeth: the catalog the gateway served before, an
+// entry that left its name to the Server Card, is exactly what
+// PageSpeed rejected.
 func TestARDChecksRejectTheBareCatalogEntry(t *testing.T) {
 	manifest, _ := compileARDSchema(t)
-	body := serve(t, AICatalogHandler(), cardTenant(), http.MethodGet,
-		nil).Body.String()
+	body := `{"specVersion":"1.0",` +
+		`"host":{"displayName":"Demo Store","identifier":"shop.example.test"},` +
+		`"entries":[{"identifier":"urn:air:shop.example.test:mcp:store",` +
+		`"type":"application/mcp-server-card+json",` +
+		`"url":"https://www.shop.example.test/mcp/server-card"}]}`
 
 	doc, err := jsonschema.UnmarshalJSON(strings.NewReader(body))
 	require.NoError(t, err)
