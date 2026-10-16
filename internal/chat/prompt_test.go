@@ -47,6 +47,15 @@ func TestSystemPromptOffersReviewsOnlyWithThem(t *testing.T) {
 	assert.Contains(t, systemPrompt(tn, ""), "categories, reviews, carts")
 }
 
+// A failed tool is reported as one: the assistant had claimed a cart
+// update that never reached the shopper's cart, then blamed a "cartId
+// mix-up" no tool reported.
+func TestSystemPromptReportsFailuresAsTheToolGaveThem(t *testing.T) {
+	p := systemPrompt(testTenant(), "")
+	assert.Contains(t, p, "never claim the action succeeded")
+	assert.Contains(t, p, "never give a cause the tool did not")
+}
+
 func TestSystemPromptWithCart(t *testing.T) {
 	p := systemPrompt(testTenant(), "cart-uuid-1")
 	assert.Contains(t, p, "cart-uuid-1")

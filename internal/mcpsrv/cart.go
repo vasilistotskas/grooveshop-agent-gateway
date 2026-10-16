@@ -193,9 +193,14 @@ func (h *handlers) addToCart(
 			"product %d was not found", in.ProductID))
 	}
 
+	// Django adds to a new guest cart when it cannot reach the one named
+	// (a signed-in shopper's cart is one), so the cart named is the one
+	// to read back: not finding it means the product is not in it.
 	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, cartID)
 	if err != nil {
-		return nil, out, upstreamErr(err, "the cart service is unavailable")
+		return nil, out, upstreamErr(err, "the shopper's cart could not be "+
+			"found, so the product is not in it; tell the shopper their "+
+			"cart could not be updated")
 	}
 	out = h.cartOut(t, c)
 	return h.cartSummary(out), out, nil
