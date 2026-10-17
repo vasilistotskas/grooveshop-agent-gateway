@@ -24,6 +24,11 @@ var (
 	// signed-in shopper's, or a guest cart since deleted): it serves a
 	// new guest cart in its place, and acts on that one.
 	ErrCartUnreachable = errors.New("django: cart unreachable")
+	// ErrCartTokenRefused: Django refused the signed-in shopper's cart
+	// token (unknown, expired or revoked). The cart was not reached, so
+	// it is ErrCartUnreachable too.
+	ErrCartTokenRefused = fmt.Errorf(
+		"django: cart token refused: %w", ErrCartUnreachable)
 )
 
 // APIError carries the upstream status and DRF "detail" message. It unwraps

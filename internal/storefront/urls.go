@@ -31,6 +31,11 @@ func Cart(domain string) string {
 	return Origin(domain) + "/cart"
 }
 
+// Checkout is the checkout page (app/pages/checkout).
+func Checkout(domain string) string {
+	return Origin(domain) + "/checkout"
+}
+
 // CartClaim hands a gateway-built cart to the browser session
 // (server/routes/cart/claim.get.ts).
 func CartClaim(domain, cartID string) string {

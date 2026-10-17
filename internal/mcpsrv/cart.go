@@ -129,8 +129,11 @@ func (h *handlers) createCart(
 	), out, nil
 }
 
+// cartId is optional in the schemas below: a signed-in shopper's chat
+// turn reaches their cart through the cart token instead, and the
+// handlers require it of everyone else.
 type GetCartIn struct {
-	CartID string `json:"cartId" jsonschema:"cart id from create_cart or add_to_cart"`
+	CartID string `json:"cartId,omitempty" jsonschema:"cart id from create_cart or add_to_cart"`
 }
 
 func (h *handlers) getCart(
@@ -141,7 +144,7 @@ func (h *handlers) getCart(
 	if err != nil {
 		return nil, out, err
 	}
-	if in.CartID == "" {
+	if in.CartID == "" && !django.HasCartToken(ctx) {
 		return nil, out, errors.New(
 			"cartId is required; create one with create_cart")
 	}
@@ -176,8 +179,10 @@ func (h *handlers) addToCart(
 		qty = 1
 	}
 
+	// A signed-in shopper's cart is reached through their cart token,
+	// whatever id is named: there is no guest cart to create first.
 	cartID := in.CartID
-	if cartID == "" {
+	if cartID == "" && !django.HasCartToken(ctx) {
 		c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, "")
 		if err != nil {
 			return nil, out, upstreamErr(err,
@@ -208,7 +213,7 @@ func (h *handlers) addToCart(
 }
 
 type UpdateCartItemIn struct {
-	CartID   string `json:"cartId"`
+	CartID   string `json:"cartId,omitempty"`
 	ItemID   int64  `json:"itemId" jsonschema:"cart line id from the cart's items"`
 	Quantity int    `json:"quantity" jsonschema:"new quantity, 1-999"`
 }
@@ -221,7 +226,8 @@ func (h *handlers) updateCartItem(
 	if err != nil {
 		return nil, out, err
 	}
-	if in.CartID == "" || in.ItemID <= 0 || in.Quantity <= 0 {
+	if (in.CartID == "" && !django.HasCartToken(ctx)) ||
+		in.ItemID <= 0 || in.Quantity <= 0 {
 		return nil, out, errors.New(
 			"cartId, itemId and a positive quantity are required; use " +
 				"remove_cart_item to delete a line")
@@ -241,7 +247,7 @@ func (h *handlers) updateCartItem(
 }
 
 type RemoveCartItemIn struct {
-	CartID string `json:"cartId"`
+	CartID string `json:"cartId,omitempty"`
 	ItemID int64  `json:"itemId"`
 }
 
@@ -253,7 +259,7 @@ func (h *handlers) removeCartItem(
 	if err != nil {
 		return nil, out, err
 	}
-	if in.CartID == "" || in.ItemID <= 0 {
+	if (in.CartID == "" && !django.HasCartToken(ctx)) || in.ItemID <= 0 {
 		return nil, out, errors.New("cartId and itemId are required")
 	}
 	if err := h.deps.Django.RemoveCartItem(
@@ -271,7 +277,7 @@ func (h *handlers) removeCartItem(
 }
 
 type CheckoutLinkIn struct {
-	CartID string `json:"cartId"`
+	CartID string `json:"cartId,omitempty"`
 }
 
 type CheckoutLinkOut struct {
@@ -286,7 +292,8 @@ func (h *handlers) getCheckoutLink(
 	if err != nil {
 		return nil, out, err
 	}
-	if in.CartID == "" {
+	signedIn := django.HasCartToken(ctx)
+	if in.CartID == "" && !signedIn {
 		return nil, out, errors.New("cartId is required")
 	}
 	// Validate the cart exists before handing the shopper a dead link.
@@ -296,7 +303,12 @@ func (h *handlers) getCheckoutLink(
 		return nil, out, upstreamErr(err,
 			"that cart no longer exists; create a new one with create_cart")
 	}
+	// A signed-in shopper's cart is already their session's: the claim
+	// link adopts guest carts only, so they go straight to checkout.
 	out.URL = storefront.CartClaim(t.Domain, in.CartID)
+	if signedIn {
+		out.URL = storefront.Checkout(t.Domain)
+	}
 	return textResult(
 		"Give the shopper this link to review the cart and pay on the "+
 			"store's checkout (address, delivery and payment are chosen "+

@@ -22,6 +22,46 @@ func (c *Client) cartHeaders(cartID string) map[string]string {
 	return h
 }
 
+// cartTarget picks how a call on an allowlisted cart route names its
+// cart, and the cart id the one that answers must be (servedNamed). A
+// signed-in shopper's cart token (WithCartToken) wins over cartID and is
+// sent instead of X-Cart-Id. The served cart is then trusted, not
+// compared: Django resolves the token to exactly that shopper's cart or
+// refuses it with 401, and never serves a guest cart in its place, so
+// the cart that answers is the one the shopper sees. Comparing it with
+// cartID would refuse their own cart whenever the model names a stale
+// guest id. Stock, order and payment calls use cartHeaders and never
+// carry the token: Django refuses it there.
+func (c *Client) cartTarget(
+	ctx context.Context, cartID string,
+) (headers map[string]string, named string, err error) {
+	tok, ok := cartTokenFrom(ctx)
+	if !ok {
+		return c.cartHeaders(cartID), cartID, nil
+	}
+	// A refused token stays refused for the turn; asking again would
+	// only spend another round trip on the same 401.
+	if tok.Refused() {
+		return nil, "", ErrCartTokenRefused
+	}
+	h := c.cartHeaders("")
+	h["X-Cart-Token"] = tok.value
+	return h, "", nil
+}
+
+// cartRefusal maps a 401 on a call carrying a cart token to
+// ErrCartTokenRefused and records it on the token. The call carries no
+// other credential, so a 401 there can only be the token: Django's
+// cart_token_invalid (unknown, expired or revoked).
+func cartRefusal(ctx context.Context, err error) error {
+	tok, ok := cartTokenFrom(ctx)
+	if !ok || !errors.Is(err, ErrUnauthorized) {
+		return err
+	}
+	tok.refused.Store(true)
+	return ErrCartTokenRefused
+}
+
 // servedNamed checks that Django acted on the cart the call named, not
 // on the new guest cart it serves in place of one the caller cannot
 // reach. An empty name asks for that new cart.
@@ -64,18 +104,22 @@ type productAlertCreate struct {
 func (c *Client) GetCart(
 	ctx context.Context, host, lang, cartID string,
 ) (*Cart, error) {
-	var out Cart
-	err := c.get(ctx, request{
-		path:     "/cart",
-		host:     host,
-		language: lang,
-		headers:  c.cartHeaders(cartID),
-		out:      &out,
-	})
+	headers, named, err := c.cartTarget(ctx, cartID)
 	if err != nil {
 		return nil, err
 	}
-	if err := servedNamed(cartID, out.UUID); err != nil {
+	var out Cart
+	err = c.get(ctx, request{
+		path:     "/cart",
+		host:     host,
+		language: lang,
+		headers:  headers,
+		out:      &out,
+	})
+	if err != nil {
+		return nil, cartRefusal(ctx, err)
+	}
+	if err := servedNamed(named, out.UUID); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -85,19 +129,23 @@ func (c *Client) GetCart(
 func (c *Client) AddCartItem(
 	ctx context.Context, host, lang, cartID string, productID int64, qty int,
 ) (*CartItem, error) {
+	headers, named, err := c.cartTarget(ctx, cartID)
+	if err != nil {
+		return nil, err
+	}
 	var out CartItem
-	err := c.send(ctx, http.MethodPost, request{
+	err = c.send(ctx, http.MethodPost, request{
 		path:     "/cart/item",
 		host:     host,
 		language: lang,
-		headers:  c.cartHeaders(cartID),
+		headers:  headers,
 		body:     cartItemCreate{Product: productID, Quantity: qty},
 		out:      &out,
 	})
 	if err != nil {
-		return nil, err
+		return nil, cartRefusal(ctx, err)
 	}
-	if err := servedNamed(cartID, out.CartID); err != nil {
+	if err := servedNamed(named, out.CartID); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -106,20 +154,24 @@ func (c *Client) AddCartItem(
 func (c *Client) UpdateCartItem(
 	ctx context.Context, host, lang, cartID string, itemID int64, qty int,
 ) (*CartItem, error) {
+	headers, named, err := c.cartTarget(ctx, cartID)
+	if err != nil {
+		return nil, err
+	}
 	var out CartItem
-	err := c.send(ctx, http.MethodPut, request{
+	err = c.send(ctx, http.MethodPut, request{
 		path:     "/cart/item/{id}",
 		rawPath:  fmt.Sprintf("/cart/item/%d", itemID),
 		host:     host,
 		language: lang,
-		headers:  c.cartHeaders(cartID),
+		headers:  headers,
 		body:     cartItemUpdate{Quantity: qty},
 		out:      &out,
 	})
 	if err != nil {
-		return nil, err
+		return nil, cartRefusal(ctx, err)
 	}
-	if err := servedNamed(cartID, out.CartID); err != nil {
+	if err := servedNamed(named, out.CartID); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -128,13 +180,17 @@ func (c *Client) UpdateCartItem(
 func (c *Client) RemoveCartItem(
 	ctx context.Context, host, lang, cartID string, itemID int64,
 ) error {
-	return c.send(ctx, http.MethodDelete, request{
+	headers, _, err := c.cartTarget(ctx, cartID)
+	if err != nil {
+		return err
+	}
+	return cartRefusal(ctx, c.send(ctx, http.MethodDelete, request{
 		path:     "/cart/item/{id}",
 		rawPath:  fmt.Sprintf("/cart/item/%d", itemID),
 		host:     host,
 		language: lang,
-		headers:  c.cartHeaders(cartID),
-	})
+		headers:  headers,
+	}))
 }
 
 // ApplyCoupon attaches a discount code to the cart (the store keeps one
@@ -144,16 +200,21 @@ func (c *Client) RemoveCartItem(
 func (c *Client) ApplyCoupon(
 	ctx context.Context, host, lang, cartID, code string,
 ) (*Cart, error) {
+	headers, named, err := c.cartTarget(ctx, cartID)
+	if err != nil {
+		return nil, err
+	}
 	var out Cart
-	err := c.send(ctx, http.MethodPost, request{
+	err = c.send(ctx, http.MethodPost, request{
 		path:     "/cart/coupon",
 		host:     host,
 		language: lang,
-		headers:  c.cartHeaders(cartID),
+		headers:  headers,
 		body:     couponApply{Code: code},
 		out:      &out,
 	})
 	if err != nil {
+		err = cartRefusal(ctx, err)
 		apiErr, ok := errors.AsType[*APIError](err)
 		if ok && errors.Is(err, ErrValidation) && apiErr.Reason != "" {
 			return nil, &CouponRejectedError{
@@ -162,7 +223,7 @@ func (c *Client) ApplyCoupon(
 		}
 		return nil, err
 	}
-	if err := servedNamed(cartID, out.UUID); err != nil {
+	if err := servedNamed(named, out.UUID); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -173,18 +234,22 @@ func (c *Client) ApplyCoupon(
 func (c *Client) RemoveCoupon(
 	ctx context.Context, host, lang, cartID string,
 ) (*Cart, error) {
-	var out Cart
-	err := c.send(ctx, http.MethodDelete, request{
-		path:     "/cart/coupon",
-		host:     host,
-		language: lang,
-		headers:  c.cartHeaders(cartID),
-		out:      &out,
-	})
+	headers, named, err := c.cartTarget(ctx, cartID)
 	if err != nil {
 		return nil, err
 	}
-	if err := servedNamed(cartID, out.UUID); err != nil {
+	var out Cart
+	err = c.send(ctx, http.MethodDelete, request{
+		path:     "/cart/coupon",
+		host:     host,
+		language: lang,
+		headers:  headers,
+		out:      &out,
+	})
+	if err != nil {
+		return nil, cartRefusal(ctx, err)
+	}
+	if err := servedNamed(named, out.UUID); err != nil {
 		return nil, err
 	}
 	return &out, nil
