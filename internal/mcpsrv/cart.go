@@ -123,6 +123,17 @@ func (h *handlers) createCart(
 		return nil, out, upstreamErr(err, "the cart service is unavailable")
 	}
 	out.CartID = c.UUID
+	// The token resolves to the cart the signed-in shopper already has:
+	// nothing is created, and saying so keeps the model from presenting
+	// their existing cart as a new, empty one.
+	if django.HasCartToken(ctx) {
+		return textResult(
+			"No cart was created: the shopper is signed in and already "+
+				"has cart %s, which the cart tools act on. Fetch it with "+
+				"get_cart to see what is in it.", out.CartID,
+		), out, nil
+	}
+	cartChanged(ctx)
 	return textResult(
 		"Created cart %s. Persist this cartId — it identifies the "+
 			"shopper's cart in every subsequent call.", out.CartID,
@@ -141,7 +152,7 @@ func (h *handlers) getCart(
 	if err != nil {
 		return nil, out, err
 	}
-	if in.CartID == "" {
+	if in.CartID == "" && !django.HasCartToken(ctx) {
 		return nil, out, errors.New(
 			"cartId is required; create one with create_cart")
 	}
@@ -176,8 +187,10 @@ func (h *handlers) addToCart(
 		qty = 1
 	}
 
+	// A signed-in shopper's cart is reached through their cart token,
+	// whatever id is named: there is no guest cart to create first.
 	cartID := in.CartID
-	if cartID == "" {
+	if cartID == "" && !django.HasCartToken(ctx) {
 		c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, "")
 		if err != nil {
 			return nil, out, upstreamErr(err,
@@ -198,14 +211,22 @@ func (h *handlers) addToCart(
 		return nil, out, upstreamErr(err, fmt.Sprintf(
 			"product %d was not found", in.ProductID))
 	}
+	cartChanged(ctx)
 
 	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, cartID)
 	if err != nil {
-		return nil, out, upstreamErr(err, "the cart service is unavailable")
+		return nil, out, errReadBack
 	}
 	out = h.cartOut(t, c)
 	return h.cartSummary(out), out, nil
 }
+
+// errReadBack is a cart change the store accepted whose cart could not
+// be read back (a refused token, an outage): the change happened, so
+// the model must neither deny it nor repeat it.
+var errReadBack = errors.New("the change was sent and the store " +
+	"accepted it, but the cart could not be re-read; tell the shopper " +
+	"to check their cart, and do not repeat the change")
 
 type UpdateCartItemIn struct {
 	CartID   string `json:"cartId"`
@@ -221,7 +242,8 @@ func (h *handlers) updateCartItem(
 	if err != nil {
 		return nil, out, err
 	}
-	if in.CartID == "" || in.ItemID <= 0 || in.Quantity <= 0 {
+	if (in.CartID == "" && !django.HasCartToken(ctx)) ||
+		in.ItemID <= 0 || in.Quantity <= 0 {
 		return nil, out, errors.New(
 			"cartId, itemId and a positive quantity are required; use " +
 				"remove_cart_item to delete a line")
@@ -232,9 +254,10 @@ func (h *handlers) updateCartItem(
 		return nil, out, upstreamErr(err,
 			"that cart line was not found; fetch the cart with get_cart")
 	}
+	cartChanged(ctx)
 	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, in.CartID)
 	if err != nil {
-		return nil, out, upstreamErr(err, "the cart service is unavailable")
+		return nil, out, errReadBack
 	}
 	out = h.cartOut(t, c)
 	return h.cartSummary(out), out, nil
@@ -253,7 +276,7 @@ func (h *handlers) removeCartItem(
 	if err != nil {
 		return nil, out, err
 	}
-	if in.CartID == "" || in.ItemID <= 0 {
+	if (in.CartID == "" && !django.HasCartToken(ctx)) || in.ItemID <= 0 {
 		return nil, out, errors.New("cartId and itemId are required")
 	}
 	if err := h.deps.Django.RemoveCartItem(
@@ -262,9 +285,10 @@ func (h *handlers) removeCartItem(
 		return nil, out, upstreamErr(err,
 			"that cart line was not found; fetch the cart with get_cart")
 	}
+	cartChanged(ctx)
 	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, in.CartID)
 	if err != nil {
-		return nil, out, upstreamErr(err, "the cart service is unavailable")
+		return nil, out, errReadBack
 	}
 	out = h.cartOut(t, c)
 	return h.cartSummary(out), out, nil
@@ -286,7 +310,8 @@ func (h *handlers) getCheckoutLink(
 	if err != nil {
 		return nil, out, err
 	}
-	if in.CartID == "" {
+	signedIn := django.HasCartToken(ctx)
+	if in.CartID == "" && !signedIn {
 		return nil, out, errors.New("cartId is required")
 	}
 	// Validate the cart exists before handing the shopper a dead link.
@@ -296,10 +321,73 @@ func (h *handlers) getCheckoutLink(
 		return nil, out, upstreamErr(err,
 			"that cart no longer exists; create a new one with create_cart")
 	}
+	// A signed-in shopper's cart is already their session's: the claim
+	// link adopts guest carts only, so they go straight to checkout.
 	out.URL = storefront.CartClaim(t.Domain, in.CartID)
+	if signedIn {
+		out.URL = storefront.Checkout(t.Domain)
+	}
 	return textResult(
 		"Give the shopper this link to review the cart and pay on the "+
 			"store's checkout (address, delivery and payment are chosen "+
 			"there): %s", out.URL,
 	), out, nil
+}
+
+type ApplyCouponIn struct {
+	CartID string `json:"cartId,omitempty"`
+	Code   string `json:"code" jsonschema:"the coupon code exactly as the shopper gave it"`
+}
+
+func (h *handlers) applyCoupon(
+	ctx context.Context, _ *mcp.CallToolRequest, in ApplyCouponIn,
+) (*mcp.CallToolResult, CartOut, error) {
+	var out CartOut
+	t, err := h.tenantFor(ctx)
+	if err != nil {
+		return nil, out, err
+	}
+	code := strings.TrimSpace(in.Code)
+	if code == "" || (in.CartID == "" && !django.HasCartToken(ctx)) {
+		return nil, out, errors.New("cartId and code are required")
+	}
+	c, err := h.deps.Django.ApplyCoupon(
+		ctx, t.Domain, t.DefaultLocale, in.CartID, code)
+	if rejected, ok := errors.AsType[*django.CouponRejectedError](err); ok {
+		return nil, out, fmt.Errorf("the store refused coupon %s (%s): %s",
+			code, rejected.Reason, rejected.Detail)
+	}
+	if err != nil {
+		return nil, out, upstreamErr(err, "that cart no longer exists; "+
+			"create a new one with create_cart")
+	}
+	cartChanged(ctx)
+	out = h.cartOut(t, c)
+	return h.cartSummary(out), out, nil
+}
+
+type RemoveCouponIn struct {
+	CartID string `json:"cartId,omitempty"`
+}
+
+func (h *handlers) removeCoupon(
+	ctx context.Context, _ *mcp.CallToolRequest, in RemoveCouponIn,
+) (*mcp.CallToolResult, CartOut, error) {
+	var out CartOut
+	t, err := h.tenantFor(ctx)
+	if err != nil {
+		return nil, out, err
+	}
+	if in.CartID == "" && !django.HasCartToken(ctx) {
+		return nil, out, errors.New("cartId is required")
+	}
+	c, err := h.deps.Django.RemoveCoupon(
+		ctx, t.Domain, t.DefaultLocale, in.CartID)
+	if err != nil {
+		return nil, out, upstreamErr(err, "that cart no longer exists; "+
+			"create a new one with create_cart")
+	}
+	cartChanged(ctx)
+	out = h.cartOut(t, c)
+	return h.cartSummary(out), out, nil
 }

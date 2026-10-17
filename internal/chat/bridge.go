@@ -15,13 +15,16 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcpsrv"
 )
 
-// cartTools mutate the shopper's cart; a successful call flags the widget
-// to refresh its cart store.
+// cartTools return the shopper's cart id for the widget to adopt.
+// Whether the turn changed the cart the tools record themselves
+// (mcpsrv.CartActivity).
 var cartTools = map[string]bool{
 	"create_cart":      true,
 	"add_to_cart":      true,
 	"update_cart_item": true,
 	"remove_cart_item": true,
+	"apply_coupon":     true,
+	"remove_coupon":    true,
 }
 
 // checkoutTools are the UCP checkout capability's canonical tools. They
@@ -58,9 +61,9 @@ type bridge struct {
 	// a review or search result, can still name one.
 	offered map[string]bool
 
-	mu          sync.Mutex
-	cartID      string
-	cartMutated bool
+	mu       sync.Mutex
+	cartID   string
+	activity *mcpsrv.CartActivity
 	// productsSent dedupes product cards across the turn's tool calls.
 	productsSent map[int64]bool
 }
@@ -69,6 +72,8 @@ type bridge struct {
 // transports. ctx must carry the tenant — it becomes the server session's
 // base context, exactly like the HTTP transport path.
 func newBridge(ctx context.Context, server *mcp.Server) (*bridge, error) {
+	activity := &mcpsrv.CartActivity{}
+	ctx = mcpsrv.WithCartActivity(ctx, activity)
 	serverT, clientT := mcp.NewInMemoryTransports()
 	if _, err := server.Connect(ctx, serverT, nil); err != nil {
 		return nil, err
@@ -81,7 +86,7 @@ func newBridge(ctx context.Context, server *mcp.Server) (*bridge, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &bridge{session: session}, nil
+	return &bridge{session: session, activity: activity}, nil
 }
 
 func (b *bridge) close() {
@@ -175,15 +180,13 @@ func (b *bridge) call(
 	return text, products, nil
 }
 
-// recordCartState tracks the active cart id and whether this turn changed
-// the cart, so the widget can adopt/refresh it.
+// recordCartState tracks the active cart id, so the widget can adopt it.
 func (b *bridge) recordCartState(tool string, structured []byte) {
 	if !cartTools[tool] {
 		return
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.cartMutated = true
 	var payload struct {
 		CartID string `json:"cartId"`
 	}
@@ -196,5 +199,5 @@ func (b *bridge) recordCartState(tool string, structured []byte) {
 func (b *bridge) cartState() (cartID string, mutated bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.cartID, b.cartMutated
+	return b.cartID, b.activity.Mutated()
 }

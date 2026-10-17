@@ -23,8 +23,7 @@ import (
 // with features, over the shared server that carries every tool.
 func offeredNames(t *testing.T, features django.StoreFeatures) []string {
 	t.Helper()
-	server := mcpsrv.NewServer(mcpsrv.Deps{Version: "test"},
-		mcpsrv.BridgeIdentity, mcpsrv.EveryFeature)
+	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test"})
 	br, err := newBridge(context.Background(), server)
 	require.NoError(t, err)
 	t.Cleanup(br.close)
@@ -73,10 +72,9 @@ func TestBridgeReportsAFailedCartToolAsAFailure(t *testing.T) {
 		}))
 	t.Cleanup(srv.Close)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server := mcpsrv.NewServer(mcpsrv.Deps{Version: "test",
+	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test",
 		Django: django.New(srv.URL+"/api/v1", "api.example.test", "secret",
-			5*time.Second, log, obs.NewMetrics())},
-		mcpsrv.BridgeIdentity, mcpsrv.EveryFeature)
+			5*time.Second, log, obs.NewMetrics())})
 	ctx := tenant.NewContext(context.Background(), testTenant())
 	br, err := newBridge(ctx, server)
 	require.NoError(t, err)
@@ -92,4 +90,41 @@ func TestBridgeReportsAFailedCartToolAsAFailure(t *testing.T) {
 	assert.Contains(t, text, "the product is not in it")
 	_, mutated := br.cartState()
 	assert.False(t, mutated)
+}
+
+// A refused cart token reaches the model as the cart being unreachable,
+// marks nothing mutated, and is recorded on the token the turn's done
+// event reads.
+func TestBridgeReportsARefusedCartToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			assert.Empty(t, r.Header.Get("X-Cart-Id"))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"detail": "The cart token is invalid."}`))
+		}))
+	t.Cleanup(srv.Close)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test",
+		Django: django.New(srv.URL+"/api/v1", "api.example.test", "secret",
+			5*time.Second, log, obs.NewMetrics())})
+	tok, err := django.ParseCartToken("Zk3n_Q8vX2-rT5yLmW9aB4cD7eF0gH1iJ6k")
+	require.NoError(t, err)
+	ctx := django.WithCartToken(
+		tenant.NewContext(context.Background(), testTenant()), tok)
+	br, err := newBridge(ctx, server)
+	require.NoError(t, err)
+	t.Cleanup(br.close)
+	_, err = br.tools(ctx, mcpsrv.EveryFeature)
+	require.NoError(t, err)
+
+	text, _, err := br.call(ctx, "add_to_cart", map[string]any{
+		"cartId": "6f1c1f3e-2d6a-4b0f-9a3e-2f6d6c1b9a10", "productId": 64})
+
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(text, "ERROR: "), text)
+	assert.Contains(t, text, "could not be reached")
+	_, mutated := br.cartState()
+	assert.False(t, mutated)
+	assert.True(t, tok.Refused())
 }

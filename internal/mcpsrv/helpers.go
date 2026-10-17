@@ -36,6 +36,12 @@ func (h *handlers) tenantFor(ctx context.Context) (*tenant.Tenant, error) {
 // errors. The SDK packs returned errors into CallToolResult.IsError.
 func upstreamErr(err error, notFound string) error {
 	switch {
+	// Checked first: it is ErrCartUnreachable too, whose not-found
+	// wording ("create a new cart") would mislead for the shopper's own.
+	case errors.Is(err, django.ErrCartTokenRefused):
+		return errors.New("the shopper's cart could not be reached, so " +
+			"nothing in it changed; tell the shopper their cart could " +
+			"not be reached and to try again")
 	case errors.Is(err, django.ErrNotFound),
 		errors.Is(err, django.ErrCartUnreachable):
 		return errors.New(notFound)

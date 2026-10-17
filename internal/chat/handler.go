@@ -22,6 +22,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/text"
@@ -69,12 +70,20 @@ type chatRequest struct {
 	ConversationID string `json:"conversationId"`
 	Message        string `json:"message"`
 	CartID         string `json:"cartId"`
+	// CartToken is a signed-in shopper's cart pass (django.CartToken).
+	// It lives only in this turn's context, never in the conversation.
+	// A pointer, so a supplied empty token is refused like any other
+	// malformed one instead of passing for an omitted field.
+	CartToken *string `json:"cartToken"`
 }
 
 type doneEvent struct {
 	ConversationID string `json:"conversationId"`
 	CartID         string `json:"cartId,omitempty"`
 	CartMutated    bool   `json:"cartMutated"`
+	// CartTokenRefused: Django refused the turn's cart token, so the
+	// shopper's cart was not reached; the widget mints a new one.
+	CartTokenRefused bool `json:"cartTokenRefused"`
 }
 
 func (s *Service) Handler() http.Handler {
@@ -122,6 +131,17 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	if req.CartID != "" && uuid.Validate(req.CartID) != nil {
 		fail(http.StatusBadRequest, msgBadRequest)
 		return
+	}
+	var cartToken *django.CartToken
+	if req.CartToken != nil {
+		var err error
+		if cartToken, err = django.ParseCartToken(*req.CartToken); err != nil {
+			fail(http.StatusBadRequest, msgBadRequest)
+			return
+		}
+		// Every cart call of the turn acts on the token's cart; tool
+		// handlers reach it through the bridge's base context.
+		r = r.WithContext(django.WithCartToken(r.Context(), cartToken))
 	}
 
 	conv, err := s.store.Load(r.Context(), t.SchemaName, req.ConversationID)
@@ -243,10 +263,17 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 			slog.String("error", err.Error()))
 	}
 
+	// A signed-in shopper's cart is already their session's: an id for
+	// the widget to adopt belongs to guest carts only.
+	doneCartID := conv.CartID
+	if cartToken != nil {
+		doneCartID = ""
+	}
 	sse.event("done", doneEvent{
-		ConversationID: conv.ID,
-		CartID:         conv.CartID,
-		CartMutated:    cartMutated,
+		ConversationID:   conv.ID,
+		CartID:           doneCartID,
+		CartMutated:      cartMutated,
+		CartTokenRefused: cartToken != nil && cartToken.Refused(),
 	})
 }
 
@@ -277,7 +304,8 @@ func (s *Service) runTurn(
 	messages := make(
 		[]openai.ChatCompletionMessageParamUnion, 0, len(conv.Turns)+2)
 	messages = append(messages,
-		openai.SystemMessage(systemPrompt(t, conv.CartID)))
+		openai.SystemMessage(systemPrompt(
+			t, conv.CartID, django.HasCartToken(ctx))))
 	for _, turn := range conv.Turns {
 		if turn.Role == "assistant" {
 			messages = append(messages, openai.AssistantMessage(turn.Text))

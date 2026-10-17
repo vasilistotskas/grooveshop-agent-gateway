@@ -16,6 +16,7 @@ func TestURLs(t *testing.T) {
 	assert.Equal(t, "https://shop.example.test/products/42/blue-mug",
 		Product(d, 42, "blue-mug"))
 	assert.Equal(t, "https://shop.example.test/cart", Cart(d))
+	assert.Equal(t, "https://shop.example.test/checkout", Checkout(d))
 	assert.Equal(t, "https://shop.example.test/cart/claim?uuid=c-1",
 		CartClaim(d, "c-1"))
 	assert.Equal(t, "https://shop.example.test/checkout/success/o-1",

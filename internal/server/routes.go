@@ -168,7 +168,7 @@ func New(d Deps) http.Handler {
 	// instead — so one shared instance is correct here. It carries every
 	// tool; the bridge offers each store only its own (mcpsrv.Offered).
 	chatSvc := chat.New(d.Cfg,
-		mcpsrv.NewServer(mcpDeps, mcpsrv.BridgeIdentity, mcpsrv.EveryFeature),
+		mcpsrv.NewChatServer(mcpDeps),
 		chat.NewStore(d.Redis, d.Cfg.ConversationTTL, d.Cfg.ChatMaxTurns),
 		chat.NewQuota(d.Redis,
 			d.Cfg.ChatStoreTurnsPerHour, d.Cfg.ChatVisitorTurnsPerDay),

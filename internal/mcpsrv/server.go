@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
@@ -43,6 +45,20 @@ type Deps struct {
 // callable. id is what it calls itself in `initialize` — per tenant, and
 // identical to the tenant's Server Card (IdentityFor).
 func NewServer(d Deps, id Identity, features django.StoreFeatures) *mcp.Server {
+	return newServer(d, id, features, mcpSurface)
+}
+
+// NewChatServer builds the chat bridge's server: every tool, chat-only
+// ones included, with the cart tools' cartId optional (cartToolOf). One
+// in-process client shares it across stores, and the bridge offers each
+// store only the tools it is served (Offered).
+func NewChatServer(d Deps) *mcp.Server {
+	return newServer(d, BridgeIdentity, EveryFeature, chatSurface)
+}
+
+func newServer(
+	d Deps, id Identity, features django.StoreFeatures, s surface,
+) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    id.Name,
 		Title:   id.Title,
@@ -56,16 +72,23 @@ func NewServer(d Deps, id Identity, features django.StoreFeatures) *mcp.Server {
 		},
 	})
 	for _, t := range toolset(&handlers{deps: d}) {
-		if t.offeredTo(features) {
-			t.register(srv)
+		if t.offeredTo(features) && t.servedOn(s) {
+			t.register(srv, s)
 		}
 	}
 	return srv
 }
 
-// EveryFeature builds the chat bridge's server, which one in-process
-// client shares across stores: it carries every tool, and the bridge
-// offers each store only the ones it is served (Offered).
+// surface is who a server is built for: agents on /mcp, or the
+// first-party chat.
+type surface int
+
+const (
+	mcpSurface surface = iota
+	chatSurface
+)
+
+// EveryFeature is the feature set the chat server carries tools for.
 var EveryFeature = django.StoreFeatures{
 	ProductReviews: true,
 	Favourites:     true,
@@ -78,10 +101,23 @@ var EveryFeature = django.StoreFeatures{
 // as every handler has its own argument and result types).
 type tool struct {
 	def      *mcp.Tool
-	register func(*mcp.Server)
+	register func(*mcp.Server, surface)
 	// offered, when set, is the store feature the tool serves: a store
 	// with it off is not served the tool.
 	offered func(django.StoreFeatures) bool
+	// chatOnly tools are served to the first-party chat alone: not on
+	// /mcp, and not advertised by discovery.
+	chatOnly bool
+}
+
+// chatOnly serves t to the chat alone.
+func chatOnly(t tool) tool {
+	t.chatOnly = true
+	return t
+}
+
+func (t tool) servedOn(s surface) bool {
+	return !t.chatOnly || s == chatSurface
 }
 
 // onlyWith offers t only to a store with the feature on.
@@ -98,10 +134,36 @@ func (t tool) offeredTo(f django.StoreFeatures) bool {
 func reviewsOn(f django.StoreFeatures) bool    { return f.ProductReviews }
 func loyaltyOn(f django.StoreFeatures) bool    { return f.Loyalty }
 func favouritesOn(f django.StoreFeatures) bool { return f.Favourites }
+func promotionsOn(f django.StoreFeatures) bool { return f.Promotions }
 
 func toolOf[In, Out any](def *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) tool {
-	return tool{def: def, register: func(srv *mcp.Server) {
+	return tool{def: def, register: func(srv *mcp.Server, _ surface) {
 		mcp.AddTool(srv, def, h)
+	}}
+}
+
+// cartToolOf is toolOf for a tool that names its cart by cartId. /mcp
+// agents always must, so the schema requires it there. In the chat a
+// signed-in shopper's turn reaches the cart through their cart token
+// instead, so the chat's schema leaves it optional and the handler
+// requires it of a guest.
+func cartToolOf[In, Out any](
+	def *mcp.Tool, h mcp.ToolHandlerFor[In, Out],
+) tool {
+	return tool{def: def, register: func(srv *mcp.Server, s surface) {
+		if s != chatSurface {
+			mcp.AddTool(srv, def, h)
+			return
+		}
+		schema, err := jsonschema.For[In](&jsonschema.ForOptions{})
+		if err != nil {
+			panic(fmt.Sprintf("tool %q: input schema: %v", def.Name, err))
+		}
+		schema.Required = slices.DeleteFunc(schema.Required,
+			func(p string) bool { return p == "cartId" })
+		chat := *def
+		chat.InputSchema = schema
+		mcp.AddTool(srv, &chat, h)
 	}}
 }
 
@@ -115,7 +177,7 @@ var definitions = sync.OnceValue(func() []tool { return toolset(&handlers{}) })
 func toolNamesFor(features django.StoreFeatures) []string {
 	var names []string
 	for _, t := range definitions() {
-		if t.offeredTo(features) {
+		if t.offeredTo(features) && t.servedOn(mcpSurface) {
 			names = append(names, t.def.Name)
 		}
 	}
@@ -219,7 +281,7 @@ func toolset(h *handlers) []tool {
 				"also creates a cart implicitly when called without one.",
 		}, h.createCart),
 
-		toolOf(&mcp.Tool{
+		cartToolOf(&mcp.Tool{
 			Name: "get_cart",
 			Description: "Fetch a cart's current lines and totals by cartId, " +
 				"including any applied coupon, promotion discount and " +
@@ -233,17 +295,17 @@ func toolset(h *handlers) []tool {
 				"the cart implicitly; persist the returned cartId.",
 		}, h.addToCart),
 
-		toolOf(&mcp.Tool{
+		cartToolOf(&mcp.Tool{
 			Name:        "update_cart_item",
 			Description: "Change a cart line's quantity.",
 		}, h.updateCartItem),
 
-		toolOf(&mcp.Tool{
+		cartToolOf(&mcp.Tool{
 			Name:        "remove_cart_item",
 			Description: "Remove a line from the cart.",
 		}, h.removeCartItem),
 
-		toolOf(&mcp.Tool{
+		cartToolOf(&mcp.Tool{
 			Name: "get_checkout_link",
 			Description: "Get the URL where the shopper completes checkout in " +
 				"their browser — reviewing the cart, choosing delivery and " +
@@ -251,6 +313,22 @@ func toolset(h *handlers) []tool {
 				"delivery). Payment always happens on the store's own pages, " +
 				"never in chat.",
 		}, h.getCheckoutLink),
+
+		// Chat-only: the owner allowed the assistant coupons on the
+		// shopper's cart; /mcp agents apply codes through checkout.
+		chatOnly(onlyWith(promotionsOn, toolOf(&mcp.Tool{
+			Name: "apply_coupon",
+			Description: "Apply a coupon code the shopper gave you to their " +
+				"cart (one coupon per cart: a new code replaces the " +
+				"previous one). Returns the cart with its new totals; a " +
+				"code the store refuses comes back with its reason.",
+		}, h.applyCoupon))),
+
+		chatOnly(onlyWith(promotionsOn, toolOf(&mcp.Tool{
+			Name: "remove_coupon",
+			Description: "Remove the coupon applied to the shopper's cart. " +
+				"Returns the cart with its new totals.",
+		}, h.removeCoupon))),
 
 		toolOf(&mcp.Tool{
 			Name: "track_order",
