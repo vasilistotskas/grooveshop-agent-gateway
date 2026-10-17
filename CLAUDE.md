@@ -288,7 +288,10 @@ release that drops, loosens or retypes one of those properties.
   `/checkout` instead of the cart claim. It lives in the turn's context
   only: never the stored conversation, the prompt or a log.
   `cartTokenRefused: true` means Django refused it (expired, revoked):
-  the cart was not reached, and the widget mints a new token. `products` follows the
+  the cart was not reached, and the widget mints a new token.
+  `cartMutated` is recorded by the cart tools when Django accepts a
+  change (`mcpsrv.CartActivity`), so a change whose read-back failed
+  still counts. `products` follows the
   `tool` done event of `search_products` (query + `totalHits` as total)
   and `get_product` (the product, then its variants), decoded from the
   tool's structured result (`internal/chat/products.go`), deduplicated

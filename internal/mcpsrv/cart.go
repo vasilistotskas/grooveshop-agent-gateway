@@ -123,6 +123,17 @@ func (h *handlers) createCart(
 		return nil, out, upstreamErr(err, "the cart service is unavailable")
 	}
 	out.CartID = c.UUID
+	// The token resolves to the cart the signed-in shopper already has:
+	// nothing is created, and saying so keeps the model from presenting
+	// their existing cart as a new, empty one.
+	if django.HasCartToken(ctx) {
+		return textResult(
+			"No cart was created: the shopper is signed in and already "+
+				"has cart %s, which the cart tools act on. Fetch it with "+
+				"get_cart to see what is in it.", out.CartID,
+		), out, nil
+	}
+	cartChanged(ctx)
 	return textResult(
 		"Created cart %s. Persist this cartId — it identifies the "+
 			"shopper's cart in every subsequent call.", out.CartID,
@@ -203,14 +214,22 @@ func (h *handlers) addToCart(
 		return nil, out, upstreamErr(err, fmt.Sprintf(
 			"product %d was not found", in.ProductID))
 	}
+	cartChanged(ctx)
 
 	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, cartID)
 	if err != nil {
-		return nil, out, upstreamErr(err, "the cart service is unavailable")
+		return nil, out, errReadBack
 	}
 	out = h.cartOut(t, c)
 	return h.cartSummary(out), out, nil
 }
+
+// errReadBack is a cart change the store accepted whose cart could not
+// be read back (a refused token, an outage): the change happened, so
+// the model must neither deny it nor repeat it.
+var errReadBack = errors.New("the change was sent and the store " +
+	"accepted it, but the cart could not be re-read; tell the shopper " +
+	"to check their cart, and do not repeat the change")
 
 type UpdateCartItemIn struct {
 	CartID   string `json:"cartId,omitempty"`
@@ -238,9 +257,10 @@ func (h *handlers) updateCartItem(
 		return nil, out, upstreamErr(err,
 			"that cart line was not found; fetch the cart with get_cart")
 	}
+	cartChanged(ctx)
 	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, in.CartID)
 	if err != nil {
-		return nil, out, upstreamErr(err, "the cart service is unavailable")
+		return nil, out, errReadBack
 	}
 	out = h.cartOut(t, c)
 	return h.cartSummary(out), out, nil
@@ -268,9 +288,10 @@ func (h *handlers) removeCartItem(
 		return nil, out, upstreamErr(err,
 			"that cart line was not found; fetch the cart with get_cart")
 	}
+	cartChanged(ctx)
 	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, in.CartID)
 	if err != nil {
-		return nil, out, upstreamErr(err, "the cart service is unavailable")
+		return nil, out, errReadBack
 	}
 	out = h.cartOut(t, c)
 	return h.cartSummary(out), out, nil

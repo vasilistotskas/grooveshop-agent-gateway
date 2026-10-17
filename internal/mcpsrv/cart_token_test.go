@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -118,4 +119,95 @@ func TestCartToolsNeedNoCartIDWhenSignedIn(t *testing.T) {
 	for _, hdr := range *seen {
 		assert.Empty(t, hdr.Get("X-Cart-Id"))
 	}
+}
+
+// cartRoutes serves the add and read-back from fixtures, or the status
+// each route is given.
+func cartRoutes(
+	t *testing.T, addStatus, readStatus int,
+) *handlers {
+	t.Helper()
+	read := func(name string) []byte {
+		b, err := os.ReadFile(filepath.Join("..", "..", "testdata",
+			"fixtures", "django", name))
+		require.NoError(t, err)
+		return b
+	}
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			status, body := readStatus, read("cart_with_items.json")
+			if r.Method == http.MethodPost {
+				status, body = addStatus, read("cart_item_created.json")
+			}
+			w.WriteHeader(status)
+			if status < 300 {
+				_, _ = w.Write(body)
+			}
+		}))
+	t.Cleanup(srv.Close)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return &handlers{deps: Deps{Django: django.New(srv.URL+"/api/v1",
+		"api.example.test", "secret", 5*time.Second, log, nil)}}
+}
+
+func listening(ctx context.Context) (context.Context, *CartActivity) {
+	a := &CartActivity{}
+	return WithCartActivity(ctx, a), a
+}
+
+// A change the store accepted is a change, even when the cart cannot be
+// read back after it: the tool says so, and that it must not be redone,
+// instead of claiming nothing changed.
+func TestCartChangeWithAFailedReadBackIsReportedAsMade(t *testing.T) {
+	for name, readStatus := range map[string]int{
+		"token refused on the read-back": http.StatusUnauthorized,
+		"store down on the read-back":    http.StatusServiceUnavailable,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := cartRoutes(t, http.StatusCreated, readStatus)
+			ctx, activity := listening(signedIn(t))
+
+			_, _, err := h.addToCart(ctx, nil, AddToCartIn{ProductID: 1})
+
+			require.ErrorIs(t, err, errReadBack)
+			assert.NotContains(t, err.Error(), "nothing in it changed")
+			assert.True(t, activity.Mutated())
+		})
+	}
+}
+
+// A refusal on the change itself changed nothing, and says so.
+func TestCartChangeRefusedByTheStoreIsNoChange(t *testing.T) {
+	h := cartRoutes(t, http.StatusUnauthorized, http.StatusOK)
+	ctx, activity := listening(signedIn(t))
+
+	_, _, err := h.addToCart(ctx, nil, AddToCartIn{ProductID: 1})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not be reached")
+	assert.False(t, activity.Mutated())
+}
+
+// create_cart for a signed-in shopper creates nothing: their cart exists,
+// and the tool says so instead of announcing a new one.
+func TestCreateCartForASignedInShopperCreatesNothing(t *testing.T) {
+	h, _ := cartHandlers(t, http.StatusOK)
+	ctx, activity := listening(signedIn(t))
+
+	res, out, err := h.createCart(ctx, nil, struct{}{})
+
+	require.NoError(t, err)
+	assert.Equal(t, fixtureCartID, out.CartID)
+	text := res.Content[0].(*mcp.TextContent).Text
+	assert.Contains(t, text, "No cart was created")
+	assert.NotContains(t, text, "Created cart")
+	assert.False(t, activity.Mutated())
+
+	ctx, activity = listening(
+		tenant.NewContext(context.Background(), cartTenant()))
+	res, _, err = h.createCart(ctx, nil, struct{}{})
+	require.NoError(t, err)
+	assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, "Created cart")
+	assert.True(t, activity.Mutated())
 }

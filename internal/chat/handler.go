@@ -72,7 +72,9 @@ type chatRequest struct {
 	CartID         string `json:"cartId"`
 	// CartToken is a signed-in shopper's cart pass (django.CartToken).
 	// It lives only in this turn's context, never in the conversation.
-	CartToken string `json:"cartToken"`
+	// A pointer, so a supplied empty token is refused like any other
+	// malformed one instead of passing for an omitted field.
+	CartToken *string `json:"cartToken"`
 }
 
 type doneEvent struct {
@@ -131,9 +133,9 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var cartToken *django.CartToken
-	if req.CartToken != "" {
+	if req.CartToken != nil {
 		var err error
-		if cartToken, err = django.ParseCartToken(req.CartToken); err != nil {
+		if cartToken, err = django.ParseCartToken(*req.CartToken); err != nil {
 			fail(http.StatusBadRequest, msgBadRequest)
 			return
 		}

@@ -353,6 +353,9 @@ func TestChatRejectsMalformedInput(t *testing.T) {
 		"conversation id not a uuid": {
 			"message": "γεια", "conversationId": "../evil",
 		},
+		"cart token supplied empty": {
+			"message": "γεια", "cartToken": "",
+		},
 		"cart token not shaped like one": {
 			"message": "γεια", "cartToken": "abc\r\nX-Cart-Id: 1",
 		},

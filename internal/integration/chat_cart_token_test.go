@@ -20,6 +20,9 @@ const (
 	// token is refused the way Django refuses an expired one.
 	liveCartToken    = "Zk3n_Q8vX2-rT5yLmW9aB4cD7eF0gH1iJ6kN8pS3uVw"
 	revokedCartToken = "Rv0k3d_Q8vX2-rT5yLmW9aB4cD7eF0gH1iJ6kN8pS3"
+	// revokingCartToken is accepted for changes and refused on reads: a
+	// token revoked between the change and its read-back.
+	revokingCartToken = "Rv0k1ng_Q8vX2-rT5yLmW9aB4cD7eF0gH1iJ6kN8pS"
 )
 
 // lockedBuffer is a log sink the gateway's goroutines write while the
@@ -70,7 +73,9 @@ func tokenDjango(t *testing.T) (http.Handler, func() []djangoCall) {
 				strings.Contains(r.URL.Path, "reserve-stock") {
 				t.Errorf("cart token sent to %s", route)
 			}
-			if token != liveCartToken {
+			accepted := token == liveCartToken ||
+				(token == revokingCartToken && r.Method != http.MethodGet)
+			if !accepted {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
 				_, _ = w.Write([]byte(
@@ -194,4 +199,25 @@ func TestChatSignalsARefusedCartToken(t *testing.T) {
 	for _, c := range calls() {
 		assert.Empty(t, c.cartID, c.route)
 	}
+}
+
+// A token revoked after the change but before its read-back: the change
+// happened, so the widget is told the cart changed and to mint a new
+// token, and the model that the change must not be repeated.
+func TestChatReportsAChangeWhoseReadBackWasRefused(t *testing.T) {
+	fake := &fakeChatAPI{scripts: []string{
+		toolUseTurnSSE("add_to_cart", `{"productId": 1}`),
+		textTurnSSE("Το πρόσθεσα, έλεγξε το καλάθι σου."),
+	}}
+	djangoH, _ := tokenDjango(t)
+	gw, _ := newChatGateway(t, fake, djangoH, quietLogger())
+
+	done := doneOf(t, postChat(t, gw.URL, map[string]any{
+		"message": "βάλε τον φορτιστή", "cartToken": revokingCartToken,
+	}))
+
+	assert.Equal(t, true, done["cartMutated"])
+	assert.Equal(t, true, done["cartTokenRefused"])
+	body := string(*fake.lastBody.Load())
+	assert.Contains(t, body, "do not repeat the change")
 }
