@@ -23,8 +23,7 @@ import (
 // with features, over the shared server that carries every tool.
 func offeredNames(t *testing.T, features django.StoreFeatures) []string {
 	t.Helper()
-	server := mcpsrv.NewServer(mcpsrv.Deps{Version: "test"},
-		mcpsrv.BridgeIdentity, mcpsrv.EveryFeature)
+	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test"})
 	br, err := newBridge(context.Background(), server)
 	require.NoError(t, err)
 	t.Cleanup(br.close)
@@ -73,10 +72,9 @@ func TestBridgeReportsAFailedCartToolAsAFailure(t *testing.T) {
 		}))
 	t.Cleanup(srv.Close)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server := mcpsrv.NewServer(mcpsrv.Deps{Version: "test",
+	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test",
 		Django: django.New(srv.URL+"/api/v1", "api.example.test", "secret",
-			5*time.Second, log, obs.NewMetrics())},
-		mcpsrv.BridgeIdentity, mcpsrv.EveryFeature)
+			5*time.Second, log, obs.NewMetrics())})
 	ctx := tenant.NewContext(context.Background(), testTenant())
 	br, err := newBridge(ctx, server)
 	require.NoError(t, err)
@@ -107,10 +105,9 @@ func TestBridgeReportsARefusedCartToken(t *testing.T) {
 		}))
 	t.Cleanup(srv.Close)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server := mcpsrv.NewServer(mcpsrv.Deps{Version: "test",
+	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test",
 		Django: django.New(srv.URL+"/api/v1", "api.example.test", "secret",
-			5*time.Second, log, obs.NewMetrics())},
-		mcpsrv.BridgeIdentity, mcpsrv.EveryFeature)
+			5*time.Second, log, obs.NewMetrics())})
 	tok, err := django.ParseCartToken("Zk3n_Q8vX2-rT5yLmW9aB4cD7eF0gH1iJ6k")
 	require.NoError(t, err)
 	ctx := django.WithCartToken(

@@ -289,9 +289,18 @@ release that drops, loosens or retypes one of those properties.
   only: never the stored conversation, the prompt or a log.
   `cartTokenRefused: true` means Django refused it (expired, revoked):
   the cart was not reached, and the widget mints a new token.
+  `done.cartId` is sent on anonymous turns only, and the widget adopts
+  it only then: a turn that sent a `cartToken` gets none, and the
+  widget ignores `done.cartId` whenever it sent one, refreshing the
+  shopper's own cart through their session on `cartMutated`.
   `cartMutated` is recorded by the cart tools when Django accepts a
   change (`mcpsrv.CartActivity`), so a change whose read-back failed
-  still counts. `products` follows the
+  still counts. The chat runs on its own server (`mcpsrv.NewChatServer`):
+  - the cart tools' `cartId` is optional there (`cartToolOf`), while
+    `/mcp` requires it;
+  - only the chat carries the `chatOnly` tools: `apply_coupon` and
+    `remove_coupon`, gated on `promotions`, never on `/mcp` or in
+    discovery. `products` follows the
   `tool` done event of `search_products` (query + `totalHits` as total)
   and `get_product` (the product, then its variants), decoded from the
   tool's structured result (`internal/chat/products.go`), deduplicated

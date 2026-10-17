@@ -5,8 +5,10 @@ package integration
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -53,7 +55,8 @@ type djangoCall struct {
 
 // tokenDjango wraps the fixture Django: a cart call with the live token
 // is served as usual, any other token gets Django's 401, and a token on
-// a route that does not accept it fails the test.
+// a route that does not accept it fails the test. The store has
+// promotions on, and its coupon endpoint accepts SAVE10 only.
 func tokenDjango(t *testing.T) (http.Handler, func() []djangoCall) {
 	t.Helper()
 	inner := fakeDjangoMux(t)
@@ -82,6 +85,29 @@ func tokenDjango(t *testing.T) (http.Handler, func() []djangoCall) {
 					`{"detail": "The cart token is invalid or has expired."}`))
 				return
 			}
+		}
+		switch route {
+		case "GET /api/v1/tenant/resolve":
+			b, err := os.ReadFile(fixturePath("tenant_resolve_demostore.json"))
+			require.NoError(t, err)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(bytes.Replace(b, []byte(`"promotions": false`),
+				[]byte(`"promotions": true`), 1))
+			return
+		case "POST /api/v1/cart/coupon":
+			var in struct {
+				Code string `json:"code"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			if in.Code != "SAVE10" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"detail": "The promotion has ended",` +
+					` "reason": "discount_code_expired"}`))
+				return
+			}
+			serveFixture(t, w, "cart_with_coupon.json")
+			return
 		}
 		inner.ServeHTTP(w, r)
 	})
@@ -146,6 +172,8 @@ func TestChatActsOnTheSignedInCartThroughTheToken(t *testing.T) {
 	}))
 	assert.Equal(t, true, done["cartMutated"])
 	assert.Equal(t, false, done["cartTokenRefused"])
+	assert.NotContains(t, done, "cartId",
+		"a signed-in cart is the session's; no id for the widget to adopt")
 	events := postChat(t, gw.URL, map[string]any{
 		"message": "και άλλον έναν", "cartToken": liveCartToken,
 		"conversationId": done["conversationId"],
@@ -220,4 +248,47 @@ func TestChatReportsAChangeWhoseReadBackWasRefused(t *testing.T) {
 	assert.Equal(t, true, done["cartTokenRefused"])
 	body := string(*fake.lastBody.Load())
 	assert.Contains(t, body, "do not repeat the change")
+}
+
+// The assistant applies a code the shopper names to their signed-in
+// cart and sees the new totals; a code the store refuses reaches it with
+// the store's reason, and changes nothing.
+func TestChatAppliesACouponToTheSignedInCart(t *testing.T) {
+	for name, tc := range map[string]struct {
+		code, want string
+		mutated    bool
+	}{
+		"accepted": {"SAVE10", "92.94", true},
+		"refused":  {"OLD5", "discount_code_expired", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeChatAPI{scripts: []string{
+				toolUseTurnSSE("apply_coupon", `{"code": "`+tc.code+`"}`),
+				textTurnSSE("Έγινε."),
+			}}
+			djangoH, calls := tokenDjango(t)
+			gw, _ := newChatGateway(t, fake, djangoH, quietLogger())
+
+			done := doneOf(t, postChat(t, gw.URL, map[string]any{
+				"message":   "βάλε τον κωδικό " + tc.code,
+				"cartToken": liveCartToken,
+			}))
+
+			assert.Equal(t, tc.mutated, done["cartMutated"])
+			fake.mu.Lock()
+			first := string(fake.bodies[0])
+			fake.mu.Unlock()
+			assert.Contains(t, first, `"apply_coupon"`)
+			assert.Contains(t, first, "never invent or guess codes")
+			assert.Contains(t, string(*fake.lastBody.Load()), tc.want)
+			var sent bool
+			for _, c := range calls() {
+				if c.route == "POST /api/v1/cart/coupon" {
+					sent = true
+					assert.Equal(t, liveCartToken, c.cartToken)
+				}
+			}
+			assert.True(t, sent)
+		})
+	}
 }

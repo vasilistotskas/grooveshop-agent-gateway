@@ -243,6 +243,8 @@ func TestChatTextOnlyTurn(t *testing.T) {
 	body := *fake.lastBody.Load()
 	assert.Contains(t, string(body), "Demo Store")
 	assert.Contains(t, string(body), "gemini-3.7-flash")
+	// The store has promotions off: no coupon tools, no coupon guidance.
+	assert.NotContains(t, string(body), "apply_coupon")
 }
 
 func TestChatToolUseTurnMutatesCart(t *testing.T) {

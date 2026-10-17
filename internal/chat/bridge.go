@@ -23,6 +23,8 @@ var cartTools = map[string]bool{
 	"add_to_cart":      true,
 	"update_cart_item": true,
 	"remove_cart_item": true,
+	"apply_coupon":     true,
+	"remove_coupon":    true,
 }
 
 // checkoutTools are the UCP checkout capability's canonical tools. They

@@ -263,9 +263,15 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 			slog.String("error", err.Error()))
 	}
 
+	// A signed-in shopper's cart is already their session's: an id for
+	// the widget to adopt belongs to guest carts only.
+	doneCartID := conv.CartID
+	if cartToken != nil {
+		doneCartID = ""
+	}
 	sse.event("done", doneEvent{
 		ConversationID:   conv.ID,
-		CartID:           conv.CartID,
+		CartID:           doneCartID,
 		CartMutated:      cartMutated,
 		CartTokenRefused: cartToken != nil && cartToken.Refused(),
 	})

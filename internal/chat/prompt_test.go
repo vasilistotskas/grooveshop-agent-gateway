@@ -87,3 +87,16 @@ func TestSystemPromptForASignedInShopper(t *testing.T) {
 	assert.NotContains(t, p, "no active cart")
 	assert.NotContains(t, strings.ToLower(p), "token")
 }
+
+// Coupon guidance comes with the coupon tools, which need promotions.
+func TestSystemPromptOffersCouponsOnlyWithPromotions(t *testing.T) {
+	tn := testTenant()
+	tn.Features.Promotions = true
+	p := systemPrompt(tn, "", false)
+	assert.Contains(t, p, "apply_coupon")
+	assert.Contains(t, p, "never invent or guess codes")
+	assert.Contains(t, p, "in the tool's own words")
+
+	tn.Features.Promotions = false
+	assert.NotContains(t, systemPrompt(tn, "", false), "coupon")
+}

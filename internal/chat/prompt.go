@@ -20,6 +20,14 @@ func systemPrompt(t *tenant.Tenant, cartID string, signedIn bool) string {
 	if t.Features.ProductReviews {
 		reviews = "reviews, "
 	}
+	// Coupons are a promotions feature, like their tools.
+	coupons := ""
+	if t.Features.Promotions {
+		coupons = "\n- Apply or remove a coupon only when the shopper " +
+			"names its code (apply_coupon, remove_coupon); never invent " +
+			"or guess codes, and if the store refuses one, say so in " +
+			"the tool's own words."
+	}
 	cartLine := "The shopper has no active cart yet; add_to_cart creates " +
 		"one — persist and reuse the returned cartId."
 	switch {
@@ -45,10 +53,11 @@ Language and tone:
 
 Buying flow:
 - Verify stock via tools before promising availability. If something is out of stock, offer subscribe_product_alert.
-- Build the cart with the cart tools as the shopper decides.
+- Build the cart with the cart tools as the shopper decides.%s
 - Payment NEVER happens in chat: when the shopper is ready, call get_checkout_link and hand them the link — address, delivery and payment are completed on the store's own checkout pages.
 - For delivery questions, use get_shipping_options and find_pickup_points — they list the store's actual carriers and pickup networks.
 
 %s`,
-		store, t.Domain, reviews, t.DefaultCurrency, t.DefaultLocale, cartLine)
+		store, t.Domain, reviews, t.DefaultCurrency, t.DefaultLocale,
+		coupons, cartLine)
 }

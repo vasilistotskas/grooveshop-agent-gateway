@@ -140,11 +140,8 @@ func (h *handlers) createCart(
 	), out, nil
 }
 
-// cartId is optional in the schemas below: a signed-in shopper's chat
-// turn reaches their cart through the cart token instead, and the
-// handlers require it of everyone else.
 type GetCartIn struct {
-	CartID string `json:"cartId,omitempty" jsonschema:"cart id from create_cart or add_to_cart"`
+	CartID string `json:"cartId" jsonschema:"cart id from create_cart or add_to_cart"`
 }
 
 func (h *handlers) getCart(
@@ -232,7 +229,7 @@ var errReadBack = errors.New("the change was sent and the store " +
 	"to check their cart, and do not repeat the change")
 
 type UpdateCartItemIn struct {
-	CartID   string `json:"cartId,omitempty"`
+	CartID   string `json:"cartId"`
 	ItemID   int64  `json:"itemId" jsonschema:"cart line id from the cart's items"`
 	Quantity int    `json:"quantity" jsonschema:"new quantity, 1-999"`
 }
@@ -267,7 +264,7 @@ func (h *handlers) updateCartItem(
 }
 
 type RemoveCartItemIn struct {
-	CartID string `json:"cartId,omitempty"`
+	CartID string `json:"cartId"`
 	ItemID int64  `json:"itemId"`
 }
 
@@ -298,7 +295,7 @@ func (h *handlers) removeCartItem(
 }
 
 type CheckoutLinkIn struct {
-	CartID string `json:"cartId,omitempty"`
+	CartID string `json:"cartId"`
 }
 
 type CheckoutLinkOut struct {
@@ -335,4 +332,62 @@ func (h *handlers) getCheckoutLink(
 			"store's checkout (address, delivery and payment are chosen "+
 			"there): %s", out.URL,
 	), out, nil
+}
+
+type ApplyCouponIn struct {
+	CartID string `json:"cartId,omitempty"`
+	Code   string `json:"code" jsonschema:"the coupon code exactly as the shopper gave it"`
+}
+
+func (h *handlers) applyCoupon(
+	ctx context.Context, _ *mcp.CallToolRequest, in ApplyCouponIn,
+) (*mcp.CallToolResult, CartOut, error) {
+	var out CartOut
+	t, err := h.tenantFor(ctx)
+	if err != nil {
+		return nil, out, err
+	}
+	code := strings.TrimSpace(in.Code)
+	if code == "" || (in.CartID == "" && !django.HasCartToken(ctx)) {
+		return nil, out, errors.New("cartId and code are required")
+	}
+	c, err := h.deps.Django.ApplyCoupon(
+		ctx, t.Domain, t.DefaultLocale, in.CartID, code)
+	if rejected, ok := errors.AsType[*django.CouponRejectedError](err); ok {
+		return nil, out, fmt.Errorf("the store refused coupon %s (%s): %s",
+			code, rejected.Reason, rejected.Detail)
+	}
+	if err != nil {
+		return nil, out, upstreamErr(err, "that cart no longer exists; "+
+			"create a new one with create_cart")
+	}
+	cartChanged(ctx)
+	out = h.cartOut(t, c)
+	return h.cartSummary(out), out, nil
+}
+
+type RemoveCouponIn struct {
+	CartID string `json:"cartId,omitempty"`
+}
+
+func (h *handlers) removeCoupon(
+	ctx context.Context, _ *mcp.CallToolRequest, in RemoveCouponIn,
+) (*mcp.CallToolResult, CartOut, error) {
+	var out CartOut
+	t, err := h.tenantFor(ctx)
+	if err != nil {
+		return nil, out, err
+	}
+	if in.CartID == "" && !django.HasCartToken(ctx) {
+		return nil, out, errors.New("cartId is required")
+	}
+	c, err := h.deps.Django.RemoveCoupon(
+		ctx, t.Domain, t.DefaultLocale, in.CartID)
+	if err != nil {
+		return nil, out, upstreamErr(err, "that cart no longer exists; "+
+			"create a new one with create_cart")
+	}
+	cartChanged(ctx)
+	out = h.cartOut(t, c)
+	return h.cartSummary(out), out, nil
 }
