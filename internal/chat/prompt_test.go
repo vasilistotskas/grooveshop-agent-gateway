@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,7 +20,7 @@ func testTenant() *tenant.Tenant {
 }
 
 func TestSystemPromptWithoutCart(t *testing.T) {
-	p := systemPrompt(testTenant(), "")
+	p := systemPrompt(testTenant(), "", false)
 	assert.Contains(t, p, "Demo Store")
 	assert.Contains(t, p, "shop.example.test")
 	assert.Contains(t, p, "no active cart")
@@ -29,7 +30,7 @@ func TestSystemPromptWithoutCart(t *testing.T) {
 func TestSystemPromptIsTenantNeutral(t *testing.T) {
 	tn := testTenant()
 	tn.DefaultLocale = "de"
-	p := systemPrompt(tn, "")
+	p := systemPrompt(tn, "", false)
 	assert.Contains(t, p, "the store's language (de)")
 	assert.NotContains(t, p, "Greek")
 	assert.NotContains(t, p, "Greece")
@@ -41,23 +42,23 @@ func TestSystemPromptIsTenantNeutral(t *testing.T) {
 // that has them on, as only that store is served the review tool.
 func TestSystemPromptOffersReviewsOnlyWithThem(t *testing.T) {
 	tn := testTenant()
-	assert.NotContains(t, systemPrompt(tn, ""), "reviews")
+	assert.NotContains(t, systemPrompt(tn, "", false), "reviews")
 
 	tn.Features.ProductReviews = true
-	assert.Contains(t, systemPrompt(tn, ""), "categories, reviews, carts")
+	assert.Contains(t, systemPrompt(tn, "", false), "categories, reviews, carts")
 }
 
 // A failed tool is reported as one: the assistant had claimed a cart
 // update that never reached the shopper's cart, then blamed a "cartId
 // mix-up" no tool reported.
 func TestSystemPromptReportsFailuresAsTheToolGaveThem(t *testing.T) {
-	p := systemPrompt(testTenant(), "")
+	p := systemPrompt(testTenant(), "", false)
 	assert.Contains(t, p, "never claim the action succeeded")
 	assert.Contains(t, p, "never give a cause the tool did not")
 }
 
 func TestSystemPromptWithCart(t *testing.T) {
-	p := systemPrompt(testTenant(), "cart-uuid-1")
+	p := systemPrompt(testTenant(), "cart-uuid-1", false)
 	assert.Contains(t, p, "cart-uuid-1")
 	assert.NotContains(t, p, "no active cart")
 }
@@ -75,4 +76,14 @@ func TestLoadEmptyIDStartsFresh(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, c.ID)
 	assert.Empty(t, c.Turns)
+}
+
+// A signed-in shopper's cart is bound outside the model: the prompt
+// neither names a cart id to pass nor mentions the token.
+func TestSystemPromptForASignedInShopper(t *testing.T) {
+	p := systemPrompt(testTenant(), "cart-uuid-1", true)
+	assert.Contains(t, p, "omit cartId")
+	assert.NotContains(t, p, "cart-uuid-1")
+	assert.NotContains(t, p, "no active cart")
+	assert.NotContains(t, strings.ToLower(p), "token")
 }

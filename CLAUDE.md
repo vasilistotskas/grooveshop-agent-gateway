@@ -76,7 +76,12 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   since deleted): it answers 200/201 with a new guest cart and acts on
   that one. Every cart call that names a cart therefore checks the cart
   that answered (`servedNamed`) and returns `ErrCartUnreachable` for
-  another.
+  another. A signed-in shopper's cart is reached only through the cart
+  token the chat widget forwards (`django.CartToken`, in the request
+  context): the cart routes Django accepts it on (`cartTarget`) send
+  `X-Cart-Token` instead of `X-Cart-Id` and trust the cart it resolves
+  to; a 401 there is `ErrCartTokenRefused`. Stock, order and payment
+  calls never carry it.
 - `internal/httpmw` — recover, request-id, access log, RED metrics, per-IP
   rate limit. Metrics wraps the mux directly so `r.Pattern` is populated;
   tenant middleware runs *inside* routing (per route group), and enriches
@@ -275,7 +280,15 @@ release that drops, loosens or retypes one of those properties.
 - Nuxt chat widget (`app/composables/useShopChat.ts`) reads the `/chat`
   SSE events: `delta {text}`, `tool {name, status: running|done}`,
   `products {tool, query?, total?, products: [{id}]}`, `error {message}`,
-  `done {conversationId, cartId?, cartMutated}`. `products` follows the
+  `done {conversationId, cartId?, cartMutated, cartTokenRefused}`.
+  The request is `{message, conversationId?, cartId?, cartToken?}`;
+  `cartToken` is a signed-in shopper's pass from Django's
+  `POST /cart/agent-token`. With it the cart tools act on that shopper's
+  cart whatever `cartId` the model names, and `get_checkout_link` links
+  `/checkout` instead of the cart claim. It lives in the turn's context
+  only: never the stored conversation, the prompt or a log.
+  `cartTokenRefused: true` means Django refused it (expired, revoked):
+  the cart was not reached, and the widget mints a new token. `products` follows the
   `tool` done event of `search_products` (query + `totalHits` as total)
   and `get_product` (the product, then its variants), decoded from the
   tool's structured result (`internal/chat/products.go`), deduplicated
@@ -302,7 +315,10 @@ release that drops, loosens or retypes one of those properties.
 - B2B/wholesale pricing (Django `b2b/` app) is RETAIL-ONLY here by
   design: every gateway catalog/cart/checkout call is anonymous (no
   bearer forwarded), so MCP tools, UCP/ACP checkout and feeds always
-  see retail prices — totals stay self-consistent end to end. Only
+  see retail prices — totals stay self-consistent end to end. The one
+  exception is a chat turn's cart calls with a cart token: Django prices
+  that cart for its owner, so a wholesale shopper's cart shows their
+  prices. Only
   `/api/v1/agent/*` forwards agent bearers, and the only current price
   they carry (favourites' `effectivePrice`) is the product's stored
   retail one. Do not thread identity into the catalog/cart clients for

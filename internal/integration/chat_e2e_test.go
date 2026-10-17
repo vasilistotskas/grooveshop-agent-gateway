@@ -7,14 +7,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/openai/openai-go/v3/option"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -76,6 +79,10 @@ type fakeChatAPI struct {
 	scripts []string
 	// lastBody captures the final request for assertions.
 	lastBody atomic.Pointer[[]byte]
+
+	mu sync.Mutex
+	// bodies holds every request the model was sent, in order.
+	bodies [][]byte
 }
 
 func (f *fakeChatAPI) handler() http.Handler {
@@ -84,6 +91,9 @@ func (f *fakeChatAPI) handler() http.Handler {
 		_, _ = buf.ReadFrom(r.Body)
 		body := buf.Bytes()
 		f.lastBody.Store(&body)
+		f.mu.Lock()
+		f.bodies = append(f.bodies, body)
+		f.mu.Unlock()
 
 		n := int(f.calls.Add(1)) - 1
 		if n >= len(f.scripts) {
@@ -99,13 +109,24 @@ func startChatGateway(
 	t *testing.T, fake *fakeChatAPI, tune ...func(*config.Config),
 ) *httptest.Server {
 	t.Helper()
-	djangoSrv := httptest.NewServer(fakeDjangoMux(t))
+	gw, _ := newChatGateway(t, fake, fakeDjangoMux(t), quietLogger(),
+		tune...)
+	return gw
+}
+
+// newChatGateway boots the gateway's chat over djangoH, logging to log,
+// and returns its Redis too.
+func newChatGateway(
+	t *testing.T, fake *fakeChatAPI, djangoH http.Handler,
+	log *slog.Logger, tune ...func(*config.Config),
+) (*httptest.Server, *redis.Client) {
+	t.Helper()
+	djangoSrv := httptest.NewServer(djangoH)
 	t.Cleanup(djangoSrv.Close)
 	modelSrv := httptest.NewServer(fake.handler())
 	t.Cleanup(modelSrv.Close)
 	rdb := startRedis(t)
 
-	log := quietLogger()
 	metrics := obs.NewMetrics()
 	cfg := config.Config{
 		Env: config.EnvTest,
@@ -153,7 +174,7 @@ func startChatGateway(
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, rdb
 }
 
 type sseEvent struct {
@@ -243,6 +264,7 @@ func TestChatToolUseTurnMutatesCart(t *testing.T) {
 	}
 	require.NotNil(t, done)
 	assert.Equal(t, true, done["cartMutated"])
+	assert.Equal(t, false, done["cartTokenRefused"])
 	assert.Equal(t, "29eb4495-e018-45e7-b59c-6646302bd4ef", done["cartId"])
 	assert.Equal(t, int32(2), fake.calls.Load(),
 		"tool result must be sent back for a second model call")
@@ -330,6 +352,9 @@ func TestChatRejectsMalformedInput(t *testing.T) {
 		},
 		"conversation id not a uuid": {
 			"message": "γεια", "conversationId": "../evil",
+		},
+		"cart token not shaped like one": {
+			"message": "γεια", "cartToken": "abc\r\nX-Cart-Id: 1",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

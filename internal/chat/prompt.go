@@ -9,7 +9,7 @@ import (
 // systemPrompt scopes the assistant to shopping for this tenant. Stable
 // content leads and the volatile cart line trails it, keeping the prompt
 // cache-friendly across turns of a conversation.
-func systemPrompt(t *tenant.Tenant, cartID string) string {
+func systemPrompt(t *tenant.Tenant, cartID string, signedIn bool) string {
 	store := t.StoreName
 	if store == "" {
 		store = t.Name
@@ -22,7 +22,13 @@ func systemPrompt(t *tenant.Tenant, cartID string) string {
 	}
 	cartLine := "The shopper has no active cart yet; add_to_cart creates " +
 		"one — persist and reuse the returned cartId."
-	if cartID != "" {
+	switch {
+	// The cart tools act on a signed-in shopper's own cart whatever id
+	// they are given; the model needs no id, and never sees the token.
+	case signedIn:
+		cartLine = "The shopper is signed in: the cart tools act on " +
+			"their own cart, so omit cartId."
+	case cartID != "":
 		cartLine = fmt.Sprintf(
 			"The shopper's active cartId is %s — pass it to every cart "+
 				"tool and never invent another.", cartID)
