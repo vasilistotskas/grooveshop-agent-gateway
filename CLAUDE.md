@@ -287,8 +287,10 @@ release that drops, loosens or retypes one of those properties.
   cart whatever `cartId` the model names, and `get_checkout_link` links
   `/checkout` instead of the cart claim. It lives in the turn's context
   only: never the stored conversation, the prompt or a log.
-  `cartTokenRefused: true` means Django refused it (expired, revoked):
-  the cart was not reached, and the widget mints a new token.
+  `cartTokenRefused: true` means Django refused it on a call this turn
+  (expired, revoked), and the widget mints a new token. It does not mean
+  nothing changed: a change Django accepted before a refused read-back
+  still counts, so `cartMutated` and `cartTokenRefused` can both be true.
   `done.cartId` is sent on anonymous turns only, and the widget adopts
   it only then: a turn that sent a `cartToken` gets none, and the
   widget ignores `done.cartId` whenever it sent one, refreshing the
