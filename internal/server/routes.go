@@ -193,6 +193,9 @@ func New(d Deps) http.Handler {
 	)
 	var h http.Handler = mux
 	h = httpmw.Metrics(d.Metrics)(h)
+	// Outside Metrics: it hands the mux a new request, whose r.Pattern
+	// Metrics would not see.
+	h = django.RelayCaller(h)
 	h = exceptInternal(limiter.Middleware(), h)
 	h = httpmw.Logging(d.Log)(h)
 	h = httpmw.RequestID()(h)

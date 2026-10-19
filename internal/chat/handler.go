@@ -155,10 +155,8 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusBadRequest, msgBadRequest)
 		return
 	}
-	// Tool handlers reach the turn through the bridge's base context. A
-	// change it made is kept as long as the conversation can be retried.
-	r = r.WithContext(mcpsrv.WithTurn(r.Context(), mcpsrv.NewTurn(
-		s.store.rdb, t.SchemaName, req.TurnID, s.cfg.ConversationTTL)))
+	// Tool handlers reach the turn through the bridge's base context.
+	r = r.WithContext(mcpsrv.WithTurn(r.Context(), mcpsrv.NewTurn(req.TurnID)))
 	var cartToken *django.CartToken
 	if req.CartToken != nil {
 		var err error

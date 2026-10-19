@@ -82,6 +82,14 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   `X-Cart-Token` instead of `X-Cart-Id` and trust the cart it resolves
   to; a 401 there is `ErrCartTokenRefused`. Stock, order and payment
   calls never carry it.
+  A call made while serving a request names that request's caller, as
+  the storefront's SSR proxy does (`django.RelayCaller`, mounted in
+  `server.New`): `CF-Connecting-IP` as `X-Real-IP`, `X-Forwarded-For`,
+  `X-Origin-Verify` and `User-Agent`, relayed as received. So Django's
+  throttles and `Idempotency-Key` scopes see the visitor, not the pod.
+  The gateway decides and mints nothing here: Django believes the
+  address only beside a correct `X-Origin-Verify` (`core/client_ip.py`),
+  and the inbound `X-Real-Ip` (Traefik's own peer) is never relayed.
 - `internal/httpmw` — recover, request-id, access log, RED metrics, per-IP
   rate limit. Metrics wraps the mux directly so `r.Pattern` is populated;
   tenant middleware runs *inside* routing (per route group), and enriches
@@ -291,14 +299,13 @@ release that drops, loosens or retypes one of those properties.
   `done {conversationId, cartId?, cartMutated, cartTokenRefused}`.
   The request is `{message, conversationId?, cartId?, cartToken?,
   turnId?}`. `turnId` is a UUID the widget mints per message and sends
-  again when the shopper retries it. Each `add_to_cart` of the turn is
-  claimed in Redis (`mcpsrv.Turn`, `ag:{schema}:chat:change:…`, kept
-  for `CHAT_CONVERSATION_TTL`), so a retry, on whichever pod, finds an
-  add the first attempt made and does not send it again. Not Django's
-  `Idempotency-Key`: its middleware scopes a key to the caller's
-  address, which is one gateway pod. An add the store refused is
-  released; one it did not confirm (a timeout, a 5xx) keeps its claim
-  until it expires, and the model is told to check the cart;
+  again when the shopper retries it: each `add_to_cart` of the turn
+  sends an `Idempotency-Key` derived from it, the call and how many
+  identical adds the turn already made (`mcpsrv.Turn`), so Django's
+  idempotency middleware answers a retried add with the first outcome
+  instead of adding twice. Django scopes the key to the caller, which
+  `django.RelayCaller` names, so a retry on the other pod is the same
+  caller;
   `cartToken` is a signed-in shopper's pass from Django's
   `POST /cart/agent-token`. With it the cart tools act on that shopper's
   cart whatever `cartId` the model names, and `get_checkout_link` links

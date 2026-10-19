@@ -193,10 +193,22 @@ type sseEvent struct {
 
 func postChat(t *testing.T, gwURL string, body map[string]any) []sseEvent {
 	t.Helper()
+	return postChatAs(t, gwURL, http.Header{}, body)
+}
+
+// postChatAs posts a turn with the headers the edge delivered it with.
+func postChatAs(
+	t *testing.T, gwURL string, edge http.Header, body map[string]any,
+) []sseEvent {
+	t.Helper()
 	raw, err := json.Marshal(body)
 	require.NoError(t, err)
-	resp, err := http.Post(gwURL+"/chat", "application/json",
+	req, err := http.NewRequest(http.MethodPost, gwURL+"/chat",
 		bytes.NewReader(raw))
+	require.NoError(t, err)
+	req.Header = edge.Clone()
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)

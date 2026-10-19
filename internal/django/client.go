@@ -130,6 +130,13 @@ func (c *Client) get(ctx context.Context, req request) error {
 // send performs a non-GET call exactly once.
 func (c *Client) send(ctx context.Context, method string, req request) error {
 	req.method = method
+	if key := idempotencyKeyFrom(ctx); key != "" {
+		req.headers = maps.Clone(req.headers)
+		if req.headers == nil {
+			req.headers = map[string]string{}
+		}
+		req.headers["Idempotency-Key"] = key
+	}
 	return c.do(ctx, req)
 }
 
@@ -165,6 +172,7 @@ func (c *Client) do(ctx context.Context, r request) error {
 	if r.body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	setCaller(ctx, req.Header)
 	for k, v := range r.headers {
 		req.Header.Set(k, v)
 	}

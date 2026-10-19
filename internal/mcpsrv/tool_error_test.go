@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -98,21 +100,85 @@ func TestToolErrorRendersAsJSON(t *testing.T) {
 	assert.Contains(t, err.Error(), "Μόνο 2 <διαθέσιμα>")
 }
 
-// An add the store did not confirm may be in the cart already: the agent
-// is told to check the cart, not to retry, which could add it twice.
-func TestAddToCartWithAnUnknownOutcomeSaysToCheckTheCart(t *testing.T) {
+// addDjango answers POST /cart/item with addStatus (the item, or a
+// refusal) and every GET /cart with the fixture, recording the
+// Idempotency-Key each add sent.
+func addDjango(t *testing.T, addStatus *int) (*handlers, *[]string) {
+	t.Helper()
+	read := func(name string) []byte {
+		b, err := os.ReadFile(filepath.Join("..", "..", "testdata",
+			"fixtures", "django", name))
+		require.NoError(t, err)
+		return b
+	}
+	cart, item := read("cart_with_items.json"), read("cart_item_created.json")
+	var keys []string
 	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusBadGateway)
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodGet {
+				_, _ = w.Write(cart)
+				return
+			}
+			keys = append(keys, r.Header.Get("Idempotency-Key"))
+			w.WriteHeader(*addStatus)
+			if *addStatus < 300 {
+				_, _ = w.Write(item)
+				return
+			}
+			_, _ = w.Write([]byte(`{"detail": "busy", "code": "error"}`))
 		}))
 	t.Cleanup(srv.Close)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := &handlers{deps: Deps{Django: django.New(srv.URL+"/api/v1",
-		"api.example.test", "secret", 5*time.Second, log, nil)}}
+	return &handlers{deps: Deps{Django: django.New(srv.URL+"/api/v1",
+		"api.example.test", "secret", 5*time.Second, log, nil)}}, &keys
+}
+
+// A chat turn's add carries an idempotency key. A repeat of an add whose
+// outcome is unknown reuses it, so the store answers it with the first
+// outcome; once an add succeeded, an identical one is a new change.
+func TestAddToCartIsIdempotentWithinATurn(t *testing.T) {
+	status := http.StatusBadGateway
+	h, keys := addDjango(t, &status)
+	ctx := WithTurn(tenant.NewContext(context.Background(), cartTenant()),
+		NewTurn("8b0f6c1e-4a8d-4c8b-9a37-2f4f1d1c9e01"))
+	in := AddToCartIn{CartID: fixtureCartID, ProductID: 1, Quantity: 2}
+
+	_, _, err := h.addToCart(ctx, nil, in)
+	require.Error(t, err)
+	status = http.StatusCreated
+	_, _, err = h.addToCart(ctx, nil, in)
+	require.NoError(t, err)
+	_, _, err = h.addToCart(ctx, nil, in)
+	require.NoError(t, err)
+	_, _, err = h.addToCart(ctx, nil,
+		AddToCartIn{CartID: fixtureCartID, ProductID: 1, Quantity: 1})
+	require.NoError(t, err)
+
+	require.Len(t, *keys, 4)
+	k := *keys
+	assert.NotEmpty(t, k[0])
+	assert.Equal(t, k[0], k[1], "a repeat of the failed add reuses its key")
+	assert.NotEqual(t, k[1], k[2], "a second add after a success is new")
+	assert.NotEqual(t, k[2], k[3], "another quantity is another change")
+
+	// The same turn retried by the shopper starts from the same keys.
+	retried := WithTurn(tenant.NewContext(context.Background(), cartTenant()),
+		NewTurn("8b0f6c1e-4a8d-4c8b-9a37-2f4f1d1c9e01"))
+	_, _, err = h.addToCart(retried, nil, in)
+	require.NoError(t, err)
+	assert.Equal(t, k[0], (*keys)[4])
+}
+
+// An /mcp agent has no turn: its adds carry no key.
+func TestAddToCartWithoutATurnSendsNoKey(t *testing.T) {
+	status := http.StatusCreated
+	h, keys := addDjango(t, &status)
 	ctx := tenant.NewContext(context.Background(), cartTenant())
 
 	_, _, err := h.addToCart(ctx, nil,
 		AddToCartIn{CartID: fixtureCartID, ProductID: 1})
 
-	assert.Equal(t, errAddUnconfirmed, err)
+	require.NoError(t, err)
+	assert.Equal(t, []string{""}, *keys)
 }
