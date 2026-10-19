@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These tests decode fixtures recorded from the real dev API. They are the
-// drift guard for the hand-written DTOs: refresh the fixtures whenever
-// schema.yml changes an endpoint the gateway consumes, and these tests fail
-// loudly if a used field moves or changes type.
+// These tests decode fixtures recorded from the real dev API, so they prove
+// the hand-written DTOs decode a real response. They do not prove Django
+// still sends a field: that is the consumer contract's job
+// (TestDjangoConsumerContract in contract_test.go).
 
 func decodeFixture[T any](t *testing.T, name string) T {
 	t.Helper()
