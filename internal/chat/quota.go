@@ -26,22 +26,30 @@ func NewQuota(rdb *redis.Client, storePerHour, visitorPerDay int) *Quota {
 // so a refused turn spends nothing: a visitor locked out for the day does
 // not also drain the store's hourly budget. KEYS: store, visitor counter.
 // ARGV: store limit, visitor limit, store TTL (s), visitor TTL (s).
+// Returns 0 when the turn is taken, else the full window: 1 the store's,
+// 2 the visitor's (the visitor's wins when both are, as it lasts longer).
 var takeTurn = redis.NewScript(`
 local store = tonumber(redis.call('GET', KEYS[1]) or '0')
 local visitor = tonumber(redis.call('GET', KEYS[2]) or '0')
-if store >= tonumber(ARGV[1]) or visitor >= tonumber(ARGV[2]) then
-  return 0
+if visitor >= tonumber(ARGV[2]) then
+  return 2
+end
+if store >= tonumber(ARGV[1]) then
+  return 1
 end
 redis.call('INCR', KEYS[1])
 redis.call('EXPIRE', KEYS[1], ARGV[3], 'NX')
 redis.call('INCR', KEYS[2])
 redis.call('EXPIRE', KEYS[2], ARGV[4], 'NX')
-return 1
+return 0
 `)
 
-// Allow reports whether the store and the visitor both have a turn left,
-// and spends one from each if so.
-func (q *Quota) Allow(ctx context.Context, schema, visitor string, now time.Time) (bool, error) {
+// Allow spends a turn from the store's and the visitor's budgets when both
+// have one left, and returns 0. Otherwise it spends nothing and returns
+// how long until the full window resets.
+func (q *Quota) Allow(
+	ctx context.Context, schema, visitor string, now time.Time,
+) (time.Duration, error) {
 	now = now.UTC()
 	hour := now.Truncate(time.Hour)
 	day := now.Truncate(24 * time.Hour)
@@ -50,14 +58,20 @@ func (q *Quota) Allow(ctx context.Context, schema, visitor string, now time.Time
 		prefix + "store:" + hour.Format("2006010215"),
 		prefix + "visitor:" + visitor + ":" + day.Format("20060102"),
 	}
+	hourEnd, dayEnd := hour.Add(time.Hour), day.Add(24*time.Hour)
 	// Expire at the window's end, plus a minute so a key never outlives
 	// its window by less than clock skew between pods and Redis.
-	storeTTL := int(hour.Add(time.Hour).Sub(now).Seconds()) + 60
-	visitorTTL := int(day.Add(24*time.Hour).Sub(now).Seconds()) + 60
-	allowed, err := takeTurn.Run(ctx, q.rdb, keys,
+	storeTTL := int(hourEnd.Sub(now).Seconds()) + 60
+	visitorTTL := int(dayEnd.Sub(now).Seconds()) + 60
+	full, err := takeTurn.Run(ctx, q.rdb, keys,
 		q.storePerHour, q.visitorPerDay, storeTTL, visitorTTL).Int()
-	if err != nil {
-		return false, err
+	switch {
+	case err != nil:
+		return 0, err
+	case full == 1:
+		return hourEnd.Sub(now), nil
+	case full == 2:
+		return dayEnd.Sub(now), nil
 	}
-	return allowed == 1, nil
+	return 0, nil
 }

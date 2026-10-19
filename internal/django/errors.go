@@ -3,6 +3,10 @@ package django
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/text"
 )
 
 // Sentinel errors shared by every protocol surface. Handlers map these to
@@ -31,21 +35,44 @@ var (
 		"django: cart token refused: %w", ErrCartUnreachable)
 )
 
-// APIError carries the upstream status and DRF "detail" message. It unwraps
-// to the matching sentinel so callers branch with errors.Is. Reason is the
-// optional machine-readable code some 4xx bodies carry next to detail
-// (coupon, loyalty and gift-card rejections). Body is the raw (bounded)
-// response for the few callers that decode a structured failure, such as
-// the stock-shortfall 409.
+// APIError is a Django error response (docs/error-contract.md in the
+// Django repository). It unwraps to the matching sentinel so callers
+// branch with errors.Is.
+//
+//   - Code: the stable snake_case error code, empty when the body has
+//     none (a 5xx from a proxy, a bare list body).
+//   - Detail: the store's own explanation, in the request's language: its
+//     `detail`, or each field's messages for a validation error. Empty when
+//     the body gave neither, so it is always safe to show.
+//   - Reason: the machine-readable code some 4xx bodies carry next to
+//     detail (coupon, loyalty and gift-card rejections).
+//   - RetryAfter: the throttle's Retry-After, zero when absent.
+//   - Body: the raw (bounded) response, for the few callers that decode a
+//     structured failure, such as the stock-shortfall 409.
 type APIError struct {
-	Status int
-	Detail string
-	Reason string
-	Body   []byte
+	Status     int
+	Code       string
+	Detail     string
+	Reason     string
+	RetryAfter time.Duration
+	Body       []byte
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("django: status %d: %s", e.Status, e.Detail)
+	// A body without detail or fields (a bare list, a proxy page) is
+	// still quoted, bounded: an error log needs something to go on.
+	detail := e.Detail
+	if detail == "" {
+		detail = text.Ellipsize(string(e.Body), 512)
+	}
+	if detail == "" {
+		detail = http.StatusText(e.Status)
+	}
+	if e.Code != "" {
+		return fmt.Sprintf("django: status %d (%s): %s",
+			e.Status, e.Code, detail)
+	}
+	return fmt.Sprintf("django: status %d: %s", e.Status, detail)
 }
 
 // CouponRejectedError is a coupon apply refused by the store's promotion

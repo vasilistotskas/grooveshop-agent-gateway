@@ -199,8 +199,10 @@ func (h *handlers) addToCart(
 		cartID = c.UUID
 	}
 
+	addCtx, added := idempotent(ctx, fmt.Sprintf(
+		"add_to_cart:%s:%d:%d", cartID, in.ProductID, qty))
 	_, err = h.deps.Django.AddCartItem(
-		ctx, t.Domain, t.DefaultLocale, cartID, in.ProductID, qty,
+		addCtx, t.Domain, t.DefaultLocale, cartID, in.ProductID, qty,
 	)
 	if errors.Is(err, django.ErrCartUnreachable) {
 		return nil, out, errors.New("the shopper's cart could not be " +
@@ -211,6 +213,7 @@ func (h *handlers) addToCart(
 		return nil, out, upstreamErr(err, fmt.Sprintf(
 			"product %d was not found", in.ProductID))
 	}
+	added()
 	cartChanged(ctx)
 
 	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, cartID)
