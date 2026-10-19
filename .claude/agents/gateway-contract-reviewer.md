@@ -30,11 +30,15 @@ reading the whole tree.
   populated for metrics. Flag a move that wraps the mux instead.
 
 ### 2. DTO drift against Django
-- DTOs are hand-written minimal structs with camelCase tags. When a used
-  endpoint's shape changes in `../grooveshop-django-api/schema.yml`, the
-  recorded responses under `testdata/fixtures/django/` must be refreshed and
-  the decode tests must still pass.
-- Flag a new or changed DTO field with no corresponding fixture coverage.
+- DTOs are hand-written minimal structs with camelCase tags. The drift signal
+  is the consumer contract `contract/django-consumer.openapi.json`, generated
+  from the call registry in `internal/django/contract_test.go`, never edited.
+  Flag a changed DTO or Django call without a regenerated contract
+  (`go test ./internal/django -run TestDjangoConsumerContract -update`) and a
+  matching registry entry (`TestDjangoContractCoversEveryCall`), and flag a
+  `contract:"…"` tag added to silence a real break.
+- The recorded responses under `testdata/fixtures/django/` prove decoding
+  only. Flag a new or changed DTO field with no fixture covering its decode.
 - Money must decode via `json.Number` with `UseNumber()` and be held as integer
   cents internally, formatted only at the edge. Flag a float money field.
 

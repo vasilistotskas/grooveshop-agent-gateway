@@ -41,7 +41,10 @@ integration files even when you only ran the unit tests.
 - Give the pass/fail/skip counts.
 - For each failure: the test name, the assertion that failed, and the source
   file it points at.
-- If a DTO decode test failed, suspect drift against
-  `grooveshop-django-api/schema.yml` and check whether the fixtures under
-  `testdata/fixtures/django/` need refreshing — that is the designed signal,
-  not a flake.
+- If `TestDjangoConsumerContract` failed, a DTO or the call registry changed
+  without regenerating the contract: run
+  `go test ./internal/django -run TestDjangoConsumerContract -update` and
+  commit `contract/django-consumer.openapi.json`. That is the designed
+  signal, not a flake.
+- If a DTO decode test failed, the hand-recorded fixtures under
+  `testdata/fixtures/django/` disagree with the DTO.
