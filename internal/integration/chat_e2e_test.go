@@ -121,11 +121,20 @@ func newChatGateway(
 	log *slog.Logger, tune ...func(*config.Config),
 ) (*httptest.Server, *redis.Client) {
 	t.Helper()
+	rdb := startRedis(t)
+	return newChatGatewayOn(t, rdb, fake, djangoH, log, tune...), rdb
+}
+
+// newChatGatewayOn boots one gateway pod on rdb, which several share.
+func newChatGatewayOn(
+	t *testing.T, rdb *redis.Client, fake *fakeChatAPI,
+	djangoH http.Handler, log *slog.Logger, tune ...func(*config.Config),
+) *httptest.Server {
+	t.Helper()
 	djangoSrv := httptest.NewServer(djangoH)
 	t.Cleanup(djangoSrv.Close)
 	modelSrv := httptest.NewServer(fake.handler())
 	t.Cleanup(modelSrv.Close)
-	rdb := startRedis(t)
 
 	metrics := obs.NewMetrics()
 	cfg := config.Config{
@@ -174,7 +183,7 @@ func newChatGateway(
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return srv, rdb
+	return srv
 }
 
 type sseEvent struct {

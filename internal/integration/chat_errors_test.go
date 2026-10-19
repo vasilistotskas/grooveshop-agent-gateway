@@ -17,31 +17,63 @@ import (
 )
 
 // cartItemDjango is the fake Django with POST /cart/item answered by add
-// (nil: the fixture), recording each add's Idempotency-Key.
+// (nil: the fixture), told how many adds came before, and a count of the
+// adds it was sent.
 func cartItemDjango(
-	t *testing.T, add http.HandlerFunc,
-) (http.Handler, func() []string) {
+	t *testing.T, add func(w http.ResponseWriter, before int),
+) (http.Handler, func() int) {
 	t.Helper()
 	base := fakeDjangoMux(t)
 	var mu sync.Mutex
-	var keys []string
+	adds := 0
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/cart/item" {
 			mu.Lock()
-			keys = append(keys, r.Header.Get("Idempotency-Key"))
+			before := adds
+			adds++
 			mu.Unlock()
 			if add != nil {
-				add(w, r)
+				add(w, before)
 				return
 			}
 		}
 		base.ServeHTTP(w, r)
 	})
-	return h, func() []string {
+	return h, func() int {
 		mu.Lock()
 		defer mu.Unlock()
-		return append([]string(nil), keys...)
+		return adds
 	}
+}
+
+const chatCartID = "29eb4495-e018-45e7-b59c-6646302bd4ef"
+
+func toolStatuses(events []sseEvent) []any {
+	var statuses []any
+	for _, e := range events {
+		if e.name == "tool" {
+			statuses = append(statuses, e.data["status"])
+		}
+	}
+	return statuses
+}
+
+func lastEvent(t *testing.T, events []sseEvent, name string) map[string]any {
+	t.Helper()
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].name == name {
+			return events[i].data
+		}
+	}
+	require.Failf(t, "no event", "no %q event in %v", name, events)
+	return nil
+}
+
+func storeRefusal(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	_, _ = w.Write([]byte(`{"detail": "Μόνο 2 διαθέσιμα.",` +
+		` "code": "insufficient_stock"}`))
 }
 
 // A refused tool call is a failed step for the widget, and the model is
@@ -51,62 +83,114 @@ func TestChatFailedToolIsAnErrorStepWithTheStoresReason(t *testing.T) {
 		toolUseTurnSSE("add_to_cart", `{"productId": 1, "quantity": 5}`),
 		textTurnSSE("Υπάρχουν μόνο 2 διαθέσιμα."),
 	}}
-	djangoH, _ := cartItemDjango(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_, _ = w.Write([]byte(`{"detail": "Μόνο 2 διαθέσιμα.",` +
-			` "code": "insufficient_stock"}`))
+	djangoH, _ := cartItemDjango(t, func(w http.ResponseWriter, _ int) {
+		storeRefusal(w)
 	})
 	gw, _ := newChatGateway(t, fake, djangoH, quietLogger())
 
 	events := postChat(t, gw.URL, map[string]any{"message": "βάλε 5"})
 
-	var statuses []any
-	for _, e := range events {
-		if e.name == "tool" {
-			statuses = append(statuses, e.data["status"])
-		}
-	}
-	assert.Equal(t, []any{"running", "error"}, statuses)
+	assert.Equal(t, []any{"running", "error"}, toolStatuses(events))
 	body := string(*fake.lastBody.Load())
 	assert.Contains(t, body, "insufficient_stock")
 	assert.Contains(t, body, "Μόνο 2 διαθέσιμα.")
 }
 
-// The widget sends a retried message with its turn id again: the retry's
-// add carries the first attempt's key, so Django answers it with the
-// first outcome instead of adding the product twice. Another turn's add
-// is another change.
-func TestChatRetriedTurnRepeatsItsIdempotencyKey(t *testing.T) {
-	addTurn := func() []string {
-		return []string{
-			toolUseTurnSSE("add_to_cart", `{"productId": 1, "quantity": 1}`),
-			textTurnSSE("Έγινε."),
-		}
-	}
-	var scripts []string
-	for range 3 {
-		scripts = append(scripts, addTurn()...)
-	}
-	fake := &fakeChatAPI{scripts: scripts}
-	djangoH, keys := cartItemDjango(t, nil)
+// The shopper retries a turn that added the product and then failed.
+// The retry reaches the other pod, which finds the add recorded in the
+// shared Redis: the product is added once, and the widget still learns
+// that the cart changed.
+func TestChatRetriedTurnOnAnotherPodDoesNotAddTwice(t *testing.T) {
+	addThenFail := &fakeChatAPI{scripts: []string{
+		// The next model call is unscripted: it fails the turn.
+		toolUseTurnSSE("add_to_cart", `{"productId": 1, "quantity": 1}`),
+	}}
+	addThenAnswer := &fakeChatAPI{scripts: []string{
+		toolUseTurnSSE("add_to_cart", `{"productId": 1, "quantity": 1}`),
+		textTurnSSE("Το πρόσθεσα."),
+	}}
+	djangoH, adds := cartItemDjango(t, nil)
+	rdb := startRedis(t)
+	podA := newChatGatewayOn(t, rdb, addThenFail, djangoH, quietLogger())
+	podB := newChatGatewayOn(t, rdb, addThenAnswer, djangoH, quietLogger())
+	turn := map[string]any{"message": "βάλε το", "cartId": chatCartID,
+		"turnId": "2f7d9c1a-5b3e-4e8f-a6d2-9c0b1e4f7a35"}
+
+	failed := postChat(t, podA.URL, turn)
+	require.NotNil(t, lastEvent(t, failed, "error"))
+	require.Equal(t, 1, adds())
+
+	retried := postChat(t, podB.URL, turn)
+
+	assert.Equal(t, 1, adds(), "the retry must not add the product again")
+	assert.Equal(t, []any{"running", "done"}, toolStatuses(retried))
+	assert.Equal(t, true, lastEvent(t, retried, "done")["cartMutated"])
+}
+
+// Another message is another turn: the same add is made again.
+func TestChatAnotherTurnAddsAgain(t *testing.T) {
+	fake := &fakeChatAPI{scripts: []string{
+		toolUseTurnSSE("add_to_cart", `{"productId": 1, "quantity": 1}`),
+		textTurnSSE("Έγινε."),
+		toolUseTurnSSE("add_to_cart", `{"productId": 1, "quantity": 1}`),
+		textTurnSSE("Έγινε."),
+	}}
+	djangoH, adds := cartItemDjango(t, nil)
 	gw, _ := newChatGateway(t, fake, djangoH, quietLogger())
-	const turn = "2f7d9c1a-5b3e-4e8f-a6d2-9c0b1e4f7a35"
-	cart := "29eb4495-e018-45e7-b59c-6646302bd4ef"
 
-	postChat(t, gw.URL, map[string]any{
-		"message": "βάλε το", "cartId": cart, "turnId": turn})
-	postChat(t, gw.URL, map[string]any{
-		"message": "βάλε το", "cartId": cart, "turnId": turn})
-	postChat(t, gw.URL, map[string]any{
-		"message": "βάλε το", "cartId": cart,
-		"turnId": "6a1e3b7c-0d4f-4a2b-8c9e-1f5d7b3a9c20"})
+	for _, id := range []string{"2f7d9c1a-5b3e-4e8f-a6d2-9c0b1e4f7a35",
+		"6a1e3b7c-0d4f-4a2b-8c9e-1f5d7b3a9c20"} {
+		postChat(t, gw.URL, map[string]any{
+			"message": "βάλε κι άλλο", "cartId": chatCartID, "turnId": id})
+	}
 
-	got := keys()
-	require.Len(t, got, 3)
-	assert.NotEmpty(t, got[0])
-	assert.Equal(t, got[0], got[1])
-	assert.NotEqual(t, got[0], got[2])
+	assert.Equal(t, 2, adds())
+}
+
+// Within a turn, an add the store refused can be made again, and an
+// identical add after a success is a new one.
+func TestChatTurnRepeatsAnAddTheStoreRefused(t *testing.T) {
+	add := toolUseTurnSSE("add_to_cart", `{"productId": 1, "quantity": 1}`)
+	fake := &fakeChatAPI{scripts: []string{add, add, add,
+		textTurnSSE("Δύο στο καλάθι.")}}
+	djangoH, adds := cartItemDjango(t,
+		func(w http.ResponseWriter, before int) {
+			if before == 0 {
+				storeRefusal(w)
+				return
+			}
+			serveFixture(t, w, "cart_item_created.json")
+		})
+	gw, _ := newChatGateway(t, fake, djangoH, quietLogger())
+
+	events := postChat(t, gw.URL, map[string]any{
+		"message": "βάλε δύο", "cartId": chatCartID})
+
+	assert.Equal(t, 3, adds())
+	assert.Equal(t, []any{"running", "error", "running", "done",
+		"running", "done"}, toolStatuses(events))
+}
+
+// An add the store did not confirm may have been made: the model is told
+// to check the cart, and a repeat is refused before it reaches the store.
+func TestChatTurnDoesNotRepeatAnUnconfirmedAdd(t *testing.T) {
+	add := toolUseTurnSSE("add_to_cart", `{"productId": 1, "quantity": 1}`)
+	fake := &fakeChatAPI{scripts: []string{add, add,
+		textTurnSSE("Έλεγξε το καλάθι σου.")}}
+	djangoH, adds := cartItemDjango(t, func(w http.ResponseWriter, _ int) {
+		w.WriteHeader(http.StatusBadGateway)
+	})
+	gw, _ := newChatGateway(t, fake, djangoH, quietLogger())
+
+	events := postChat(t, gw.URL, map[string]any{
+		"message": "βάλε το", "cartId": chatCartID})
+
+	assert.Equal(t, 1, adds())
+	assert.Equal(t, []any{"running", "error", "running", "error"},
+		toolStatuses(events))
+	require.Len(t, fake.bodies, 3)
+	assert.Contains(t, string(fake.bodies[1]), "get_cart to check")
+	assert.Contains(t, string(fake.bodies[2]), "in_progress")
 }
 
 func TestChatRefusesAMalformedTurnID(t *testing.T) {

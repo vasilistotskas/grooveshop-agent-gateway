@@ -112,9 +112,9 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   refusal, `retryAfterSeconds` for a throttle, and a `hint`. A 403 is
   reported as `not_found`, and a 5xx or network failure only as
   `unavailable`: no upstream text beyond what Django wrote for a client.
-  Returning a plain Go error from a typed tool handler is fine — the SDK wraps it into exactly that; only a
-  `*jsonrpc.Error` becomes a protocol error, so never return one for a
-  business condition. The single exception is UCP discovery: a platform
+  Returning a plain Go error from a typed tool handler is fine — the
+  SDK wraps it into exactly that; only a `*jsonrpc.Error` becomes a
+  protocol error, so never return one for a business condition. The single exception is UCP discovery: a platform
   profile that cannot be fetched, validated or version-matched is the
   spec's transport error `-32001` (`mcpsrv.negotiate`).
 - **Every canonical UCP tool negotiates** (`internal/ucp/negotiate.go`,
@@ -291,10 +291,14 @@ release that drops, loosens or retypes one of those properties.
   `done {conversationId, cartId?, cartMutated, cartTokenRefused}`.
   The request is `{message, conversationId?, cartId?, cartToken?,
   turnId?}`. `turnId` is a UUID the widget mints per message and sends
-  again when the shopper retries it: the turn's adds carry an
-  `Idempotency-Key` derived from it (`mcpsrv.Turn`), so Django's
-  idempotency middleware answers a retried add with the first outcome
-  instead of adding twice;
+  again when the shopper retries it. Each `add_to_cart` of the turn is
+  claimed in Redis (`mcpsrv.Turn`, `ag:{schema}:chat:change:…`, kept
+  for `CHAT_CONVERSATION_TTL`), so a retry, on whichever pod, finds an
+  add the first attempt made and does not send it again. Not Django's
+  `Idempotency-Key`: its middleware scopes a key to the caller's
+  address, which is one gateway pod. An add the store refused is
+  released; one it did not confirm (a timeout, a 5xx) keeps its claim
+  until it expires, and the model is told to check the cart;
   `cartToken` is a signed-in shopper's pass from Django's
   `POST /cart/agent-token`. With it the cart tools act on that shopper's
   cart whatever `cartId` the model names, and `get_checkout_link` links

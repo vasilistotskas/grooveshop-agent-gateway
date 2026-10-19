@@ -69,6 +69,7 @@ const (
 	codeConflict        = "conflict"
 	codeInvalid         = "invalid"
 	codeUnavailable     = "unavailable"
+	codeInProgress      = "in_progress"
 )
 
 // upstreamErr converts Django client errors into agent-actionable tool

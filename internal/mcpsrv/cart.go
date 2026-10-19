@@ -199,21 +199,35 @@ func (h *handlers) addToCart(
 		cartID = c.UUID
 	}
 
-	addCtx, added := idempotent(ctx, fmt.Sprintf(
+	add, err := claimChange(ctx, fmt.Sprintf(
 		"add_to_cart:%s:%d:%d", cartID, in.ProductID, qty))
-	_, err = h.deps.Django.AddCartItem(
-		addCtx, t.Domain, t.DefaultLocale, cartID, in.ProductID, qty,
-	)
-	if errors.Is(err, django.ErrCartUnreachable) {
-		return nil, out, errors.New("the shopper's cart could not be " +
-			"reached, so the product is not in it; tell the shopper " +
-			"their cart could not be updated")
+	if errors.Is(err, errChangeInFlight) {
+		return nil, out, errAddInFlight
 	}
 	if err != nil {
-		return nil, out, upstreamErr(err, fmt.Sprintf(
-			"product %d was not found", in.ProductID))
+		return nil, out, errChangeUnavailable
 	}
-	added()
+	if !add.made {
+		// Finished even when the shopper leaves (the client's timeout
+		// bounds it), so that their retry finds the outcome recorded.
+		_, err = h.deps.Django.AddCartItem(context.WithoutCancel(ctx),
+			t.Domain, t.DefaultLocale, cartID, in.ProductID, qty,
+		)
+		if err != nil {
+			if errors.Is(err, django.ErrUpstreamDown) {
+				return nil, out, errAddUnconfirmed
+			}
+			add.release(ctx)
+			if errors.Is(err, django.ErrCartUnreachable) {
+				return nil, out, errors.New("the shopper's cart could " +
+					"not be reached, so the product is not in it; tell " +
+					"the shopper their cart could not be updated")
+			}
+			return nil, out, upstreamErr(err, fmt.Sprintf(
+				"product %d was not found", in.ProductID))
+		}
+		add.done(ctx)
+	}
 	cartChanged(ctx)
 
 	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, cartID)
@@ -223,6 +237,24 @@ func (h *handlers) addToCart(
 	out = h.cartOut(t, c)
 	return h.cartSummary(out), out, nil
 }
+
+// An add whose outcome is unknown (a timeout, a 5xx), or that another
+// attempt of the turn is still making, may be in the cart already:
+// repeating it blind could add the product twice. One whose turn could
+// not be read was never sent.
+var (
+	errChangeUnavailable = &ToolError{Code: codeUnavailable, RetryAfter: 30,
+		Hint: "nothing was added: the cart cannot be changed right now; " +
+			"retry once, then tell the shopper to try again later"}
+	errAddUnconfirmed = &ToolError{Code: codeUnavailable, Hint: "the " +
+		"store did not confirm the add, so the product may or may not " +
+		"be in the cart; call get_cart to check, and do not add it " +
+		"again in this reply"}
+	errAddInFlight = &ToolError{Code: codeInProgress, Hint: "an earlier " +
+		"attempt of this message is still adding this product; call " +
+		"get_cart to check whether it is in the cart, and do not add " +
+		"it again in this reply"}
+)
 
 // errReadBack is a cart change the store accepted whose cart could not
 // be read back (a refused token, an outage): the change happened, so
