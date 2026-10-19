@@ -82,6 +82,14 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   `X-Cart-Token` instead of `X-Cart-Id` and trust the cart it resolves
   to; a 401 there is `ErrCartTokenRefused`. Stock, order and payment
   calls never carry it.
+  A call made while serving a request names that request's caller, as
+  the storefront's SSR proxy does (`django.RelayCaller`, mounted in
+  `server.New`): `CF-Connecting-IP` as `X-Real-IP`, `X-Forwarded-For`,
+  `X-Origin-Verify` and `User-Agent`, relayed as received. So Django's
+  throttles and `Idempotency-Key` scopes see the visitor, not the pod.
+  The gateway decides and mints nothing here: Django believes the
+  address only beside a correct `X-Origin-Verify` (`core/client_ip.py`),
+  and the inbound `X-Real-Ip` (Traefik's own peer) is never relayed.
 - `internal/httpmw` — recover, request-id, access log, RED metrics, per-IP
   rate limit. Metrics wraps the mux directly so `r.Pattern` is populated;
   tenant middleware runs *inside* routing (per route group), and enriches
@@ -106,10 +114,15 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
 - Hand-written minimal DTOs (camelCase tags); decode with `UseNumber()`,
   money as `json.Number` → integer cents internally, format at the edge.
 - Business failures in MCP tools surface as `CallToolResult{IsError:
-  true}` with actionable text. Returning a plain Go error from a typed
-  tool handler is fine — the SDK wraps it into exactly that; only a
-  `*jsonrpc.Error` becomes a protocol error, so never return one for a
-  business condition. The single exception is UCP discovery: a platform
+  true}` with actionable text. A Django failure goes through
+  `upstreamErr`, which renders an `mcpsrv.ToolError` as JSON text:
+  Django's `code` and its `detail` (or its validation `fields`) for a
+  refusal, `retryAfterSeconds` for a throttle, and a `hint`. A 403 is
+  reported as `not_found`, and a 5xx or network failure only as
+  `unavailable`: no upstream text beyond what Django wrote for a client.
+  Returning a plain Go error from a typed tool handler is fine — the
+  SDK wraps it into exactly that; only a `*jsonrpc.Error` becomes a
+  protocol error, so never return one for a business condition. The single exception is UCP discovery: a platform
   profile that cannot be fetched, validated or version-matched is the
   spec's transport error `-32001` (`mcpsrv.negotiate`).
 - **Every canonical UCP tool negotiates** (`internal/ucp/negotiate.go`,
@@ -278,10 +291,21 @@ release that drops, loosens or retypes one of those properties.
   `/mcp`'s agent-commerce gate (a store without it gets the same 404),
   and the Server Card's CORS, ETag and cache headers.
 - Nuxt chat widget (`app/composables/useShopChat.ts`) reads the `/chat`
-  SSE events: `delta {text}`, `tool {name, status: running|done}`,
-  `products {tool, query?, total?, products: [{id}]}`, `error {message}`,
+  SSE events: `delta {text}`, `tool {name, status: running|done|error}`
+  (`error`: the call failed, and the model was told why),
+  `products {tool, query?, total?, products: [{id}]}`,
+  `error {message, code?, retryAfter?}` (`code: rate_limited` when the
+  model provider throttled the turn, `retryAfter` its wait in seconds),
   `done {conversationId, cartId?, cartMutated, cartTokenRefused}`.
-  The request is `{message, conversationId?, cartId?, cartToken?}`;
+  The request is `{message, conversationId?, cartId?, cartToken?,
+  turnId?}`. `turnId` is a UUID the widget mints per message and sends
+  again when the shopper retries it: each `add_to_cart` of the turn
+  sends an `Idempotency-Key` derived from it, the call and how many
+  identical adds the turn already made (`mcpsrv.Turn`), so Django's
+  idempotency middleware answers a retried add with the first outcome
+  instead of adding twice. Django scopes the key to the caller, which
+  `django.RelayCaller` names, so a retry on the other pod is the same
+  caller;
   `cartToken` is a signed-in shopper's pass from Django's
   `POST /cart/agent-token`. With it the cart tools act on that shopper's
   cart whatever `cartId` the model names, and `get_checkout_link` links
@@ -323,7 +347,7 @@ release that drops, loosens or retypes one of those properties.
     - `CHAT_STORE_TURNS_PER_HOUR` per store per clock hour;
     - `CHAT_VISITOR_TURNS_PER_DAY` per client IP per store per UTC day.
   
-  A refused turn spends from neither budget and gets the store's localized `rate_limited` message with a 429.
+  A refused turn spends from neither budget and gets the store's localized `rate_limited` message with a 429 and a `Retry-After` until the full window resets.
 - Infra repo: manifests under `manifests/app-constructs/grooveshop/base/`,
   path rules on the storefront ingress.
 - B2B/wholesale pricing (Django `b2b/` app) is RETAIL-ONLY here by

@@ -82,10 +82,11 @@ func TestBridgeReportsAFailedCartToolAsAFailure(t *testing.T) {
 	_, err = br.tools(ctx, mcpsrv.EveryFeature)
 	require.NoError(t, err)
 
-	text, _, err := br.call(ctx, "add_to_cart", map[string]any{
+	text, _, failed, err := br.call(ctx, "add_to_cart", map[string]any{
 		"cartId": "6f1c1f3e-2d6a-4b0f-9a3e-2f6d6c1b9a10", "productId": 64})
 
 	require.NoError(t, err)
+	assert.True(t, failed)
 	assert.True(t, strings.HasPrefix(text, "ERROR: "), text)
 	assert.Contains(t, text, "the product is not in it")
 	_, mutated := br.cartState()
@@ -118,10 +119,11 @@ func TestBridgeReportsARefusedCartToken(t *testing.T) {
 	_, err = br.tools(ctx, mcpsrv.EveryFeature)
 	require.NoError(t, err)
 
-	text, _, err := br.call(ctx, "add_to_cart", map[string]any{
+	text, _, failed, err := br.call(ctx, "add_to_cart", map[string]any{
 		"cartId": "6f1c1f3e-2d6a-4b0f-9a3e-2f6d6c1b9a10", "productId": 64})
 
 	require.NoError(t, err)
+	assert.True(t, failed)
 	assert.True(t, strings.HasPrefix(text, "ERROR: "), text)
 	assert.Contains(t, text, "could not be reached")
 	_, mutated := br.cartState()

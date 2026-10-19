@@ -199,8 +199,12 @@ func (h *handlers) addToCart(
 		cartID = c.UUID
 	}
 
-	_, err = h.deps.Django.AddCartItem(
-		ctx, t.Domain, t.DefaultLocale, cartID, in.ProductID, qty,
+	addCtx, added := idempotent(ctx, fmt.Sprintf(
+		"add_to_cart:%s:%d:%d", cartID, in.ProductID, qty))
+	// Finished even when the shopper leaves (the client's timeout bounds
+	// it), so the store records an outcome their retry is answered with.
+	_, err = h.deps.Django.AddCartItem(context.WithoutCancel(addCtx),
+		t.Domain, t.DefaultLocale, cartID, in.ProductID, qty,
 	)
 	if errors.Is(err, django.ErrCartUnreachable) {
 		return nil, out, errors.New("the shopper's cart could not be " +
@@ -211,6 +215,7 @@ func (h *handlers) addToCart(
 		return nil, out, upstreamErr(err, fmt.Sprintf(
 			"product %d was not found", in.ProductID))
 	}
+	added()
 	cartChanged(ctx)
 
 	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, cartID)

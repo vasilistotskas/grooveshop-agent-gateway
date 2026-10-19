@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
@@ -127,6 +130,13 @@ func (c *Client) get(ctx context.Context, req request) error {
 // send performs a non-GET call exactly once.
 func (c *Client) send(ctx context.Context, method string, req request) error {
 	req.method = method
+	if key := idempotencyKeyFrom(ctx); key != "" {
+		req.headers = maps.Clone(req.headers)
+		if req.headers == nil {
+			req.headers = map[string]string{}
+		}
+		req.headers["Idempotency-Key"] = key
+	}
 	return c.do(ctx, req)
 }
 
@@ -162,6 +172,7 @@ func (c *Client) do(ctx context.Context, r request) error {
 	if r.body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	setCaller(ctx, req.Header)
 	for k, v := range r.headers {
 		req.Header.Set(k, v)
 	}
@@ -209,27 +220,58 @@ const maxErrorBody = 64 << 10
 
 func (c *Client) apiError(resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-	detail, reason := "", ""
-	var parsed struct {
-		Detail string `json:"detail"`
-		Reason string `json:"reason"`
+	apiErr := &APIError{Status: resp.StatusCode, Body: body}
+	if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil &&
+		s > 0 {
+		apiErr.RetryAfter = time.Duration(s) * time.Second
 	}
-	if err := json.Unmarshal(body, &parsed); err == nil {
-		detail = parsed.Detail
-		reason = parsed.Reason
+	// Each member is decoded on its own: `code` is a coupon code's field
+	// errors (a list) when the request had a `code` field, and one
+	// mistyped member must not cost the others.
+	var parsed map[string]json.RawMessage
+	if json.Unmarshal(body, &parsed) != nil {
+		return apiErr
 	}
-	// DRF validation errors are a {"field": ["msg", …]} map with no
-	// "detail" key — swallowing them leaves undebuggable "Bad Request"
-	// errors, so carry the raw body instead.
-	if detail == "" && len(body) > 0 {
-		detail = text.Ellipsize(string(body), 512)
+	_ = json.Unmarshal(parsed["detail"], &apiErr.Detail)
+	_ = json.Unmarshal(parsed["code"], &apiErr.Code)
+	_ = json.Unmarshal(parsed["reason"], &apiErr.Reason)
+	if apiErr.Detail == "" {
+		var fields any
+		if json.Unmarshal(parsed["fields"], &fields) == nil {
+			apiErr.Detail = text.Ellipsize(
+				strings.Join(fieldMessages("", fields), "; "), 512)
+		}
 	}
-	if detail == "" {
-		detail = http.StatusText(resp.StatusCode)
+	return apiErr
+}
+
+// fieldMessages flattens a validation error's `fields` ({field:
+// [{message, code}]}, nested where the serializer nests) into
+// "field: message" lines, the nested path dotted.
+func fieldMessages(path string, v any) []string {
+	var out []string
+	switch v := v.(type) {
+	case map[string]any:
+		if msg, ok := v["message"].(string); ok {
+			if path == "" || path == "nonFieldErrors" || path == "detail" {
+				return []string{msg}
+			}
+			return []string{path + ": " + msg}
+		}
+		keys := slices.Sorted(maps.Keys(v))
+		for _, k := range keys {
+			p := k
+			if path != "" {
+				p = path + "." + k
+			}
+			out = append(out, fieldMessages(p, v[k])...)
+		}
+	case []any:
+		for _, item := range v {
+			out = append(out, fieldMessages(path, item)...)
+		}
 	}
-	return &APIError{
-		Status: resp.StatusCode, Detail: detail, Reason: reason, Body: body,
-	}
+	return out
 }
 
 func retryable(err error) bool {

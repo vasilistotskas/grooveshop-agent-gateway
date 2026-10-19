@@ -121,11 +121,20 @@ func newChatGateway(
 	log *slog.Logger, tune ...func(*config.Config),
 ) (*httptest.Server, *redis.Client) {
 	t.Helper()
+	rdb := startRedis(t)
+	return newChatGatewayOn(t, rdb, fake, djangoH, log, tune...), rdb
+}
+
+// newChatGatewayOn boots one gateway pod on rdb, which several share.
+func newChatGatewayOn(
+	t *testing.T, rdb *redis.Client, fake *fakeChatAPI,
+	djangoH http.Handler, log *slog.Logger, tune ...func(*config.Config),
+) *httptest.Server {
+	t.Helper()
 	djangoSrv := httptest.NewServer(djangoH)
 	t.Cleanup(djangoSrv.Close)
 	modelSrv := httptest.NewServer(fake.handler())
 	t.Cleanup(modelSrv.Close)
-	rdb := startRedis(t)
 
 	metrics := obs.NewMetrics()
 	cfg := config.Config{
@@ -174,7 +183,7 @@ func newChatGateway(
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return srv, rdb
+	return srv
 }
 
 type sseEvent struct {
@@ -184,10 +193,22 @@ type sseEvent struct {
 
 func postChat(t *testing.T, gwURL string, body map[string]any) []sseEvent {
 	t.Helper()
+	return postChatAs(t, gwURL, http.Header{}, body)
+}
+
+// postChatAs posts a turn with the headers the edge delivered it with.
+func postChatAs(
+	t *testing.T, gwURL string, edge http.Header, body map[string]any,
+) []sseEvent {
+	t.Helper()
 	raw, err := json.Marshal(body)
 	require.NoError(t, err)
-	resp, err := http.Post(gwURL+"/chat", "application/json",
+	req, err := http.NewRequest(http.MethodPost, gwURL+"/chat",
 		bytes.NewReader(raw))
+	require.NoError(t, err)
+	req.Header = edge.Clone()
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)

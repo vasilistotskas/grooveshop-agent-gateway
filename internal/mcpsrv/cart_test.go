@@ -115,5 +115,7 @@ func TestUpstreamErrReportsAnUnreachableCartAsNotFound(t *testing.T) {
 	err := upstreamErr(fmt.Errorf("get: %w", django.ErrCartUnreachable),
 		"that cart no longer exists")
 
-	assert.EqualError(t, err, "that cart no longer exists")
+	assert.Equal(t, &ToolError{
+		Code: "not_found", Hint: "that cart no longer exists",
+	}, err)
 }

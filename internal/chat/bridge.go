@@ -134,17 +134,20 @@ func (b *bridge) tools(
 
 // call executes one tool through the MCP session and renders the result
 // as the plain text a tool-role message carries, plus the products event
-// for the widget when the result names products. Business failures come
-// back as "ERROR: …" text so the model can react, and so does a protocol
-// error (an unknown tool, arguments that fail the input schema): those
-// are the model's mistakes, and aborting would throw away the prose the
-// shopper has already seen. Only a dead request context is fatal.
+// for the widget when the result names products; failed reports whether
+// the call failed, for the widget's step state. Business failures come
+// back as "ERROR: …" text (a tool's mcpsrv.ToolError: the store's code,
+// its words and what to do) so the model can react, and so does a
+// protocol error (an unknown tool, arguments that fail the input
+// schema): those are the model's mistakes, and aborting would throw away
+// the prose the shopper has already seen. Only a dead request context is
+// fatal.
 func (b *bridge) call(
 	ctx context.Context, name string, input map[string]any,
-) (string, *productsEvent, error) {
+) (text string, products *productsEvent, failed bool, err error) {
 	if !b.offered[name] {
 		return "ERROR: unknown tool " + strconv.Quote(name) +
-			"; call only the tools you were given", nil, nil
+			"; call only the tools you were given", nil, true, nil
 	}
 	res, err := b.session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      name,
@@ -152,13 +155,12 @@ func (b *bridge) call(
 	})
 	if err != nil {
 		if ctx.Err() != nil {
-			return "", nil, err
+			return "", nil, true, err
 		}
-		return "ERROR: " + err.Error(), nil, nil
+		return "ERROR: " + err.Error(), nil, true, nil
 	}
 
 	var parts []string
-	var products *productsEvent
 	for _, c := range res.Content {
 		if tc, ok := c.(*mcp.TextContent); ok {
 			parts = append(parts, tc.Text)
@@ -173,11 +175,11 @@ func (b *bridge) call(
 			}
 		}
 	}
-	text := strings.Join(parts, "\n")
+	text = strings.Join(parts, "\n")
 	if res.IsError {
 		text = "ERROR: " + text
 	}
-	return text, products, nil
+	return text, products, res.IsError, nil
 }
 
 // recordCartState tracks the active cart id, so the widget can adopt it.

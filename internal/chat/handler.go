@@ -24,6 +24,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcpsrv"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/text"
 )
@@ -75,7 +76,23 @@ type chatRequest struct {
 	// A pointer, so a supplied empty token is refused like any other
 	// malformed one instead of passing for an omitted field.
 	CartToken *string `json:"cartToken"`
+	// TurnID names the turn: the widget mints one per message and sends
+	// it again when the shopper retries that message, so the retry's cart
+	// changes are recognised as the same (mcpsrv.Turn). A turn without
+	// one is named here, and only its own repeats are recognised.
+	TurnID string `json:"turnId"`
 }
+
+// errorEvent ends a failed turn. Code is set for the failures the widget
+// words itself: codeRateLimited, with RetryAfter (seconds) when the model
+// provider said how long to wait.
+type errorEvent struct {
+	Message    string `json:"message"`
+	Code       string `json:"code,omitempty"`
+	RetryAfter int    `json:"retryAfter,omitempty"`
+}
+
+const codeRateLimited = "rate_limited"
 
 type doneEvent struct {
 	ConversationID string `json:"conversationId"`
@@ -132,6 +149,14 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusBadRequest, msgBadRequest)
 		return
 	}
+	if req.TurnID == "" {
+		req.TurnID = uuid.NewString()
+	} else if uuid.Validate(req.TurnID) != nil {
+		fail(http.StatusBadRequest, msgBadRequest)
+		return
+	}
+	// Tool handlers reach the turn through the bridge's base context.
+	r = r.WithContext(mcpsrv.WithTurn(r.Context(), mcpsrv.NewTurn(req.TurnID)))
 	var cartToken *django.CartToken
 	if req.CartToken != nil {
 		var err error
@@ -160,7 +185,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	// Counted only once the request and its conversation are valid, so
 	// rejected calls spend nothing; refused before any model call.
-	allowed, err := s.quota.Allow(r.Context(), t.SchemaName,
+	retryAfter, err := s.quota.Allow(r.Context(), t.SchemaName,
 		httpmw.ClientIP(r), time.Now())
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "chat quota check failed",
@@ -168,9 +193,10 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusServiceUnavailable, msgUnavailable)
 		return
 	}
-	if !allowed {
+	if retryAfter > 0 {
 		s.log.InfoContext(r.Context(), "chat turn refused by quota",
 			slog.String("tenant", t.SchemaName))
+		w.Header().Set("Retry-After", strconv.Itoa(seconds(retryAfter)))
 		fail(http.StatusTooManyRequests, msgRateLimited)
 		return
 	}
@@ -209,7 +235,9 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		// The status line alone is undebuggable — surface the model
 		// API's error body and the failing request shape.
-		message := messageFor(t.DefaultLocale, msgTurnFailed)
+		failure := errorEvent{
+			Message: messageFor(t.DefaultLocale, msgTurnFailed),
+		}
 		if apierr, ok := errors.AsType[*openai.Error](err); ok {
 			upstream := string(apierr.DumpResponse(true))
 			attrs = append(attrs,
@@ -234,7 +262,11 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 			// Lift which quota died out of the body dump so triage
 			// reads one field instead of a 2KB blob.
 			if apierr.StatusCode == http.StatusTooManyRequests {
-				message = messageFor(t.DefaultLocale, msgRateLimited)
+				failure = errorEvent{
+					Message:    messageFor(t.DefaultLocale, msgRateLimited),
+					Code:       codeRateLimited,
+					RetryAfter: modelRetryAfter(apierr, upstream),
+				}
 				for field, re := range quotaFields {
 					if m := re.FindStringSubmatch(upstream); m != nil {
 						attrs = append(attrs, slog.String(field, m[1]))
@@ -243,7 +275,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.log.ErrorContext(r.Context(), "chat turn failed", attrs...)
-		sse.event("error", map[string]string{"message": message})
+		sse.event("error", failure)
 		return
 	}
 
@@ -428,13 +460,18 @@ func (s *Service) runTurn(
 			sse.event("tool", map[string]string{
 				"name": tc.Function.Name, "status": "running",
 			})
-			result, products, err := br.call(ctx, tc.Function.Name, input)
+			result, products, failed, err := br.call(
+				ctx, tc.Function.Name, input)
 			if err != nil {
 				return "", "", false, fmt.Errorf(
 					"chat: tool %s: %w", tc.Function.Name, err)
 			}
+			status := "done"
+			if failed {
+				status = "error"
+			}
 			sse.event("tool", map[string]string{
-				"name": tc.Function.Name, "status": "done",
+				"name": tc.Function.Name, "status": status,
 			})
 			if products != nil {
 				sse.event("products", products)
@@ -479,6 +516,29 @@ var quotaFields = map[string]*regexp.Regexp{
 	"quota_limit":  regexp.MustCompile(`limit:\s*(\d+)`),
 	"quota_model":  regexp.MustCompile(`model:\s*([a-z0-9.-]+)`),
 	"retry_hint":   regexp.MustCompile(`retry in ([0-9.]+s)`),
+}
+
+// modelRetryAfter is how long the model provider asked to wait, in whole
+// seconds rounded up: its Retry-After header, else the hint in its body
+// (Gemini's "retry in 12.3s"); 0 when it said neither.
+func modelRetryAfter(apierr *openai.Error, dump string) int {
+	if apierr.Response != nil {
+		if s, err := strconv.Atoi(
+			apierr.Response.Header.Get("Retry-After")); err == nil && s > 0 {
+			return s
+		}
+	}
+	if m := quotaFields["retry_hint"].FindStringSubmatch(dump); m != nil {
+		if d, err := time.ParseDuration(m[1]); err == nil && d > 0 {
+			return seconds(d)
+		}
+	}
+	return 0
+}
+
+// seconds rounds d up to whole seconds, at least one.
+func seconds(d time.Duration) int {
+	return max(1, int((d+time.Second-1)/time.Second))
 }
 
 // redactAuth strips credential header values from a dumped HTTP request
