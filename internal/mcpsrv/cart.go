@@ -35,7 +35,7 @@ type CartOut struct {
 	AppliedCouponCodes []string           `json:"appliedCouponCodes,omitempty" jsonschema:"coupon codes that currently apply to this cart"`
 	RefusedCoupons     []RefusedCouponOut `json:"refusedCoupons,omitempty" jsonschema:"coupon codes attached to the cart that do not apply now, with the store's reason"`
 	FreeShipping       bool               `json:"freeShipping,omitempty" jsonschema:"a promotion grants free delivery on this cart"`
-	TotalWeightGrams   int                `json:"totalWeightGrams" jsonschema:"cart weight; pass it to get_shipping_options so options over a weight cap are left out"`
+	TotalWeightGrams   int                `json:"totalWeightGrams" jsonschema:"cart weight; pass it with cartId to get_shipping_options so options the cart is too heavy or too large for are left out"`
 }
 
 // RefusedCouponOut is an attached coupon the store refuses now — its item

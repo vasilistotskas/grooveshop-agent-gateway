@@ -50,11 +50,16 @@ func pricingCart(promo string, freeShipping bool, codes []string) string {
 		`"currency":"EUR"}`
 }
 
+// pricingSessionCart is the cart every pricing test session names.
+const pricingSessionCart = "29eb4495-e018-45e7-b59c-6646302bd4ef"
+
 // pricingDjango serves the given cart and one acs home_delivery option at
-// the given price, flagged over its weight cap when exceeds is set. The
-// options handler fails the test unless the cart weight is forwarded.
+// the given price, flagged over its weight cap when overWeight is set and
+// too large for its parcels when tooLarge is. The options handler fails
+// the test unless the cart weight and the session's cart are forwarded.
 func pricingDjango(
-	t *testing.T, cart string, shippingPrice string, exceeds bool,
+	t *testing.T, cart string, shippingPrice string,
+	overWeight, tooLarge bool,
 ) *django.Client {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -67,12 +72,15 @@ func pricingDjango(
 		func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, "107", r.URL.Query().Get("weightGrams"),
 				"cart weight forwarded to the rate's weight cap")
+			assert.Equal(t, pricingSessionCart, r.Header.Get("X-Cart-Id"),
+				"cart named so Django checks it against the parcels")
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`[{"providerCode":"acs",` +
 				`"providerName":"ACS Courier","kind":"home_delivery",` +
 				`"price":` + shippingPrice + `,"currency":"EUR",` +
 				`"priority":10,"countryCode":"GR","maxWeightGrams":100,` +
-				`"exceedsMaxWeight":` + strconv.FormatBool(exceeds) + `,` +
+				`"exceedsMaxWeight":` + strconv.FormatBool(overWeight) + `,` +
+				`"exceedsParcelSize":` + strconv.FormatBool(tooLarge) + `,` +
 				`"metadata":{}}]`))
 		})
 	srv := httptest.NewServer(mux)
@@ -93,6 +101,7 @@ func TestComputePricingDiscounts(t *testing.T) {
 		shippingPrice string
 		withDelivery  bool
 		overWeight    bool
+		tooLarge      bool
 
 		wantSubtotal int64
 		wantDiscount int64
@@ -154,6 +163,17 @@ func TestComputePricingDiscounts(t *testing.T) {
 			wantTotal:     18000,
 		},
 		{
+			name:          "an option too large for the cart prices no delivery",
+			cart:          pricingCart("20.00", false, []string{"SAVE20"}),
+			shippingPrice: "3.50",
+			withDelivery:  true,
+			tooLarge:      true,
+			wantSubtotal:  20000,
+			wantDiscount:  2000,
+			wantMarkdown:  1200,
+			wantTotal:     18000,
+		},
+		{
 			name:         "discount above subtotal clamps total at zero",
 			cart:         pricingCart("250.00", false, []string{"MEGA"}),
 			wantSubtotal: 20000,
@@ -169,10 +189,10 @@ func TestComputePricingDiscounts(t *testing.T) {
 			if shipping == "" {
 				shipping = "0.0"
 			}
-			dj := pricingDjango(t, tc.cart, shipping, tc.overWeight)
+			dj := pricingDjango(t, tc.cart, shipping,
+				tc.overWeight, tc.tooLarge)
 
-			s := NewSession("public", tn.Domain, "acp",
-				"29eb4495-e018-45e7-b59c-6646302bd4ef")
+			s := NewSession("public", tn.Domain, "acp", pricingSessionCart)
 			if tc.withDelivery {
 				s.Fulfillment = Fulfillment{
 					Kind:         FulfillmentHomeDelivery,

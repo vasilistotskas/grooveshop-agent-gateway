@@ -205,7 +205,7 @@ func renderFulfillment(
 	if f.CountryCode == "" {
 		return
 	}
-	opts, err := dj.ShippingOptions(ctx, t.Domain, t.DefaultLocale,
+	opts, err := dj.ShippingOptions(ctx, t.Domain, t.DefaultLocale, s.CartID,
 		django.ShippingQuery{
 			CountryCode:      f.CountryCode,
 			OrderValueAmount: cart.TotalPrice.String(),
@@ -217,9 +217,10 @@ func renderFulfillment(
 	}
 	offered := map[string]bool{}
 	for _, o := range opts {
-		// Over the rate's weight cap Django refuses the order, so the
-		// agent must never be offered it.
-		if o.Kind != checkout.FulfillmentHomeDelivery || o.ExceedsMaxWeight {
+		// Over the rate's weight cap, or too large for the carrier's
+		// parcels, Django refuses the order, so the agent must never be
+		// offered it.
+		if o.Kind != checkout.FulfillmentHomeDelivery || !o.FitsCart() {
 			continue
 		}
 		fee, ok := shippingFeeMinor(o)

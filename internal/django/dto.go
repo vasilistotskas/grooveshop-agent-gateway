@@ -207,20 +207,28 @@ func (p PayWay) HasKnownSettlement() bool {
 }
 
 // ShippingOption is one (provider, kind) row priced by the store's
-// shipping rate for CountryCode. An option over its rate's weight cap is
-// still listed (ExceedsMaxWeight) so a storefront can explain why it is
-// unavailable; Django refuses to create an order with it.
+// shipping rate for CountryCode. An option over its rate's weight cap
+// (ExceedsMaxWeight), or whose parcels the named cart does not fit
+// (ExceedsParcelSize), is still listed so a storefront can explain why it
+// is unavailable; Django refuses to create an order with it.
 type ShippingOption struct {
-	ProviderCode     string          `json:"providerCode"`
-	ProviderName     string          `json:"providerName"`
-	Kind             string          `json:"kind"`
-	Price            json.Number     `json:"price"`
-	Currency         string          `json:"currency"`
-	Priority         int             `json:"priority"`
-	CountryCode      string          `json:"countryCode"`
-	MaxWeightGrams   *int            `json:"maxWeightGrams"`
-	ExceedsMaxWeight bool            `json:"exceedsMaxWeight"`
-	Metadata         json.RawMessage `json:"metadata"`
+	ProviderCode      string          `json:"providerCode"`
+	ProviderName      string          `json:"providerName"`
+	Kind              string          `json:"kind"`
+	Price             json.Number     `json:"price"`
+	Currency          string          `json:"currency"`
+	Priority          int             `json:"priority"`
+	CountryCode       string          `json:"countryCode"`
+	MaxWeightGrams    *int            `json:"maxWeightGrams"`
+	ExceedsMaxWeight  bool            `json:"exceedsMaxWeight"`
+	ExceedsParcelSize bool            `json:"exceedsParcelSize"`
+	Metadata          json.RawMessage `json:"metadata"`
+}
+
+// FitsCart reports whether Django would ship the cart this way: within
+// the weight cap and in the carrier's parcels.
+func (o ShippingOption) FitsCart() bool {
+	return !o.ExceedsMaxWeight && !o.ExceedsParcelSize
 }
 
 type FreeShippingInfo struct {

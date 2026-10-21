@@ -186,7 +186,7 @@ func deliveryFee(
 	if f.ProviderCode == "" || f.Kind == "" || f.CountryCode == "" {
 		return 0, false
 	}
-	opts, err := dj.ShippingOptions(ctx, t.Domain, t.DefaultLocale,
+	opts, err := dj.ShippingOptions(ctx, t.Domain, t.DefaultLocale, s.CartID,
 		django.ShippingQuery{
 			CountryCode:      f.CountryCode,
 			OrderValueAmount: cart.TotalPrice.String(),
@@ -198,7 +198,7 @@ func deliveryFee(
 	}
 	for _, o := range opts {
 		if o.ProviderCode == f.ProviderCode && o.Kind == f.Kind {
-			if o.ExceedsMaxWeight {
+			if !o.FitsCart() {
 				return 0, false
 			}
 			fee, err := money.MinorUnits(o.Price.String())

@@ -58,10 +58,9 @@ type Fulfillment struct {
 	Street       string `json:"street"`
 	StreetNumber string `json:"streetNumber"`
 
-	AcsStationExternalID  string `json:"acsStationExternalId,omitempty"`
-	AcsStationBranch      string `json:"acsStationBranch,omitempty"`
-	BoxnowLockerID        string `json:"boxnowLockerId,omitempty"`
-	BoxnowCompartmentSize int    `json:"boxnowCompartmentSize,omitempty"`
+	AcsStationExternalID string `json:"acsStationExternalId,omitempty"`
+	AcsStationBranch     string `json:"acsStationBranch,omitempty"`
+	BoxnowLockerID       string `json:"boxnowLockerId,omitempty"`
 }
 
 // Complete reports whether enough is present to place the order. Django

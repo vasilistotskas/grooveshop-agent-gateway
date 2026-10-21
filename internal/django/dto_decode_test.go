@@ -261,6 +261,7 @@ func TestDecodeShippingOptions(t *testing.T) {
 	assert.Equal(t, "GR", opts[0].CountryCode)
 	assert.Nil(t, opts[0].MaxWeightGrams, "no weight cap on the rate")
 	assert.False(t, opts[0].ExceedsMaxWeight)
+	assert.False(t, opts[0].ExceedsParcelSize)
 	assert.NotEmpty(t, opts[0].Metadata)
 }
 

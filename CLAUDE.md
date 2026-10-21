@@ -80,8 +80,10 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   token the chat widget forwards (`django.CartToken`, in the request
   context): the cart routes Django accepts it on (`cartTarget`) send
   `X-Cart-Token` instead of `X-Cart-Id` and trust the cart it resolves
-  to; a 401 there is `ErrCartTokenRefused`. Stock, order and payment
-  calls never carry it.
+  to; a 401 there is `ErrCartTokenRefused`. The read-only shipping calls
+  (`/shipping/options`, BOX NOW `lockers/nearest`) send it the same way
+  (`shippingCartHeaders`), so a chat shopper's cart is judged for parcel
+  fit. Stock, order and payment calls never carry it.
   A call made while serving a request names that request's caller, as
   the storefront's SSR proxy does (`django.RelayCaller`, mounted in
   `server.New`): `CF-Connecting-IP` as `X-Real-IP`, `X-Forwarded-For`,
