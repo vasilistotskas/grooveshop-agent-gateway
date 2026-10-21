@@ -155,7 +155,6 @@ func (f *Flow) Complete(
 			AcsStationExternalID: s.Fulfillment.AcsStationExternalID,
 			AcsStationBranch:     s.Fulfillment.AcsStationBranch,
 			BoxnowLockerID:       s.Fulfillment.BoxnowLockerID,
-			BoxnowCompartmentSz:  s.Fulfillment.BoxnowCompartmentSize,
 			Attribution: &django.OrderAttribution{
 				AgentProtocol: s.Protocol,
 			},

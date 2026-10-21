@@ -831,9 +831,6 @@
             ],
             "type": "object"
           },
-          "boxnowCompartmentSize": {
-            "type": "integer"
-          },
           "boxnowLockerId": {
             "type": "string"
           },

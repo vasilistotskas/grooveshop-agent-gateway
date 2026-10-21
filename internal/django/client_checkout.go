@@ -85,7 +85,6 @@ type OrderCreate struct {
 	AcsStationExternalID string `json:"acsStationExternalId,omitempty"`
 	AcsStationBranch     string `json:"acsStationBranch,omitempty"`
 	BoxnowLockerID       string `json:"boxnowLockerId,omitempty"`
-	BoxnowCompartmentSz  int    `json:"boxnowCompartmentSize,omitempty"`
 
 	CustomerNotes string `json:"customerNotes,omitempty"`
 
