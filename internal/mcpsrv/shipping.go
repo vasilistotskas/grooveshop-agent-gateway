@@ -53,14 +53,17 @@ func (h *handlers) getShippingOptions(
 	if in.WeightGrams > 0 {
 		q.WeightGrams = strconv.Itoa(in.WeightGrams)
 	}
-	opts, err := h.deps.Django.ShippingOptions(ctx, t.Domain, t.DefaultLocale, q)
+	// No cart: the tool's input names none, and a chat cart token is
+	// refused on this endpoint. Django then flags no option for size.
+	opts, err := h.deps.Django.ShippingOptions(
+		ctx, t.Domain, t.DefaultLocale, "", q)
 	if err != nil {
 		return nil, out, upstreamErr(err, "shipping options are unavailable")
 	}
 	for _, o := range opts {
 		// Listed upstream so a storefront can explain the greyed-out
 		// option; an agent can only act on options it may choose.
-		if o.ExceedsMaxWeight {
+		if !o.FitsCart() {
 			continue
 		}
 		out.Options = append(out.Options, ShippingOptionOut{

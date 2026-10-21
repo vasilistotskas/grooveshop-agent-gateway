@@ -14,8 +14,12 @@ type ShippingQuery struct {
 	WeightGrams      string
 }
 
+// ShippingOptions lists the store's options for sq. cartID names the cart
+// Django checks each option's parcels against (ExceedsParcelSize); with
+// none no option is flagged for size. It goes as X-Cart-Id, never as a
+// cart token: Django refuses a token on this endpoint.
 func (c *Client) ShippingOptions(
-	ctx context.Context, host, lang string, sq ShippingQuery,
+	ctx context.Context, host, lang, cartID string, sq ShippingQuery,
 ) ([]ShippingOption, error) {
 	q := url.Values{"countryCode": {sq.CountryCode}}
 	if sq.OrderValueAmount != "" {
@@ -27,12 +31,17 @@ func (c *Client) ShippingOptions(
 	if sq.WeightGrams != "" {
 		q.Set("weightGrams", sq.WeightGrams)
 	}
+	var headers map[string]string
+	if cartID != "" {
+		headers = c.cartHeaders(cartID)
+	}
 	var out []ShippingOption
 	err := c.get(ctx, request{
 		path:     "/shipping/options",
 		host:     host,
 		language: lang,
 		query:    q,
+		headers:  headers,
 		out:      &out,
 	})
 	if err != nil {

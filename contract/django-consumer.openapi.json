@@ -1874,6 +1874,9 @@
           "exceedsMaxWeight": {
             "type": "boolean"
           },
+          "exceedsParcelSize": {
+            "type": "boolean"
+          },
           "kind": {
             "type": "string"
           },
@@ -1899,6 +1902,7 @@
           "countryCode",
           "currency",
           "exceedsMaxWeight",
+          "exceedsParcelSize",
           "kind",
           "metadata",
           "price",
