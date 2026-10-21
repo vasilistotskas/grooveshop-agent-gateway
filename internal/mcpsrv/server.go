@@ -255,7 +255,9 @@ func toolset(h *handlers) []tool {
 			Name: "get_shipping_options",
 			Description: "Available delivery methods for a destination " +
 				"country with prices and free-shipping thresholds. Kinds: " +
-				"home_delivery and pickup_point (lockers/shops).",
+				"home_delivery and pickup_point (lockers/shops). When " +
+				"checking out a cart, pass its cartId and totalWeightGrams " +
+				"so methods it is too large or too heavy for are left out.",
 		}, h.getShippingOptions),
 
 		toolOf(&mcp.Tool{

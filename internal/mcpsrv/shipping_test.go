@@ -17,9 +17,12 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
-// shippingDjango lists ACS home delivery, a BoxNow locker the cart is too
-// large for and an ACS locker over its weight cap, and records each
-// options call.
+// shippingCart is the cart an agent names.
+const shippingCart = "7d0b2f3e-91a4-4c56-8e2f-3b6a1c9d4e70"
+
+// shippingDjango lists ACS home delivery, a BoxNow locker and an ACS
+// locker over its weight cap, and records each options call. As Django
+// does, it flags the BoxNow locker too large only when a cart is named.
 func shippingDjango(t *testing.T) (*handlers, *[]*http.Request) {
 	t.Helper()
 	var seen []*http.Request
@@ -34,7 +37,8 @@ func shippingDjango(t *testing.T) (*handlers, *[]*http.Request) {
 			assert.Equal(t, "/api/v1/shipping/options", r.URL.Path)
 			_, _ = w.Write([]byte(`[` +
 				shippingRow("acs", "home_delivery", false, false) + `,` +
-				shippingRow("boxnow", "pickup_point", false, true) + `,` +
+				shippingRow("boxnow", "pickup_point", false,
+					r.Header.Get("X-Cart-Id") != "") + `,` +
 				shippingRow("acs", "pickup_point", true, false) + `]`))
 		}))
 	t.Cleanup(srv.Close)
@@ -53,9 +57,31 @@ func shippingRow(provider, kind string, overWeight, tooLarge bool) string {
 		`"metadata":{}}`
 }
 
-// An agent is offered only the options the cart fits; the tool names no
-// cart, so it never sends one.
-func TestShippingOptionsOfferOnlyWhatTheCartFits(t *testing.T) {
+func offered(out ShippingOptionsOut) []string {
+	var keys []string
+	for _, o := range out.Options {
+		keys = append(keys, o.ProviderCode+":"+o.Kind)
+	}
+	return keys
+}
+
+// With the agent's cart named, the options it does not fit are left out:
+// the cart goes to Django as X-Cart-Id, which flags the parcel fit.
+func TestShippingOptionsForACartOfferOnlyWhatItFits(t *testing.T) {
+	h, seen := shippingDjango(t)
+	ctx := tenant.NewContext(context.Background(), cartTenant())
+
+	_, out, err := h.getShippingOptions(ctx, nil,
+		ShippingOptionsIn{CountryCode: "GR", CartID: shippingCart})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acs:home_delivery"}, offered(out))
+	require.Len(t, *seen, 1)
+	assert.Equal(t, shippingCart, (*seen)[0].Header.Get("X-Cart-Id"))
+}
+
+// Without a cart nothing is judged for size, only for the weight given.
+func TestShippingOptionsWithoutACartLeaveOutOnlyTheOverweight(t *testing.T) {
 	h, seen := shippingDjango(t)
 	ctx := tenant.NewContext(context.Background(), cartTenant())
 
@@ -63,9 +89,8 @@ func TestShippingOptionsOfferOnlyWhatTheCartFits(t *testing.T) {
 		ShippingOptionsIn{CountryCode: "GR"})
 
 	require.NoError(t, err)
-	require.Len(t, out.Options, 1)
-	assert.Equal(t, "acs", out.Options[0].ProviderCode)
-	assert.Equal(t, "home_delivery", out.Options[0].Kind)
+	assert.Equal(t,
+		[]string{"acs:home_delivery", "boxnow:pickup_point"}, offered(out))
 	require.Len(t, *seen, 1)
 	assert.Empty(t, (*seen)[0].Header.Get("X-Cart-Id"))
 }

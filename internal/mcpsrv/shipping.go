@@ -14,6 +14,7 @@ type ShippingOptionsIn struct {
 	CountryCode string `json:"countryCode" jsonschema:"ISO 3166-1 alpha-2 destination, e.g. GR"`
 	OrderValue  string `json:"orderValue,omitempty" jsonschema:"cart total as decimal string, used for free-shipping checks"`
 	WeightGrams int    `json:"weightGrams,omitempty" jsonschema:"the cart's totalWeightGrams from get_cart; without it no option is left out for its weight cap"`
+	CartID      string `json:"cartId,omitempty" jsonschema:"cart id from create_cart or add_to_cart; without it no option is left out for being too large for the cart"`
 }
 
 type ShippingOptionOut struct {
@@ -53,10 +54,10 @@ func (h *handlers) getShippingOptions(
 	if in.WeightGrams > 0 {
 		q.WeightGrams = strconv.Itoa(in.WeightGrams)
 	}
-	// No cart: the tool's input names none, and a chat cart token is
-	// refused on this endpoint. Django then flags no option for size.
+	// The cart goes by its id only: Django refuses a chat cart token on
+	// this endpoint. Without one it flags no option for size.
 	opts, err := h.deps.Django.ShippingOptions(
-		ctx, t.Domain, t.DefaultLocale, "", q)
+		ctx, t.Domain, t.DefaultLocale, in.CartID, q)
 	if err != nil {
 		return nil, out, upstreamErr(err, "shipping options are unavailable")
 	}
