@@ -54,8 +54,8 @@ func (h *handlers) getShippingOptions(
 	if in.WeightGrams > 0 {
 		q.WeightGrams = strconv.Itoa(in.WeightGrams)
 	}
-	// The cart goes by its id only: Django refuses a chat cart token on
-	// this endpoint. Without one it flags no option for size.
+	// The cart is the chat shopper's (their cart token) or cartId; with
+	// neither, Django flags no option for size.
 	opts, err := h.deps.Django.ShippingOptions(
 		ctx, t.Domain, t.DefaultLocale, in.CartID, q)
 	if err != nil {
