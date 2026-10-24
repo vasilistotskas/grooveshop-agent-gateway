@@ -56,7 +56,7 @@ func fixtureProducts() []django.Product {
 			Slug: "fortistis-kinitou", Category: 262,
 			Pricing: django.Pricing{EffectivePrice: "464.68"},
 			Stock:   186, Active: true,
-			MainImagePath: "media/uploads/products/φορτιστής.jpg",
+			MainImagePath: "media/uploads/products/%CF%86%CE%BF%CF%81%CF%84%CE%B9%CF%83%CF%84%CE%AE%CF%82.jpg",
 		},
 		{
 			// Announced reduction, with a brand and item group: the
@@ -152,9 +152,11 @@ func TestRSSItemRules(t *testing.T) {
 	assert.Zero(t, plain.PriorMinor)
 	// HTML is stripped and entities decoded exactly once.
 	assert.Equal(t, "Γρήγορη φόρτιση & ασφάλεια USB-C.", plain.Description)
-	// Unicode path segments are percent-encoded, separators kept.
+	// Django's path arrives percent-encoded and is linked as it is,
+	// never encoded a second time.
 	assert.Contains(t, plain.ImageLink,
-		"media/uploads/products/%CF%86%CE%BF%CF%81%CF%84%CE%B9%CF%83%CF%84%CE%AE%CF%82.jpg")
+		"media/uploads/products/%CF%86%CE%BF%CF%81%CF%84%CE%B9%CF%83%CF%84%CE%AE%CF%82.jpg/")
+	assert.NotContains(t, plain.ImageLink, "%25")
 
 	sale, err := newFeedItem(&products[1], ctx)
 	require.NoError(t, err)
