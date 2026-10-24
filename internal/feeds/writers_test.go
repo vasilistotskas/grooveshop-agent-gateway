@@ -73,6 +73,16 @@ func fixtureProducts() []django.Product {
 			},
 			Stock: 0, Active: true,
 			MainImagePath: "media/uploads/products/case.jpg",
+			ImagePaths: []string{
+				"media/uploads/products/case.jpg",
+				"media/uploads/products/case-back.jpg",
+				"media/uploads/products/case-side.jpg",
+			},
+			VariantGroupTitle: new("Θήκη Κινητού"),
+			Attributes: []django.ProductAttribute{
+				{AttributeName: "Χρώμα", Value: "Μαύρο", IsVariant: true},
+				{AttributeName: "Υλικό", Value: "Σιλικόνη"},
+			},
 		},
 		{
 			// Reduced (markdown or promotion) but not announceable yet:
@@ -167,6 +177,14 @@ func TestRSSItemRules(t *testing.T) {
 	assert.False(t, sale.InStock)
 	// Empty description falls back to the name.
 	assert.Equal(t, "Θήκη Κινητού", sale.Description)
+	// A variant names its group and the axis it differs by, never a
+	// plain specification; the main image is not repeated.
+	assert.Equal(t, "Θήκη Κινητού", sale.ItemGroupTitle)
+	assert.Equal(t, []variantOption{{Name: "Χρώμα", Value: "Μαύρο"}},
+		sale.VariantOptions)
+	require.Len(t, sale.AdditionalImageLinks, 2)
+	assert.Contains(t, sale.AdditionalImageLinks[0], "/case-back.jpg/")
+	assert.NotContains(t, sale.AdditionalImageLinks[0], "/case.jpg/")
 
 	skipped, err := newFeedItem(&products[3], ctx)
 	require.NoError(t, err)

@@ -22,6 +22,8 @@
       <description>Θήκη Κινητού</description>
       <link>https://shop.example.test/products/2/thiki-kinitou</link>
       <g:image_link>https://assets.platform.test/media_stream-image/media/uploads/products/case.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg</g:image_link>
+      <g:additional_image_link>https://assets.platform.test/media_stream-image/media/uploads/products/case-back.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg</g:additional_image_link>
+      <g:additional_image_link>https://assets.platform.test/media_stream-image/media/uploads/products/case-side.jpg/1000/1000/contain/center/FFFFFF/5/85.jpeg</g:additional_image_link>
       <g:availability>out of stock</g:availability>
       <g:condition>new</g:condition>
       <g:price>24.80 EUR</g:price>
@@ -29,6 +31,8 @@
       <g:brand>Spigen</g:brand>
       <g:product_type>Ηλεκτρονικά &amp; Gadgets</g:product_type>
       <g:item_group_id>77</g:item_group_id>
+      <g:item_group_title>Θήκη Κινητού</g:item_group_title>
+      <g:variant_option><g:name>Χρώμα</g:name><g:value>Μαύρο</g:value></g:variant_option>
     </item>
     <item>
       <g:id>4</g:id>
