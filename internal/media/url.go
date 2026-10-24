@@ -4,10 +4,7 @@
 // differences are config values, never conditionals.
 package media
 
-import (
-	"net/url"
-	"strings"
-)
+import "strings"
 
 // Host picks the media origin for a tenant: its own assets host when it
 // has opted into white-label asset URLs, otherwise the platform origin.
@@ -32,9 +29,12 @@ func Host(tenantAssetsDomain, platformHost string) string {
 // yields an empty URL, so a missing configuration drops the image
 // rather than publishing an unreachable one.
 //
-// The path is Django's raw storage name, so each segment is
-// percent-encoded here: a Greek filename is not a valid URI, and feed
-// crawlers and UCP platforms (image_url is format: uri) reject it.
+// The path is substituted as it arrives: Django's mainImagePath is the
+// storage's URL path (core/utils/image_paths.py builds it from
+// ImageField.url), already percent-encoded, so a Greek filename arrives
+// as %CE%BA... Encoding it again turned every '%' into '%25': the image
+// still loaded, but feeds named a different URL from the storefront's
+// structured data and the UCP/MCP payloads.
 func ImageURL(template, assetsHost, schema, path string) string {
 	if path == "" || template == "" || assetsHost == "" {
 		return ""
@@ -42,14 +42,6 @@ func ImageURL(template, assetsHost, schema, path string) string {
 	return strings.NewReplacer(
 		"{assets_host}", assetsHost,
 		"{schema}", schema,
-		"{path}", escapePath(path),
+		"{path}", path,
 	).Replace(template)
-}
-
-func escapePath(path string) string {
-	segments := strings.Split(path, "/")
-	for i, s := range segments {
-		segments[i] = url.PathEscape(s)
-	}
-	return strings.Join(segments, "/")
 }

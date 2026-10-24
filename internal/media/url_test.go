@@ -21,16 +21,16 @@ func TestImageURL(t *testing.T) {
 	assert.Empty(t, ImageURL(tpl, "assets.platform.test", "demostore", ""))
 }
 
-// Django sends the raw storage name; a Greek filename must come out as
-// a valid URI with its separators intact.
-func TestImageURLEscapesPathSegments(t *testing.T) {
+// Django's mainImagePath is already a URL path (percent-encoded by the
+// storage), so it must reach the URL unchanged: encoding it again turns
+// each '%' into '%25'.
+func TestImageURLKeepsDjangosEncodedPath(t *testing.T) {
 	tpl := "https://{assets_host}/media_stream-image/{path}/800/800.jpeg"
-	got := ImageURL(tpl, "assets.platform.test", "demostore",
-		"media/uploads/products/φορτιστής 2.jpg")
+	path := "media/demostore/uploads/products/" +
+		"%CE%BA%CE%BB%CE%B9%CF%80_photo_1.png"
+	got := ImageURL(tpl, "assets.platform.test", "demostore", path)
 	assert.Equal(t,
-		"https://assets.platform.test/media_stream-image/"+
-			"media/uploads/products/"+
-			"%CF%86%CE%BF%CF%81%CF%84%CE%B9%CF%83%CF%84%CE%AE%CF%82%202.jpg"+
+		"https://assets.platform.test/media_stream-image/"+path+
 			"/800/800.jpeg",
 		got)
 }
