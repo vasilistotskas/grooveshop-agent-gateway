@@ -29,6 +29,8 @@ import (
 const (
 	feedTitleMax       = 150
 	feedDescriptionMax = 5000
+	// Google takes up to 10 additional images per product.
+	feedAdditionalImagesMax = 10
 )
 
 // feedContext carries per-generation tenant data every writer needs.
@@ -55,7 +57,10 @@ type feedItem struct {
 	Description string
 	Link        string
 	ImageLink   string
-	InStock     bool
+	// AdditionalImageLinks are the product's other images, in display
+	// order after the main one.
+	AdditionalImageLinks []string
+	InStock              bool
 	// Prices are ISO 4217 minor units, like everywhere else in the
 	// gateway; formatFeedPrice renders them at the edge. EffectiveMinor
 	// is the unit price checkout charges. PriorMinor is the Omnibus
@@ -67,7 +72,18 @@ type feedItem struct {
 	Brand          string
 	CategoryName   string
 	VariantGroup   *int64
+	// ItemGroupTitle and VariantOptions describe a variant: the group's
+	// name, and the attributes (flagged variant axes) its siblings
+	// differ by. Google disapproves items of one group that no
+	// attribute tells apart.
+	ItemGroupTitle string
+	VariantOptions []variantOption
 	Currency       string
+}
+
+type variantOption struct {
+	Name  string
+	Value string
 }
 
 // newFeedItem maps a product row; a nil item means the platforms would
@@ -99,6 +115,32 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 		}
 	}
 
+	var options []variantOption
+	var groupTitle string
+	if p.VariantGroup != nil {
+		for _, a := range p.Attributes {
+			if a.IsVariant && a.AttributeName != "" && a.Value != "" {
+				options = append(options,
+					variantOption{Name: a.AttributeName, Value: a.Value})
+			}
+		}
+		if p.VariantGroupTitle != nil {
+			groupTitle = *p.VariantGroupTitle
+		}
+	}
+
+	var additional []string
+	for _, path := range p.ImagePaths {
+		if path == p.MainImagePath || path == "" {
+			continue
+		}
+		if len(additional) == feedAdditionalImagesMax {
+			break
+		}
+		additional = append(additional, media.ImageURL(ctx.ImageURLTemplate,
+			ctx.AssetsHost, ctx.Schema, path))
+	}
+
 	brand := ctx.StoreName
 	if p.BrandName != nil && *p.BrandName != "" {
 		brand = *p.BrandName
@@ -110,13 +152,16 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 		Link: storefront.Product(ctx.Domain, p.ID, p.Slug),
 		ImageLink: media.ImageURL(ctx.ImageURLTemplate, ctx.AssetsHost,
 			ctx.Schema, p.MainImagePath),
-		InStock:        p.Stock > 0,
-		EffectiveMinor: effective,
-		PriorMinor:     prior,
-		Brand:          brand,
-		CategoryName:   ctx.CategoryNames[p.Category],
-		VariantGroup:   p.VariantGroup,
-		Currency:       ctx.Currency,
+		AdditionalImageLinks: additional,
+		InStock:              p.Stock > 0,
+		EffectiveMinor:       effective,
+		PriorMinor:           prior,
+		Brand:                brand,
+		CategoryName:         ctx.CategoryNames[p.Category],
+		VariantGroup:         p.VariantGroup,
+		ItemGroupTitle:       groupTitle,
+		VariantOptions:       options,
+		Currency:             ctx.Currency,
 	}, nil
 }
 
@@ -148,6 +193,13 @@ func (w *rssWriter) Item(it *feedItem) {
 		fmt.Sprintf("<description>%s</description>", escapeXML(it.Description)),
 		fmt.Sprintf("<link>%s</link>", escapeXML(it.Link)),
 		fmt.Sprintf("<g:image_link>%s</g:image_link>", escapeXML(it.ImageLink)),
+	)
+	for _, link := range it.AdditionalImageLinks {
+		fields = append(fields, fmt.Sprintf(
+			"<g:additional_image_link>%s</g:additional_image_link>",
+			escapeXML(link)))
+	}
+	fields = append(fields,
 		fmt.Sprintf("<g:availability>%s</g:availability>", availability(it.InStock)),
 		"<g:condition>new</g:condition>",
 	)
@@ -173,6 +225,16 @@ func (w *rssWriter) Item(it *feedItem) {
 	if it.VariantGroup != nil {
 		fields = append(fields, fmt.Sprintf(
 			"<g:item_group_id>%d</g:item_group_id>", *it.VariantGroup))
+		if it.ItemGroupTitle != "" {
+			fields = append(fields, fmt.Sprintf(
+				"<g:item_group_title>%s</g:item_group_title>",
+				escapeXML(it.ItemGroupTitle)))
+		}
+		for _, o := range it.VariantOptions {
+			fields = append(fields, fmt.Sprintf(
+				"<g:variant_option><g:name>%s</g:name><g:value>%s</g:value>"+
+					"</g:variant_option>", escapeXML(o.Name), escapeXML(o.Value)))
+		}
 	}
 	w.buf.WriteString("    <item>\n      ")
 	w.buf.WriteString(strings.Join(fields, "\n      "))

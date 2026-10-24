@@ -286,6 +286,28 @@
                       "nullable": true,
                       "type": "number"
                     },
+                    "attributes": {
+                      "items": {
+                        "properties": {
+                          "attributeName": {
+                            "type": "string"
+                          },
+                          "isVariant": {
+                            "type": "boolean"
+                          },
+                          "value": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "attributeName",
+                          "isVariant",
+                          "value"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
                     "brandName": {
                       "nullable": true,
                       "type": "string"
@@ -299,6 +321,12 @@
                     },
                     "id": {
                       "type": "integer"
+                    },
+                    "imagePaths": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
                     },
                     "likesCount": {
                       "type": "integer"
@@ -347,6 +375,10 @@
                       "nullable": true,
                       "type": "integer"
                     },
+                    "variantGroupTitle": {
+                      "nullable": true,
+                      "type": "string"
+                    },
                     "vatPercent": {
                       "type": "number"
                     },
@@ -368,9 +400,11 @@
                   },
                   "required": [
                     "announcedDiscountPercent",
+                    "attributes",
                     "category",
                     "effectivePrice",
                     "id",
+                    "imagePaths",
                     "likesCount",
                     "mainImagePath",
                     "priorPrice",
@@ -481,6 +515,28 @@
                 "nullable": true,
                 "type": "number"
               },
+              "attributes": {
+                "items": {
+                  "properties": {
+                    "attributeName": {
+                      "type": "string"
+                    },
+                    "isVariant": {
+                      "type": "boolean"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "attributeName",
+                    "isVariant",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
               "brandName": {
                 "nullable": true,
                 "type": "string"
@@ -494,6 +550,12 @@
               },
               "id": {
                 "type": "integer"
+              },
+              "imagePaths": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               "likesCount": {
                 "type": "integer"
@@ -542,6 +604,10 @@
                 "nullable": true,
                 "type": "integer"
               },
+              "variantGroupTitle": {
+                "nullable": true,
+                "type": "string"
+              },
               "vatPercent": {
                 "type": "number"
               },
@@ -563,9 +629,11 @@
             },
             "required": [
               "announcedDiscountPercent",
+              "attributes",
               "category",
               "effectivePrice",
               "id",
+              "imagePaths",
               "likesCount",
               "mainImagePath",
               "priorPrice",
@@ -921,6 +989,28 @@
                       "nullable": true,
                       "type": "number"
                     },
+                    "attributes": {
+                      "items": {
+                        "properties": {
+                          "attributeName": {
+                            "type": "string"
+                          },
+                          "isVariant": {
+                            "type": "boolean"
+                          },
+                          "value": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "attributeName",
+                          "isVariant",
+                          "value"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
                     "brandName": {
                       "nullable": true,
                       "type": "string"
@@ -934,6 +1024,12 @@
                     },
                     "id": {
                       "type": "integer"
+                    },
+                    "imagePaths": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
                     },
                     "likesCount": {
                       "type": "integer"
@@ -982,6 +1078,10 @@
                       "nullable": true,
                       "type": "integer"
                     },
+                    "variantGroupTitle": {
+                      "nullable": true,
+                      "type": "string"
+                    },
                     "vatPercent": {
                       "type": "number"
                     },
@@ -1003,9 +1103,11 @@
                   },
                   "required": [
                     "announcedDiscountPercent",
+                    "attributes",
                     "category",
                     "effectivePrice",
                     "id",
+                    "imagePaths",
                     "likesCount",
                     "mainImagePath",
                     "priorPrice",
@@ -1301,6 +1403,28 @@
             "nullable": true,
             "type": "number"
           },
+          "attributes": {
+            "items": {
+              "properties": {
+                "attributeName": {
+                  "type": "string"
+                },
+                "isVariant": {
+                  "type": "boolean"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "attributeName",
+                "isVariant",
+                "value"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "brandName": {
             "nullable": true,
             "type": "string"
@@ -1314,6 +1438,12 @@
           },
           "id": {
             "type": "integer"
+          },
+          "imagePaths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "likesCount": {
             "type": "integer"
@@ -1362,6 +1492,10 @@
             "nullable": true,
             "type": "integer"
           },
+          "variantGroupTitle": {
+            "nullable": true,
+            "type": "string"
+          },
           "vatPercent": {
             "type": "number"
           },
@@ -1383,9 +1517,11 @@
         },
         "required": [
           "announcedDiscountPercent",
+          "attributes",
           "category",
           "effectivePrice",
           "id",
+          "imagePaths",
           "likesCount",
           "mainImagePath",
           "priorPrice",
@@ -1620,6 +1756,28 @@
             "nullable": true,
             "type": "number"
           },
+          "attributes": {
+            "items": {
+              "properties": {
+                "attributeName": {
+                  "type": "string"
+                },
+                "isVariant": {
+                  "type": "boolean"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "attributeName",
+                "isVariant",
+                "value"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "brandName": {
             "nullable": true,
             "type": "string"
@@ -1633,6 +1791,12 @@
           },
           "id": {
             "type": "integer"
+          },
+          "imagePaths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "likesCount": {
             "type": "integer"
@@ -1684,6 +1848,10 @@
             "nullable": true,
             "type": "integer"
           },
+          "variantGroupTitle": {
+            "nullable": true,
+            "type": "string"
+          },
           "vatPercent": {
             "type": "number"
           },
@@ -1705,9 +1873,11 @@
         },
         "required": [
           "announcedDiscountPercent",
+          "attributes",
           "category",
           "effectivePrice",
           "id",
+          "imagePaths",
           "likesCount",
           "mainImagePath",
           "priceDropAlertsEnabled",

@@ -49,12 +49,28 @@ type Product struct {
 	} `json:"weight"`
 	VatPercent json.Number `json:"vatPercent"`
 	Pricing
-	MainImagePath string      `json:"mainImagePath"`
-	ReviewAverage json.Number `json:"reviewAverage"`
-	ReviewCount   int         `json:"reviewCount"`
-	LikesCount    int         `json:"likesCount"`
-	ViewCount     int         `json:"viewCount"`
-	UUID          string      `json:"uuid"`
+	MainImagePath string `json:"mainImagePath"`
+	// ImagePaths is every image in display order, the main one first,
+	// in mainImagePath's (already percent-encoded) form.
+	ImagePaths    []string           `json:"imagePaths"`
+	Attributes    []ProductAttribute `json:"attributes"`
+	ReviewAverage json.Number        `json:"reviewAverage"`
+	ReviewCount   int                `json:"reviewCount"`
+	LikesCount    int                `json:"likesCount"`
+	ViewCount     int                `json:"viewCount"`
+	UUID          string             `json:"uuid"`
+	// VariantGroupTitle is the variant group's name in the request
+	// language; null without a group or a name.
+	VariantGroupTitle *string `json:"variantGroupTitle"`
+}
+
+// ProductAttribute is one of a product's attribute values, translated.
+// IsVariant marks the axes its variant group differs by (Colour,
+// Memory): the ones a shopper picks between.
+type ProductAttribute struct {
+	AttributeName string `json:"attributeName"`
+	Value         string `json:"value"`
+	IsVariant     bool   `json:"isVariant"`
 }
 
 // ProductDetail is the /product/{id} shape: the price-drop alert switch
