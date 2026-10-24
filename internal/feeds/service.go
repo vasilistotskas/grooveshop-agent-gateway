@@ -62,6 +62,13 @@ type Meta struct {
 	// servable, but stale on arrival.
 	GeneratedAt time.Time `json:"generatedAt"`
 	Size        int       `json:"size"`
+	// Generator is the gateway build that rendered the feed. A feed from
+	// another build is not served: the cache outlives a release by up to
+	// FEED_STALE_TTL, and a release that changes what a feed says (new
+	// attributes, a fixed URL) reached Google, Meta and TikTok only once
+	// that ran out. During a rollout the old and the new pods may each
+	// regenerate once; after it, one build writes and reads.
+	Generator string `json:"generator"`
 }
 
 type Service struct {
@@ -75,17 +82,20 @@ type Service struct {
 	assetsHost string
 	freshTTL   time.Duration
 	staleTTL   time.Duration
+	generator  string
 	sf         singleflight.Group
 }
 
 func NewService(
 	dj *django.Client, rdb *redis.Client, log *slog.Logger,
 	imageTpl, assetsHost string, freshTTL, staleTTL time.Duration,
+	generator string,
 ) *Service {
 	return &Service{
 		dj: dj, rdb: rdb, log: log,
 		imageTpl: imageTpl, assetsHost: assetsHost,
 		freshTTL: freshTTL, staleTTL: staleTTL,
+		generator: generator,
 	}
 }
 
@@ -163,6 +173,9 @@ func (s *Service) fromCache(
 	}
 	var meta Meta
 	if err := json.Unmarshal([]byte(rawMeta), &meta); err != nil {
+		return nil, Meta{}, false
+	}
+	if meta.Generator != s.generator {
 		return nil, Meta{}, false
 	}
 	return []byte(data), meta, true
@@ -330,6 +343,7 @@ func (s *Service) store(
 			for format, e := range entries {
 				meta := e.meta
 				meta.GeneratedAt = generatedAt
+				meta.Generator = s.generator
 				rawMeta, err := json.Marshal(meta)
 				if err != nil {
 					return err

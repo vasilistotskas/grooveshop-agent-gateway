@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -57,12 +58,46 @@ func (g *gatedDjango) release() { g.once.Do(func() { close(g.released) }) }
 
 func newFeedService(t *testing.T, djangoURL string) *feeds.Service {
 	t.Helper()
+	return feedServiceOf(djangoURL, startRedis(t), "v1.0.0")
+}
+
+func feedServiceOf(
+	djangoURL string, rdb *redis.Client, generator string,
+) *feeds.Service {
 	log := quietLogger()
 	dj := django.New(djangoURL+"/api/v1", "api.example.test", "test-secret",
 		5*time.Second, log, obs.NewMetrics())
-	return feeds.NewService(dj, startRedis(t), log,
+	return feeds.NewService(dj, rdb, log,
 		"https://{assets_host}/x/{path}", "assets.platform.test",
-		time.Hour, 24*time.Hour)
+		time.Hour, 24*time.Hour, generator)
+}
+
+// A release that changes what a feed says must not serve the previous
+// build's feed until FEED_FRESH_TTL runs out: the new build regenerates
+// on its first request, and a fresh feed it wrote is then served.
+func TestFeedFromAnotherBuildIsRegenerated(t *testing.T) {
+	g := newGatedDjango(t)
+	g.armed.Store(false)
+	srv := httptest.NewServer(g)
+	t.Cleanup(srv.Close)
+	rdb := startRedis(t)
+	ten := feedTenant()
+
+	_, meta, err := feedServiceOf(srv.URL, rdb, "v1.0.0").
+		Get(context.Background(), ten, feeds.KindGoogle)
+	require.NoError(t, err)
+	assert.Equal(t, "v1.0.0", meta.Generator)
+	require.EqualValues(t, 1, g.sweeps.Load())
+
+	next := feedServiceOf(srv.URL, rdb, "v1.1.0")
+	_, meta, err = next.Get(context.Background(), ten, feeds.KindGoogle)
+	require.NoError(t, err)
+	assert.Equal(t, "v1.1.0", meta.Generator)
+	assert.EqualValues(t, 2, g.sweeps.Load(), "the new build swept again")
+
+	_, _, err = next.Get(context.Background(), ten, feeds.KindGoogle)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, g.sweeps.Load(), "its own feed is served")
 }
 
 func feedTenant() *tenant.Tenant {

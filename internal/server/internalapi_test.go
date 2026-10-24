@@ -42,7 +42,7 @@ func unreachableRedis() *redis.Client {
 
 func invalidateHandler(rdb *redis.Client) http.Handler {
 	svc := feeds.NewService(nil, rdb, quietLog(), "", "",
-		time.Hour, 24*time.Hour)
+		time.Hour, 24*time.Hour, "test")
 	return internalFeedInvalidate(testSecret, svc, quietLog())
 }
 

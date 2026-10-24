@@ -146,7 +146,7 @@ func New(d Deps) http.Handler {
 
 	feedSvc := feeds.NewService(d.Django, d.Redis, d.Log,
 		d.Cfg.FeedImageURLTemplate, d.Cfg.AssetsHost,
-		d.Cfg.FeedFreshTTL, d.Cfg.FeedStaleTTL)
+		d.Cfg.FeedFreshTTL, d.Cfg.FeedStaleTTL, d.Version)
 	feedMW := func(h http.Handler) http.Handler {
 		return tenantMW(tenant.RequireProductFeeds(h))
 	}
