@@ -942,6 +942,9 @@
           "streetNumber": {
             "type": "string"
           },
+          "termsAccepted": {
+            "type": "boolean"
+          },
           "zipcode": {
             "type": "string"
           }
@@ -956,6 +959,7 @@
           "phone",
           "street",
           "streetNumber",
+          "termsAccepted",
           "zipcode"
         ],
         "type": "object"

@@ -205,6 +205,9 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			assert.NotEmpty(t, body["payWayId"])
 			assert.NotEmpty(t, body["email"])
+			// Every agent checkout linked the terms and privacy policy,
+			// so every order it places accepts them.
+			assert.Equal(t, true, body["termsAccepted"])
 			if attribution, ok := body["attribution"].(map[string]any); ok {
 				faults.agentProtocol.Store(attribution["agentProtocol"])
 			}
