@@ -155,6 +155,12 @@ func (f *Flow) Complete(
 			AcsStationExternalID: s.Fulfillment.AcsStationExternalID,
 			AcsStationBranch:     s.Fulfillment.AcsStationBranch,
 			BoxnowLockerID:       s.Fulfillment.BoxnowLockerID,
+			// Every UCP and ACP checkout response links the store's terms
+			// and privacy policy for the platform to present to the buyer
+			// (storefront.Terms, storefront.Privacy); completing it is the
+			// buyer's acceptance. Django records it as an agent checkout,
+			// proven by the internal secret.
+			TermsAccepted: true,
 			Attribution: &django.OrderAttribution{
 				AgentProtocol: s.Protocol,
 			},

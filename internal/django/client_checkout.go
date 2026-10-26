@@ -88,6 +88,10 @@ type OrderCreate struct {
 
 	CustomerNotes string `json:"customerNotes,omitempty"`
 
+	// TermsAccepted: the buyer accepts the store's terms of use and
+	// privacy policy. Django records the texts in force with the order.
+	TermsAccepted bool `json:"termsAccepted"`
+
 	Attribution *OrderAttribution `json:"attribution,omitempty"`
 }
 

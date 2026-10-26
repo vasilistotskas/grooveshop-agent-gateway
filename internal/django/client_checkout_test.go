@@ -105,6 +105,7 @@ func TestReserveStockDoesNotRetry(t *testing.T) {
 
 // The attribution rides the body camelCase, so Django books the order
 // with the agent source type; without one the key is left out entirely.
+// termsAccepted is always sent, so a false is never mistaken for absent.
 func TestCreateOrderSendsAttribution(t *testing.T) {
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(
@@ -128,6 +129,7 @@ func TestCreateOrderSendsAttribution(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"agentProtocol": "acp"},
 		got["attribution"])
+	assert.Equal(t, false, got["termsAccepted"])
 
 	_, err = c.CreateOrder(context.Background(),
 		"shop.example.test", "el", "cart-uuid", OrderCreate{PayWayID: 1})
