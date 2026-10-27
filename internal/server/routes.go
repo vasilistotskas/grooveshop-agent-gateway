@@ -24,6 +24,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/identity"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcpsrv"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
@@ -71,11 +72,12 @@ func New(d Deps) http.Handler {
 	// the variant that tops them up.
 	tenantSecretsMW := tenant.MiddlewareWithSecrets(d.Resolver, d.Log)
 
+	site := storefront.NewSite(d.Cfg.StorefrontDefaultLocale)
 	checkoutStore := checkout.NewStore(d.Redis)
-	checkoutFlow := checkout.NewFlow(d.Django, checkoutStore, d.Log)
+	checkoutFlow := checkout.NewFlow(d.Django, checkoutStore, site, d.Log)
 	ucpBuilder := ucp.NewBuilder(
 		d.Django, d.Cfg.MediaURLTemplate, d.Cfg.AssetsHost,
-		d.Cfg.PaymentHandlerEnv,
+		d.Cfg.PaymentHandlerEnv, site,
 	)
 
 	// The handler builds one server per tenant (they differ only in the
@@ -89,6 +91,7 @@ func New(d Deps) http.Handler {
 		AssetsHost:         d.Cfg.AssetsHost,
 		AllowLocalWebhooks: d.Cfg.AllowLocalWebhooks,
 		Profiles:           d.Profiles,
+		Site:               site,
 		Log:                d.Log,
 		Version:            d.Version,
 	}
@@ -111,7 +114,7 @@ func New(d Deps) http.Handler {
 	}
 	// The Server Card extension's reserved location: the streamable-HTTP
 	// URL + /server-card. Both discovery documents point here.
-	describeMCP("/mcp/server-card", mcpsrv.ServerCardHandler(d.Version))
+	describeMCP("/mcp/server-card", mcpsrv.ServerCardHandler(d.Version, site))
 	// The ARD manifest, which ARD consumers MUST fetch, and the AI
 	// Catalog, which MCP Server Card discovery goes through.
 	describeMCP("/.well-known/ard.json", mcpsrv.ARDHandler())
@@ -132,7 +135,8 @@ func New(d Deps) http.Handler {
 	mux.Handle("POST /internal/events/order-status", internalOrderEvents(
 		d.Cfg.InternalSecret, orderEventDeps{
 			Store: checkoutStore, Flow: checkoutFlow, Resolver: d.Resolver,
-			Django: d.Django, Dispatcher: d.Dispatcher, Log: d.Log,
+			Django: d.Django, Dispatcher: d.Dispatcher, Site: site,
+			Log: d.Log,
 		}))
 
 	// ACP is always mounted; access is gated per tenant at request time
@@ -142,11 +146,11 @@ func New(d Deps) http.Handler {
 		return tenantSecretsMW(tenant.RequireCheckout(h))
 	}
 	acp.NewHandler(d.Django, checkoutStore, checkoutFlow, d.Redis,
-		d.Log).Register(mux, acpMW)
+		site, d.Log).Register(mux, acpMW)
 
 	feedSvc := feeds.NewService(d.Django, d.Redis, d.Log,
 		d.Cfg.FeedImageURLTemplate, d.Cfg.AssetsHost,
-		d.Cfg.FeedFreshTTL, d.Cfg.FeedStaleTTL, d.Version)
+		d.Cfg.FeedFreshTTL, d.Cfg.FeedStaleTTL, d.Version, site)
 	feedMW := func(h http.Handler) http.Handler {
 		return tenantMW(tenant.RequireProductFeeds(h))
 	}

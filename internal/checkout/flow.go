@@ -64,13 +64,16 @@ type Outcome struct {
 
 // Flow orchestrates order creation over the existing Django endpoints.
 type Flow struct {
-	dj  *django.Client
-	st  *Store
-	log *slog.Logger
+	dj   *django.Client
+	st   *Store
+	site storefront.Site
+	log  *slog.Logger
 }
 
-func NewFlow(dj *django.Client, st *Store, log *slog.Logger) *Flow {
-	return &Flow{dj: dj, st: st, log: log}
+func NewFlow(
+	dj *django.Client, st *Store, site storefront.Site, log *slog.Logger,
+) *Flow {
+	return &Flow{dj: dj, st: st, site: site, log: log}
 }
 
 // Complete places the order for a ready session. The caller holds the
@@ -208,10 +211,11 @@ func (f *Flow) startPayment(
 	ctx context.Context, t *tenant.Tenant, s *Session,
 ) (*Outcome, error) {
 	s.Status = StatusRequiresEscalation
-	cs, err := f.dj.CreateOrderCheckoutSession(ctx, t.Domain, t.DefaultLocale,
+	lang := django.Language(ctx, t.TenantConfig)
+	links := f.site.Links(t.Domain, lang)
+	cs, err := f.dj.CreateOrderCheckoutSession(ctx, t.Domain, lang,
 		s.OrderID, s.OrderUUID,
-		storefront.OrderSuccess(t.Domain, s.OrderUUID),
-		storefront.Cart(t.Domain))
+		links.OrderSuccess(s.OrderUUID), links.Cart())
 	if err != nil {
 		s.PaymentURL = ""
 		return nil, fmt.Errorf("%w: %w", ErrPaymentSessionFailed, err)

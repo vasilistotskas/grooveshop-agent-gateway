@@ -11,6 +11,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/media"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/text"
 )
@@ -30,6 +31,14 @@ func (h *handlers) tenantFor(ctx context.Context) (*tenant.Tenant, error) {
 			"internal error: request is missing store context; retry")
 	}
 	return t, nil
+}
+
+// linksFor are the store's page links in the language ctx is served in:
+// a chat turn's, else the store's default (django.Language).
+func (h *handlers) linksFor(
+	ctx context.Context, t *tenant.Tenant,
+) storefront.Links {
+	return h.deps.Site.Links(t.Domain, django.Language(ctx, t.TenantConfig))
 }
 
 // ToolError is a failed tool call's answer, rendered as JSON text so an

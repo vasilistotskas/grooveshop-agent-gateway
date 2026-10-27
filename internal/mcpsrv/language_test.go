@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -59,6 +60,67 @@ func TestToolsAskDjangoForTheTurnsLanguage(t *testing.T) {
 				assert.Equal(t, tc.wantLang, l)
 			}
 			assert.Equal(t, []string{tc.wantLang}, codes)
+		})
+	}
+}
+
+// An English chat turn linked the Greek pages: the storefront serves its
+// build default (el here) unprefixed and every other language under
+// /<code>, so the links follow the turn's language, and /mcp, which
+// names none, the store's default.
+func TestLinksFollowTheTurnsLanguage(t *testing.T) {
+	enStore := cartTenant()
+	enStore.DefaultLocale = "en"
+	for name, tc := range map[string]struct {
+		ctx         context.Context
+		wantProduct string
+		wantClaim   string
+		wantPolicy  string
+	}{
+		"English turn": {
+			django.WithLanguage(
+				tenant.NewContext(context.Background(), cartTenant()), "en"),
+			"https://shop.example.test/en/products/",
+			"https://shop.example.test/cart/claim?locale=en&uuid=" +
+				fixtureCartID,
+			"https://shop.example.test/en/return-policy",
+		},
+		"Greek turn": {
+			django.WithLanguage(
+				tenant.NewContext(context.Background(), cartTenant()), "el"),
+			"https://shop.example.test/products/",
+			"https://shop.example.test/cart/claim?uuid=" + fixtureCartID,
+			"https://shop.example.test/return-policy",
+		},
+		"/mcp at an English-default store": {
+			tenant.NewContext(context.Background(), enStore),
+			"https://shop.example.test/en/products/",
+			"https://shop.example.test/cart/claim?locale=en&uuid=" +
+				fixtureCartID,
+			"https://shop.example.test/en/return-policy",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			product := fixtureHandlers(t, "product_detail.json",
+				func(*http.Request) {})
+			_, p, err := product.getProduct(tc.ctx, nil,
+				GetProductIn{ProductID: 1})
+			require.NoError(t, err)
+			assert.True(t, strings.HasPrefix(p.URL, tc.wantProduct), p.URL)
+
+			cart, _ := cartHandlers(t, http.StatusOK)
+			_, link, err := cart.getCheckoutLink(tc.ctx, nil,
+				CheckoutLinkIn{CartID: fixtureCartID})
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantClaim, link.URL)
+
+			policies, _ := policiesDjango(t,
+				`{"RETURN_WINDOW_DAYS": "14", "RETURN_FEES": "free"}`,
+				http.StatusOK)
+			_, out, err := policies.getStorePolicies(tc.ctx, nil,
+				StorePoliciesIn{})
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantPolicy, out.ReturnPolicyURL)
 		})
 	}
 }

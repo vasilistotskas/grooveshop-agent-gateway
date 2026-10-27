@@ -17,6 +17,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
@@ -36,8 +37,10 @@ type Deps struct {
 	// Profiles resolves the calling platform's UCP profile for
 	// capability negotiation on every canonical tool.
 	Profiles *ucp.ProfileResolver
-	Log      *slog.Logger
-	Version  string
+	// Site builds the links into each store's storefront pages.
+	Site    storefront.Site
+	Log     *slog.Logger
+	Version string
 }
 
 // NewServer builds the MCP server with the commerce toolset a store with

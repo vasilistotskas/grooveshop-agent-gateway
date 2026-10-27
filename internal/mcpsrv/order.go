@@ -9,7 +9,6 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
@@ -127,13 +126,13 @@ func (h *handlers) getOrder(
 	if err := in.Meta.validate(false); err != nil {
 		return nil, zero, err
 	}
-	neg, err := h.negotiate(ctx, t, in.Meta, storefront.Home(t.Domain))
+	neg, err := h.negotiate(ctx, t, in.Meta, h.linksFor(ctx, t).Home())
 	if err != nil {
 		return nil, zero, err
 	}
 	if !neg.Has(ucp.CapabilityOrder) {
 		return nil, OrderResult{failure: ucp.CapabilitiesIncompatible(
-			storefront.Home(t.Domain))}, nil
+			h.linksFor(ctx, t).Home())}, nil
 	}
 	if in.ID == "" {
 		return nil, zero, errors.New("id is required")
@@ -161,7 +160,8 @@ func (h *handlers) getOrder(
 			"the order index is temporarily unavailable; retry shortly")
 	}
 
-	out, err := ucp.BuildOrder(t, order, link.CheckoutID,
+	out, err := ucp.BuildOrder(t, h.linksFor(ctx, t), order,
+		link.CheckoutID,
 		neg.Declaration(ucp.CapabilityOrder))
 	if err != nil {
 		return nil, zero, err

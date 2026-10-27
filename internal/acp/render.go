@@ -63,7 +63,7 @@ func statusOf(s *checkout.Session, offlinePayWay bool) string {
 // Render serializes the shared session into the ACP response payload.
 func Render(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant,
-	s *checkout.Session,
+	links storefront.Links, s *checkout.Session,
 ) (*Session, error) {
 	pricing, cart, err := checkout.ComputePricing(ctx, dj, t, s)
 	if err != nil {
@@ -82,12 +82,12 @@ func Render(
 		Totals:             []Total{},
 		Messages:           []Message{},
 		Links: []Link{
-			{Type: "terms_of_use", URL: storefront.Terms(t.Domain)},
-			{Type: "privacy_policy", URL: storefront.Privacy(t.Domain)},
+			{Type: "terms_of_use", URL: links.Terms()},
+			{Type: "privacy_policy", URL: links.Privacy()},
 		},
 		// Handoff and session recovery: the buyer claims this cart in the
 		// browser and finishes checkout there (card payment included).
-		ContinueURL: storefront.CartClaim(t.Domain, s.CartID),
+		ContinueURL: links.CartClaim(s.CartID),
 	}
 
 	if s.Buyer != (checkout.Buyer{}) {
@@ -165,7 +165,7 @@ func Render(
 			ID:                s.OrderUUID,
 			CheckoutSessionID: s.ID,
 			OrderNumber:       strconv.FormatInt(s.OrderID, 10),
-			PermalinkURL:      storefront.OrderSuccess(t.Domain, s.OrderUUID),
+			PermalinkURL:      links.OrderSuccess(s.OrderUUID),
 		}
 	}
 	return out, nil

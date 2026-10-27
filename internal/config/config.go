@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -76,6 +77,15 @@ type Config struct {
 	// empty image URL instead.
 	AssetsHost string
 
+	// StorefrontDefaultLocale is the language the storefront's
+	// unprefixed pages render: its build-time DEFAULT_LOCALE
+	// (i18n/locales.ts), the same on every tenant whatever the tenant's
+	// own default. Every other language lives under /<code>, so a link
+	// into the storefront names its language only when it differs
+	// (storefront.Site). Platform config, required: a guess would send
+	// shoppers to pages in the wrong language with nothing reporting it.
+	StorefrontDefaultLocale string
+
 	// MediaURLTemplate builds public product-image URLs. Placeholders:
 	// {assets_host} (resolved via media.Host), {schema} (tenant schema),
 	// {path} (relative mainImagePath). The full media-stream segment list
@@ -126,14 +136,15 @@ type Config struct {
 // errors.
 func Load() (Config, error) {
 	cfg := Config{
-		ListenAddr:       envOr("LISTEN_ADDR", ":8080"),
-		Env:              envOr("ENV", EnvProduction),
-		LogLevel:         envOr("LOG_LEVEL", "info"),
-		DjangoBaseURL:    strings.TrimRight(os.Getenv("DJANGO_BASE_URL"), "/"),
-		DjangoPublicHost: os.Getenv("DJANGO_PUBLIC_HOST"),
-		InternalSecret:   os.Getenv("INTERNAL_EVENTS_SECRET"),
-		RedisURL:         os.Getenv("REDIS_URL"),
-		AssetsHost:       os.Getenv("ASSETS_HOST"),
+		ListenAddr:              envOr("LISTEN_ADDR", ":8080"),
+		Env:                     envOr("ENV", EnvProduction),
+		LogLevel:                envOr("LOG_LEVEL", "info"),
+		DjangoBaseURL:           strings.TrimRight(os.Getenv("DJANGO_BASE_URL"), "/"),
+		DjangoPublicHost:        os.Getenv("DJANGO_PUBLIC_HOST"),
+		InternalSecret:          os.Getenv("INTERNAL_EVENTS_SECRET"),
+		RedisURL:                os.Getenv("REDIS_URL"),
+		AssetsHost:              os.Getenv("ASSETS_HOST"),
+		StorefrontDefaultLocale: os.Getenv("STOREFRONT_DEFAULT_LOCALE"),
 		MediaURLTemplate: envOr("MEDIA_IMAGE_URL_TEMPLATE",
 			"https://{assets_host}/media_stream-image/{path}"+
 				"/800/800/contain/entropy/transparent/5/80.webp"),
@@ -236,14 +247,27 @@ func Load() (Config, error) {
 	if cfg.AssetsHost == "" {
 		missing = append(missing, "ASSETS_HOST")
 	}
+	if cfg.StorefrontDefaultLocale == "" {
+		missing = append(missing, "STOREFRONT_DEFAULT_LOCALE")
+	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf(
 			"config: missing required env vars: %s",
 			strings.Join(missing, ", "),
 		)
 	}
+	// A path segment of the storefront's routes: a bare lowercase
+	// language code, as its locale codes are.
+	if !localeCode.MatchString(cfg.StorefrontDefaultLocale) {
+		return Config{}, fmt.Errorf(
+			"config: STOREFRONT_DEFAULT_LOCALE must be a lowercase "+
+				"language code such as el (got %q)",
+			cfg.StorefrontDefaultLocale)
+	}
 	return cfg, nil
 }
+
+var localeCode = regexp.MustCompile(`^[a-z]{2,3}$`)
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

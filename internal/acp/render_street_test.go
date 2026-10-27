@@ -28,7 +28,7 @@ func TestRenderAsksForTheHouseNumber(t *testing.T) {
 	require.Equal(t, checkout.StatusIncomplete, s.Status)
 
 	payload, err := Render(context.Background(), fixtureDjango(t),
-		testTenant(), s)
+		testTenant(), testLinks(testTenant()), s)
 	require.NoError(t, err)
 
 	var params []string

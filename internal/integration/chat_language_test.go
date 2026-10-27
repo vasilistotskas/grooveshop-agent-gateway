@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 
@@ -45,9 +46,14 @@ func TestChatServesTheTurnInThePagesLanguage(t *testing.T) {
 		wantLang   string
 		wantPrompt string
 		wantName   string
+		// enLinks: the product links name English (/en/...); the
+		// storefront's build default, el, is unprefixed.
+		enLinks bool
 	}{
-		"served":     {"en", "en", "reply in English (en)", "Scented Candles"},
-		"not served": {"de", "el", "reply in Greek (el)", "Portable Phone Charger"},
+		"served": {"en", "en", "reply in English (en)",
+			"Scented Candles", true},
+		"not served": {"de", "el", "reply in Greek (el)",
+			"Portable Phone Charger", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fake := &fakeChatAPI{scripts: []string{
@@ -67,7 +73,11 @@ func TestChatServesTheTurnInThePagesLanguage(t *testing.T) {
 			first := string(fake.bodies[0])
 			fake.mu.Unlock()
 			assert.Contains(t, first, tc.wantPrompt)
-			assert.Contains(t, string(*fake.lastBody.Load()), tc.wantName)
+			last := string(*fake.lastBody.Load())
+			assert.Contains(t, last, tc.wantName)
+			assert.Equal(t, tc.enLinks,
+				strings.Contains(last, "/en/products/1/"), last)
+			assert.Contains(t, last, "/products/1/")
 		})
 	}
 }

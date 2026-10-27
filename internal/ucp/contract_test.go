@@ -21,6 +21,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -132,6 +133,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 		"https://{assets_host}/img/{path}.webp",
 		"assets.platform.test",
 		"production",
+		storefront.NewSite("el"),
 	)
 
 	newSession := func(status checkout.Status) *checkout.Session {
@@ -200,6 +202,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 				"https://{assets_host}/img/{path}.webp",
 				"assets.platform.test",
 				"production",
+				storefront.NewSite("el"),
 			)
 			s := newSession(checkout.StatusIncomplete)
 			payload, err := couponBuilder.BuildCheckout(
@@ -280,7 +283,7 @@ func TestBuildCheckoutPaymentParity(t *testing.T) {
 	) *Checkout {
 		t.Helper()
 		b := NewBuilder(dj, "https://{assets_host}/img/{path}.webp",
-			"assets.platform.test", "production")
+			"assets.platform.test", "production", storefront.NewSite("el"))
 		s := checkout.NewSession(tn.SchemaName, tn.Domain, "ucp",
 			"29eb4495-e018-45e7-b59c-6646302bd4ef")
 		s.Status = st
@@ -349,7 +352,7 @@ func TestBuildOrderMatchesOrderSchema(t *testing.T) {
 	var order django.Order
 	require.NoError(t, json.Unmarshal(raw, &order))
 
-	out, err := BuildOrder(tn, &order, "chk_abc123", OrderCapabilities())
+	out, err := BuildOrder(tn, storefront.NewSite("el").Links(tn.Domain, "el"), &order, "chk_abc123", OrderCapabilities())
 	require.NoError(t, err)
 	require.NoError(t, schema.Validate(roundTrip(t, out)))
 
@@ -370,7 +373,7 @@ func TestBuildOrderMatchesOrderSchema(t *testing.T) {
 // checkout_id is required, so a caller that cannot name the checkout must
 // be refused rather than handed an order with an empty link.
 func TestBuildOrderRefusesWithoutACheckout(t *testing.T) {
-	_, err := BuildOrder(testTenant(), &django.Order{UUID: "o-1"}, "",
+	_, err := BuildOrder(testTenant(), storefront.Links{}, &django.Order{UUID: "o-1"}, "",
 		OrderCapabilities())
 	assert.ErrorContains(t, err, "no known checkout session")
 }

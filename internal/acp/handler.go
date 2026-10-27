@@ -18,6 +18,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -29,15 +30,16 @@ type Handler struct {
 	store *checkout.Store
 	flow  *checkout.Flow
 	rdb   *redis.Client
+	site  storefront.Site
 	log   *slog.Logger
 }
 
 func NewHandler(
 	dj *django.Client, store *checkout.Store, flow *checkout.Flow,
-	rdb *redis.Client, log *slog.Logger,
+	rdb *redis.Client, site storefront.Site, log *slog.Logger,
 ) *Handler {
 	return &Handler{
-		dj: dj, store: store, flow: flow, rdb: rdb, log: log,
+		dj: dj, store: store, flow: flow, rdb: rdb, site: site, log: log,
 	}
 }
 
@@ -824,7 +826,9 @@ func (h *Handler) render(
 	w http.ResponseWriter, r *http.Request, t *tenant.Tenant,
 	s *checkout.Session, status int,
 ) {
-	payload, err := Render(r.Context(), h.dj, t, s)
+	// ACP names no language: the store's default.
+	payload, err := Render(r.Context(), h.dj, t,
+		h.site.Links(t.Domain, t.DefaultLocale), s)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "acp render failed",
 			slog.String("session", s.ID), slog.String("error", err.Error()))

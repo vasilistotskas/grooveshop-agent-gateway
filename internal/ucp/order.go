@@ -67,7 +67,8 @@ type OrderFulfillment struct{}
 // it for reconciliation, so a caller that cannot supply it must surface
 // that rather than pass an empty string.
 func BuildOrder(
-	t *tenant.Tenant, o *django.Order, checkoutID string,
+	t *tenant.Tenant, links storefront.Links, o *django.Order,
+	checkoutID string,
 	capabilities map[string][]CapabilityRef,
 ) (*Order, error) {
 	if checkoutID == "" {
@@ -87,7 +88,7 @@ func BuildOrder(
 		ID:           o.UUID,
 		Label:        fmt.Sprintf("Order %d", o.ID),
 		CheckoutID:   checkoutID,
-		PermalinkURL: storefront.OrderSuccess(t.Domain, o.UUID),
+		PermalinkURL: links.OrderSuccess(o.UUID),
 		LineItems:    make([]OrderLineItem, 0, len(o.Items)),
 		Currency:     currency,
 	}

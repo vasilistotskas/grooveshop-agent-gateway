@@ -11,7 +11,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -126,7 +125,7 @@ func (h *handlers) searchProducts(
 			Stock:       hit.Stock,
 			InStock:     hit.Stock > 0,
 			Rating:      ratingOf(t, hit.ReviewAverage),
-			URL:         storefront.Product(t.Domain, hit.Master, hit.Slug),
+			URL:         h.linksFor(ctx, t).Product(hit.Master, hit.Slug),
 			ImageURL:    h.imageURL(t, hit.MainImagePath),
 		}
 		out.Products = append(out.Products, s)
@@ -183,7 +182,7 @@ func (h *handlers) getProduct(
 		Stock:       p.Stock,
 		InStock:     p.Stock > 0 && p.Active,
 		Rating:      ratingOf(t, p.ReviewAverage),
-		URL:         storefront.Product(t.Domain, p.ID, p.Slug),
+		URL:         h.linksFor(ctx, t).Product(p.ID, p.Slug),
 		ImageURL:    h.imageURL(t, p.MainImagePath),
 	}
 	out.VatPercent = num(p.VatPercent)
@@ -209,7 +208,7 @@ func (h *handlers) getProduct(
 				Price:    priceOf(v.Pricing, t.DefaultCurrency),
 				Stock:    v.Stock,
 				InStock:  v.Stock > 0 && v.Active,
-				URL:      storefront.Product(t.Domain, v.ID, v.Slug),
+				URL:      h.linksFor(ctx, t).Product(v.ID, v.Slug),
 				ImageURL: h.imageURL(t, v.MainImagePath),
 			}
 			out.Variants = append(out.Variants, vs)

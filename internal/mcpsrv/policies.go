@@ -10,7 +10,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 )
 
 type StorePoliciesIn struct{}
@@ -49,7 +48,7 @@ func (h *handlers) getStorePolicies(
 		ctx, t.Domain, lang, django.ContentPageReturnPolicy)
 	switch {
 	case err == nil:
-		out.ReturnPolicyURL = storefront.ReturnPolicy(t.Domain)
+		out.ReturnPolicyURL = h.linksFor(ctx, t).ReturnPolicy()
 	case !errors.Is(err, django.ErrNotFound):
 		return nil, out, upstreamErr(err, "store policies are unavailable")
 	}

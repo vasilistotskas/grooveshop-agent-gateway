@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -35,7 +36,7 @@ func getCard(t *testing.T, header http.Header) *httptest.ResponseRecorder {
 	}
 	req = req.WithContext(tenant.NewContext(req.Context(), cardTenant()))
 	rec := httptest.NewRecorder()
-	ServerCardHandler("1.18.0").ServeHTTP(rec, req)
+	ServerCardHandler("1.18.0", storefront.NewSite("el")).ServeHTTP(rec, req)
 	return rec
 }
 

@@ -165,11 +165,12 @@ func startGateway(t *testing.T) *httptest.Server {
 	cfg := config.Config{
 		Env: config.EnvTest,
 		// Registers httptest webhook endpoints on 127.0.0.1.
-		AllowLocalWebhooks: true,
-		PaymentHandlerEnv:  config.HandlerEnvSandbox,
-		DjangoBaseURL:      djangoSrv.URL + "/api/v1",
-		DjangoPublicHost:   "api.example.test",
-		AssetsHost:         "assets.platform.test",
+		AllowLocalWebhooks:      true,
+		PaymentHandlerEnv:       config.HandlerEnvSandbox,
+		DjangoBaseURL:           djangoSrv.URL + "/api/v1",
+		DjangoPublicHost:        "api.example.test",
+		AssetsHost:              "assets.platform.test",
+		StorefrontDefaultLocale: "el",
 		MediaURLTemplate: "https://{assets_host}/media_stream-image/{path}" +
 			"/800/800/contain/entropy/transparent/5/80.webp",
 		TenantCacheTTL:   time.Minute,

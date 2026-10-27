@@ -47,7 +47,7 @@ func TestGetProductListsVariantPrices(t *testing.T) {
 	t.Cleanup(srv.Close)
 	log := slog.New(slog.NewTextHandler(os.Stderr,
 		&slog.HandlerOptions{Level: slog.LevelError + 1}))
-	h := &handlers{deps: Deps{Django: django.New(srv.URL+"/api/v1",
+	h := &handlers{deps: Deps{Site: testSite, Django: django.New(srv.URL+"/api/v1",
 		"api.example.test", "secret", 5*time.Second, log, obs.NewMetrics())}}
 	ctx := tenant.NewContext(context.Background(), cartTenant())
 

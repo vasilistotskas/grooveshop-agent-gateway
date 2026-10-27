@@ -18,6 +18,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/feeds"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -69,7 +70,8 @@ func feedServiceOf(
 		5*time.Second, log, obs.NewMetrics())
 	return feeds.NewService(dj, rdb, log,
 		"https://{assets_host}/x/{path}", "assets.platform.test",
-		time.Hour, 24*time.Hour, generator)
+		time.Hour, 24*time.Hour, generator,
+		storefront.NewSite("el"))
 }
 
 // A release that changes what a feed says must not serve the previous

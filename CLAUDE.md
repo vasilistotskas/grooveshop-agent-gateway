@@ -54,7 +54,10 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   development | test) is folded into `AllowLocalWebhooks` and
   `PaymentHandlerEnv` there so no handler compares environment strings.
   The infra staging overlay sets `ENV=staging`: production network
-  rules, sandbox handler label.
+  rules, sandbox handler label. `STOREFRONT_DEFAULT_LOCALE` (required, a
+  bare language code) is the storefront build's `DEFAULT_LOCALE`
+  (`i18n/locales.ts`): the language its unprefixed pages render on
+  every tenant, whatever the tenant's own default.
   Per-tenant values come from Django `tenant/resolve` at request time,
   never env.
 - `internal/identity` — optional-auth middleware on /mcp: a present
@@ -104,7 +107,18 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   cart claim, order success, legal pages, OAuth metadata). The paths are
   a cross-repo contract with the Nuxt `app/pages` and `server/routes`
   trees; build URLs here, never with a `"https://" + domain + path`
-  literal in a renderer.
+  literal in a renderer. Page links are in a language: `storefront.Site`
+  (built once from `STOREFRONT_DEFAULT_LOCALE`) hands out
+  `Links(domain, lang)`, which leave the build default unprefixed and
+  put any other language under `/<code>` (@nuxtjs/i18n
+  `prefix_except_default`). The cart claim is a Nitro server route, not
+  a page, so it takes no prefix: it carries a `locale=<code>` query instead,
+  only for a language other than the build default, and the storefront
+  redirects to the cart in it. A tool builds its links in the turn's
+  language (`mcpsrv` `linksFor`: `django.Language`), so a chat turn on
+  `/en` links `/en/...` and `/mcp` links the store's default; ACP, the
+  UCP order webhooks, the Server Card and the feeds link the store's
+  default.
 - `internal/text` — rune-safe truncation. Byte-index cuts split Greek
   runes; use `text.Runes` / `text.Ellipsize`.
 - `testdata/fixtures/django/` — recorded upstream responses for the DTO
@@ -220,7 +234,7 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   the rest. `get_store_policies` reads `RETURN_WINDOW_DAYS` and
   `RETURN_FEES` from `/settings/public` (Django's `PUBLIC_SETTING_KEYS`;
   `0` / `""` are "not stated" and are left out, a missing or malformed
-  value fails the call) and links `storefront.ReturnPolicy` only while
+  value fails the call) and links `Links.ReturnPolicy` only while
   `/content-page/return-policy` is published (a 404 means it is not).
 - Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:v4:{host}`,
   versioned with the cached `TenantConfig` shape: bump it when a field is
@@ -296,8 +310,10 @@ release that drops, loosens or retypes one of those properties.
   (Viva Smart Checkout URL). Payments: **Viva primary** (hosted
   authorization via UCP `requires_escalation`+`continue_url`), Stripe
   tokenized behind per-tenant flag.
-- Nuxt repo: `/cart/claim?uuid=` claims a gateway-built cart into the
-  browser session;
+- Nuxt repo: `/cart/claim` (query `uuid=<cart>`, plus
+  `locale=<code>` for a language other than the build default) claims
+  a gateway-built cart into the browser session and lands on the cart
+  page in `locale` (absent: the build default);
   `.well-known/oauth-protected-resource[/mcp]` names the Django API as
   the OAuth authorization server (allauth.idp: auth-code + PKCE + DCR).
 - Agent discovery is the gateway's alone: `/.well-known/ard.json` and

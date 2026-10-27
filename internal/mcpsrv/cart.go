@@ -9,7 +9,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -336,9 +335,10 @@ func (h *handlers) getCheckoutLink(
 	}
 	// A signed-in shopper's cart is already their session's: the claim
 	// link adopts guest carts only, so they go straight to checkout.
-	out.URL = storefront.CartClaim(t.Domain, in.CartID)
+	links := h.linksFor(ctx, t)
+	out.URL = links.CartClaim(in.CartID)
 	if signedIn {
-		out.URL = storefront.Checkout(t.Domain)
+		out.URL = links.Checkout()
 	}
 	return textResult(
 		"Give the shopper this link to review the cart and pay on the "+

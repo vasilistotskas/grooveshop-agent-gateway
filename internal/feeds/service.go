@@ -17,6 +17,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/media"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -83,19 +84,20 @@ type Service struct {
 	freshTTL   time.Duration
 	staleTTL   time.Duration
 	generator  string
+	site       storefront.Site
 	sf         singleflight.Group
 }
 
 func NewService(
 	dj *django.Client, rdb *redis.Client, log *slog.Logger,
 	imageTpl, assetsHost string, freshTTL, staleTTL time.Duration,
-	generator string,
+	generator string, site storefront.Site,
 ) *Service {
 	return &Service{
 		dj: dj, rdb: rdb, log: log,
 		imageTpl: imageTpl, assetsHost: assetsHost,
 		freshTTL: freshTTL, staleTTL: staleTTL,
-		generator: generator,
+		generator: generator, site: site,
 	}
 }
 
@@ -236,6 +238,7 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 	fctx := &feedContext{
 		StoreName:        storeName(t),
 		Domain:           t.Domain,
+		Links:            s.site.Links(t.Domain, t.DefaultLocale),
 		AssetsHost:       media.Host(t.AssetsDomain, s.assetsHost),
 		Schema:           t.SchemaName,
 		Currency:         t.DefaultCurrency,
