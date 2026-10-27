@@ -62,7 +62,7 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   (60s in-memory cache, SHA-256 keys); invalid tokens get 401 + the
   RFC 9728 `WWW-Authenticate` challenge; anonymous requests pass
   through. Account tools forward the bearer — Django enforces scopes.
-- `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:v2:{host}`
+- `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:v3:{host}`
   → Django; singleflight; 60s negative cache; stale-if-error) + middleware
   (tenant from the **real Host header only** — inbound X-Forwarded-Host is
   deliberately ignored; spoofing it must never switch tenants).
@@ -192,9 +192,14 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   folds each into one boolean, the plan flag AND the store setting, under
   `features` on `tenant/resolve` (`TenantConfig.Features`); read
   nothing else. A tool serving a feature is registered with `onlyWith`
-  (`internal/mcpsrv/server.go`): `get_product_reviews` needs
-  `productReviews`, `my_loyalty_points` `loyalty`, `my_favourites`
-  `favourites`. The per-store server (cached per feature set) neither
+  (`internal/mcpsrv/server.go`): the catalog tools need `catalogue`;
+  the cart, shipping, payment-method, checkout-link and five canonical
+  checkout tools need `cart` (which Django folds the catalogue into);
+  `get_product_reviews`, `subscribe_product_alert` and `my_favourites`
+  need `catalogue` and `productReviews` / `productAlerts` /
+  `favourites`; `my_loyalty_points` `loyalty`. The order tools stay
+  open. The UCP profile and `/acp/*` need `cart` (`CheckoutOn`), the
+  feeds `catalogue` (`ProductFeedsOn`). The per-store server (cached per feature set) neither
   lists nor serves it, discovery does not advertise it, and the chat
   bridge, which shares one server built with `EveryFeature`, filters
   through `mcpsrv.Offered`. With reviews off no rating or review count
@@ -204,7 +209,7 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   with the plan flag off, which would fail the request) and clears the
   cart's old coupon best effort, and ACP sessions do not declare the
   discount extension.
-- Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:v2:{host}`,
+- Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:v3:{host}`,
   versioned with the cached `TenantConfig` shape: bump it when a field is
   added, or entries an older pod wrote decode it as its zero value.
 - No tenant label on Prometheus metrics (unbounded cardinality) — tenant

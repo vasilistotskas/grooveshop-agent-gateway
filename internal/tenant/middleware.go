@@ -87,6 +87,14 @@ func RequireProductFeeds(next http.Handler) http.Handler {
 	})
 }
 
+// RequireCheckout is the agent-checkout variant (UCP profile, ACP): off
+// whenever agent commerce or the store's cart is off.
+func RequireCheckout(next http.Handler) http.Handler {
+	return requireFeature(next, func(t *Tenant) bool {
+		return t.CheckoutOn()
+	})
+}
+
 func requireFeature(
 	next http.Handler, enabled func(*Tenant) bool,
 ) http.Handler {

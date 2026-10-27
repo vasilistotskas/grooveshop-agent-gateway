@@ -125,25 +125,61 @@ func TestRequireProductFeedsSubordinateToAgentGate(t *testing.T) {
 	})
 
 	cases := []struct {
-		name  string
-		agent bool
-		feeds bool
-		want  int
+		name      string
+		agent     bool
+		feeds     bool
+		catalogue bool
+		want      int
 	}{
-		{"both off 404s", false, false, http.StatusNotFound},
-		{"feeds off 404s", true, false, http.StatusNotFound},
-		{"agent off kills feeds too", false, true, http.StatusNotFound},
-		{"both on serves", true, true, http.StatusNoContent},
+		{"all off 404s", false, false, false, http.StatusNotFound},
+		{"feeds off 404s", true, false, true, http.StatusNotFound},
+		{"agent off kills feeds too", false, true, true, http.StatusNotFound},
+		// A feed lists product pages, which a store without its
+		// catalogue does not serve.
+		{"catalogue off 404s", true, true, false, http.StatusNotFound},
+		{"all on serves", true, true, true, http.StatusNoContent},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tn := &Tenant{}
 			tn.AgentCommerceEnabled = tc.agent
 			tn.ProductFeedsEnabled = tc.feeds
+			tn.Features.Catalogue = tc.catalogue
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "http://x/", nil)
 			req = req.WithContext(NewContext(req.Context(), tn))
 			RequireProductFeeds(next).ServeHTTP(rec, req)
+			assert.Equal(t, tc.want, rec.Code)
+		})
+	}
+}
+
+func TestRequireCheckoutNeedsAgentCommerceAndTheCart(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	cases := []struct {
+		name  string
+		agent bool
+		cart  bool
+		want  int
+	}{
+		{"both off 404s", false, false, http.StatusNotFound},
+		{"agent off 404s", false, true, http.StatusNotFound},
+		// A store that takes no orders has nothing to check out.
+		{"cart off 404s", true, false, http.StatusNotFound},
+		{"both on serves", true, true, http.StatusNoContent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tn := &Tenant{}
+			tn.AgentCommerceEnabled = tc.agent
+			tn.Features.Cart = tc.cart
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "http://x/", nil)
+			req = req.WithContext(NewContext(req.Context(), tn))
+			RequireCheckout(next).ServeHTTP(rec, req)
 			assert.Equal(t, tc.want, rec.Code)
 		})
 	}
