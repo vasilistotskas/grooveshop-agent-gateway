@@ -69,8 +69,9 @@ func TestResolverSharesRedisTierAcrossInstances(t *testing.T) {
 					"defaultLocale": "el",
 					"defaultCurrency": "EUR",
 					"primaryDomain": "shop.example.test",
-					"features": {"productReviews": true, "favourites": true,
-						"loyalty": true, "promotions": false}
+					"features": {"catalogue": true, "cart": true,
+						"productReviews": true, "productAlerts": true,
+						"favourites": true, "loyalty": true, "promotions": false}
 				}`))
 				return
 			}
@@ -102,7 +103,8 @@ func TestResolverSharesRedisTierAcrossInstances(t *testing.T) {
 	// The store's features survive the Redis round trip: a pod served
 	// from the shared tier offers the same tools as the one that asked.
 	assert.Equal(t, django.StoreFeatures{
-		ProductReviews: true, Favourites: true, Loyalty: true,
+		Catalogue: true, Cart: true, ProductReviews: true,
+		ProductAlerts: true, Favourites: true, Loyalty: true,
 	}, got.Features)
 
 	// Negative results are shared too.

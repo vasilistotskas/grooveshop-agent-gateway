@@ -63,7 +63,10 @@ func TestResolveTenantDecodesFixture(t *testing.T) {
 	assert.Equal(t, "el", cfg.DefaultLocale)
 	assert.Equal(t, "EUR", cfg.DefaultCurrency)
 	assert.Equal(t, "shop.example.test", cfg.PrimaryDomain)
-	assert.Equal(t, StoreFeatures{ProductReviews: true, Favourites: true, Loyalty: true}, cfg.Features)
+	assert.Equal(t, StoreFeatures{
+		Catalogue: true, Cart: true, ProductReviews: true, ProductAlerts: true,
+		Favourites: true, Loyalty: true,
+	}, cfg.Features)
 	assert.Equal(t, "sk-test-fake", cfg.ChatAPIKey)
 	assert.Equal(t, "acp-bearer-demostore-fixture", cfg.ACPBearerToken)
 }
