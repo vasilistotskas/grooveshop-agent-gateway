@@ -252,6 +252,18 @@ var djangoContract = []contractCall{
 		},
 	},
 	{
+		fn: "PublicSettings", method: http.MethodGet,
+		path: "/settings/public", status: http.StatusOK,
+		out:   reflect.TypeFor[PublicSettings](),
+		names: map[string]string{"PublicSettings": "PublicSettings"},
+	},
+	{
+		fn: "ContentPage", method: http.MethodGet,
+		path: "/content-page/{slug}", status: http.StatusOK,
+		out:   reflect.TypeFor[ContentPage](),
+		names: map[string]string{"ContentPage": "ContentPageDetail"},
+	},
+	{
 		fn: "OrderByUUID", method: http.MethodGet,
 		path: "/order/uuid/{uuid}", status: http.StatusOK,
 		out:   reflect.TypeFor[Order](),

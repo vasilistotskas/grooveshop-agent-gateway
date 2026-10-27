@@ -59,6 +59,12 @@ func Privacy(domain string) string {
 	return Origin(domain) + "/privacy-policy"
 }
 
+// ReturnPolicy is the return-policy page (app/pages/return-policy.vue),
+// which renders the store's published `return-policy` content page.
+func ReturnPolicy(domain string) string {
+	return Origin(domain) + "/return-policy"
+}
+
 // MCP is this gateway's MCP endpoint, path-routed on the tenant domain.
 func MCP(domain string) string {
 	return Origin(domain) + "/mcp"

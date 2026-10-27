@@ -276,10 +276,12 @@ func toolset(h *handlers) []tool {
 
 		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name: "find_pickup_points",
-			Description: "Find parcel pickup points near a Greek postal " +
-				"code: ACS Smartpoint lockers/shops and BOX NOW lockers. " +
-				"Pass city (and optionally street) for more accurate BOX " +
-				"NOW results.",
+			Description: "Find parcel pickup points near a postal code, " +
+				"searching only the pickup carriers this store delivers " +
+				"with to that country (ACS Smartpoint lockers/shops, BOX " +
+				"NOW lockers); says so when it has none. BOX NOW lockers " +
+				"are searched only with the shopper's city and street: " +
+				"ask the shopper for them.",
 		}, h.findPickupPoints)),
 
 		onlyWith(cartOn, toolOf(&mcp.Tool{
@@ -289,6 +291,17 @@ func toolset(h *handlers) []tool {
 				"free thresholds. Optionally filter by the shipping " +
 				"provider/kind you plan to use.",
 		}, h.getPaymentMethods)),
+
+		// Open on every store, as track_order is: return terms bind
+		// orders already placed.
+		toolOf(&mcp.Tool{
+			Name: "get_store_policies",
+			Description: "The store's return terms as it states them: " +
+				"the return window in days after delivery, who pays " +
+				"return shipping, and the link to its return-policy " +
+				"page. A term it has not stated is absent; never fill " +
+				"one in.",
+		}, h.getStorePolicies),
 
 		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name: "create_cart",

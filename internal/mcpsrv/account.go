@@ -66,13 +66,14 @@ func (h *handlers) myOrders(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	linked, err := h.linkedFor(ctx, t)
 	if err != nil {
 		return nil, out, err
 	}
 
 	orders, err := h.deps.Django.AgentOrders(
-		ctx, t.Domain, t.DefaultLocale, linked.Bearer)
+		ctx, t.Domain, lang, linked.Bearer)
 	if err != nil {
 		return nil, out, scopedErr(err, "orders:read", "no orders found")
 	}
@@ -115,13 +116,14 @@ func (h *handlers) myLoyaltyPoints(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	linked, err := h.linkedFor(ctx, t)
 	if err != nil {
 		return nil, out, err
 	}
 
 	loyalty, err := h.deps.Django.AgentLoyalty(
-		ctx, t.Domain, t.DefaultLocale, linked.Bearer)
+		ctx, t.Domain, lang, linked.Bearer)
 	if err != nil {
 		return nil, out, scopedErr(err, "loyalty:read", "no loyalty data found")
 	}
@@ -133,7 +135,7 @@ func (h *handlers) myLoyaltyPoints(
 		out.PointsToNextTier = loyalty.PointsToNextTier.String()
 	}
 	if loyalty.Tier != nil {
-		out.Tier = django.Localized(loyalty.Tier.Translations, t.DefaultLocale).Name
+		out.Tier = django.Localized(loyalty.Tier.Translations, lang).Name
 	}
 
 	summary := fmt.Sprintf(
@@ -166,13 +168,14 @@ func (h *handlers) myFavourites(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	linked, err := h.linkedFor(ctx, t)
 	if err != nil {
 		return nil, out, err
 	}
 
 	favourites, err := h.deps.Django.AgentFavourites(
-		ctx, t.Domain, t.DefaultLocale, linked.Bearer)
+		ctx, t.Domain, lang, linked.Bearer)
 	if err != nil {
 		return nil, out, scopedErr(err, "favourites:read", "no favourites found")
 	}

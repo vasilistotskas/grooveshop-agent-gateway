@@ -20,7 +20,7 @@ func testTenant() *tenant.Tenant {
 }
 
 func TestSystemPromptWithoutCart(t *testing.T) {
-	p := systemPrompt(testTenant(), "", false)
+	p := systemPrompt(testTenant(), "el", "", false)
 	assert.Contains(t, p, "Demo Store")
 	assert.Contains(t, p, "shop.example.test")
 	assert.Contains(t, p, "no active cart")
@@ -30,8 +30,8 @@ func TestSystemPromptWithoutCart(t *testing.T) {
 func TestSystemPromptIsTenantNeutral(t *testing.T) {
 	tn := testTenant()
 	tn.DefaultLocale = "de"
-	p := systemPrompt(tn, "", false)
-	assert.Contains(t, p, "the store's language (de)")
+	p := systemPrompt(tn, tn.DefaultLocale, "", false)
+	assert.Contains(t, p, "reply in German (de)")
 	assert.NotContains(t, p, "Greek")
 	assert.NotContains(t, p, "Greece")
 	assert.NotContains(t, p, "ACS")
@@ -42,23 +42,47 @@ func TestSystemPromptIsTenantNeutral(t *testing.T) {
 // that has them on, as only that store is served the review tool.
 func TestSystemPromptOffersReviewsOnlyWithThem(t *testing.T) {
 	tn := testTenant()
-	assert.NotContains(t, systemPrompt(tn, "", false), "reviews")
+	assert.NotContains(t, systemPrompt(tn, tn.DefaultLocale, "", false), "reviews")
 
 	tn.Features.ProductReviews = true
-	assert.Contains(t, systemPrompt(tn, "", false), "categories, reviews, carts")
+	assert.Contains(t, systemPrompt(tn, tn.DefaultLocale, "", false), "categories, reviews, carts")
 }
 
 // A failed tool is reported as one: the assistant had claimed a cart
 // update that never reached the shopper's cart, then blamed a "cartId
 // mix-up" no tool reported.
 func TestSystemPromptReportsFailuresAsTheToolGaveThem(t *testing.T) {
-	p := systemPrompt(testTenant(), "", false)
+	p := systemPrompt(testTenant(), "el", "", false)
 	assert.Contains(t, p, "never claim the action succeeded")
 	assert.Contains(t, p, "never give a cause the tool did not")
 }
 
+// The assistant answers in the shopper's language, and when that is
+// unclear in the turn's: an English question on /en was answered in
+// Greek because the prompt named only the store's default.
+func TestSystemPromptNamesTheTurnsLanguage(t *testing.T) {
+	p := systemPrompt(testTenant(), "en", "", false)
+	assert.Contains(t, p, "language of the shopper's latest message")
+	assert.Contains(t, p, "reply in English (en)")
+	assert.NotContains(t, p, "(el)")
+}
+
+// The assistant offered "programming books" in a phone-accessory store:
+// nothing may be named that no tool showed.
+func TestSystemPromptGroundsEveryNamedProduct(t *testing.T) {
+	assert.Contains(t, systemPrompt(testTenant(), "el", "", false),
+		"Never mention a product, category or brand that no tool result")
+}
+
+// A return window answered from the model's own knowledge is right only
+// by chance: policy answers come from the policies tool alone.
+func TestSystemPromptAnswersPoliciesFromTheTool(t *testing.T) {
+	assert.Contains(t, systemPrompt(testTenant(), "el", "", false),
+		"returns and the store's policies only from get_store_policies")
+}
+
 func TestSystemPromptWithCart(t *testing.T) {
-	p := systemPrompt(testTenant(), "cart-uuid-1", false)
+	p := systemPrompt(testTenant(), "el", "cart-uuid-1", false)
 	assert.Contains(t, p, "cart-uuid-1")
 	assert.NotContains(t, p, "no active cart")
 }
@@ -81,7 +105,7 @@ func TestLoadEmptyIDStartsFresh(t *testing.T) {
 // A signed-in shopper's cart is bound outside the model: the prompt
 // neither names a cart id to pass nor mentions the token.
 func TestSystemPromptForASignedInShopper(t *testing.T) {
-	p := systemPrompt(testTenant(), "cart-uuid-1", true)
+	p := systemPrompt(testTenant(), "el", "cart-uuid-1", true)
 	assert.Contains(t, p, "omit cartId")
 	assert.NotContains(t, p, "cart-uuid-1")
 	assert.NotContains(t, p, "no active cart")
@@ -92,11 +116,11 @@ func TestSystemPromptForASignedInShopper(t *testing.T) {
 func TestSystemPromptOffersCouponsOnlyWithPromotions(t *testing.T) {
 	tn := testTenant()
 	tn.Features.Promotions = true
-	p := systemPrompt(tn, "", false)
+	p := systemPrompt(tn, tn.DefaultLocale, "", false)
 	assert.Contains(t, p, "apply_coupon")
 	assert.Contains(t, p, "never invent or guess codes")
 	assert.Contains(t, p, "in the tool's own words")
 
 	tn.Features.Promotions = false
-	assert.NotContains(t, systemPrompt(tn, "", false), "coupon")
+	assert.NotContains(t, systemPrompt(tn, tn.DefaultLocale, "", false), "coupon")
 }

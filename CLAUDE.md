@@ -62,7 +62,7 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   (60s in-memory cache, SHA-256 keys); invalid tokens get 401 + the
   RFC 9728 `WWW-Authenticate` challenge; anonymous requests pass
   through. Account tools forward the bearer — Django enforces scopes.
-- `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:v3:{host}`
+- `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:v4:{host}`
   → Django; singleflight; 60s negative cache; stale-if-error) + middleware
   (tenant from the **real Host header only** — inbound X-Forwarded-Host is
   deliberately ignored; spoofing it must never switch tenants).
@@ -197,8 +197,9 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   checkout tools need `cart` (which Django folds the catalogue into);
   `get_product_reviews`, `subscribe_product_alert` and `my_favourites`
   need `catalogue` and `productReviews` / `productAlerts` /
-  `favourites`; `my_loyalty_points` `loyalty`. The order tools stay
-  open. The UCP profile and `/acp/*` need `cart` (`CheckoutOn`), the
+  `favourites`; `my_loyalty_points` `loyalty`. The order tools and
+  `get_store_policies` stay open (return terms bind orders already
+  placed). The UCP profile and `/acp/*` need `cart` (`CheckoutOn`), the
   feeds `catalogue` (`ProductFeedsOn`). The per-store server (cached per feature set) neither
   lists nor serves it, discovery does not advertise it, and the chat
   bridge, which shares one server built with `EveryFeature`, filters
@@ -209,7 +210,19 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   with the plan flag off, which would fail the request) and clears the
   cart's old coupon best effort, and ACP sessions do not declare the
   discount extension.
-- Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:v3:{host}`,
+- **Store facts come from the store, never a default.**
+  `find_pickup_points` searches only the pickup carriers the store's
+  `/shipping/options` list as `pickup_point` for the country and the
+  cart (`FitsCart`), among the networks it can search (ACS, BOX NOW);
+  a store without one gets an answer saying so, not an error. BOX NOW's
+  `lockers/nearest` requires city, street AND postal code, so it is
+  called only with all three and the tool tells the model to ask for
+  the rest. `get_store_policies` reads `RETURN_WINDOW_DAYS` and
+  `RETURN_FEES` from `/settings/public` (Django's `PUBLIC_SETTING_KEYS`;
+  `0` / `""` are "not stated" and are left out, a missing or malformed
+  value fails the call) and links `storefront.ReturnPolicy` only while
+  `/content-page/return-policy` is published (a 404 means it is not).
+- Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:v4:{host}`,
   versioned with the cached `TenantConfig` shape: bump it when a field is
   added, or entries an older pod wrote decode it as its zero value.
 - No tenant label on Prometheus metrics (unbounded cardinality) — tenant
@@ -305,7 +318,21 @@ release that drops, loosens or retypes one of those properties.
   model provider throttled the turn, `retryAfter` its wait in seconds),
   `done {conversationId, cartId?, cartMutated, cartTokenRefused}`.
   The request is `{message, conversationId?, cartId?, cartToken?,
-  turnId?}`. `turnId` is a UUID the widget mints per message and sends
+  turnId?, locale?}`. `locale` is the storefront page's language code
+  (`el`, `en`, …): the turn is served in it when the store serves it
+  (`TenantConfig.ServedLocales`: `availableLocales`, else the default
+  alone), else in the store's default; an unserved one is ignored, not
+  refused. The turn's language rides the request context
+  (`django.WithLanguage`) like the cart token, and every tool handler
+  reads it through `django.Language` — `X-Language`, the search's
+  `languageCode` and the translation picked — so product names come
+  back in the page's language. `/mcp` names none and stays on the
+  store's default. The refusals and SSE `error` messages speak it, and
+  the prompt tells the model to reply in the language of the shopper's
+  latest message, else in the turn's, named in English
+  (`chat.languageName`). The prompt also forbids naming a product,
+  category or brand no tool result showed, and answers return and
+  policy questions only from `get_store_policies`. `turnId` is a UUID the widget mints per message and sends
   again when the shopper retries it: each `add_to_cart` of the turn
   sends an `Idempotency-Key` derived from it, the call and how many
   identical adds the turn already made (`mcpsrv.Turn`), so Django's

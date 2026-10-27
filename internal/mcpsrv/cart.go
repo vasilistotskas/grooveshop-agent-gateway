@@ -45,7 +45,9 @@ type RefusedCouponOut struct {
 	Reason string `json:"reason" jsonschema:"the store's discount_code_* reason"`
 }
 
-func (h *handlers) cartOut(t *tenant.Tenant, c *django.Cart) CartOut {
+func (h *handlers) cartOut(
+	t *tenant.Tenant, lang string, c *django.Cart,
+) CartOut {
 	out := CartOut{
 		CartID:             c.UUID,
 		TotalItems:         c.TotalItems,
@@ -67,7 +69,7 @@ func (h *handlers) cartOut(t *tenant.Tenant, c *django.Cart) CartOut {
 		out.AppliedCouponCodes = append(out.AppliedCouponCodes, coupon.Code)
 	}
 	for _, it := range c.Items {
-		tr := django.Localized(it.Product.Translations, t.DefaultLocale)
+		tr := django.Localized(it.Product.Translations, lang)
 		out.Items = append(out.Items, CartItemOut{
 			ItemID:     it.ID,
 			ProductID:  it.Product.ID,
@@ -118,7 +120,8 @@ func (h *handlers) createCart(
 	if err != nil {
 		return nil, out, err
 	}
-	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, "")
+	lang := django.Language(ctx, t.TenantConfig)
+	c, err := h.deps.Django.GetCart(ctx, t.Domain, lang, "")
 	if err != nil {
 		return nil, out, upstreamErr(err, "the cart service is unavailable")
 	}
@@ -152,16 +155,17 @@ func (h *handlers) getCart(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	if in.CartID == "" && !django.HasCartToken(ctx) {
 		return nil, out, errors.New(
 			"cartId is required; create one with create_cart")
 	}
-	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, in.CartID)
+	c, err := h.deps.Django.GetCart(ctx, t.Domain, lang, in.CartID)
 	if err != nil {
 		return nil, out, upstreamErr(err, "that cart no longer exists; "+
 			"create a new one with create_cart")
 	}
-	out = h.cartOut(t, c)
+	out = h.cartOut(t, lang, c)
 	return h.cartSummary(out), out, nil
 }
 
@@ -179,6 +183,7 @@ func (h *handlers) addToCart(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	if in.ProductID <= 0 {
 		return nil, out, errors.New("productId is required")
 	}
@@ -191,7 +196,7 @@ func (h *handlers) addToCart(
 	// whatever id is named: there is no guest cart to create first.
 	cartID := in.CartID
 	if cartID == "" && !django.HasCartToken(ctx) {
-		c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, "")
+		c, err := h.deps.Django.GetCart(ctx, t.Domain, lang, "")
 		if err != nil {
 			return nil, out, upstreamErr(err,
 				"the cart service is unavailable")
@@ -204,7 +209,7 @@ func (h *handlers) addToCart(
 	// Finished even when the shopper leaves (the client's timeout bounds
 	// it), so the store records an outcome their retry is answered with.
 	_, err = h.deps.Django.AddCartItem(context.WithoutCancel(addCtx),
-		t.Domain, t.DefaultLocale, cartID, in.ProductID, qty,
+		t.Domain, lang, cartID, in.ProductID, qty,
 	)
 	if errors.Is(err, django.ErrCartUnreachable) {
 		return nil, out, errors.New("the shopper's cart could not be " +
@@ -218,11 +223,11 @@ func (h *handlers) addToCart(
 	added()
 	cartChanged(ctx)
 
-	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, cartID)
+	c, err := h.deps.Django.GetCart(ctx, t.Domain, lang, cartID)
 	if err != nil {
 		return nil, out, errReadBack
 	}
-	out = h.cartOut(t, c)
+	out = h.cartOut(t, lang, c)
 	return h.cartSummary(out), out, nil
 }
 
@@ -247,6 +252,7 @@ func (h *handlers) updateCartItem(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	if (in.CartID == "" && !django.HasCartToken(ctx)) ||
 		in.ItemID <= 0 || in.Quantity <= 0 {
 		return nil, out, errors.New(
@@ -254,17 +260,17 @@ func (h *handlers) updateCartItem(
 				"remove_cart_item to delete a line")
 	}
 	if _, err := h.deps.Django.UpdateCartItem(
-		ctx, t.Domain, t.DefaultLocale, in.CartID, in.ItemID, in.Quantity,
+		ctx, t.Domain, lang, in.CartID, in.ItemID, in.Quantity,
 	); err != nil {
 		return nil, out, upstreamErr(err,
 			"that cart line was not found; fetch the cart with get_cart")
 	}
 	cartChanged(ctx)
-	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, in.CartID)
+	c, err := h.deps.Django.GetCart(ctx, t.Domain, lang, in.CartID)
 	if err != nil {
 		return nil, out, errReadBack
 	}
-	out = h.cartOut(t, c)
+	out = h.cartOut(t, lang, c)
 	return h.cartSummary(out), out, nil
 }
 
@@ -281,21 +287,22 @@ func (h *handlers) removeCartItem(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	if (in.CartID == "" && !django.HasCartToken(ctx)) || in.ItemID <= 0 {
 		return nil, out, errors.New("cartId and itemId are required")
 	}
 	if err := h.deps.Django.RemoveCartItem(
-		ctx, t.Domain, t.DefaultLocale, in.CartID, in.ItemID,
+		ctx, t.Domain, lang, in.CartID, in.ItemID,
 	); err != nil {
 		return nil, out, upstreamErr(err,
 			"that cart line was not found; fetch the cart with get_cart")
 	}
 	cartChanged(ctx)
-	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, in.CartID)
+	c, err := h.deps.Django.GetCart(ctx, t.Domain, lang, in.CartID)
 	if err != nil {
 		return nil, out, errReadBack
 	}
-	out = h.cartOut(t, c)
+	out = h.cartOut(t, lang, c)
 	return h.cartSummary(out), out, nil
 }
 
@@ -315,13 +322,14 @@ func (h *handlers) getCheckoutLink(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	signedIn := django.HasCartToken(ctx)
 	if in.CartID == "" && !signedIn {
 		return nil, out, errors.New("cartId is required")
 	}
 	// Validate the cart exists before handing the shopper a dead link.
 	if _, err := h.deps.Django.GetCart(
-		ctx, t.Domain, t.DefaultLocale, in.CartID,
+		ctx, t.Domain, lang, in.CartID,
 	); err != nil {
 		return nil, out, upstreamErr(err,
 			"that cart no longer exists; create a new one with create_cart")
@@ -352,12 +360,13 @@ func (h *handlers) applyCoupon(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	code := strings.TrimSpace(in.Code)
 	if code == "" || (in.CartID == "" && !django.HasCartToken(ctx)) {
 		return nil, out, errors.New("cartId and code are required")
 	}
 	c, err := h.deps.Django.ApplyCoupon(
-		ctx, t.Domain, t.DefaultLocale, in.CartID, code)
+		ctx, t.Domain, lang, in.CartID, code)
 	if rejected, ok := errors.AsType[*django.CouponRejectedError](err); ok {
 		return nil, out, fmt.Errorf("the store refused coupon %s (%s): %s",
 			code, rejected.Reason, rejected.Detail)
@@ -367,7 +376,7 @@ func (h *handlers) applyCoupon(
 			"create a new one with create_cart")
 	}
 	cartChanged(ctx)
-	out = h.cartOut(t, c)
+	out = h.cartOut(t, lang, c)
 	return h.cartSummary(out), out, nil
 }
 
@@ -383,16 +392,17 @@ func (h *handlers) removeCoupon(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	if in.CartID == "" && !django.HasCartToken(ctx) {
 		return nil, out, errors.New("cartId is required")
 	}
 	c, err := h.deps.Django.RemoveCoupon(
-		ctx, t.Domain, t.DefaultLocale, in.CartID)
+		ctx, t.Domain, lang, in.CartID)
 	if err != nil {
 		return nil, out, upstreamErr(err, "that cart no longer exists; "+
 			"create a new one with create_cart")
 	}
 	cartChanged(ctx)
-	out = h.cartOut(t, c)
+	out = h.cartOut(t, lang, c)
 	return h.cartSummary(out), out, nil
 }

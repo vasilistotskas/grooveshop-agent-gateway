@@ -27,7 +27,7 @@ func TestCartOutDiscountFields(t *testing.T) {
 	tn := cartTenant()
 
 	t.Run("zero-discount cart omits the discount fields", func(t *testing.T) {
-		out := h.cartOut(tn, &django.Cart{
+		out := h.cartOut(tn, tn.DefaultLocale, &django.Cart{
 			UUID:               "c-1",
 			TotalPrice:         json.Number("929.36"),
 			PromotionDiscount:  json.Number("0.0"),
@@ -40,7 +40,7 @@ func TestCartOutDiscountFields(t *testing.T) {
 	})
 
 	t.Run("coupon cart surfaces discount state", func(t *testing.T) {
-		out := h.cartOut(tn, &django.Cart{
+		out := h.cartOut(tn, tn.DefaultLocale, &django.Cart{
 			UUID:                  "c-1",
 			TotalPrice:            json.Number("929.36"),
 			PromotionDiscount:     json.Number("92.94"),
@@ -67,7 +67,7 @@ func TestCartOutDiscountFields(t *testing.T) {
 	// A code the store refuses now must not read as applied: the summary
 	// used to name it beside an automatic promotion's discount.
 	t.Run("refused coupon is not named as applied", func(t *testing.T) {
-		out := h.cartOut(tn, &django.Cart{
+		out := h.cartOut(tn, tn.DefaultLocale, &django.Cart{
 			UUID:              "c-1",
 			TotalPrice:        json.Number("32.37"),
 			PromotionDiscount: json.Number("10.79"),

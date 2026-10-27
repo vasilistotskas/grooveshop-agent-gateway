@@ -8,6 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
 type ShippingOptionsIn struct {
@@ -42,6 +43,7 @@ func (h *handlers) getShippingOptions(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	if in.CountryCode == "" {
 		return nil, out, errors.New("countryCode is required (e.g. GR)")
 	}
@@ -57,7 +59,7 @@ func (h *handlers) getShippingOptions(
 	// The cart is the chat shopper's (their cart token) or cartId; with
 	// neither, Django flags no option for size.
 	opts, err := h.deps.Django.ShippingOptions(
-		ctx, t.Domain, t.DefaultLocale, in.CartID, q)
+		ctx, t.Domain, lang, in.CartID, q)
 	if err != nil {
 		return nil, out, upstreamErr(err, "shipping options are unavailable")
 	}
@@ -79,7 +81,7 @@ func (h *handlers) getShippingOptions(
 	// Free-shipping thresholds are informative, not load-bearing — a
 	// failure here must not hide the shipping options themselves.
 	if info, err := h.deps.Django.FreeShippingInfo(
-		ctx, t.Domain, t.DefaultLocale, in.CountryCode); err == nil {
+		ctx, t.Domain, lang, in.CountryCode); err == nil {
 		for _, p := range info.Providers {
 			out.FreeShipping = append(out.FreeShipping, struct {
 				ProviderCode string `json:"providerCode"`
@@ -97,9 +99,10 @@ func (h *handlers) getShippingOptions(
 }
 
 type PickupPointsIn struct {
-	PostalCode string `json:"postalCode" jsonschema:"Greek postal code, e.g. 10434"`
-	City       string `json:"city,omitempty" jsonschema:"city name, improves BOX NOW matching"`
-	Street     string `json:"street,omitempty" jsonschema:"street and number, improves BOX NOW matching"`
+	CountryCode string `json:"countryCode" jsonschema:"ISO 3166-1 alpha-2 country of the postal code, e.g. GR"`
+	PostalCode  string `json:"postalCode" jsonschema:"postal code to search near, e.g. 10434"`
+	City        string `json:"city,omitempty" jsonschema:"the shopper's city; BOX NOW lockers are searched only with city and street"`
+	Street      string `json:"street,omitempty" jsonschema:"the shopper's street and number; BOX NOW lockers are searched only with city and street"`
 }
 
 type PickupPoint struct {
@@ -118,56 +121,127 @@ type PickupPoint struct {
 }
 
 type PickupPointsOut struct {
-	Points []PickupPoint `json:"points"`
+	// Carriers are the pickup carriers the store offers to the country
+	// for the cart, whose networks were searched or need more input.
+	Carriers []string      `json:"carriers"`
+	Points   []PickupPoint `json:"points"`
 }
 
 const maxAcsPoints = 10
 
+// pickupCarriers are the providers the store delivers to pickup points
+// with in countryCode that the cart fits, among those whose networks the
+// gateway can search. A chat shopper's cart is judged through their cart
+// token, as get_shipping_options judges it.
+func (h *handlers) pickupCarriers(
+	ctx context.Context, t *tenant.Tenant, lang, countryCode string,
+) (offered map[string]bool, pickup bool, err error) {
+	opts, err := h.deps.Django.ShippingOptions(ctx, t.Domain, lang, "",
+		django.ShippingQuery{CountryCode: countryCode,
+			Currency: t.DefaultCurrency})
+	if err != nil {
+		return nil, false, err
+	}
+	offered = map[string]bool{}
+	for _, o := range opts {
+		if o.Kind != django.ShippingKindPickupPoint {
+			continue
+		}
+		pickup = true
+		switch o.ProviderCode {
+		case django.ShippingProviderACS, django.ShippingProviderBoxNow:
+			if o.FitsCart() {
+				offered[o.ProviderCode] = true
+			}
+		}
+	}
+	return offered, pickup, nil
+}
+
 func (h *handlers) findPickupPoints(
 	ctx context.Context, _ *mcp.CallToolRequest, in PickupPointsIn,
 ) (*mcp.CallToolResult, PickupPointsOut, error) {
-	var out PickupPointsOut
+	out := PickupPointsOut{Carriers: []string{}, Points: []PickupPoint{}}
 	t, err := h.tenantFor(ctx)
 	if err != nil {
 		return nil, out, err
+	}
+	lang := django.Language(ctx, t.TenantConfig)
+	if in.CountryCode == "" {
+		return nil, out, errors.New("countryCode is required (e.g. GR)")
 	}
 	if in.PostalCode == "" {
 		return nil, out, errors.New("postalCode is required")
 	}
 
-	stations, acsErr := h.deps.Django.AcsNearestStations(
-		ctx, t.Domain, t.DefaultLocale, in.PostalCode, in.City)
-	for i, s := range stations {
-		if i >= maxAcsPoints {
-			break
+	carriers, anyPickup, err := h.pickupCarriers(
+		ctx, t, lang, in.CountryCode)
+	if err != nil {
+		return nil, out, upstreamErr(err, "pickup point lookup is unavailable")
+	}
+	// Answers, not errors: no other postal code would change them.
+	switch {
+	case !anyPickup:
+		return textResult(
+			"This store does not deliver to pickup points in %s; offer "+
+				"its home delivery (get_shipping_options) instead.",
+			in.CountryCode), out, nil
+	case len(carriers) == 0:
+		return textResult(
+			"The cart is too large or too heavy for this store's pickup "+
+				"points in %s; offer its home delivery "+
+				"(get_shipping_options) instead.",
+			in.CountryCode), out, nil
+	}
+	for _, c := range []string{
+		django.ShippingProviderACS, django.ShippingProviderBoxNow,
+	} {
+		if carriers[c] {
+			out.Carriers = append(out.Carriers, c)
 		}
-		out.Points = append(out.Points, PickupPoint{
-			Provider:     django.ShippingProviderACS,
-			ID:           s.ExternalID,
-			BranchCode:   s.BranchCode,
-			Name:         s.Name,
-			Address:      s.AddressLine1,
-			City:         s.City,
-			PostalCode:   s.PostalCode,
-			Lat:          s.Lat,
-			Lng:          s.Lng,
-			MaxWeightKg:  s.MaxWeightKg,
-			WorkingHours: s.WorkingHours,
-		})
 	}
 
-	// BOX NOW's nearest lookup proxies their live API and needs an
-	// address; skip quietly when the extra fields are absent or the
-	// upstream declines — ACS results remain useful alone.
-	boxnowIncluded := false
-	if in.City != "" {
-		if l, err := h.deps.Django.BoxNowNearestLocker(
-			ctx, t.Domain, t.DefaultLocale, django.BoxNowNearestRequest{
+	var acsErr error
+	if carriers[django.ShippingProviderACS] {
+		var stations []django.AcsStation
+		stations, acsErr = h.deps.Django.AcsNearestStations(
+			ctx, t.Domain, lang, in.PostalCode, in.City)
+		for i, s := range stations {
+			if i >= maxAcsPoints {
+				break
+			}
+			out.Points = append(out.Points, PickupPoint{
+				Provider:     django.ShippingProviderACS,
+				ID:           s.ExternalID,
+				BranchCode:   s.BranchCode,
+				Name:         s.Name,
+				Address:      s.AddressLine1,
+				City:         s.City,
+				PostalCode:   s.PostalCode,
+				Lat:          s.Lat,
+				Lng:          s.Lng,
+				MaxWeightKg:  s.MaxWeightKg,
+				WorkingHours: s.WorkingHours,
+			})
+		}
+	}
+
+	// BOX NOW's nearest lookup proxies their live API, which Django calls
+	// only with a full address: city, street and postal code are each
+	// required there, so a call without one is a certain 400. When BOX
+	// NOW declines, the other network's results stand alone.
+	note := ""
+	if carriers[django.ShippingProviderBoxNow] {
+		if in.City == "" || in.Street == "" {
+			note = " BOX NOW lockers are searched only with the " +
+				"shopper's city and street (with number): ask the " +
+				"shopper for them, then call again."
+		} else if l, err := h.deps.Django.BoxNowNearestLocker(
+			ctx, t.Domain, lang, django.BoxNowNearestRequest{
 				City:       in.City,
 				Street:     in.Street,
 				PostalCode: in.PostalCode,
 			}); err == nil {
-			boxnowIncluded = true
 			out.Points = append(out.Points, PickupPoint{
 				Provider:   django.ShippingProviderBoxNow,
 				ID:         l.ID,
@@ -183,6 +257,10 @@ func (h *handlers) findPickupPoints(
 	}
 
 	if len(out.Points) == 0 {
+		if note != "" {
+			return textResult("No pickup points listed yet.%s", note),
+				out, nil
+		}
 		if acsErr != nil {
 			return nil, out, upstreamErr(acsErr,
 				"pickup point lookup is unavailable")
@@ -190,11 +268,6 @@ func (h *handlers) findPickupPoints(
 		return nil, out, errors.New(
 			"no pickup points found near that postal code; try a " +
 				"neighbouring postal code or add the city name")
-	}
-
-	note := ""
-	if !boxnowIncluded {
-		note = " Provide city (and street) to also check BOX NOW lockers."
 	}
 	return textResult(
 		"Found %d pickup points near %s.%s",
@@ -235,8 +308,9 @@ func (h *handlers) getPaymentMethods(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 
-	page, err := h.deps.Django.PayWays(ctx, t.Domain, t.DefaultLocale,
+	page, err := h.deps.Django.PayWays(ctx, t.Domain, lang,
 		in.ShippingProviderCode, in.ShippingKind)
 	if err != nil {
 		return nil, out, upstreamErr(err, "payment methods are unavailable")
@@ -245,11 +319,11 @@ func (h *handlers) getPaymentMethods(
 		if !pw.Active {
 			continue
 		}
-		label, err := pw.Label(t.DefaultLocale)
+		label, err := pw.Label(lang)
 		if err != nil {
 			return nil, out, err
 		}
-		tr := django.Localized(pw.Translations, t.DefaultLocale)
+		tr := django.Localized(pw.Translations, lang)
 		out.Methods = append(out.Methods, PaymentMethodOut{
 			ID:            pw.ID,
 			Label:         label,

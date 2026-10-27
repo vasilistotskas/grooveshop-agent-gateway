@@ -34,6 +34,7 @@ func (h *handlers) subscribeProductAlert(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	if in.ProductID <= 0 || in.Email == "" {
 		return nil, out, errors.New("productId and email are required")
 	}
@@ -50,7 +51,7 @@ func (h *handlers) subscribeProductAlert(
 		return nil, out, err
 	}
 
-	_, err = h.deps.Django.CreateProductAlert(ctx, t.Domain, t.DefaultLocale,
+	_, err = h.deps.Django.CreateProductAlert(ctx, t.Domain, lang,
 		in.Kind, in.ProductID, in.Email, target)
 	out.Kind = in.Kind
 	out.ProductID = in.ProductID

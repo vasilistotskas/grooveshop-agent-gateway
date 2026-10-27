@@ -84,6 +84,7 @@ func (h *handlers) searchProducts(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	if in.Query == "" {
 		return nil, out, errors.New("query is required")
 	}
@@ -101,7 +102,7 @@ func (h *handlers) searchProducts(
 
 	res, err := h.deps.Django.SearchProducts(ctx, t.Domain, django.SearchParams{
 		Query:        in.Query,
-		LanguageCode: t.DefaultLocale,
+		LanguageCode: lang,
 		Categories:   in.Categories,
 		PriceMin:     in.PriceMin,
 		PriceMax:     in.PriceMax,
@@ -161,18 +162,19 @@ func (h *handlers) getProduct(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	if in.ProductID <= 0 {
 		return nil, out, errors.New("productId is required")
 	}
 
-	p, err := h.deps.Django.GetProduct(ctx, t.Domain, t.DefaultLocale, in.ProductID)
+	p, err := h.deps.Django.GetProduct(ctx, t.Domain, lang, in.ProductID)
 	if err != nil {
 		return nil, out, upstreamErr(err, fmt.Sprintf(
 			"product %d was not found; find products with search_products",
 			in.ProductID))
 	}
 
-	tr := django.Localized(p.Translations, t.DefaultLocale)
+	tr := django.Localized(p.Translations, lang)
 	out.ProductSummary = ProductSummary{
 		ID:          p.ID,
 		Name:        tr.Name,
@@ -194,13 +196,13 @@ func (h *handlers) getProduct(
 	out.PriceAlertAvailable = p.PriceDropAlertsEnabled
 
 	variants, err := h.deps.Django.GetProductVariants(
-		ctx, t.Domain, t.DefaultLocale, in.ProductID)
+		ctx, t.Domain, lang, in.ProductID)
 	if err == nil {
 		for _, v := range variants.Variants {
 			if v.ID == p.ID {
 				continue
 			}
-			vtr := django.Localized(v.Translations, t.DefaultLocale)
+			vtr := django.Localized(v.Translations, lang)
 			vs := ProductSummary{
 				ID:       v.ID,
 				Name:     vtr.Name,
@@ -283,8 +285,9 @@ func (h *handlers) listCategories(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 
-	cats, err := h.deps.Django.ListAllCategories(ctx, t.Domain, t.DefaultLocale)
+	cats, err := h.deps.Django.ListAllCategories(ctx, t.Domain, lang)
 	if err != nil {
 		return nil, out, upstreamErr(err, "categories are unavailable")
 	}
@@ -299,7 +302,7 @@ func (h *handlers) listCategories(
 		}
 		out.Categories = append(out.Categories, CategoryOut{
 			ID:       c.ID,
-			Name:     django.Localized(c.Translations, t.DefaultLocale).Name,
+			Name:     django.Localized(c.Translations, lang).Name,
 			ParentID: c.Parent,
 			Level:    c.Level,
 		})
@@ -332,8 +335,9 @@ func (h *handlers) getTrendingSearches(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 
-	res, err := h.deps.Django.Trending(ctx, t.Domain, t.DefaultLocale, in.Limit)
+	res, err := h.deps.Django.Trending(ctx, t.Domain, lang, in.Limit)
 	if err != nil {
 		return nil, out, upstreamErr(err, "trending searches are unavailable")
 	}
@@ -374,6 +378,7 @@ func (h *handlers) getProductReviews(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	if in.ProductID <= 0 {
 		return nil, out, errors.New("productId is required")
 	}
@@ -385,13 +390,13 @@ func (h *handlers) getProductReviews(
 		limit = 20
 	}
 
-	p, err := h.deps.Django.GetProduct(ctx, t.Domain, t.DefaultLocale, in.ProductID)
+	p, err := h.deps.Django.GetProduct(ctx, t.Domain, lang, in.ProductID)
 	if err != nil {
 		return nil, out, upstreamErr(err, fmt.Sprintf(
 			"product %d was not found", in.ProductID))
 	}
 	page, err := h.deps.Django.GetProductReviews(
-		ctx, t.Domain, t.DefaultLocale, in.ProductID, limit)
+		ctx, t.Domain, lang, in.ProductID, limit)
 	if err != nil {
 		return nil, out, upstreamErr(err, "reviews are unavailable")
 	}
@@ -409,7 +414,7 @@ func (h *handlers) getProductReviews(
 		}{
 			Reviewer: r.User.FirstName,
 			Rating:   r.Rate,
-			Comment:  django.Localized(r.Translations, t.DefaultLocale).Comment,
+			Comment:  django.Localized(r.Translations, lang).Comment,
 			Date:     r.CreatedAt,
 		})
 	}
