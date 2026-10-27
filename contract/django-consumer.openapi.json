@@ -2088,10 +2088,19 @@
       },
       "StoreFeatures": {
         "properties": {
+          "cart": {
+            "type": "boolean"
+          },
+          "catalogue": {
+            "type": "boolean"
+          },
           "favourites": {
             "type": "boolean"
           },
           "loyalty": {
+            "type": "boolean"
+          },
+          "productAlerts": {
             "type": "boolean"
           },
           "productReviews": {
@@ -2102,8 +2111,11 @@
           }
         },
         "required": [
+          "cart",
+          "catalogue",
           "favourites",
           "loyalty",
+          "productAlerts",
           "productReviews",
           "promotions"
         ],

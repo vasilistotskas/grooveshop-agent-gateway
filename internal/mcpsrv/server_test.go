@@ -107,6 +107,9 @@ func TestStoreIsServedOnlyTheToolsOfItsFeatures(t *testing.T) {
 		"get_product_reviews": func(f *django.StoreFeatures) { f.ProductReviews = false },
 		"my_loyalty_points":   func(f *django.StoreFeatures) { f.Loyalty = false },
 		"my_favourites":       func(f *django.StoreFeatures) { f.Favourites = false },
+		"subscribe_product_alert": func(f *django.StoreFeatures) {
+			f.ProductAlerts = false
+		},
 	}
 	every := toolsListed(t, EveryFeature)
 	for name, switchOff := range gated {
@@ -122,6 +125,49 @@ func TestStoreIsServedOnlyTheToolsOfItsFeatures(t *testing.T) {
 			assert.True(t, Offered(name, EveryFeature))
 			assert.False(t, Offered(name, features))
 		})
+	}
+}
+
+// The cart and the catalogue each take their whole group of tools, and
+// nothing else: a store's past orders stay reachable either way.
+func TestCartAndCatalogueSwitchOffTheirTools(t *testing.T) {
+	catalogue := []string{
+		"search_products", "get_product", "list_categories",
+		"get_trending_searches", "get_product_reviews",
+		"subscribe_product_alert", "my_favourites",
+	}
+	cart := []string{
+		"get_shipping_options", "find_pickup_points", "get_payment_methods",
+		"create_cart", "get_cart", "add_to_cart", "update_cart_item",
+		"remove_cart_item", "get_checkout_link", "create_checkout",
+		"get_checkout", "update_checkout", "complete_checkout",
+		"cancel_checkout",
+	}
+	orders := []string{"track_order", "my_orders", "get_order", "my_loyalty_points"}
+
+	noCart := EveryFeature
+	noCart.Cart = false
+	listed := toolsListed(t, noCart)
+	for _, name := range cart {
+		assert.NotContains(t, listed, name)
+		assert.False(t, Offered(name, noCart))
+	}
+	for _, name := range append(catalogue, orders...) {
+		assert.Contains(t, listed, name)
+	}
+	assert.False(t, Offered("apply_coupon", noCart), "a coupon needs a cart")
+
+	// Django folds the catalogue into the cart, so a store without its
+	// catalogue has neither.
+	noCatalogue := EveryFeature
+	noCatalogue.Catalogue = false
+	noCatalogue.Cart = false
+	listed = toolsListed(t, noCatalogue)
+	for _, name := range append(catalogue, cart...) {
+		assert.NotContains(t, listed, name)
+	}
+	for _, name := range orders {
+		assert.Contains(t, listed, name)
 	}
 }
 

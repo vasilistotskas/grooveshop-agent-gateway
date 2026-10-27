@@ -90,7 +90,10 @@ const (
 
 // EveryFeature is the feature set the chat server carries tools for.
 var EveryFeature = django.StoreFeatures{
+	Catalogue:      true,
+	Cart:           true,
 	ProductReviews: true,
+	ProductAlerts:  true,
 	Favourites:     true,
 	Loyalty:        true,
 	Promotions:     true,
@@ -130,11 +133,22 @@ func (t tool) offeredTo(f django.StoreFeatures) bool {
 	return t.offered == nil || t.offered(f)
 }
 
-// The store features a tool can serve, for onlyWith.
-func reviewsOn(f django.StoreFeatures) bool    { return f.ProductReviews }
+// The store features a tool can serve, for onlyWith. Django's `cart`
+// already needs its catalogue; the product features read the catalogue
+// too, since their products are served only while it is.
+func catalogueOn(f django.StoreFeatures) bool { return f.Catalogue }
+func cartOn(f django.StoreFeatures) bool      { return f.Cart }
+func reviewsOn(f django.StoreFeatures) bool {
+	return f.Catalogue && f.ProductReviews
+}
+func productAlertsOn(f django.StoreFeatures) bool {
+	return f.Catalogue && f.ProductAlerts
+}
+func favouritesOn(f django.StoreFeatures) bool {
+	return f.Catalogue && f.Favourites
+}
 func loyaltyOn(f django.StoreFeatures) bool    { return f.Loyalty }
-func favouritesOn(f django.StoreFeatures) bool { return f.Favourites }
-func promotionsOn(f django.StoreFeatures) bool { return f.Promotions }
+func promotionsOn(f django.StoreFeatures) bool { return f.Cart && f.Promotions }
 
 func toolOf[In, Out any](def *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) tool {
 	return tool{def: def, register: func(srv *mcp.Server, _ surface) {
@@ -213,36 +227,36 @@ func representativeQueries(store string) []string {
 // toolset is every tool the server carries, with its handler on h.
 func toolset(h *handlers) []tool {
 	return []tool{
-		toolOf(&mcp.Tool{
+		onlyWith(catalogueOn, toolOf(&mcp.Tool{
 			Name: "search_products",
 			Description: "Search the store's product catalog by free text " +
 				"with optional category and price filters. Greek and English " +
 				"queries both work (Greeklish is expanded server-side). " +
 				"Returns product ids usable with get_product; prices are " +
 				"VAT-inclusive.",
-		}, h.searchProducts),
+		}, h.searchProducts)),
 
-		toolOf(&mcp.Tool{
+		onlyWith(catalogueOn, toolOf(&mcp.Tool{
 			Name: "get_product",
 			Description: "Fetch one product by id: localized name and " +
 				"description, VAT-inclusive price, live stock, rating " +
 				"(1–10, when the store has reviews), page URL, image and " +
 				"purchasable variants.",
-		}, h.getProduct),
+		}, h.getProduct)),
 
-		toolOf(&mcp.Tool{
+		onlyWith(catalogueOn, toolOf(&mcp.Tool{
 			Name: "list_categories",
 			Description: "List the store's product category tree (ids and " +
 				"localized names). Category ids can be passed to " +
 				"search_products to narrow a search.",
-		}, h.listCategories),
+		}, h.listCategories)),
 
-		toolOf(&mcp.Tool{
+		onlyWith(catalogueOn, toolOf(&mcp.Tool{
 			Name: "get_trending_searches",
 			Description: "Popular search queries in this store over the last " +
 				"24 hours — useful to discover what shoppers are looking at. " +
 				"Feed a query into search_products to see the products.",
-		}, h.getTrendingSearches),
+		}, h.getTrendingSearches)),
 
 		onlyWith(reviewsOn, toolOf(&mcp.Tool{
 			Name: "get_product_reviews",
@@ -251,70 +265,70 @@ func toolset(h *handlers) []tool {
 				"verified-purchase comments.",
 		}, h.getProductReviews)),
 
-		toolOf(&mcp.Tool{
+		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name: "get_shipping_options",
 			Description: "Available delivery methods for a destination " +
 				"country with prices and free-shipping thresholds. Kinds: " +
 				"home_delivery and pickup_point (lockers/shops). When " +
 				"checking out a cart, pass its cartId and totalWeightGrams " +
 				"so methods it is too large or too heavy for are left out.",
-		}, h.getShippingOptions),
+		}, h.getShippingOptions)),
 
-		toolOf(&mcp.Tool{
+		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name: "find_pickup_points",
 			Description: "Find parcel pickup points near a Greek postal " +
 				"code: ACS Smartpoint lockers/shops and BOX NOW lockers. " +
 				"Pass city (and optionally street) for more accurate BOX " +
 				"NOW results.",
-		}, h.findPickupPoints),
+		}, h.findPickupPoints)),
 
-		toolOf(&mcp.Tool{
+		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name: "get_payment_methods",
 			Description: "Payment methods this store accepts (e.g. card via " +
 				"Viva/Stripe, cash on delivery), with any extra cost and " +
 				"free thresholds. Optionally filter by the shipping " +
 				"provider/kind you plan to use.",
-		}, h.getPaymentMethods),
+		}, h.getPaymentMethods)),
 
-		toolOf(&mcp.Tool{
+		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name: "create_cart",
 			Description: "Create an empty shopping cart. Persist the returned " +
 				"cartId — every cart and checkout tool needs it. add_to_cart " +
 				"also creates a cart implicitly when called without one.",
-		}, h.createCart),
+		}, h.createCart)),
 
-		cartToolOf(&mcp.Tool{
+		onlyWith(cartOn, cartToolOf(&mcp.Tool{
 			Name: "get_cart",
 			Description: "Fetch a cart's current lines and totals by cartId, " +
 				"including any applied coupon, promotion discount and " +
 				"promotional free shipping.",
-		}, h.getCart),
+		}, h.getCart)),
 
-		toolOf(&mcp.Tool{
+		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name: "add_to_cart",
 			Description: "Add a product to the cart (increments the line if " +
 				"already present). Omit cartId on the first call to create " +
 				"the cart implicitly; persist the returned cartId.",
-		}, h.addToCart),
+		}, h.addToCart)),
 
-		cartToolOf(&mcp.Tool{
+		onlyWith(cartOn, cartToolOf(&mcp.Tool{
 			Name:        "update_cart_item",
 			Description: "Change a cart line's quantity.",
-		}, h.updateCartItem),
+		}, h.updateCartItem)),
 
-		cartToolOf(&mcp.Tool{
+		onlyWith(cartOn, cartToolOf(&mcp.Tool{
 			Name:        "remove_cart_item",
 			Description: "Remove a line from the cart.",
-		}, h.removeCartItem),
+		}, h.removeCartItem)),
 
-		cartToolOf(&mcp.Tool{
+		onlyWith(cartOn, cartToolOf(&mcp.Tool{
 			Name: "get_checkout_link",
 			Description: "Get the URL where the shopper completes checkout in " +
 				"their browser — reviewing the cart, choosing delivery and " +
 				"paying (card via the store's payment provider, or cash on " +
 				"delivery). Payment always happens on the store's own pages, " +
 				"never in chat.",
-		}, h.getCheckoutLink),
+		}, h.getCheckoutLink)),
 
 		// Chat-only: the owner allowed the assistant coupons on the
 		// shopper's cart; /mcp agents apply codes through checkout.
@@ -339,13 +353,13 @@ func toolset(h *handlers) []tool {
 				"the carrier tracking link once shipped.",
 		}, h.trackOrder),
 
-		toolOf(&mcp.Tool{
+		onlyWith(productAlertsOn, toolOf(&mcp.Tool{
 			Name: "subscribe_product_alert",
 			Description: "Subscribe an email address to a product alert: " +
 				"restock (back in stock) or price_drop (price falls to a " +
 				"target). Useful when a product is out of stock or too " +
 				"expensive right now.",
-		}, h.subscribeProductAlert),
+		}, h.subscribeProductAlert)),
 
 		// Account-scoped tools: need a linked shopper account (OAuth
 		// authorization-code + PKCE against the store's identity provider;
@@ -381,7 +395,7 @@ func toolset(h *handlers) []tool {
 		// protocol metadata, `id` names the target session, and `checkout`
 		// carries the domain object. Structured output is the UCP checkout
 		// session.
-		toolOf(&mcp.Tool{
+		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "create_checkout",
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: start a checkout session. Send " +
@@ -389,27 +403,27 @@ func toolset(h *handlers) []tool {
 				"cart tools). Collect buyer, fulfillment and payment with " +
 				"update_checkout until status is ready_for_complete. " +
 				"Requires meta.ucp-agent.profile.",
-		}, h.createCheckout),
+		}, h.createCheckout)),
 
-		toolOf(&mcp.Tool{
+		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "get_checkout",
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: read the current state of a checkout " +
 				"session, including its totals, messages and the payment " +
 				"instruments available for it. Requires " +
 				"meta.ucp-agent.profile.",
-		}, h.getCheckout),
+		}, h.getCheckout)),
 
-		toolOf(&mcp.Tool{
+		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "update_checkout",
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: add or change buyer details, delivery " +
 				"(address or ACS/BOX NOW pickup point), payment and " +
 				"discount codes on a checkout session. Requires " +
 				"meta.ucp-agent.profile.",
-		}, h.updateCheckout),
+		}, h.updateCheckout)),
 
-		toolOf(&mcp.Tool{
+		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "complete_checkout",
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: place the order. Send " +
@@ -419,7 +433,7 @@ func toolset(h *handlers) []tool {
 				"continue_url where the buyer authorizes on the store's " +
 				"hosted page. Requires meta.ucp-agent.profile and " +
 				"meta.idempotency-key.",
-		}, h.completeCheckout),
+		}, h.completeCheckout)),
 
 		// UCP order capability (dev.ucp.shopping.order), MCP transport
 		// binding. Its conformance section requires exactly this tool.
@@ -433,14 +447,14 @@ func toolset(h *handlers) []tool {
 				"meta.ucp-agent.profile.",
 		}, h.getOrder),
 
-		toolOf(&mcp.Tool{
+		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "cancel_checkout",
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: abandon a checkout session the buyer is no " +
 				"longer pursuing. Already-canceled sessions succeed " +
 				"unchanged. Requires meta.ucp-agent.profile and " +
 				"meta.idempotency-key.",
-		}, h.cancelCheckout),
+		}, h.cancelCheckout)),
 	}
 }
 

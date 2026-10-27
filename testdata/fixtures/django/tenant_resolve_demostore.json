@@ -34,7 +34,14 @@
     "promotions": false,
     "giftCards": false,
     "wholesale": false,
-    "productSuggestions": false
+    "productSuggestions": false,
+    "b2bInvoicing": false,
+    "productAlerts": true,
+    "priceHistory": true,
+    "contactAttachments": false,
+    "chatWidget": false,
+    "catalogue": true,
+    "cart": true
   },
   "stripePublishableKey": "",
   "allowedCspSources": [],

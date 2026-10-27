@@ -124,7 +124,7 @@ func New(d Deps) http.Handler {
 	mux.Handle("GET "+ucp.HandlerDocsHost+"/", ucp.HandlerDocsHandler())
 
 	mux.Handle("GET /.well-known/ucp",
-		tenantMW(tenant.RequireAgentCommerce(
+		tenantMW(tenant.RequireCheckout(
 			ucp.ProfileHandler(d.Keys, d.Cfg.PaymentHandlerEnv))))
 
 	// Cluster-internal: Django's order-event push. Not tenant-scoped —
@@ -139,7 +139,7 @@ func New(d Deps) http.Handler {
 	// by the tenant's own acpBearerToken from tenant/resolve. A tenant
 	// without one has ACP disabled and every bearer gets 401.
 	acpMW := func(h http.Handler) http.Handler {
-		return tenantSecretsMW(tenant.RequireAgentCommerce(h))
+		return tenantSecretsMW(tenant.RequireCheckout(h))
 	}
 	acp.NewHandler(d.Django, checkoutStore, checkoutFlow, d.Redis,
 		d.Log).Register(mux, acpMW)

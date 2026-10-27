@@ -481,7 +481,13 @@ type TenantConfig struct {
 // StoreFeatures is the part of TenantConfig.features the gateway reads:
 // the features some tool or surface of it serves.
 type StoreFeatures struct {
+	// Catalogue: the store publishes its products (listings, product
+	// pages, search).
+	Catalogue bool `json:"catalogue"`
+	// Cart: the store takes orders. Django folds the catalogue into it.
+	Cart           bool `json:"cart"`
 	ProductReviews bool `json:"productReviews"`
+	ProductAlerts  bool `json:"productAlerts"`
 	Favourites     bool `json:"favourites"`
 	Loyalty        bool `json:"loyalty"`
 	Promotions     bool `json:"promotions"`
@@ -501,7 +507,17 @@ func (t TenantConfig) HostedPaymentOn() bool {
 }
 
 // ProductFeedsOn reports whether catalog feed syndication is enabled.
-// Subordinate to the agent-commerce gate.
+// Subordinate to the agent-commerce gate, and to the catalogue: a feed
+// of products the store does not publish lists pages that 404.
 func (t TenantConfig) ProductFeedsOn() bool {
-	return t.AgentCommerceEnabled && t.ProductFeedsEnabled
+	return t.AgentCommerceEnabled && t.ProductFeedsEnabled &&
+		t.Features.Catalogue
+}
+
+// CheckoutOn reports whether agents may check out at the store: the
+// UCP profile and ACP sessions. Subordinate to the agent-commerce gate,
+// and to the cart: a store that takes no orders has nothing to check
+// out.
+func (t TenantConfig) CheckoutOn() bool {
+	return t.AgentCommerceEnabled && t.Features.Cart
 }

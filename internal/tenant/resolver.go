@@ -294,9 +294,9 @@ func (r *Resolver) count(result string) {
 // that decodes a field an older one never wrote must not read that
 // one's entries, or the field reads as its zero value until they
 // expire (v2: TenantConfig.Features, which would read as every
-// feature off).
+// feature off; v3: its cart, catalogue and product alerts).
 func redisKey(domain string) string {
-	return "ag:tenant:v2:" + domain
+	return "ag:tenant:v3:" + domain
 }
 
 // NormalizeHost lowercases and strips any port from an inbound Host header.
