@@ -10,7 +10,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { dirname, relative, sep } from 'node:path'
+import { dirname } from 'node:path'
 
 let input = {}
 try {
@@ -29,10 +29,10 @@ const quote = s => (WIN
   : (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`))
 
 /** A shell is used so a PATH-resolved `go`/`gofmt` works the same on Windows. */
-function run(cmd, args, timeout = 120_000) {
+function run(cmd, args, cwd, timeout = 120_000) {
   try {
     const stdout = execFileSync([cmd, ...args].map(quote).join(' '), {
-      cwd: process.cwd(),
+      cwd,
       timeout,
       stdio: 'pipe',
       encoding: 'utf8',
@@ -50,19 +50,21 @@ function run(cmd, args, timeout = 120_000) {
   }
 }
 
-run('gofmt', ['-w', filePath])
+const dir = dirname(filePath)
+
+run('gofmt', ['-w', filePath], dir)
 
 // Vet the file's own package rather than ./... — a whole-module vet on every
-// edit is far too slow for a PostToolUse hook.
-let pkg = relative(process.cwd(), dirname(filePath)).split(sep).join('/')
-pkg = pkg && !pkg.startsWith('..') ? `./${pkg}` : '.'
+// edit is far too slow for a PostToolUse hook. It runs in the file's own
+// directory, so the package resolves whatever the hook's cwd is.
+const pkg = '.'
 
-const vet = run('go', ['vet', pkg], 120_000)
+const vet = run('go', ['vet', pkg], dir, 120_000)
 if (!vet.ok && !vet.missing && vet.output.trim()) {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PostToolUse',
-      additionalContext: `go vet ${pkg}:\n${vet.output.trim().split(/\r?\n/).slice(0, 20).join('\n')}`,
+      additionalContext: `go vet ${dir}:\n${vet.output.trim().split(/\r?\n/).slice(0, 20).join('\n')}`,
     },
   }))
 }
