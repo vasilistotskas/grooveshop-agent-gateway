@@ -107,8 +107,9 @@ const serverCardDescriptionMax = 100
 
 // ServerCardHandler serves GET <streamable-http-url>/server-card, the
 // location the Server Card extension reserves, for the tenant resolved
-// from the host. version is the build that also answers `initialize`.
-func ServerCardHandler(version string) http.Handler {
+// from the host. version is the build that also answers `initialize`;
+// the website is the store's home in its default language.
+func ServerCardHandler(version string, site storefront.Site) http.Handler {
 	return publicDocument(serverCardMediaType, func(t *tenant.Tenant) any {
 		id := IdentityFor(t)
 		card := serverCard{
@@ -117,7 +118,7 @@ func ServerCardHandler(version string) http.Handler {
 			Version:     version,
 			Description: id.Description(),
 			Title:       id.Title,
-			WebsiteURL:  storefront.Home(t.Domain),
+			WebsiteURL:  site.Links(t.Domain, t.DefaultLocale).Home(),
 			Remotes: []remote{{
 				Type:                      "streamable-http",
 				URL:                       storefront.MCP(t.Domain),

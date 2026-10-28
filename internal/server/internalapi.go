@@ -14,6 +14,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/feeds"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
@@ -72,6 +73,7 @@ type orderEventDeps struct {
 	Resolver   *tenant.Resolver
 	Django     *django.Client
 	Dispatcher *ucp.Dispatcher
+	Site       storefront.Site
 	Log        *slog.Logger
 }
 
@@ -159,7 +161,9 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 			retry("order event order fetch failed", err)
 			return
 		}
-		entity, err := ucp.BuildOrder(t, order, link.CheckoutID,
+		// An order event names no language: the store's default.
+		entity, err := ucp.BuildOrder(t,
+			d.Site.Links(t.Domain, t.DefaultLocale), order, link.CheckoutID,
 			ucp.OrderCapabilities())
 		if err != nil {
 			drop("order event order unrenderable", err)

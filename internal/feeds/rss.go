@@ -36,8 +36,10 @@ const (
 // feedContext carries per-generation tenant data every writer needs.
 type feedContext struct {
 	StoreName string
-	// Domain is the storefront host, used for product links.
+	// Domain is the storefront host, the channel's link.
 	Domain string
+	// Links are the storefront's pages in the feed's language.
+	Links storefront.Links
 	// AssetsHost is the resolved media origin for image links — the
 	// tenant's own when it opted into white-label assets, otherwise the
 	// platform origin. NOT derived from Domain: assets.<storefront> is a
@@ -149,7 +151,7 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 	return &feedItem{
 		ID:    p.ID,
 		Title: title, Description: desc,
-		Link: storefront.Product(ctx.Domain, p.ID, p.Slug),
+		Link: ctx.Links.Product(p.ID, p.Slug),
 		ImageLink: media.ImageURL(ctx.ImageURLTemplate, ctx.AssetsHost,
 			ctx.Schema, p.MainImagePath),
 		AdditionalImageLinks: additional,

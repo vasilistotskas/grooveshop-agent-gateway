@@ -15,6 +15,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -38,7 +39,7 @@ func fixtureHandlers(
 		&slog.HandlerOptions{Level: slog.LevelError + 1}))
 	dj := django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, log, obs.NewMetrics())
-	return &handlers{deps: Deps{Django: dj}}
+	return &handlers{deps: Deps{Site: testSite, Django: dj}}
 }
 
 // searchHandlers serves the recorded search fixture and reports the sort
@@ -153,3 +154,6 @@ func TestPriceOf(t *testing.T) {
 		})
 	}
 }
+
+// testSite is a storefront built with el as its default language.
+var testSite = storefront.NewSite("el")

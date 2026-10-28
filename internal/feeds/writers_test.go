@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -35,6 +36,7 @@ func testFeedContext() *feedContext {
 	return &feedContext{
 		StoreName:        "Demo Store",
 		Domain:           "shop.example.test",
+		Links:            storefront.NewSite("el").Links("shop.example.test", "el"),
 		AssetsHost:       "assets.platform.test",
 		Schema:           "demostore",
 		Currency:         "EUR",

@@ -292,3 +292,24 @@ func TestDecodeBoxNowLocker(t *testing.T) {
 	assert.Equal(t, "11472", l.PostalCode)
 	assert.NotEmpty(t, l.Distance.String())
 }
+
+func TestDecodePublicSettings(t *testing.T) {
+	s := decodeFixture[PublicSettings](t, "settings_public.json")
+
+	assert.Equal(t, "14", s.Settings[SettingReturnWindowDays])
+	assert.Equal(t, ReturnFeesFree, s.Settings[SettingReturnFees])
+}
+
+func TestDecodeContentPage(t *testing.T) {
+	p := decodeFixture[ContentPage](t, "content_page_return_policy.json")
+
+	assert.Equal(t, ContentPageReturnPolicy, p.Slug)
+}
+
+func TestDecodeTenantAvailableLocales(t *testing.T) {
+	c := decodeFixture[TenantConfig](t, "tenant_resolve_demostore.json")
+
+	assert.Equal(t, []string{"el", "en"}, c.ServedLocales())
+	assert.True(t, c.Serves("en"))
+	assert.False(t, c.Serves("de"))
+}

@@ -18,6 +18,10 @@
   "themePreset": "",
   "themeMetadata": {},
   "defaultLocale": "el",
+  "availableLocales": [
+    "el",
+    "en"
+  ],
   "defaultCurrency": "EUR",
   "primaryDomain": "shop.example.test",
   "loyaltyEnabled": true,

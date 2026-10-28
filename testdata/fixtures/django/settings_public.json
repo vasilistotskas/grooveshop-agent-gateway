@@ -1,0 +1,32 @@
+{
+  "settings": {
+    "ANNOUNCEMENT_BAR": "{}",
+    "AUTH_PANEL": "{}",
+    "BUSINESS_HOURS": "{\"schedule\": {\"fri\": {\"opens\": \"09:00\", \"closes\": \"20:00\"}, \"mon\": {\"opens\": \"09:00\", \"closes\": \"17:00\"}, \"sat\": {\"opens\": \"10:00\", \"closes\": \"15:00\"}, \"sun\": null, \"thu\": {\"opens\": \"09:00\", \"closes\": \"20:00\"}, \"tue\": {\"opens\": \"09:00\", \"closes\": \"17:00\"}, \"wed\": {\"opens\": \"09:00\", \"closes\": \"17:00\"}}, \"timezone\": \"Europe/Athens\"}",
+    "CONTACT_ATTACHMENTS_MAX_COUNT": "3",
+    "CONTACT_ATTACHMENTS_MAX_MB": "10",
+    "CONTACT_ATTACHMENTS_TYPES": "application/pdf",
+    "CONTACT_EMAIL": "hello@shop.example.test",
+    "DEMO_ACCOUNT_B2B_EMAIL": "",
+    "DEMO_ACCOUNT_B2B_PASSWORD": "",
+    "DEMO_ACCOUNT_EMAIL": "",
+    "DEMO_ACCOUNT_PASSWORD": "",
+    "DISPATCH_CUTOFF": "15:00",
+    "FUNDING_BANNER": "{\"enabled\": false}",
+    "GIFT_CARD_MAX_AMOUNT": "500.0000000000",
+    "GIFT_CARD_MIN_AMOUNT": "10.0000000000",
+    "GIFT_CARD_VALIDITY_DAYS": "1825",
+    "LOYALTY_NEW_CUSTOMER_BONUS_ENABLED": "False",
+    "LOYALTY_NEW_CUSTOMER_BONUS_POINTS": "100",
+    "LOYALTY_POINTS_EXPIRATION_DAYS": "0",
+    "LOYALTY_POINTS_FACTOR": "1.0000000000",
+    "LOYALTY_REDEMPTION_RATIO_EUR": "100.0000000000",
+    "LOYALTY_TIER_MULTIPLIER_ENABLED": "False",
+    "LOYALTY_XP_PER_LEVEL": "1000",
+    "RETURN_FEES": "free",
+    "RETURN_WINDOW_DAYS": "14",
+    "STORE_GEO_LAT": "40.6403",
+    "STORE_GEO_LNG": "22.9439",
+    "STORE_OFFICES": "[]"
+  }
+}

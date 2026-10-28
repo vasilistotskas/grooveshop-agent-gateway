@@ -10,11 +10,12 @@ import (
 // order.enum.status.PaymentStatus; a rename there is a contract change
 // that lands here, in one place.
 const (
-	ProviderVivaWallet     = "viva_wallet"
-	ProviderCashOnDelivery = "cash_on_delivery"
-	ShippingProviderACS    = "acs"
-	ShippingProviderBoxNow = "boxnow"
-	PaymentStatusCompleted = "COMPLETED"
+	ProviderVivaWallet      = "viva_wallet"
+	ProviderCashOnDelivery  = "cash_on_delivery"
+	ShippingProviderACS     = "acs"
+	ShippingProviderBoxNow  = "boxnow"
+	ShippingKindPickupPoint = "pickup_point"
+	PaymentStatusCompleted  = "COMPLETED"
 )
 
 // Settlement values, mirroring Django's “pay_way.enum.settlement

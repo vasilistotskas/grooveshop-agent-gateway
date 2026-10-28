@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -182,7 +183,7 @@ func TestDiscoveryDocuments(t *testing.T) {
 // ARD entry restates the card's — and must never drift from it.
 func TestARDEntryNamesWhatTheServerCardReports(t *testing.T) {
 	for _, tn := range []*tenant.Tenant{cardTenant(), idnTenant()} {
-		card := decode(t, serve(t, ServerCardHandler("1.18.0"), tn,
+		card := decode(t, serve(t, ServerCardHandler("1.18.0", storefront.NewSite("el")), tn,
 			http.MethodGet, nil))
 		entry := firstEntry(t, decode(t, serve(t, ARDHandler(), tn,
 			http.MethodGet, nil)))

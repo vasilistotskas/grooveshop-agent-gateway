@@ -81,7 +81,7 @@ func TestAnUnfitSelectionIsNeitherOfferedNorEchoed(t *testing.T) {
 			s.Recompute()
 
 			payload, err := Render(context.Background(),
-				unfitDjango(t, flags), tn, s)
+				unfitDjango(t, flags), tn, testLinks(tn), s)
 			require.NoError(t, err)
 
 			assert.Empty(t, payload.FulfillmentOptions,

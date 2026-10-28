@@ -139,15 +139,17 @@ type Builder struct {
 	assetsHost       string
 	// env is the payment handler's environment (config.PaymentHandlerEnv),
 	// surfaced to platforms so they keep test traffic out of live orders.
-	env string
+	env  string
+	site storefront.Site
 }
 
 func NewBuilder(
 	dj *django.Client, mediaURLTemplate, assetsHost, env string,
+	site storefront.Site,
 ) *Builder {
 	return &Builder{
 		dj: dj, mediaURLTemplate: mediaURLTemplate, assetsHost: assetsHost,
-		env: env,
+		env: env, site: site,
 	}
 }
 
@@ -162,6 +164,7 @@ func (b *Builder) BuildCheckout(
 	if err != nil {
 		return nil, fmt.Errorf("ucp: pricing: %w", err)
 	}
+	links := b.site.Links(t.Domain, django.Language(ctx, t.TenantConfig))
 
 	// The response declaration is authoritative for this checkout: it
 	// lists what the agent may still select.
@@ -190,8 +193,8 @@ func (b *Builder) BuildCheckout(
 		Status:    string(s.Status),
 		Currency:  t.DefaultCurrency,
 		Links: []Link{
-			{Type: "terms_of_service", URL: storefront.Terms(t.Domain)},
-			{Type: "privacy_policy", URL: storefront.Privacy(t.Domain)},
+			{Type: "terms_of_service", URL: links.Terms()},
+			{Type: "privacy_policy", URL: links.Privacy()},
 		},
 	}
 
@@ -262,7 +265,7 @@ func (b *Builder) BuildCheckout(
 					"payment on the store's hosted checkout.",
 			})
 		case s.OrderUUID != "":
-			out.ContinueURL = storefront.OrderSuccess(t.Domain, s.OrderUUID)
+			out.ContinueURL = links.OrderSuccess(s.OrderUUID)
 			out.Messages = append(out.Messages, Message{
 				Type: "error", Code: "payment_link_unavailable",
 				Text: "The order is placed but its payment link could not " +
@@ -270,7 +273,7 @@ func (b *Builder) BuildCheckout(
 				Severity: "recoverable",
 			})
 		default:
-			out.ContinueURL = storefront.CartClaim(t.Domain, s.CartID)
+			out.ContinueURL = links.CartClaim(s.CartID)
 			out.Messages = append(out.Messages, Message{
 				Type: "info", Code: "requires_buyer_review",
 				Text: "The buyer must open continue_url to finish " +
@@ -287,7 +290,7 @@ func (b *Builder) BuildCheckout(
 		out.Order = &OrderConfirmation{
 			ID:           s.OrderUUID,
 			Label:        fmt.Sprintf("Order %d", s.OrderID),
-			PermalinkURL: storefront.OrderSuccess(t.Domain, s.OrderUUID),
+			PermalinkURL: links.OrderSuccess(s.OrderUUID),
 		}
 	}
 	return out, nil

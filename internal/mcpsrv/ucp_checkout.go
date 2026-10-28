@@ -69,12 +69,12 @@ func (h *handlers) createCheckout(
 	if err := in.Meta.validate(false); err != nil {
 		return nil, zero, err
 	}
-	neg, err := h.negotiate(ctx, t, in.Meta, storefront.Cart(t.Domain))
+	neg, err := h.negotiate(ctx, t, in.Meta, h.linksFor(ctx, t).Cart())
 	if err != nil {
 		return nil, zero, err
 	}
 	if !neg.Has(ucp.CapabilityCheckout) {
-		return nil, incompatibleCheckout(t), nil
+		return nil, incompatibleCheckout(h.linksFor(ctx, t)), nil
 	}
 	lines, err := in.Checkout.lines()
 	if err != nil {
@@ -167,12 +167,12 @@ func (h *handlers) updateCheckout(
 	if err := in.Meta.validate(false); err != nil {
 		return nil, zero, err
 	}
-	neg, err := h.negotiate(ctx, t, in.Meta, storefront.Cart(t.Domain))
+	neg, err := h.negotiate(ctx, t, in.Meta, h.linksFor(ctx, t).Cart())
 	if err != nil {
 		return nil, zero, err
 	}
 	if !neg.Has(ucp.CapabilityCheckout) {
-		return nil, incompatibleCheckout(t), nil
+		return nil, incompatibleCheckout(h.linksFor(ctx, t)), nil
 	}
 	s, release, err := h.lockedSession(ctx, t, in.ID)
 	if err != nil {
@@ -240,12 +240,12 @@ func (h *handlers) completeCheckout(
 	if err := in.Meta.validate(true); err != nil {
 		return nil, zero, err
 	}
-	neg, err := h.negotiate(ctx, t, in.Meta, storefront.Cart(t.Domain))
+	neg, err := h.negotiate(ctx, t, in.Meta, h.linksFor(ctx, t).Cart())
 	if err != nil {
 		return nil, zero, err
 	}
 	if !neg.Has(ucp.CapabilityCheckout) {
-		return nil, incompatibleCheckout(t), nil
+		return nil, incompatibleCheckout(h.linksFor(ctx, t)), nil
 	}
 	s, release, err := h.lockedSession(ctx, t, in.ID)
 	if err != nil {
@@ -486,12 +486,12 @@ func (h *handlers) getCheckout(
 	if err := in.Meta.validate(false); err != nil {
 		return nil, zero, err
 	}
-	neg, err := h.negotiate(ctx, t, in.Meta, storefront.Cart(t.Domain))
+	neg, err := h.negotiate(ctx, t, in.Meta, h.linksFor(ctx, t).Cart())
 	if err != nil {
 		return nil, zero, err
 	}
 	if !neg.Has(ucp.CapabilityCheckout) {
-		return nil, incompatibleCheckout(t), nil
+		return nil, incompatibleCheckout(h.linksFor(ctx, t)), nil
 	}
 	if in.ID == "" {
 		return nil, zero, errors.New("id is required")
@@ -525,12 +525,12 @@ func (h *handlers) cancelCheckout(
 	if err := in.Meta.validate(true); err != nil {
 		return nil, zero, err
 	}
-	neg, err := h.negotiate(ctx, t, in.Meta, storefront.Cart(t.Domain))
+	neg, err := h.negotiate(ctx, t, in.Meta, h.linksFor(ctx, t).Cart())
 	if err != nil {
 		return nil, zero, err
 	}
 	if !neg.Has(ucp.CapabilityCheckout) {
-		return nil, incompatibleCheckout(t), nil
+		return nil, incompatibleCheckout(h.linksFor(ctx, t)), nil
 	}
 	s, release, err := h.lockedSession(ctx, t, in.ID)
 	if err != nil {
@@ -563,8 +563,8 @@ func (h *handlers) cancelCheckout(
 
 // incompatibleCheckout is the negotiation-failure result: the platform
 // shares no version of the checkout capability.
-func incompatibleCheckout(t *tenant.Tenant) CheckoutResult {
+func incompatibleCheckout(links storefront.Links) CheckoutResult {
 	return CheckoutResult{
-		failure: ucp.CapabilitiesIncompatible(storefront.Cart(t.Domain)),
+		failure: ucp.CapabilitiesIncompatible(links.Cart()),
 	}
 }

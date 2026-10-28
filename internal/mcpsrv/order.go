@@ -9,7 +9,6 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
@@ -51,11 +50,12 @@ func (h *handlers) trackOrder(
 	if err != nil {
 		return nil, out, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	if in.OrderUUID == "" {
 		return nil, out, errors.New("orderUuid is required")
 	}
 
-	o, err := h.deps.Django.OrderByUUID(ctx, t.Domain, t.DefaultLocale, in.OrderUUID)
+	o, err := h.deps.Django.OrderByUUID(ctx, t.Domain, lang, in.OrderUUID)
 	if err != nil {
 		return nil, out, upstreamErr(err,
 			"no order was found for that UUID; double-check it against "+
@@ -74,7 +74,7 @@ func (h *handlers) trackOrder(
 	out.GiftCardAmount = posNum(o.PricingBreakdown.GiftCardAmount)
 	out.Currency = o.PricingBreakdown.Currency
 	for _, it := range o.Items {
-		tr := django.Localized(it.Product.Translations, t.DefaultLocale)
+		tr := django.Localized(it.Product.Translations, lang)
 		out.Items = append(out.Items, struct {
 			Name     string `json:"name"`
 			Quantity int    `json:"quantity"`
@@ -122,23 +122,24 @@ func (h *handlers) getOrder(
 	if err != nil {
 		return nil, zero, err
 	}
+	lang := django.Language(ctx, t.TenantConfig)
 	if err := in.Meta.validate(false); err != nil {
 		return nil, zero, err
 	}
-	neg, err := h.negotiate(ctx, t, in.Meta, storefront.Home(t.Domain))
+	neg, err := h.negotiate(ctx, t, in.Meta, h.linksFor(ctx, t).Home())
 	if err != nil {
 		return nil, zero, err
 	}
 	if !neg.Has(ucp.CapabilityOrder) {
 		return nil, OrderResult{failure: ucp.CapabilitiesIncompatible(
-			storefront.Home(t.Domain))}, nil
+			h.linksFor(ctx, t).Home())}, nil
 	}
 	if in.ID == "" {
 		return nil, zero, errors.New("id is required")
 	}
 
 	order, err := h.deps.Django.OrderByUUID(
-		ctx, t.Domain, t.DefaultLocale, in.ID)
+		ctx, t.Domain, lang, in.ID)
 	if err != nil {
 		if errors.Is(err, django.ErrNotFound) {
 			return nil, zero, fmt.Errorf("no order %s exists", in.ID)
@@ -159,7 +160,8 @@ func (h *handlers) getOrder(
 			"the order index is temporarily unavailable; retry shortly")
 	}
 
-	out, err := ucp.BuildOrder(t, order, link.CheckoutID,
+	out, err := ucp.BuildOrder(t, h.linksFor(ctx, t), order,
+		link.CheckoutID,
 		neg.Declaration(ucp.CapabilityOrder))
 	if err != nil {
 		return nil, zero, err

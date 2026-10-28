@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/feeds"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 )
 
 const testSecret = "shared-internal-secret"
@@ -42,7 +43,7 @@ func unreachableRedis() *redis.Client {
 
 func invalidateHandler(rdb *redis.Client) http.Handler {
 	svc := feeds.NewService(nil, rdb, quietLog(), "", "",
-		time.Hour, 24*time.Hour, "test")
+		time.Hour, 24*time.Hour, "test", storefront.NewSite("el"))
 	return internalFeedInvalidate(testSecret, svc, quietLog())
 }
 

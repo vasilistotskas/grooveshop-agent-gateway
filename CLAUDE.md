@@ -54,7 +54,10 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   development | test) is folded into `AllowLocalWebhooks` and
   `PaymentHandlerEnv` there so no handler compares environment strings.
   The infra staging overlay sets `ENV=staging`: production network
-  rules, sandbox handler label.
+  rules, sandbox handler label. `STOREFRONT_DEFAULT_LOCALE` (required, a
+  bare language code) is the storefront build's `DEFAULT_LOCALE`
+  (`i18n/locales.ts`): the language its unprefixed pages render on
+  every tenant, whatever the tenant's own default.
   Per-tenant values come from Django `tenant/resolve` at request time,
   never env.
 - `internal/identity` — optional-auth middleware on /mcp: a present
@@ -62,7 +65,7 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   (60s in-memory cache, SHA-256 keys); invalid tokens get 401 + the
   RFC 9728 `WWW-Authenticate` challenge; anonymous requests pass
   through. Account tools forward the bearer — Django enforces scopes.
-- `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:v3:{host}`
+- `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:v4:{host}`
   → Django; singleflight; 60s negative cache; stale-if-error) + middleware
   (tenant from the **real Host header only** — inbound X-Forwarded-Host is
   deliberately ignored; spoofing it must never switch tenants).
@@ -104,7 +107,18 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   cart claim, order success, legal pages, OAuth metadata). The paths are
   a cross-repo contract with the Nuxt `app/pages` and `server/routes`
   trees; build URLs here, never with a `"https://" + domain + path`
-  literal in a renderer.
+  literal in a renderer. Page links are in a language: `storefront.Site`
+  (built once from `STOREFRONT_DEFAULT_LOCALE`) hands out
+  `Links(domain, lang)`, which leave the build default unprefixed and
+  put any other language under `/<code>` (@nuxtjs/i18n
+  `prefix_except_default`). The cart claim is a Nitro server route, not
+  a page, so it takes no prefix: it carries a `locale=<code>` query instead,
+  only for a language other than the build default, and the storefront
+  redirects to the cart in it. A tool builds its links in the turn's
+  language (`mcpsrv` `linksFor`: `django.Language`), so a chat turn on
+  `/en` links `/en/...` and `/mcp` links the store's default; ACP, the
+  UCP order webhooks, the Server Card and the feeds link the store's
+  default.
 - `internal/text` — rune-safe truncation. Byte-index cuts split Greek
   runes; use `text.Runes` / `text.Ellipsize`.
 - `testdata/fixtures/django/` — recorded upstream responses for the DTO
@@ -197,8 +211,9 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   checkout tools need `cart` (which Django folds the catalogue into);
   `get_product_reviews`, `subscribe_product_alert` and `my_favourites`
   need `catalogue` and `productReviews` / `productAlerts` /
-  `favourites`; `my_loyalty_points` `loyalty`. The order tools stay
-  open. The UCP profile and `/acp/*` need `cart` (`CheckoutOn`), the
+  `favourites`; `my_loyalty_points` `loyalty`. The order tools and
+  `get_store_policies` stay open (return terms bind orders already
+  placed). The UCP profile and `/acp/*` need `cart` (`CheckoutOn`), the
   feeds `catalogue` (`ProductFeedsOn`). The per-store server (cached per feature set) neither
   lists nor serves it, discovery does not advertise it, and the chat
   bridge, which shares one server built with `EveryFeature`, filters
@@ -209,7 +224,19 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   with the plan flag off, which would fail the request) and clears the
   cart's old coupon best effort, and ACP sessions do not declare the
   discount extension.
-- Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:v3:{host}`,
+- **Store facts come from the store, never a default.**
+  `find_pickup_points` searches only the pickup carriers the store's
+  `/shipping/options` list as `pickup_point` for the country and the
+  cart (`FitsCart`), among the networks it can search (ACS, BOX NOW);
+  a store without one gets an answer saying so, not an error. BOX NOW's
+  `lockers/nearest` requires city, street AND postal code, so it is
+  called only with all three and the tool tells the model to ask for
+  the rest. `get_store_policies` reads `RETURN_WINDOW_DAYS` and
+  `RETURN_FEES` from `/settings/public` (Django's `PUBLIC_SETTING_KEYS`;
+  `0` / `""` are "not stated" and are left out, a missing or malformed
+  value fails the call) and links `Links.ReturnPolicy` only while
+  `/content-page/return-policy` is published (a 404 means it is not).
+- Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:v4:{host}`,
   versioned with the cached `TenantConfig` shape: bump it when a field is
   added, or entries an older pod wrote decode it as its zero value.
 - No tenant label on Prometheus metrics (unbounded cardinality) — tenant
@@ -283,8 +310,10 @@ release that drops, loosens or retypes one of those properties.
   (Viva Smart Checkout URL). Payments: **Viva primary** (hosted
   authorization via UCP `requires_escalation`+`continue_url`), Stripe
   tokenized behind per-tenant flag.
-- Nuxt repo: `/cart/claim?uuid=` claims a gateway-built cart into the
-  browser session;
+- Nuxt repo: `/cart/claim` (query `uuid=<cart>`, plus
+  `locale=<code>` for a language other than the build default) claims
+  a gateway-built cart into the browser session and lands on the cart
+  page in `locale` (absent: the build default);
   `.well-known/oauth-protected-resource[/mcp]` names the Django API as
   the OAuth authorization server (allauth.idp: auth-code + PKCE + DCR).
 - Agent discovery is the gateway's alone: `/.well-known/ard.json` and
@@ -305,7 +334,21 @@ release that drops, loosens or retypes one of those properties.
   model provider throttled the turn, `retryAfter` its wait in seconds),
   `done {conversationId, cartId?, cartMutated, cartTokenRefused}`.
   The request is `{message, conversationId?, cartId?, cartToken?,
-  turnId?}`. `turnId` is a UUID the widget mints per message and sends
+  turnId?, locale?}`. `locale` is the storefront page's language code
+  (`el`, `en`, …): the turn is served in it when the store serves it
+  (`TenantConfig.ServedLocales`: `availableLocales`, else the default
+  alone), else in the store's default; an unserved one is ignored, not
+  refused. The turn's language rides the request context
+  (`django.WithLanguage`) like the cart token, and every tool handler
+  reads it through `django.Language` — `X-Language`, the search's
+  `languageCode` and the translation picked — so product names come
+  back in the page's language. `/mcp` names none and stays on the
+  store's default. The refusals and SSE `error` messages speak it, and
+  the prompt tells the model to reply in the language of the shopper's
+  latest message, else in the turn's, named in English
+  (`chat.languageName`). The prompt also forbids naming a product,
+  category or brand no tool result showed, and answers return and
+  policy questions only from `get_store_policies`. `turnId` is a UUID the widget mints per message and sends
   again when the shopper retries it: each `add_to_cart` of the turn
   sends an `Idempotency-Key` derived from it, the call and how many
   identical adds the turn already made (`mcpsrv.Turn`), so Django's

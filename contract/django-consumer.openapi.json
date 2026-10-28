@@ -674,6 +674,17 @@
         ],
         "type": "object"
       },
+      "ContentPageDetail": {
+        "properties": {
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "type": "object"
+      },
       "CouponApplyRequestRequest": {
         "properties": {
           "code": {
@@ -2019,6 +2030,20 @@
         ],
         "type": "object"
       },
+      "PublicSettings": {
+        "properties": {
+          "settings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "settings"
+        ],
+        "type": "object"
+      },
       "ReserveStockResponse": {
         "properties": {
           "message": {
@@ -2137,6 +2162,12 @@
           },
           "assetsDomain": {
             "type": "string"
+          },
+          "availableLocales": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "defaultCurrency": {
             "type": "string"
@@ -2472,6 +2503,33 @@
           }
         },
         "summary": "django.Client.ReserveStock"
+      }
+    },
+    "/api/v1/content-page/{slug}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContentPageDetail"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.ContentPage"
       }
     },
     "/api/v1/order": {
@@ -2946,6 +3004,23 @@
           }
         },
         "summary": "django.Client.Trending"
+      }
+    },
+    "/api/v1/settings/public": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicSettings"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.PublicSettings"
       }
     },
     "/api/v1/shipping/acs/stations/nearest": {

@@ -81,6 +81,10 @@ type chatRequest struct {
 	// changes are recognised as the same (mcpsrv.Turn). A turn without
 	// one is named here, and only its own repeats are recognised.
 	TurnID string `json:"turnId"`
+	// Locale is the language of the storefront page the shopper is on
+	// (e.g. "el", "en"). The turn is served in it when the store serves
+	// that language, else in the store's default.
+	Locale string `json:"locale"`
 }
 
 // errorEvent ends a failed turn. Code is set for the failures the widget
@@ -122,9 +126,11 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The widget renders payload.error verbatim, so every refusal below
-	// speaks the tenant's language.
+	// speaks the turn's language: the store's default until the request
+	// names a language the store serves.
+	lang := t.DefaultLocale
 	fail := func(status int, key string) {
-		httpmw.WriteJSONError(w, status, messageFor(t.DefaultLocale, key))
+		httpmw.WriteJSONError(w, status, messageFor(lang, key))
 	}
 	var req chatRequest
 	if err := json.NewDecoder(
@@ -133,6 +139,12 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusBadRequest, msgBadRequest)
 		return
 	}
+	if req.Locale != "" && t.Serves(req.Locale) {
+		lang = req.Locale
+	}
+	// Every Django call the turn's tools make asks for this language, so
+	// product names come back in the page's language (django.Language).
+	r = r.WithContext(django.WithLanguage(r.Context(), lang))
 	req.Message = strings.TrimSpace(req.Message)
 	if req.Message == "" {
 		fail(http.StatusBadRequest, msgMessageEmpty)
@@ -236,7 +248,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		// The status line alone is undebuggable — surface the model
 		// API's error body and the failing request shape.
 		failure := errorEvent{
-			Message: messageFor(t.DefaultLocale, msgTurnFailed),
+			Message: messageFor(lang, msgTurnFailed),
 		}
 		if apierr, ok := errors.AsType[*openai.Error](err); ok {
 			upstream := string(apierr.DumpResponse(true))
@@ -263,7 +275,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 			// reads one field instead of a 2KB blob.
 			if apierr.StatusCode == http.StatusTooManyRequests {
 				failure = errorEvent{
-					Message:    messageFor(t.DefaultLocale, msgRateLimited),
+					Message:    messageFor(lang, msgRateLimited),
 					Code:       codeRateLimited,
 					RetryAfter: modelRetryAfter(apierr, upstream),
 				}
@@ -321,6 +333,7 @@ func (s *Service) runTurn(
 	sse *sseWriter,
 ) (assistantText, cartID string, cartMutated bool, err error) {
 	ctx := r.Context()
+	lang := django.Language(ctx, t.TenantConfig)
 
 	br, err := newBridge(ctx, s.server)
 	if err != nil {
@@ -337,7 +350,7 @@ func (s *Service) runTurn(
 		[]openai.ChatCompletionMessageParamUnion, 0, len(conv.Turns)+2)
 	messages = append(messages,
 		openai.SystemMessage(systemPrompt(
-			t, conv.CartID, django.HasCartToken(ctx))))
+			t, lang, conv.CartID, django.HasCartToken(ctx))))
 	for _, turn := range conv.Turns {
 		if turn.Role == "assistant" {
 			messages = append(messages, openai.AssistantMessage(turn.Text))
@@ -412,7 +425,7 @@ func (s *Service) runTurn(
 		msg := acc.Choices[0].Message
 
 		if msg.Refusal != "" {
-			refusal := messageFor(t.DefaultLocale, msgRefusal)
+			refusal := messageFor(lang, msgRefusal)
 			sse.event("delta", map[string]string{"text": refusal})
 			text.Reset()
 			text.WriteString(refusal)
@@ -484,7 +497,7 @@ func (s *Service) runTurn(
 	// return an empty final message — either way no prose reached the
 	// shopper. Surface a friendly nudge instead of an empty bubble.
 	if text.Len() == 0 {
-		fallback := messageFor(t.DefaultLocale, msgTurnIncomplete)
+		fallback := messageFor(lang, msgTurnIncomplete)
 		sse.event("delta", map[string]string{"text": fallback})
 		text.WriteString(fallback)
 	}

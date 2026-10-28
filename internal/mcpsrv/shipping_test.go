@@ -69,7 +69,7 @@ func shippingDjango(
 		}))
 	t.Cleanup(srv.Close)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return &handlers{deps: Deps{Django: django.New(srv.URL+"/api/v1",
+	return &handlers{deps: Deps{Site: testSite, Django: django.New(srv.URL+"/api/v1",
 		"api.example.test", "secret", 5*time.Second, log, nil)}}, seen
 }
 
@@ -171,59 +171,4 @@ func TestShippingOptionsReportARefusedCartToken(t *testing.T) {
 		ShippingOptionsIn{CountryCode: "GR"})
 	require.Error(t, err)
 	assert.Len(t, seen[optionsPath], 1, "a refused token is not resent")
-}
-
-// The nearest BOX NOW locker is looked up for a signed-in shopper's cart
-// through their token; anywhere else it names no cart.
-func TestPickupPointsNameTheSignedInShoppersCart(t *testing.T) {
-	for name, tc := range map[string]struct {
-		ctx       func(*testing.T) context.Context
-		wantToken bool
-	}{
-		"signed in": {func(t *testing.T) context.Context {
-			ctx, _ := signedInWith(t)
-			return ctx
-		}, true},
-		"no cart token": {func(*testing.T) context.Context {
-			return storeContext()
-		}, false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			h, seen := shippingDjango(t, http.StatusOK)
-
-			_, out, err := h.findPickupPoints(tc.ctx(t), nil, PickupPointsIn{
-				PostalCode: "10434", City: "Αθήνα",
-			})
-
-			require.NoError(t, err)
-			assert.Contains(t, providers(out), django.ShippingProviderBoxNow)
-			require.Len(t, seen[nearestPath], 1)
-			hdr := seen[nearestPath][0]
-			assert.Equal(t, tc.wantToken, hdr.Get("X-Cart-Token") != "")
-			assert.Empty(t, hdr.Get("X-Cart-Id"))
-		})
-	}
-}
-
-// A refused token leaves the BOX NOW lookup out, as any failed lookup
-// does, and is marked on the token for the widget to mint a new one.
-func TestPickupPointsMarkARefusedCartToken(t *testing.T) {
-	h, _ := shippingDjango(t, http.StatusUnauthorized)
-	ctx, tok := signedInWith(t)
-
-	_, out, err := h.findPickupPoints(ctx, nil, PickupPointsIn{
-		PostalCode: "10434", City: "Αθήνα",
-	})
-
-	require.NoError(t, err)
-	assert.NotContains(t, providers(out), django.ShippingProviderBoxNow)
-	assert.True(t, tok.Refused())
-}
-
-func providers(out PickupPointsOut) []string {
-	var p []string
-	for _, pt := range out.Points {
-		p = append(p, pt.Provider)
-	}
-	return p
 }

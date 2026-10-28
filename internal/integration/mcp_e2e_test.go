@@ -82,6 +82,8 @@ func fakeDjangoMux(t *testing.T) http.Handler {
 	route("GET /api/v1/shipping/free-shipping-info", "free_shipping_info.json")
 	route("GET /api/v1/shipping/acs/stations/nearest", "acs_stations_nearest.json")
 	route("POST /api/v1/shipping/boxnow/lockers/nearest", "boxnow_nearest.json")
+	route("GET /api/v1/settings/public", "settings_public.json")
+	route("GET /api/v1/content-page/return-policy", "content_page_return_policy.json")
 	// The e2e suite probes this id to exercise the not-found tool error.
 	mux.HandleFunc("GET /api/v1/product/999999",
 		func(w http.ResponseWriter, _ *http.Request) {
@@ -163,11 +165,12 @@ func startGateway(t *testing.T) *httptest.Server {
 	cfg := config.Config{
 		Env: config.EnvTest,
 		// Registers httptest webhook endpoints on 127.0.0.1.
-		AllowLocalWebhooks: true,
-		PaymentHandlerEnv:  config.HandlerEnvSandbox,
-		DjangoBaseURL:      djangoSrv.URL + "/api/v1",
-		DjangoPublicHost:   "api.example.test",
-		AssetsHost:         "assets.platform.test",
+		AllowLocalWebhooks:      true,
+		PaymentHandlerEnv:       config.HandlerEnvSandbox,
+		DjangoBaseURL:           djangoSrv.URL + "/api/v1",
+		DjangoPublicHost:        "api.example.test",
+		AssetsHost:              "assets.platform.test",
+		StorefrontDefaultLocale: "el",
 		MediaURLTemplate: "https://{assets_host}/media_stream-image/{path}" +
 			"/800/800/contain/entropy/transparent/5/80.webp",
 		TenantCacheTTL:   time.Minute,
@@ -262,7 +265,8 @@ func TestMCPEndToEnd(t *testing.T) {
 			"search_products", "get_product", "list_categories",
 			"get_trending_searches", "get_product_reviews",
 			"get_shipping_options", "find_pickup_points",
-			"get_payment_methods", "create_cart", "get_cart",
+			"get_payment_methods", "get_store_policies", "create_cart",
+			"get_cart",
 			"add_to_cart", "update_cart_item", "remove_cart_item",
 			"get_checkout_link", "track_order", "subscribe_product_alert",
 			"create_checkout", "get_checkout", "update_checkout",
@@ -328,9 +332,10 @@ func TestMCPEndToEnd(t *testing.T) {
 
 	t.Run("find_pickup_points merges providers", func(t *testing.T) {
 		res := callTool(t, session, "find_pickup_points", map[string]any{
-			"postalCode": "10434",
-			"city":       "Αθήνα",
-			"street":     "Σταδίου 1",
+			"countryCode": "GR",
+			"postalCode":  "10434",
+			"city":        "Αθήνα",
+			"street":      "Σταδίου 1",
 		})
 		require.False(t, res.IsError)
 		out := structured(t, res)
@@ -342,6 +347,16 @@ func TestMCPEndToEnd(t *testing.T) {
 		}
 		assert.True(t, providers["acs"], "ACS points expected")
 		assert.True(t, providers["boxnow"], "BOX NOW point expected")
+	})
+
+	t.Run("get_store_policies states the store's return terms", func(t *testing.T) {
+		res := callTool(t, session, "get_store_policies", nil)
+		require.False(t, res.IsError)
+		out := structured(t, res)
+		assert.EqualValues(t, 14, out["returnWindowDays"])
+		assert.Equal(t, "free", out["returnFees"])
+		assert.Regexp(t, `^https://[^/]+/return-policy$`,
+			out["returnPolicyUrl"])
 	})
 
 	t.Run("get_payment_methods localizes labels", func(t *testing.T) {

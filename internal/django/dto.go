@@ -430,8 +430,11 @@ type TenantConfig struct {
 	LogoDarkURL      string `json:"logoDarkUrl"`
 	FaviconURL       string `json:"faviconUrl"`
 	DefaultLocale    string `json:"defaultLocale"`
-	DefaultCurrency  string `json:"defaultCurrency"`
-	PrimaryDomain    string `json:"primaryDomain"`
+	// AvailableLocales are the languages the storefront serves the
+	// store in; empty means its default alone (ServedLocales).
+	AvailableLocales []string `json:"availableLocales" contract:"optional"`
+	DefaultCurrency  string   `json:"defaultCurrency"`
+	PrimaryDomain    string   `json:"primaryDomain"`
 	// AssetsDomain is the tenant's OWN media host, and is empty for
 	// every tenant that has not opted into white-label asset URLs —
 	// which is the documented default. Resolve it through

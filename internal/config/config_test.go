@@ -14,6 +14,7 @@ func setRequired(t *testing.T) {
 	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 	t.Setenv("INTERNAL_EVENTS_SECRET", "s3cret")
 	t.Setenv("ASSETS_HOST", "assets.platform.test")
+	t.Setenv("STOREFRONT_DEFAULT_LOCALE", "el")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -108,6 +109,29 @@ func TestLoadRequiresAssetsHost(t *testing.T) {
 	_, err := Load()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ASSETS_HOST")
+}
+
+// The storefront's build default decides which links carry a language
+// prefix, so it is required and must be a bare language code.
+func TestLoadValidatesStorefrontDefaultLocale(t *testing.T) {
+	for value, wantErr := range map[string]bool{
+		"": true, "EL": true, "el-GR": true, "/el": true,
+		"el": false, "en": false,
+	} {
+		t.Run(value, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("STOREFRONT_DEFAULT_LOCALE", value)
+
+			cfg, err := Load()
+			if wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "STOREFRONT_DEFAULT_LOCALE")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, value, cfg.StorefrontDefaultLocale)
+		})
+	}
 }
 
 // ENV picks security-relevant behaviour, so an unrecognised value must
