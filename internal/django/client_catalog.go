@@ -181,7 +181,7 @@ func (c *Client) ListProductsPage(
 	}
 	var out Page[Product]
 	err := c.get(ctx, request{
-		path:     "/product",
+		path:     "/product/feed",
 		host:     host,
 		language: lang,
 		query:    q,

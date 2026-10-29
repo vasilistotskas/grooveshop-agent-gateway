@@ -2701,41 +2701,6 @@
         "summary": "django.Client.PayWayByID"
       }
     },
-    "/api/v1/product": {
-      "get": {
-        "parameters": [
-          {
-            "in": "query",
-            "name": "page",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "pageSize",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PaginatedProductList"
-                }
-              }
-            },
-            "description": "OK"
-          }
-        },
-        "summary": "django.Client.ListProductsPage"
-      }
-    },
     "/api/v1/product/alert": {
       "post": {
         "requestBody": {
@@ -2781,6 +2746,41 @@
           }
         },
         "summary": "django.Client.ListAllCategories"
+      }
+    },
+    "/api/v1/product/feed": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pageSize",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedProductList"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.ListProductsPage"
       }
     },
     "/api/v1/product/{id}": {

@@ -45,7 +45,7 @@ func newGatedDjango(t *testing.T) *gatedDjango {
 }
 
 func (g *gatedDjango) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/api/v1/product" && r.URL.Query().Get("page") == "1" {
+	if r.URL.Path == "/api/v1/product/feed" && r.URL.Query().Get("page") == "1" {
 		g.sweeps.Add(1)
 		if g.armed.CompareAndSwap(true, false) {
 			close(g.entered)
