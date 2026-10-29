@@ -162,7 +162,7 @@ var djangoContract = []contractCall{
 	},
 	{
 		fn: "ListProductsPage", method: http.MethodGet,
-		path: "/product", status: http.StatusOK,
+		path: "/product/feed", status: http.StatusOK,
 		query: []contractParam{{"page", true}, {"pageSize", true}},
 		out:   reflect.TypeFor[Page[Product]](),
 		names: map[string]string{
