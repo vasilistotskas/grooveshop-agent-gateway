@@ -231,13 +231,14 @@ and tagged: `.claude/rules/django-consumer-contract.md` (loads with
   `attribution` and `products` rules are in
   `.claude/rules/chat-sse-contract.md` (loads with `internal/chat/**`).
   A change there is a storefront change too.
-- Cart source: UCP/ACP cart adds send `attribution.agentProtocol`
-  (`checkout.SyncCartLines`), like their orders, so Django books the cart
-  as "AI agent". A chat turn's `add_to_cart` sends the shopper's
+- Cart source: every agent cart add sends `attribution.agentProtocol`,
+  which Django believes beside the internal secret every cart call
+  carries and books as "AI agent": UCP/ACP checkouts their protocol
+  (`checkout.SyncCartLines`, like their orders), `/mcp`'s `add_to_cart`
+  `mcp` (`django.AgentProtocolMCP`, `handlers.cartAttribution`). The
+  chat's `add_to_cart` never sends a protocol: it sends the shopper's
   first-touch `attribution` the storefront relayed
-  (`mcpsrv.WithShopperAttribution`), never `agentProtocol`, which Django
-  believes beside the internal secret every cart call carries. `/mcp`'s
-  `add_to_cart` sends none.
+  (`mcpsrv.WithShopperAttribution`), or none.
 - Config gates: ACP and chat are per-tenant. The ACP platform bearer
   arrives as `acpBearerToken` and the chat model credential as
   `chatApiKey` on `tenant/resolve` — Django includes both only when the

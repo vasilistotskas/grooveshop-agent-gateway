@@ -155,7 +155,13 @@ func fakeDjangoMux(t *testing.T) http.Handler {
 // memory+direct, which is the documented failure mode.
 func startGateway(t *testing.T) *httptest.Server {
 	t.Helper()
-	djangoSrv := httptest.NewServer(fakeDjangoMux(t))
+	return startGatewayOn(t, fakeDjangoMux(t))
+}
+
+// startGatewayOn is startGateway against djangoH.
+func startGatewayOn(t *testing.T, djangoH http.Handler) *httptest.Server {
+	t.Helper()
+	djangoSrv := httptest.NewServer(djangoH)
 	t.Cleanup(djangoSrv.Close)
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{

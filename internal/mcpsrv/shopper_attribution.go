@@ -17,9 +17,14 @@ func WithShopperAttribution(
 	return context.WithValue(ctx, shopperAttributionKey{}, a)
 }
 
-// shopperAttribution is the attribution WithShopperAttribution set, or
-// nil (an /mcp agent, or a chat turn that relayed none).
-func shopperAttribution(ctx context.Context) *django.Attribution {
+// cartAttribution is what an add_to_cart sends as the cart's source. On
+// /mcp an agent fills the cart, booked as one; in the chat it is the
+// shopper's first touch WithShopperAttribution set, or none, and never
+// an agent's: the shopper fills their own cart through the assistant.
+func (h *handlers) cartAttribution(ctx context.Context) *django.Attribution {
+	if h.surface == mcpSurface {
+		return &django.Attribution{AgentProtocol: django.AgentProtocolMCP}
+	}
 	a, _ := ctx.Value(shopperAttributionKey{}).(*django.Attribution)
 	return a
 }

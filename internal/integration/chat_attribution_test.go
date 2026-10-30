@@ -77,6 +77,20 @@ func TestChatAddSendsTheShopperAttribution(t *testing.T) {
 	assert.Nil(t, got[1])
 }
 
+// An agent's add over /mcp books the cart as an AI agent's ("mcp"),
+// while the chat, which shares the tool, never does (above).
+func TestMCPAddToCartBooksTheCartAsAnAgents(t *testing.T) {
+	djangoH, adds := attributionDjango(t)
+	gw := startGatewayOn(t, djangoH)
+	session := connectMCP(t, gw.URL)
+
+	res := callTool(t, session, "add_to_cart", map[string]any{
+		"cartId": chatCartID, "productId": 1, "quantity": 1})
+
+	require.False(t, res.IsError)
+	assert.Equal(t, []any{map[string]any{"agentProtocol": "mcp"}}, adds())
+}
+
 // An attribution of the wrong shape is a malformed request, refused like
 // any other before the turn spends anything.
 func TestChatRefusesAMalformedAttribution(t *testing.T) {
