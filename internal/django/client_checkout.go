@@ -92,14 +92,25 @@ type OrderCreate struct {
 	// privacy policy. Django records the texts in force with the order.
 	TermsAccepted bool `json:"termsAccepted"`
 
-	Attribution *OrderAttribution `json:"attribution,omitempty"`
+	Attribution *Attribution `json:"attribution,omitempty"`
 }
 
-// OrderAttribution records which agent surface placed the order, so Django
-// books it with the "agent" source type. AgentProtocol is the owning
-// checkout session's protocol: "ucp" or "acp".
-type OrderAttribution struct {
-	AgentProtocol string `json:"agentProtocol"`
+// Attribution is the acquisition signal Django classifies into an
+// order's or a cart's source (its OrderAttributionInput, the same on
+// order create and on add to cart). AgentProtocol is set only for a UCP
+// or ACP checkout ("ucp" | "acp"): Django believes it beside the
+// internal secret alone, and books the source "AI agent". The other
+// fields are the shopper's first touch as the storefront captured it,
+// relayed for a chat turn; Django checks their shape, never their
+// content.
+type Attribution struct {
+	UtmSource     string   `json:"utmSource,omitempty"`
+	UtmMedium     string   `json:"utmMedium,omitempty"`
+	UtmCampaign   string   `json:"utmCampaign,omitempty"`
+	ClickIDs      []string `json:"clickIds,omitempty"`
+	Referrer      string   `json:"referrer,omitempty"`
+	LandingPath   string   `json:"landingPath,omitempty"`
+	AgentProtocol string   `json:"agentProtocol,omitempty"`
 }
 
 // CreateOrder places a guest order from the cart. Never retried: the

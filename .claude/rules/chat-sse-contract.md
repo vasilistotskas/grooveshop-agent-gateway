@@ -3,6 +3,7 @@ paths:
   - "internal/chat/**"
   - "internal/mcpsrv/turn.go"
   - "internal/mcpsrv/cart_activity.go"
+  - "internal/mcpsrv/shopper_attribution.go"
 ---
 
 # Chat SSE contract (`/chat`)
@@ -19,7 +20,18 @@ cross-repo change. The code wins over this page.
   model provider throttled the turn, `retryAfter` its wait in seconds),
   `done {conversationId, cartId?, cartMutated, cartTokenRefused}`.
   The request is `{message, conversationId?, cartId?, cartToken?,
-  turnId?, locale?}`. `locale` is the storefront page's language code
+  turnId?, locale?, attribution?}`. `attribution` is the tab's first
+  touch exactly as the storefront's `useOrderAttribution().read()`
+  returns it: `{utmSource?, utmMedium?, utmCampaign?, clickIds?,
+  referrer?, landingPath?}` (`chat.chatAttribution`, Django's
+  `OrderAttributionInputRequest` without `agentProtocol`). A wrong type
+  is a 400; content is Django's to judge. It rides the turn's context
+  (`mcpsrv.WithShopperAttribution`), never the stored conversation, and
+  every `add_to_cart` of the turn sends it on `POST /cart/item`, so the
+  cart the assistant first fills records the visit's source. There is no
+  field for `agentProtocol`: Django believes it beside the internal
+  secret every gateway cart call carries, so a shopper must never be able
+  to set it. Without `attribution` the add sends none. `locale` is the storefront page's language code
   (`el`, `en`, …): the turn is served in it when the store serves it
   (`TenantConfig.ServedLocales`: `availableLocales`, else the default
   alone), else in the store's default; an unserved one is ignored, not

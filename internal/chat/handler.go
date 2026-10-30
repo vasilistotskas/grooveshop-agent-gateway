@@ -85,6 +85,42 @@ type chatRequest struct {
 	// (e.g. "el", "en"). The turn is served in it when the store serves
 	// that language, else in the store's default.
 	Locale string `json:"locale"`
+	// Attribution is the shopper's first touch as the storefront captured
+	// it for the tab. The cart the turn's add_to_cart first fills records
+	// it as its source; without it Django records the cart as direct.
+	// It lives only in this turn's context, never in the conversation.
+	Attribution *chatAttribution `json:"attribution"`
+}
+
+// chatAttribution is Django's OrderAttributionInput without
+// agentProtocol, the one field Django believes from the gateway alone
+// (it books a UCP/ACP checkout as the agent's): a shopper's request has
+// no way to set it. Django checks the shape and never the content, so a
+// cart add never fails over a strange referrer; the typed decode is
+// that shape check here.
+type chatAttribution struct {
+	UtmSource   string   `json:"utmSource"`
+	UtmMedium   string   `json:"utmMedium"`
+	UtmCampaign string   `json:"utmCampaign"`
+	ClickIDs    []string `json:"clickIds"`
+	Referrer    string   `json:"referrer"`
+	LandingPath string   `json:"landingPath"`
+}
+
+// toDjango is the attribution the turn's cart adds send; nil without
+// one.
+func (a *chatAttribution) toDjango() *django.Attribution {
+	if a == nil {
+		return nil
+	}
+	return &django.Attribution{
+		UtmSource:   a.UtmSource,
+		UtmMedium:   a.UtmMedium,
+		UtmCampaign: a.UtmCampaign,
+		ClickIDs:    a.ClickIDs,
+		Referrer:    a.Referrer,
+		LandingPath: a.LandingPath,
+	}
 }
 
 // errorEvent ends a failed turn. Code is set for the failures the widget
@@ -179,6 +215,10 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		// Every cart call of the turn acts on the token's cart; tool
 		// handlers reach it through the bridge's base context.
 		r = r.WithContext(django.WithCartToken(r.Context(), cartToken))
+	}
+	if attribution := req.Attribution.toDjango(); attribution != nil {
+		r = r.WithContext(
+			mcpsrv.WithShopperAttribution(r.Context(), attribution))
 	}
 
 	conv, err := s.store.Load(r.Context(), t.SchemaName, req.ConversationID)

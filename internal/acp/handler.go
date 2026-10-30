@@ -370,7 +370,8 @@ func (h *Handler) syncCart(
 	if err != nil {
 		return err
 	}
-	return checkout.SyncCartLines(r.Context(), h.dj, t, cartID, lines)
+	return checkout.SyncCartLines(
+		r.Context(), h.dj, t, checkout.ProtocolACP, cartID, lines)
 }
 
 // selectPayWay picks the collect-later method completion will use as soon

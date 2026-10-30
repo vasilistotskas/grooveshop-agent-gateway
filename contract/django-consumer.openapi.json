@@ -482,6 +482,9 @@
       },
       "CartItemCreateRequest": {
         "properties": {
+          "attribution": {
+            "$ref": "#/components/schemas/OrderAttributionInputRequest"
+          },
           "product": {
             "type": "integer"
           },
@@ -891,6 +894,35 @@
         ],
         "type": "object"
       },
+      "OrderAttributionInputRequest": {
+        "properties": {
+          "agentProtocol": {
+            "type": "string"
+          },
+          "clickIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "landingPath": {
+            "type": "string"
+          },
+          "referrer": {
+            "type": "string"
+          },
+          "utmCampaign": {
+            "type": "string"
+          },
+          "utmMedium": {
+            "type": "string"
+          },
+          "utmSource": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "OrderCreateFromCartRequest": {
         "properties": {
           "acsStationBranch": {
@@ -900,15 +932,7 @@
             "type": "string"
           },
           "attribution": {
-            "properties": {
-              "agentProtocol": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "agentProtocol"
-            ],
-            "type": "object"
+            "$ref": "#/components/schemas/OrderAttributionInputRequest"
           },
           "boxnowLockerId": {
             "type": "string"

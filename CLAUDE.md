@@ -227,9 +227,17 @@ and tagged: `.claude/rules/django-consumer-contract.md` (loads with
   `/mcp`'s agent-commerce gate (a store without it gets the same 404),
   and the Server Card's CORS, ETag and cache headers.
 - Nuxt chat widget (`app/composables/useShopChat.ts`) reads the `/chat`
-  SSE events; the request, events, locale, `turnId`, `cartToken` and
-  `products` rules are in `.claude/rules/chat-sse-contract.md` (loads with
-  `internal/chat/**`). A change there is a storefront change too.
+  SSE events; the request, events, locale, `turnId`, `cartToken`,
+  `attribution` and `products` rules are in
+  `.claude/rules/chat-sse-contract.md` (loads with `internal/chat/**`).
+  A change there is a storefront change too.
+- Cart source: UCP/ACP cart adds send `attribution.agentProtocol`
+  (`checkout.SyncCartLines`), like their orders, so Django books the cart
+  as "AI agent". A chat turn's `add_to_cart` sends the shopper's
+  first-touch `attribution` the storefront relayed
+  (`mcpsrv.WithShopperAttribution`), never `agentProtocol`, which Django
+  believes beside the internal secret every cart call carries. `/mcp`'s
+  `add_to_cart` sends none.
 - Config gates: ACP and chat are per-tenant. The ACP platform bearer
   arrives as `acpBearerToken` and the chat model credential as
   `chatApiKey` on `tenant/resolve` — Django includes both only when the

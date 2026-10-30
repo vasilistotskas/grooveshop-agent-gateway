@@ -200,6 +200,7 @@ var djangoContract = []contractCall{
 		out:  reflect.TypeFor[CartItem](),
 		names: map[string]string{
 			"cartItemCreate": "CartItemCreateRequest",
+			"Attribution":    "OrderAttributionInputRequest",
 			"CartItem":       "CartItemDetail",
 		},
 	},
@@ -276,6 +277,7 @@ var djangoContract = []contractCall{
 		out:  reflect.TypeFor[Order](),
 		names: map[string]string{
 			"OrderCreate": "OrderCreateFromCartRequest",
+			"Attribution": "OrderAttributionInputRequest",
 			"Order":       "OrderDetail",
 		},
 	},
