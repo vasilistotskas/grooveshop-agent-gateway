@@ -29,7 +29,7 @@ func TestDecodeProductDetail(t *testing.T) {
 
 	assert.Equal(t, int64(1), p.ID)
 	assert.Equal(t, "including-hope", p.Slug)
-	assert.Equal(t, int64(262), p.Category)
+	assert.Equal(t, new(int64(262)), p.Category)
 	assert.Equal(t, "464.68", p.EffectivePrice.String())
 	assert.Empty(t, p.PriorPrice, "null prior price: nothing announced")
 	assert.Empty(t, p.AnnouncedDiscountPercent)
@@ -312,4 +312,39 @@ func TestDecodeTenantAvailableLocales(t *testing.T) {
 	assert.Equal(t, []string{"el", "en"}, c.ServedLocales())
 	assert.True(t, c.Serves("en"))
 	assert.False(t, c.Serves("de"))
+}
+
+// Django's Product.category is SET_NULL: a product whose category was
+// deleted arrives with `"category":null` in the detail, every cart line and
+// every order line, and must decode as "no category", never as category 0.
+func TestDecodeProductWithoutCategory(t *testing.T) {
+	uncategorised := func(name string) []byte {
+		b := fixture(t, name)
+		out := bytes.ReplaceAll(b, []byte(`"category":262`), []byte(`"category":null`))
+		out = bytes.ReplaceAll(out, []byte(`"category":120`), []byte(`"category":null`))
+		require.NotEqual(t, b, out, "the fixture names a category to clear")
+		return out
+	}
+	decode := func(b []byte, out any) {
+		dec := json.NewDecoder(bytes.NewReader(b))
+		dec.UseNumber()
+		require.NoError(t, dec.Decode(out))
+	}
+
+	var p ProductDetail
+	decode(uncategorised("product_detail.json"), &p)
+	assert.Nil(t, p.Category)
+	assert.Equal(t, "464.68", p.EffectivePrice.String())
+
+	var c Cart
+	decode(uncategorised("cart_with_items.json"), &c)
+	require.Len(t, c.Items, 1)
+	assert.Nil(t, c.Items[0].Product.Category)
+	assert.Equal(t, "929.36", c.TotalPrice.String())
+
+	var o Order
+	decode(uncategorised("order_by_uuid.json"), &o)
+	require.Len(t, o.Items, 1)
+	assert.Nil(t, o.Items[0].Product.Category)
+	assert.Equal(t, "64.17", o.PricingBreakdown.GrandTotal.String())
 }

@@ -313,6 +313,7 @@
                       "type": "string"
                     },
                     "category": {
+                      "nullable": true,
                       "type": "integer"
                     },
                     "effectivePrice": {
@@ -401,7 +402,6 @@
                   "required": [
                     "announcedDiscountPercent",
                     "attributes",
-                    "category",
                     "effectivePrice",
                     "id",
                     "imagePaths",
@@ -542,6 +542,7 @@
                 "type": "string"
               },
               "category": {
+                "nullable": true,
                 "type": "integer"
               },
               "effectivePrice": {
@@ -630,7 +631,6 @@
             "required": [
               "announcedDiscountPercent",
               "attributes",
-              "category",
               "effectivePrice",
               "id",
               "imagePaths",
@@ -1031,6 +1031,7 @@
                       "type": "string"
                     },
                     "category": {
+                      "nullable": true,
                       "type": "integer"
                     },
                     "effectivePrice": {
@@ -1119,7 +1120,6 @@
                   "required": [
                     "announcedDiscountPercent",
                     "attributes",
-                    "category",
                     "effectivePrice",
                     "id",
                     "imagePaths",
@@ -1445,6 +1445,7 @@
             "type": "string"
           },
           "category": {
+            "nullable": true,
             "type": "integer"
           },
           "effectivePrice": {
@@ -1533,7 +1534,6 @@
         "required": [
           "announcedDiscountPercent",
           "attributes",
-          "category",
           "effectivePrice",
           "id",
           "imagePaths",
@@ -1798,6 +1798,7 @@
             "type": "string"
           },
           "category": {
+            "nullable": true,
             "type": "integer"
           },
           "effectivePrice": {
@@ -1889,7 +1890,6 @@
         "required": [
           "announcedDiscountPercent",
           "attributes",
-          "category",
           "effectivePrice",
           "id",
           "imagePaths",
