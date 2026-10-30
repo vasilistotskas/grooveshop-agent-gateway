@@ -211,7 +211,7 @@ func TestCartCallsRefuseAnotherCartServedForTheNamedOne(t *testing.T) {
 
 	_, err := c.GetCart(ctx, host, "el", other)
 	require.ErrorIs(t, err, ErrCartUnreachable)
-	_, err = c.AddCartItem(ctx, host, "el", other, 1, 1)
+	_, err = c.AddCartItem(ctx, host, "el", other, 1, 1, nil)
 	require.ErrorIs(t, err, ErrCartUnreachable)
 	_, err = c.UpdateCartItem(ctx, host, "el", other, 410, 2)
 	require.ErrorIs(t, err, ErrCartUnreachable)
@@ -225,4 +225,50 @@ func TestCartCallsRefuseAnotherCartServedForTheNamedOne(t *testing.T) {
 	assert.Equal(t, fixtureCartID, cart.UUID)
 	_, err = c.GetCart(ctx, host, "el", "")
 	require.NoError(t, err)
+}
+
+// An add carries the attribution camelCase, the same shape order create
+// sends, so Django records the cart's source; nil leaves the key out.
+func TestAddCartItemSendsAttribution(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodPost, r.Method)
+			assert.Equal(t, "/api/v1/cart/item", r.URL.Path)
+			assert.Equal(t, "test-secret", r.Header.Get("X-Internal-Gateway"))
+			got = nil
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(fixture(t, "cart_item_created.json"))
+		}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL)
+	ctx := context.Background()
+	const host = "shop.example.test"
+
+	_, err := c.AddCartItem(ctx, host, "el", fixtureCartID, 7, 2,
+		&Attribution{AgentProtocol: "ucp"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{
+		"product": float64(7), "quantity": float64(2),
+		"attribution": map[string]any{"agentProtocol": "ucp"},
+	}, got)
+
+	_, err = c.AddCartItem(ctx, host, "el", fixtureCartID, 7, 2,
+		&Attribution{
+			UtmSource: "newsletter", UtmMedium: "email",
+			UtmCampaign: "autumn", ClickIDs: []string{"gclid"},
+			Referrer: "https://search.example", LandingPath: "/products",
+		})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{
+		"utmSource": "newsletter", "utmMedium": "email",
+		"utmCampaign": "autumn", "clickIds": []any{"gclid"},
+		"referrer": "https://search.example", "landingPath": "/products",
+	}, got["attribution"])
+
+	_, err = c.AddCartItem(ctx, host, "el", fixtureCartID, 7, 2, nil)
+	require.NoError(t, err)
+	assert.NotContains(t, got, "attribution")
 }

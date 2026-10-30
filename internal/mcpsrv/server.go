@@ -74,7 +74,7 @@ func newServer(
 			Tools: &mcp.ToolCapabilities{},
 		},
 	})
-	for _, t := range toolset(&handlers{deps: d}) {
+	for _, t := range toolset(&handlers{deps: d, surface: s}) {
 		if t.offeredTo(features) && t.servedOn(s) {
 			t.register(srv, s)
 		}

@@ -164,9 +164,7 @@ func (f *Flow) Complete(
 			// buyer's acceptance. Django records it as an agent checkout,
 			// proven by the internal secret.
 			TermsAccepted: true,
-			Attribution: &django.OrderAttribution{
-				AgentProtocol: s.Protocol,
-			},
+			Attribution:   agentAttribution(s.Protocol),
 		})
 	if err != nil {
 		if !refused(err) {

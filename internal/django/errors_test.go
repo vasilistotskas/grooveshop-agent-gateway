@@ -30,7 +30,7 @@ func errorFrom(
 	t.Cleanup(srv.Close)
 	c := newTestClient(t, srv.URL)
 	_, err := c.AddCartItem(context.Background(), "shop.example.test", "el",
-		"", 1, 1)
+		"", 1, 1, nil)
 	require.Error(t, err)
 	apiErr, ok := errors.AsType[*APIError](err)
 	require.True(t, ok, "got %T", err)

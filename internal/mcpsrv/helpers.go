@@ -20,6 +20,8 @@ import (
 // server and the first-party chatbot loop.
 type handlers struct {
 	deps Deps
+	// surface is who the server the handlers serve is built for.
+	surface surface
 }
 
 // tenantFor extracts the request tenant. The /mcp route sits behind the

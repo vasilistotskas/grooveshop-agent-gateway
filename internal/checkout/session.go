@@ -17,6 +17,12 @@ const (
 	ProtocolACP = "acp"
 )
 
+// agentAttribution books what protocol's checkout fills or places as
+// the agent's: the cart's source and the order's both read "AI agent".
+func agentAttribution(protocol string) *django.Attribution {
+	return &django.Attribution{AgentProtocol: protocol}
+}
+
 // Status values follow the UCP checkout lifecycle; the ACP layer maps them
 // to its own vocabulary.
 type Status string

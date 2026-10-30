@@ -99,7 +99,7 @@ func (h *handlers) createCheckout(
 		}
 		cartID = c.UUID
 		if err := checkout.SyncCartLines(
-			ctx, h.deps.Django, t, cartID, lines,
+			ctx, h.deps.Django, t, checkout.ProtocolUCP, cartID, lines,
 		); err != nil {
 			return nil, zero, upstreamErr(err,
 				"a requested product was not found")
@@ -199,7 +199,7 @@ func (h *handlers) updateCheckout(
 					"checkout to abandon it")
 		}
 		if err := checkout.SyncCartLines(
-			ctx, h.deps.Django, t, s.CartID, lines,
+			ctx, h.deps.Django, t, s.Protocol, s.CartID, lines,
 		); err != nil {
 			return nil, zero, upstreamErr(err,
 				"the line items could not be applied; the checkout is "+
