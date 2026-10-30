@@ -55,7 +55,7 @@ func fixtureProducts() []django.Product {
 				Name:        "Φορτιστής Κινητού",
 				Description: "Γρήγορη φόρτιση &amp; ασφάλεια <b>USB-C</b>.",
 			}},
-			Slug: "fortistis-kinitou", Category: 262,
+			Slug: "fortistis-kinitou", Category: new(int64(262)),
 			Pricing: django.Pricing{EffectivePrice: "464.68"},
 			Stock:   186, Active: true,
 			MainImagePath: "media/uploads/products/%CF%86%CE%BF%CF%81%CF%84%CE%B9%CF%83%CF%84%CE%AE%CF%82.jpg",
@@ -67,7 +67,7 @@ func fixtureProducts() []django.Product {
 			Translations: map[string]django.Translation{"el": {
 				Name: "Θήκη Κινητού", Description: "",
 			}},
-			Slug: "thiki-kinitou", Category: 262,
+			Slug: "thiki-kinitou", Category: new(int64(262)),
 			VariantGroup: new(int64(77)), BrandName: new("Spigen"),
 			Pricing: django.Pricing{
 				EffectivePrice: "22.32", PriorPrice: "24.80",
@@ -93,7 +93,7 @@ func fixtureProducts() []django.Product {
 			Translations: map[string]django.Translation{"el": {
 				Name: "Καλώδιο USB-C",
 			}},
-			Slug: "kalodio-usb-c", Category: 262,
+			Slug: "kalodio-usb-c", Category: new(int64(262)),
 			Pricing: django.Pricing{EffectivePrice: "8.37"},
 			Stock:   12, Active: true,
 			MainImagePath: "media/uploads/products/cable.jpg",
@@ -104,7 +104,7 @@ func fixtureProducts() []django.Product {
 			Translations: map[string]django.Translation{"el": {
 				Name: "Αόρατο Προϊόν",
 			}},
-			Slug: "aorato", Category: 262,
+			Slug: "aorato", Category: new(int64(262)),
 			Pricing: django.Pricing{EffectivePrice: "12.40"},
 			Stock:   5, Active: true,
 			MainImagePath: "",
@@ -116,7 +116,7 @@ func fixtureProducts() []django.Product {
 			Translations: map[string]django.Translation{"el": {
 				Name: "Νέο Προϊόν",
 			}},
-			Slug: "neo", Category: 262,
+			Slug: "neo", Category: new(int64(262)),
 			Stock: 5, Active: true,
 			MainImagePath: "media/uploads/products/new.jpg",
 		},
@@ -347,4 +347,30 @@ func TestRSSDocumentParsesWithHostileText(t *testing.T) {
 	require.Len(t, doc.Items, 1)
 	assert.Equal(t, "Formfeed ", doc.Items[0].Title)
 	assert.NotContains(t, doc.Items[0].Description, "\x0b")
+}
+
+// A product without a category (Django's SET_NULL) is listed with no
+// product_type, even where the store's category names hold an entry 0.
+func TestRSSItemWithoutCategory(t *testing.T) {
+	ctx := testFeedContext()
+	ctx.CategoryNames[0] = "Κατηγορία μηδέν"
+	product := fixtureProducts()[0]
+
+	var decoded django.Product
+	require.NoError(t, json.Unmarshal([]byte(`{"category":null}`), &decoded))
+	product.Category = decoded.Category
+	require.Nil(t, product.Category)
+
+	it, err := newFeedItem(&product, ctx)
+	require.NoError(t, err)
+	require.NotNil(t, it)
+	assert.Empty(t, it.CategoryName)
+
+	w := newRSSWriter(ctx)
+	w.Item(it)
+	assert.NotContains(t, string(w.Bytes()), "<g:product_type>")
+
+	categorised, err := newFeedItem(&fixtureProducts()[0], ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "Ηλεκτρονικά & Gadgets", categorised.CategoryName)
 }
