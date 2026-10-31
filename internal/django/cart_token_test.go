@@ -32,7 +32,7 @@ func cartCalls(ctx context.Context, c *Client) map[string]error {
 		"6f1c1f3e-2d6a-4b0f-9a3e-2f6d6c1b9a10"
 	errs := map[string]error{}
 	_, errs["GetCart"] = c.GetCart(ctx, host, "el", named)
-	_, errs["AddCartItem"] = c.AddCartItem(ctx, host, "el", named, 1, 1)
+	_, errs["AddCartItem"] = c.AddCartItem(ctx, host, "el", named, 1, 1, nil)
 	_, errs["UpdateCartItem"] = c.UpdateCartItem(ctx, host, "el", named, 410, 2)
 	errs["RemoveCartItem"] = c.RemoveCartItem(ctx, host, "el", named, 410)
 	_, errs["ApplyCoupon"] = c.ApplyCoupon(ctx, host, "el", named, "SAVE10")

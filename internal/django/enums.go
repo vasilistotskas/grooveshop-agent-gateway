@@ -18,6 +18,12 @@ const (
 	PaymentStatusCompleted  = "COMPLETED"
 )
 
+// AgentProtocolMCP is the attribution agentProtocol (Django's
+// AGENT_PROTOCOLS) of a cart an agent fills through the /mcp commerce
+// tools. A UCP or ACP checkout sends its own protocol
+// (checkout.ProtocolUCP, checkout.ProtocolACP).
+const AgentProtocolMCP = "mcp"
+
 // Settlement values, mirroring Django's “pay_way.enum.settlement
 // .PaySettlement“. This is how the money changes hands, and it is the
 // authoritative discriminator — the “isOnlinePayment“ /

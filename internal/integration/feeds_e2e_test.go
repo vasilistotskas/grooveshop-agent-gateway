@@ -54,7 +54,7 @@ func feedsFakeDjango(t *testing.T) http.Handler {
 			_, _ = w.Write([]byte(`[{"id":1,"translations":{"el":{"name":"Κατηγορία"}},"slug":"cat","active":true,"parent":null,"level":0,"treeId":1}]`))
 		})
 	// 3 pages x 2 products, exercising the concurrent paged sweep.
-	mux.HandleFunc("GET /api/v1/product",
+	mux.HandleFunc("GET /api/v1/product/feed",
 		func(w http.ResponseWriter, r *http.Request) {
 			page := r.URL.Query().Get("page")
 			if page == "" {

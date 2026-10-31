@@ -38,11 +38,13 @@ type Product struct {
 	ID           int64                  `json:"id"`
 	Translations map[string]Translation `json:"translations"`
 	Slug         string                 `json:"slug"`
-	Category     int64                  `json:"category"`
-	VariantGroup *int64                 `json:"variantGroup"`
-	BrandName    *string                `json:"brandName"`
-	Stock        int                    `json:"stock" contract:"optional"`
-	Active       bool                   `json:"active" contract:"optional"`
+	// Category is nil for a product without one: Django's Product.category
+	// is SET_NULL and optional in the admin.
+	Category     *int64  `json:"category"`
+	VariantGroup *int64  `json:"variantGroup"`
+	BrandName    *string `json:"brandName"`
+	Stock        int     `json:"stock" contract:"optional"`
+	Active       bool    `json:"active" contract:"optional"`
 	Weight       *struct {
 		Unit  string      `json:"unit" contract:"optional"`
 		Value json.Number `json:"value" contract:"optional"`

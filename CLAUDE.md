@@ -39,8 +39,9 @@ go run ./cmd/gateway                             # Run (needs .env vars exported
 docker build -t agent-gateway .                  # Production image
 ```
 
-CI runs lint → unit+integration (with `-race`; local Windows Go is 386 and
-cannot race-detect) → build.
+CI runs lint → unit+integration (with `-race`) → build. `-race` requires
+cgo; the local Go builds with `CGO_ENABLED=0` and has no C compiler, so
+`go test -race` fails at once with `-race requires cgo`. Run it in CI.
 
 The `/gateway-test` skill wraps these. `.claude/` also registers a
 `gateway-contract-reviewer` subagent for the invariants below, and hooks that
@@ -141,67 +142,10 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   protocol error, so never return one for a business condition. The single exception is UCP discovery: a platform
   profile that cannot be fetched, validated or version-matched is the
   spec's transport error `-32001` (`mcpsrv.negotiate`).
-- **Every canonical UCP tool negotiates** (`internal/ucp/negotiate.go`,
-  `profiles.go`): the `meta.ucp-agent.profile` is fetched (https, no
-  redirects, public addresses, 256 KiB, cached ≥60s, failures backed
-  off, global rate budget), validated against the embedded spec schema
-  (`internal/ucp/spec/`), version-checked, and intersected with
-  `BusinessCapabilities` — the same registry the profile publishes.
-  Responses declare the negotiated capabilities; a missing root
-  capability returns the `error_response` branch
-  (`capabilities_incompatible`) of the tool's `oneOf` output schema.
-  The order webhook URL comes ONLY from the negotiated order
-  capability's `config.webhook_url`, and `pay_way_id` needs the
-  hosted-selection extension negotiated, not just the tenant gate.
-- **The canonical UCP tools take the wire shapes from the OpenRPC document**
-  (`create_checkout`, `get_checkout`, `update_checkout`,
-  `complete_checkout`, `cancel_checkout`): `meta` (with
-  `ucp-agent.profile`, plus `idempotency-key` on complete/cancel), `id`
-  for the target session, and `checkout` for the domain object with
-  snake_case members. Extensions compose FLAT onto `checkout`
-  (`fulfillment`, `discounts`), never nested under capability names.
-  Payment is selected by submitting an ADVERTISED instrument
-  (`checkout.payment.instruments`), which the business resolves to a
-  pay-way. An ONLINE method is NOT an instrument (nothing for a platform
-  to acquire; the buyer pays on the PSP's page) and cannot be an Action
-  either (both standard payment Action types require a
-  `payment_instrument_id`) — UCP models it as `requires_escalation` +
-  `continue_url`. Choosing one travels as the DECLARED extension
-  `space.grooveshop.payments.hosted_selection` carrying `pay_way_id`,
-  advertised and accepted only while `HostedPaymentOn()`; the gate is
-  the Tenant plan flag AND the `AGENT_HOSTED_PAYMENT_ENABLED`
-  extra-setting, folded by Django into `agentHostedPaymentEnabled`.
-  Every tenant gate (`agentCommerceEnabled`, `productFeedsEnabled`,
-  `agentHostedPaymentEnabled`) is a plain boolean Django always emits;
-  a payload without one decodes as OFF, and the `*On()` accessors
-  encode the subordination to agent commerce. A gated `pay_way_id` is
-  REFUSED, never ignored: ignoring would complete against a stale
-  selection. These five tools are withheld from the
-  chatbot (`internal/chat/bridge.go`) — their shapes target a platform
-  generating calls, and chat hands over a checkout link instead.
-- The service `schema` (OpenRPC) URL may appear ONLY while every method it
-  defines for an ADVERTISED capability exists — the five checkout tools
-  plus `get_order`. Declaring it asserts a machine-checkable contract.
-  Its cart/catalog methods belong to capabilities the profile does not
-  advertise, so a negotiating platform never calls them.
-- `get_order` sources the required `checkout_id` from the gateway's own
-  order link (`ag:{schema}:orderlink:{uuid}`: checkout id, storefront
-  domain, webhook target; retained a year — it must outlive the session,
-  which expires in 24h). An order placed on the web has no checkout to
-  name and is refused with that explanation, never a fabricated id.
-  `order.fulfillment` stays `{}`: an expectation needs a destination the
-  order detail deliberately does not decode (PII), and an event needs a
-  shipment timestamp upstream does not expose.
-- Order webhooks route through that link, never the session, and carry
-  the full UCP order entity rendered at enqueue. They are signed per RFC
-  9421 with the tenant's ES256 key (`internal/httpsig`; UCP's baseline
-  algorithm), with Standard Webhooks `Webhook-Id`/`Webhook-Timestamp`
-  and `UCP-Agent` naming the tenant profile. The queue is a Redis stream
-  consumer group (`ag:webhooks:orders`, one consumer per pod name): a
-  delivery is acknowledged only on a terminal outcome, a consumer's own
-  pending entries replay on restart, and a dead consumer's are claimed
-  after the visibility timeout. Delivery dials only public addresses and
-  never follows redirects.
+- **UCP** (negotiation, the canonical checkout tools' wire shapes, the
+  OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
+  `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before
+  touching UCP from anywhere else.
 - **A store feature switched off is off on every surface.** Django
   folds each into one boolean, the plan flag AND the store setting, under
   `features` on `tenant/resolve` (`TenantConfig.Features`); read
@@ -253,55 +197,11 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
 
 ## Django consumer contract
 
-`encoding/json` zero-fills a field Django stops sending, so a removed or
-renamed field would serve wrong data (0 prices in feeds) with no error.
-`contract/django-consumer.openapi.json` is the OpenAPI 3.0.3 document of
-what the gateway needs from Django: every endpoint it calls, the query
-parameters and bodies it sends, and only the response properties its DTOs
-decode. It is the gateway's side of the infrastructure deploy gate
-(`api-contract.sh`): `oasdiff breaking <contract> <Django schema.yml>`
-for each gateway/Django pairing, as for the storefront, refusing a Django
-release that drops, loosens or retypes one of those properties.
-
-- **Generated, never edited.** `internal/django/contract_test.go` holds the
-  call registry (client method, method, path, success status, query
-  parameters, body/response DTO types, Django component names) and builds
-  the document by reflecting over the DTOs. After changing a DTO or a call:
-  `go test ./internal/django -run TestDjangoConsumerContract -update`, and
-  commit the file; without `-update` a stale file fails the test.
-- **Every call is registered.** `TestDjangoContractCoversEveryCall` parses
-  the `client*.go` sources and fails when a `c.get`/`c.send` call is missing
-  from the registry or differs from it (path, method, query keys and
-  whether each is always sent, body and response types). Paths must be
-  templated string literals (`/product/{id}`, concrete one in `rawPath`).
-- **Required/nullable** come from the Go type: a value field is required
-  and non-null; a pointer is optional, and nullable unless `omitempty`;
-  `omitempty` is optional. Where Django's schema is looser than the Go type,
-  the field says so with a tag the readers already honour (they treat the
-  zero value as "not set"): `contract:"optional"`, `contract:"nullable"`,
-  `contract:"untyped"` (Django declares a `oneOf` union),
-  `contract:"undocumented"` (read but absent from Django's schema — e.g.
-  the internal-only `chatApiKey`). A sent value carries Django's declared
-  format with `contract:"format=email|uri|double"`, and its Go type must
-  marshal to Django's JSON type (`targetPrice` is a `json.Number`, sent as
-  a number). Never tag a field to silence a real break: fix the DTO or the
-  call.
-- **How it is read.** oasdiff needs `--flatten-allof` (Django nests objects
-  as `allOf`) and `--severity-levels contract/oasdiff-levels.txt`: removing
-  an *optional* read property is an error too, and so is a request body
-  property changing type or format. Informational only: enum values and
-  unions (Django's to grow), request lengths/ranges/enums (Go types cannot
-  state them), and query/path parameter types — parameters are declared as
-  strings on purpose, since that is what the URL carries and Django's
-  integer parameters accept it. Check a pairing locally with:
-
-  ```bash
-  docker run --rm -v "$PWD/contract:/c" tufin/oasdiff:<pinned> breaking \
-    --flatten-allof --severity-levels /c/oasdiff-levels.txt \
-    --allow-external-refs=false --fail-on ERR -- \
-    /c/django-consumer.openapi.json \
-    https://raw.githubusercontent.com/vasilistotskas/grooveshop-django-api/<tag>/schema.yml
-  ```
+`contract/django-consumer.openapi.json` is generated by
+`go test ./internal/django -run TestDjangoConsumerContract -update` and is
+the gateway's side of the infrastructure deploy gate. How it is built, read
+and tagged: `.claude/rules/django-consumer-contract.md` (loads with
+`internal/django/**` and `contract/**`).
 
 ## Cross-repo contracts
 
@@ -327,62 +227,18 @@ release that drops, loosens or retypes one of those properties.
   `/mcp`'s agent-commerce gate (a store without it gets the same 404),
   and the Server Card's CORS, ETag and cache headers.
 - Nuxt chat widget (`app/composables/useShopChat.ts`) reads the `/chat`
-  SSE events: `delta {text}`, `tool {name, status: running|done|error}`
-  (`error`: the call failed, and the model was told why),
-  `products {tool, query?, total?, products: [{id}]}`,
-  `error {message, code?, retryAfter?}` (`code: rate_limited` when the
-  model provider throttled the turn, `retryAfter` its wait in seconds),
-  `done {conversationId, cartId?, cartMutated, cartTokenRefused}`.
-  The request is `{message, conversationId?, cartId?, cartToken?,
-  turnId?, locale?}`. `locale` is the storefront page's language code
-  (`el`, `en`, …): the turn is served in it when the store serves it
-  (`TenantConfig.ServedLocales`: `availableLocales`, else the default
-  alone), else in the store's default; an unserved one is ignored, not
-  refused. The turn's language rides the request context
-  (`django.WithLanguage`) like the cart token, and every tool handler
-  reads it through `django.Language` — `X-Language`, the search's
-  `languageCode` and the translation picked — so product names come
-  back in the page's language. `/mcp` names none and stays on the
-  store's default. The refusals and SSE `error` messages speak it, and
-  the prompt tells the model to reply in the language of the shopper's
-  latest message, else in the turn's, named in English
-  (`chat.languageName`). The prompt also forbids naming a product,
-  category or brand no tool result showed, and answers return and
-  policy questions only from `get_store_policies`. `turnId` is a UUID the widget mints per message and sends
-  again when the shopper retries it: each `add_to_cart` of the turn
-  sends an `Idempotency-Key` derived from it, the call and how many
-  identical adds the turn already made (`mcpsrv.Turn`), so Django's
-  idempotency middleware answers a retried add with the first outcome
-  instead of adding twice. Django scopes the key to the caller, which
-  `django.RelayCaller` names, so a retry on the other pod is the same
-  caller;
-  `cartToken` is a signed-in shopper's pass from Django's
-  `POST /cart/agent-token`. With it the cart tools act on that shopper's
-  cart whatever `cartId` the model names, and `get_checkout_link` links
-  `/checkout` instead of the cart claim. It lives in the turn's context
-  only: never the stored conversation, the prompt or a log.
-  `cartTokenRefused: true` means Django refused it on a call this turn
-  (expired, revoked), and the widget mints a new token. It does not mean
-  nothing changed: a change Django accepted before a refused read-back
-  still counts, so `cartMutated` and `cartTokenRefused` can both be true.
-  `done.cartId` is sent on anonymous turns only, and the widget adopts
-  it only then: a turn that sent a `cartToken` gets none, and the
-  widget ignores `done.cartId` whenever it sent one, refreshing the
-  shopper's own cart through their session on `cartMutated`.
-  `cartMutated` is recorded by the cart tools when Django accepts a
-  change (`mcpsrv.CartActivity`), so a change whose read-back failed
-  still counts. The chat runs on its own server (`mcpsrv.NewChatServer`):
-  - the cart tools' `cartId` is optional there (`cartToolOf`), while
-    `/mcp` requires it;
-  - only the chat carries the `chatOnly` tools: `apply_coupon` and
-    `remove_coupon`, gated on `promotions`, never on `/mcp` or in
-    discovery. `products` follows the
-  `tool` done event of `search_products` (query + `totalHits` as total)
-  and `get_product` (the product, then its variants), decoded from the
-  tool's structured result (`internal/chat/products.go`), deduplicated
-  across the turn and capped per event. Ids only, never prices: the
-  storefront loads each card with the shopper's session, which is the
-  only place B2B pricing applies (see below).
+  SSE events; the request, events, locale, `turnId`, `cartToken`,
+  `attribution` and `products` rules are in
+  `.claude/rules/chat-sse-contract.md` (loads with `internal/chat/**`).
+  A change there is a storefront change too.
+- Cart source: every agent cart add sends `attribution.agentProtocol`,
+  which Django believes beside the internal secret every cart call
+  carries and books as "AI agent": UCP/ACP checkouts their protocol
+  (`checkout.SyncCartLines`, like their orders), `/mcp`'s `add_to_cart`
+  `mcp` (`django.AgentProtocolMCP`, `handlers.cartAttribution`). The
+  chat's `add_to_cart` never sends a protocol: it sends the shopper's
+  first-touch `attribution` the storefront relayed
+  (`mcpsrv.WithShopperAttribution`), or none.
 - Config gates: ACP and chat are per-tenant. The ACP platform bearer
   arrives as `acpBearerToken` and the chat model credential as
   `chatApiKey` on `tenant/resolve` — Django includes both only when the

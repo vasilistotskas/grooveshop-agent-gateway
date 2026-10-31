@@ -313,6 +313,7 @@
                       "type": "string"
                     },
                     "category": {
+                      "nullable": true,
                       "type": "integer"
                     },
                     "effectivePrice": {
@@ -401,7 +402,6 @@
                   "required": [
                     "announcedDiscountPercent",
                     "attributes",
-                    "category",
                     "effectivePrice",
                     "id",
                     "imagePaths",
@@ -482,6 +482,9 @@
       },
       "CartItemCreateRequest": {
         "properties": {
+          "attribution": {
+            "$ref": "#/components/schemas/OrderAttributionInputRequest"
+          },
           "product": {
             "type": "integer"
           },
@@ -542,6 +545,7 @@
                 "type": "string"
               },
               "category": {
+                "nullable": true,
                 "type": "integer"
               },
               "effectivePrice": {
@@ -630,7 +634,6 @@
             "required": [
               "announcedDiscountPercent",
               "attributes",
-              "category",
               "effectivePrice",
               "id",
               "imagePaths",
@@ -891,6 +894,35 @@
         ],
         "type": "object"
       },
+      "OrderAttributionInputRequest": {
+        "properties": {
+          "agentProtocol": {
+            "type": "string"
+          },
+          "clickIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "landingPath": {
+            "type": "string"
+          },
+          "referrer": {
+            "type": "string"
+          },
+          "utmCampaign": {
+            "type": "string"
+          },
+          "utmMedium": {
+            "type": "string"
+          },
+          "utmSource": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "OrderCreateFromCartRequest": {
         "properties": {
           "acsStationBranch": {
@@ -900,15 +932,7 @@
             "type": "string"
           },
           "attribution": {
-            "properties": {
-              "agentProtocol": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "agentProtocol"
-            ],
-            "type": "object"
+            "$ref": "#/components/schemas/OrderAttributionInputRequest"
           },
           "boxnowLockerId": {
             "type": "string"
@@ -1031,6 +1055,7 @@
                       "type": "string"
                     },
                     "category": {
+                      "nullable": true,
                       "type": "integer"
                     },
                     "effectivePrice": {
@@ -1119,7 +1144,6 @@
                   "required": [
                     "announcedDiscountPercent",
                     "attributes",
-                    "category",
                     "effectivePrice",
                     "id",
                     "imagePaths",
@@ -1445,6 +1469,7 @@
             "type": "string"
           },
           "category": {
+            "nullable": true,
             "type": "integer"
           },
           "effectivePrice": {
@@ -1533,7 +1558,6 @@
         "required": [
           "announcedDiscountPercent",
           "attributes",
-          "category",
           "effectivePrice",
           "id",
           "imagePaths",
@@ -1798,6 +1822,7 @@
             "type": "string"
           },
           "category": {
+            "nullable": true,
             "type": "integer"
           },
           "effectivePrice": {
@@ -1889,7 +1914,6 @@
         "required": [
           "announcedDiscountPercent",
           "attributes",
-          "category",
           "effectivePrice",
           "id",
           "imagePaths",
@@ -2701,41 +2725,6 @@
         "summary": "django.Client.PayWayByID"
       }
     },
-    "/api/v1/product": {
-      "get": {
-        "parameters": [
-          {
-            "in": "query",
-            "name": "page",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "pageSize",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PaginatedProductList"
-                }
-              }
-            },
-            "description": "OK"
-          }
-        },
-        "summary": "django.Client.ListProductsPage"
-      }
-    },
     "/api/v1/product/alert": {
       "post": {
         "requestBody": {
@@ -2781,6 +2770,41 @@
           }
         },
         "summary": "django.Client.ListAllCategories"
+      }
+    },
+    "/api/v1/product/feed": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pageSize",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedProductList"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.ListProductsPage"
       }
     },
     "/api/v1/product/{id}": {

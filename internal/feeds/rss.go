@@ -148,6 +148,13 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 		brand = *p.BrandName
 	}
 
+	// A product without a category gets no product_type, never the name
+	// of whatever category 0 would map to.
+	var categoryName string
+	if p.Category != nil {
+		categoryName = ctx.CategoryNames[*p.Category]
+	}
+
 	return &feedItem{
 		ID:    p.ID,
 		Title: title, Description: desc,
@@ -159,7 +166,7 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 		EffectiveMinor:       effective,
 		PriorMinor:           prior,
 		Brand:                brand,
-		CategoryName:         ctx.CategoryNames[p.Category],
+		CategoryName:         categoryName,
 		VariantGroup:         p.VariantGroup,
 		ItemGroupTitle:       groupTitle,
 		VariantOptions:       options,

@@ -124,7 +124,7 @@ func TestCreateOrderSendsAttribution(t *testing.T) {
 	_, err := c.CreateOrder(context.Background(),
 		"shop.example.test", "el", "cart-uuid", OrderCreate{
 			PayWayID:    1,
-			Attribution: &OrderAttribution{AgentProtocol: "acp"},
+			Attribution: &Attribution{AgentProtocol: "acp"},
 		})
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"agentProtocol": "acp"},

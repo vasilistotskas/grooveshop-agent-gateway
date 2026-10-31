@@ -3,7 +3,7 @@ name: gateway-test
 description: Run the agent-gateway Go checks — unit tests, Docker-backed integration tests, lint, and build. Use when asked to test, lint, or verify grooveshop-agent-gateway, or after changing anything under internal/ or cmd/.
 argument-hint: "[unit|integration|lint|build|all]"
 arguments: [target]
-allowed-tools: Read, Grep, Glob, Bash
+allowed-tools: Read Grep Glob Bash(go test *) Bash(go build *) Bash(golangci-lint run*) Bash(docker info*)
 ---
 
 Run the checks for `grooveshop-agent-gateway`. Target: `$target`
@@ -23,9 +23,9 @@ CI runs the same sequence: lint → unit + integration → build.
 
 ## Do not add `-race` locally
 
-CI runs the tests with `-race`, but the local Windows Go toolchain is 386 and
-**cannot** race-detect. Adding `-race` here fails with a toolchain error that
-looks like a test failure. Run it in CI, not locally.
+CI runs the tests with `-race`. `-race` requires cgo; the local Go builds
+with `CGO_ENABLED=0` and has no C compiler, so `go test -race` fails at once
+with `-race requires cgo`. Run it in CI.
 
 ## Integration tests need Docker
 

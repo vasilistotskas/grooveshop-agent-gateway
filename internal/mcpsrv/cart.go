@@ -208,7 +208,7 @@ func (h *handlers) addToCart(
 	// Finished even when the shopper leaves (the client's timeout bounds
 	// it), so the store records an outcome their retry is answered with.
 	_, err = h.deps.Django.AddCartItem(context.WithoutCancel(addCtx),
-		t.Domain, lang, cartID, in.ProductID, qty,
+		t.Domain, lang, cartID, in.ProductID, qty, h.cartAttribution(ctx),
 	)
 	if errors.Is(err, django.ErrCartUnreachable) {
 		return nil, out, errors.New("the shopper's cart could not be " +

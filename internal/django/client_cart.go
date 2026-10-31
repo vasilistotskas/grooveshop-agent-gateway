@@ -80,8 +80,9 @@ func servedNamed(named, served string) error {
 // Request bodies are typed so the consumer contract
 // (contract/django-consumer.openapi.json) is generated from them.
 type cartItemCreate struct {
-	Product  int64 `json:"product"`
-	Quantity int   `json:"quantity"`
+	Product     int64        `json:"product"`
+	Quantity    int          `json:"quantity"`
+	Attribution *Attribution `json:"attribution,omitempty"`
 }
 
 type cartItemUpdate struct {
@@ -126,12 +127,18 @@ func (c *Client) GetCart(
 }
 
 // AddCartItem adds a product (or increments its line) on the cart.
+// Django records attribution as the cart's source on the add that takes
+// it from no lines to some, and ignores it on later adds; nil sends none.
 func (c *Client) AddCartItem(
 	ctx context.Context, host, lang, cartID string, productID int64, qty int,
+	attribution *Attribution,
 ) (*CartItem, error) {
 	headers, named, err := c.cartTarget(ctx, cartID)
 	if err != nil {
 		return nil, err
+	}
+	body := cartItemCreate{
+		Product: productID, Quantity: qty, Attribution: attribution,
 	}
 	var out CartItem
 	err = c.send(ctx, http.MethodPost, request{
@@ -139,7 +146,7 @@ func (c *Client) AddCartItem(
 		host:     host,
 		language: lang,
 		headers:  headers,
-		body:     cartItemCreate{Product: productID, Quantity: qty},
+		body:     body,
 		out:      &out,
 	})
 	if err != nil {

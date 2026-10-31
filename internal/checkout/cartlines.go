@@ -17,10 +17,11 @@ type Line struct {
 // update, new products append, omitted lines are removed. Both protocols
 // treat a submitted line list as the full desired state, so a surface
 // that applied only additions would complete an order the buyer no
-// longer wants.
+// longer wants. protocol (ProtocolUCP | ProtocolACP) is the surface
+// filling the cart, recorded as its source.
 func SyncCartLines(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant,
-	cartID string, lines []Line,
+	protocol, cartID string, lines []Line,
 ) error {
 	cart, err := dj.GetCart(ctx, t.Domain, t.DefaultLocale, cartID)
 	if err != nil {
@@ -43,7 +44,8 @@ func SyncCartLines(
 			continue
 		}
 		if _, err := dj.AddCartItem(ctx, t.Domain, t.DefaultLocale,
-			cartID, l.ProductID, l.Quantity); err != nil {
+			cartID, l.ProductID, l.Quantity,
+			agentAttribution(protocol)); err != nil {
 			return err
 		}
 	}

@@ -162,7 +162,7 @@ var djangoContract = []contractCall{
 	},
 	{
 		fn: "ListProductsPage", method: http.MethodGet,
-		path: "/product", status: http.StatusOK,
+		path: "/product/feed", status: http.StatusOK,
 		query: []contractParam{{"page", true}, {"pageSize", true}},
 		out:   reflect.TypeFor[Page[Product]](),
 		names: map[string]string{
@@ -200,6 +200,7 @@ var djangoContract = []contractCall{
 		out:  reflect.TypeFor[CartItem](),
 		names: map[string]string{
 			"cartItemCreate": "CartItemCreateRequest",
+			"Attribution":    "OrderAttributionInputRequest",
 			"CartItem":       "CartItemDetail",
 		},
 	},
@@ -276,6 +277,7 @@ var djangoContract = []contractCall{
 		out:  reflect.TypeFor[Order](),
 		names: map[string]string{
 			"OrderCreate": "OrderCreateFromCartRequest",
+			"Attribution": "OrderAttributionInputRequest",
 			"Order":       "OrderDetail",
 		},
 	},

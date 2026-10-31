@@ -2,6 +2,7 @@ package mcpsrv
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -102,8 +103,10 @@ func TestToolErrorRendersAsJSON(t *testing.T) {
 
 // addDjango answers POST /cart/item with addStatus (the item, or a
 // refusal) and every GET /cart with the fixture, recording the
-// Idempotency-Key each add sent.
-func addDjango(t *testing.T, addStatus *int) (*handlers, *[]string) {
+// Idempotency-Key and the body each add sent.
+func addDjango(
+	t *testing.T, addStatus *int,
+) (*handlers, *[]string, *[]map[string]any) {
 	t.Helper()
 	read := func(name string) []byte {
 		b, err := os.ReadFile(filepath.Join("..", "..", "testdata",
@@ -113,6 +116,7 @@ func addDjango(t *testing.T, addStatus *int) (*handlers, *[]string) {
 	}
 	cart, item := read("cart_with_items.json"), read("cart_item_created.json")
 	var keys []string
+	var bodies []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -121,6 +125,9 @@ func addDjango(t *testing.T, addStatus *int) (*handlers, *[]string) {
 				return
 			}
 			keys = append(keys, r.Header.Get("Idempotency-Key"))
+			var body map[string]any
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			bodies = append(bodies, body)
 			w.WriteHeader(*addStatus)
 			if *addStatus < 300 {
 				_, _ = w.Write(item)
@@ -130,8 +137,9 @@ func addDjango(t *testing.T, addStatus *int) (*handlers, *[]string) {
 		}))
 	t.Cleanup(srv.Close)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return &handlers{deps: Deps{Site: testSite, Django: django.New(srv.URL+"/api/v1",
-		"api.example.test", "secret", 5*time.Second, log, nil)}}, &keys
+	h := &handlers{deps: Deps{Site: testSite, Django: django.New(srv.URL+"/api/v1",
+		"api.example.test", "secret", 5*time.Second, log, nil)}}
+	return h, &keys, &bodies
 }
 
 // A chat turn's add carries an idempotency key. A repeat of an add whose
@@ -139,7 +147,7 @@ func addDjango(t *testing.T, addStatus *int) (*handlers, *[]string) {
 // outcome; once an add succeeded, an identical one is a new change.
 func TestAddToCartIsIdempotentWithinATurn(t *testing.T) {
 	status := http.StatusBadGateway
-	h, keys := addDjango(t, &status)
+	h, keys, _ := addDjango(t, &status)
 	ctx := WithTurn(tenant.NewContext(context.Background(), cartTenant()),
 		NewTurn("8b0f6c1e-4a8d-4c8b-9a37-2f4f1d1c9e01"))
 	in := AddToCartIn{CartID: fixtureCartID, ProductID: 1, Quantity: 2}
@@ -173,7 +181,7 @@ func TestAddToCartIsIdempotentWithinATurn(t *testing.T) {
 // An /mcp agent has no turn: its adds carry no key.
 func TestAddToCartWithoutATurnSendsNoKey(t *testing.T) {
 	status := http.StatusCreated
-	h, keys := addDjango(t, &status)
+	h, keys, _ := addDjango(t, &status)
 	ctx := tenant.NewContext(context.Background(), cartTenant())
 
 	_, _, err := h.addToCart(ctx, nil,
