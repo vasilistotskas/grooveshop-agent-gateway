@@ -128,8 +128,8 @@ deploys it.
 
 ## Related repositories
 
-- [grooveshop-django-api](https://github.com/vasilistotskas/grooveshop-django-api): Django REST API, admin and Celery workers; the system of record for every tenant.
-- [grooveshop-storefront-ui-node-nuxt](https://github.com/vasilistotskas/grooveshop-storefront-ui-node-nuxt): Nuxt SSR storefront, one deployment serving every tenant's store.
-- [grooveshop-media-stream](https://github.com/vasilistotskas/grooveshop-media-stream): NestJS image processing and caching service.
-- [grooveshop-docs](https://github.com/vasilistotskas/grooveshop-docs): the documentation site at docs.grooveshop.space.
-- grooveshop-infrastructure (private): Kubernetes manifests and Argo CD applications for the K3s cluster.
+- [grooveshop-django-api](https://github.com/vasilistotskas/grooveshop-django-api): Django REST API, admin, and background jobs; the platform's source of truth
+- [grooveshop-storefront-ui-node-nuxt](https://github.com/vasilistotskas/grooveshop-storefront-ui-node-nuxt): Nuxt server-rendered storefront for every store
+- [grooveshop-media-stream](https://github.com/vasilistotskas/grooveshop-media-stream): NestJS image processing and caching service
+- grooveshop-infrastructure (private): Kubernetes manifests deployed by Argo CD
+- [grooveshop-docs](https://github.com/vasilistotskas/grooveshop-docs): the documentation site at docs.grooveshop.space
