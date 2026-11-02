@@ -634,8 +634,9 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// Tokenized instruments (Stripe SPT) ship behind the per-tenant flag;
-	// until then only handler-less completion (cash on delivery) works.
+	// Delegated payment is not implemented: any payment handler or
+	// tokenized instrument (Stripe SPT included) is refused, and only
+	// handler-less completion (cash on delivery) works.
 	if req.PaymentData.HandlerID != "" ||
 		len(req.PaymentData.Instrument) > 0 {
 		h.releaseIdem(r, t.SchemaName, scope, key)
