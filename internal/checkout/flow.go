@@ -15,7 +15,7 @@ import (
 var ErrNotReady = errors.New("checkout: session is not ready to complete")
 
 // ErrPaymentMethodUnsupported marks a pay way the agentic surface cannot
-// finish (Stripe tokenized completion ships behind the per-tenant flag).
+// finish (tokenized card completion, such as Stripe, is not supported).
 var ErrPaymentMethodUnsupported = errors.New(
 	"checkout: this payment method cannot be completed by an agent yet")
 
@@ -97,8 +97,7 @@ func (f *Flow) Complete(
 		return nil, err
 	}
 	// Viva's hosted authorization and collect-later pay ways are
-	// supported; tokenized card completion (Stripe) arrives with the ACP
-	// delegated payment flag.
+	// supported; tokenized card completion (Stripe) is not.
 	//
 	// The unknown-settlement guard comes FIRST and refuses outright.
 	// This branch decides whether money is taken now or on delivery, so

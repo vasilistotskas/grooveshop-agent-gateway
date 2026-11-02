@@ -208,8 +208,8 @@ and tagged: `.claude/rules/django-consumer-contract.md` (loads with
 - Django repo (`../grooveshop-django-api`): `tenant/resolve` endpoint shape,
   cart `X-Cart-Id` UUID header, guest checkout, `create_checkout_session`
   (Viva Smart Checkout URL). Payments: **Viva primary** (hosted
-  authorization via UCP `requires_escalation`+`continue_url`), Stripe
-  tokenized behind per-tenant flag.
+  authorization via UCP `requires_escalation`+`continue_url`); delegated
+  tokenized card payment (Stripe SPT) is not supported on any surface.
 - Nuxt repo: `/cart/claim` (query `uuid=<cart>`, plus
   `locale=<code>` for a language other than the build default) claims
   a gateway-built cart into the browser session and lands on the cart

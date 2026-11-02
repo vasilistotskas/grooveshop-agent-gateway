@@ -153,7 +153,7 @@ func TestACPEndToEnd(t *testing.T) {
 		assert.Equal(t, "completed", fetched["status"])
 	})
 
-	t.Run("tokenized instruments are rejected until the flag ships",
+	t.Run("tokenized instruments are rejected",
 		func(t *testing.T) {
 			resp, created := acpCall(t, http.MethodPost, base, createBody,
 				uuid.NewString())
