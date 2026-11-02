@@ -635,16 +635,21 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Delegated payment is not implemented: any payment handler or
-	// tokenized instrument (Stripe SPT included) is refused, and only
-	// handler-less completion (cash on delivery) works.
+	// tokenized instrument (Stripe SPT included) is refused. Card buyers
+	// pay on the store's checkout via continue_url; only handler-less
+	// completion (a collect-later pay way such as cash on delivery)
+	// works here.
 	if req.PaymentData.HandlerID != "" ||
 		len(req.PaymentData.Instrument) > 0 {
 		h.releaseIdem(r, t.SchemaName, scope, key)
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "unsupported",
-			Message: "Delegated card payment is not enabled for this " +
-				"store yet. Complete with empty payment_data for cash on " +
-				"delivery, or send the buyer to continue_url.",
+			Message: "Delegated card payment is not supported. To pay " +
+				"by card, send the buyer to continue_url: the store's " +
+				"checkout takes the card on its payment provider's " +
+				"hosted page. To complete here, send empty " +
+				"payment_data and the order is placed with the store's " +
+				"pay-later method, such as cash on delivery.",
 		})
 		return
 	}

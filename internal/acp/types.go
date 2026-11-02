@@ -1,8 +1,9 @@
 // Package acp implements the OpenAI Agentic Commerce Protocol REST surface
 // (spec 2026-04-17): merchant-hosted checkout sessions under /acp/*,
 // backed by the same protocol-neutral checkout sessions as UCP. Delegated
-// tokenized payment (Stripe SPT) is not implemented and is refused: cash on
-// delivery completes agentically and card buyers hand off via continue_url.
+// tokenized payment (Stripe SPT) is not implemented and is refused: a
+// collect-later pay way such as cash on delivery completes agentically
+// and card buyers hand off via continue_url.
 package acp
 
 import "encoding/json"
