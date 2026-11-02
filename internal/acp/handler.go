@@ -634,9 +634,11 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// The gateway accepts no delegated (tokenized) card payment for any
-	// store: card buyers pay on the store's checkout via continue_url,
-	// and only handler-less completion (a pay-later method) works here.
+	// Delegated payment is not implemented: any payment handler or
+	// tokenized instrument (Stripe SPT included) is refused. Card buyers
+	// pay on the store's checkout via continue_url; only handler-less
+	// completion (a collect-later pay way such as cash on delivery)
+	// works here.
 	if req.PaymentData.HandlerID != "" ||
 		len(req.PaymentData.Instrument) > 0 {
 		h.releaseIdem(r, t.SchemaName, scope, key)
