@@ -133,3 +133,9 @@ deploys it.
 - [grooveshop-media-stream](https://github.com/vasilistotskas/grooveshop-media-stream): NestJS image processing and caching service
 - grooveshop-infrastructure (private): Kubernetes manifests deployed by Argo CD
 - [grooveshop-docs](https://github.com/vasilistotskas/grooveshop-docs): the documentation site at docs.grooveshop.space
+
+## Licence
+
+Source-available under the [PolyForm Strict License 1.0.0](LICENSE.md): you may use it for
+noncommercial purposes; you may not distribute it or make changes or new works based on it.
+Commercial use needs a separate licence from the author.
