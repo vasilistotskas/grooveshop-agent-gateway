@@ -31,6 +31,9 @@ const (
 	feedDescriptionMax = 5000
 	// Google takes up to 10 additional images per product.
 	feedAdditionalImagesMax = 10
+	// Google's limits for a g:product_detail's name and value.
+	feedDetailNameMax  = 140
+	feedDetailValueMax = 1000
 )
 
 // feedContext carries per-generation tenant data every writer needs.
@@ -80,7 +83,10 @@ type feedItem struct {
 	// attribute tells apart.
 	ItemGroupTitle string
 	VariantOptions []variantOption
-	Currency       string
+	// Details are the specifications the product page shows: every
+	// attribute that is not a variant option above.
+	Details  []variantOption
+	Currency string
 }
 
 type variantOption struct {
@@ -117,18 +123,24 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 		}
 	}
 
-	var options []variantOption
+	var options, details []variantOption
+	for _, a := range p.Attributes {
+		if a.AttributeName == "" || a.Value == "" {
+			continue
+		}
+		if a.IsVariant && p.VariantGroup != nil {
+			options = append(options,
+				variantOption{Name: a.AttributeName, Value: a.Value})
+			continue
+		}
+		details = append(details, variantOption{
+			Name:  text.Runes(a.AttributeName, feedDetailNameMax),
+			Value: text.Runes(a.Value, feedDetailValueMax),
+		})
+	}
 	var groupTitle string
-	if p.VariantGroup != nil {
-		for _, a := range p.Attributes {
-			if a.IsVariant && a.AttributeName != "" && a.Value != "" {
-				options = append(options,
-					variantOption{Name: a.AttributeName, Value: a.Value})
-			}
-		}
-		if p.VariantGroupTitle != nil {
-			groupTitle = *p.VariantGroupTitle
-		}
+	if p.VariantGroup != nil && p.VariantGroupTitle != nil {
+		groupTitle = *p.VariantGroupTitle
 	}
 
 	var additional []string
@@ -170,6 +182,7 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 		VariantGroup:         p.VariantGroup,
 		ItemGroupTitle:       groupTitle,
 		VariantOptions:       options,
+		Details:              details,
 		Currency:             ctx.Currency,
 	}, nil
 }
@@ -244,6 +257,12 @@ func (w *rssWriter) Item(it *feedItem) {
 				"<g:variant_option><g:name>%s</g:name><g:value>%s</g:value>"+
 					"</g:variant_option>", escapeXML(o.Name), escapeXML(o.Value)))
 		}
+	}
+	for _, d := range it.Details {
+		fields = append(fields, fmt.Sprintf(
+			"<g:product_detail><g:attribute_name>%s</g:attribute_name>"+
+				"<g:attribute_value>%s</g:attribute_value></g:product_detail>",
+			escapeXML(d.Name), escapeXML(d.Value)))
 	}
 	w.buf.WriteString("    <item>\n      ")
 	w.buf.WriteString(strings.Join(fields, "\n      "))

@@ -184,6 +184,9 @@ func TestRSSItemRules(t *testing.T) {
 	assert.Equal(t, "Θήκη Κινητού", sale.ItemGroupTitle)
 	assert.Equal(t, []variantOption{{Name: "Χρώμα", Value: "Μαύρο"}},
 		sale.VariantOptions)
+	// The plain specifications the page shows go out as details.
+	assert.Equal(t, []variantOption{{Name: "Υλικό", Value: "Σιλικόνη"}},
+		sale.Details)
 	require.Len(t, sale.AdditionalImageLinks, 2)
 	assert.Contains(t, sale.AdditionalImageLinks[0], "/case-back.jpg/")
 	assert.NotContains(t, sale.AdditionalImageLinks[0], "/case.jpg/")
