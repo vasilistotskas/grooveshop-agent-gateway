@@ -320,6 +320,9 @@
                       "nullable": true,
                       "type": "number"
                     },
+                    "gtin": {
+                      "type": "string"
+                    },
                     "id": {
                       "type": "integer"
                     },
@@ -333,6 +336,9 @@
                       "type": "integer"
                     },
                     "mainImagePath": {
+                      "type": "string"
+                    },
+                    "mpn": {
                       "type": "string"
                     },
                     "priorPrice": {
@@ -355,6 +361,9 @@
                       "additionalProperties": {
                         "properties": {
                           "description": {
+                            "type": "string"
+                          },
+                          "feedTitle": {
                             "type": "string"
                           },
                           "name": {
@@ -552,6 +561,9 @@
                 "nullable": true,
                 "type": "number"
               },
+              "gtin": {
+                "type": "string"
+              },
               "id": {
                 "type": "integer"
               },
@@ -565,6 +577,9 @@
                 "type": "integer"
               },
               "mainImagePath": {
+                "type": "string"
+              },
+              "mpn": {
                 "type": "string"
               },
               "priorPrice": {
@@ -587,6 +602,9 @@
                 "additionalProperties": {
                   "properties": {
                     "description": {
+                      "type": "string"
+                    },
+                    "feedTitle": {
                       "type": "string"
                     },
                     "name": {
@@ -1062,6 +1080,9 @@
                       "nullable": true,
                       "type": "number"
                     },
+                    "gtin": {
+                      "type": "string"
+                    },
                     "id": {
                       "type": "integer"
                     },
@@ -1075,6 +1096,9 @@
                       "type": "integer"
                     },
                     "mainImagePath": {
+                      "type": "string"
+                    },
+                    "mpn": {
                       "type": "string"
                     },
                     "priorPrice": {
@@ -1097,6 +1121,9 @@
                       "additionalProperties": {
                         "properties": {
                           "description": {
+                            "type": "string"
+                          },
+                          "feedTitle": {
                             "type": "string"
                           },
                           "name": {
@@ -1476,6 +1503,9 @@
             "nullable": true,
             "type": "number"
           },
+          "gtin": {
+            "type": "string"
+          },
           "id": {
             "type": "integer"
           },
@@ -1489,6 +1519,9 @@
             "type": "integer"
           },
           "mainImagePath": {
+            "type": "string"
+          },
+          "mpn": {
             "type": "string"
           },
           "priorPrice": {
@@ -1511,6 +1544,9 @@
             "additionalProperties": {
               "properties": {
                 "description": {
+                  "type": "string"
+                },
+                "feedTitle": {
                   "type": "string"
                 },
                 "name": {
@@ -1651,6 +1687,9 @@
             "additionalProperties": {
               "properties": {
                 "description": {
+                  "type": "string"
+                },
+                "feedTitle": {
                   "type": "string"
                 },
                 "name": {
@@ -1829,6 +1868,9 @@
             "nullable": true,
             "type": "number"
           },
+          "gtin": {
+            "type": "string"
+          },
           "id": {
             "type": "integer"
           },
@@ -1842,6 +1884,9 @@
             "type": "integer"
           },
           "mainImagePath": {
+            "type": "string"
+          },
+          "mpn": {
             "type": "string"
           },
           "priceDropAlertsEnabled": {
@@ -1867,6 +1912,9 @@
             "additionalProperties": {
               "properties": {
                 "description": {
+                  "type": "string"
+                },
+                "feedTitle": {
                   "type": "string"
                 },
                 "name": {
@@ -2010,6 +2058,9 @@
             "additionalProperties": {
               "properties": {
                 "description": {
+                  "type": "string"
+                },
+                "feedTitle": {
                   "type": "string"
                 },
                 "name": {

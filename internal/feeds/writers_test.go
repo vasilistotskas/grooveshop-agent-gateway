@@ -184,6 +184,21 @@ func TestRSSItemRules(t *testing.T) {
 	assert.Equal(t, "Θήκη Κινητού", sale.ItemGroupTitle)
 	assert.Equal(t, []variantOption{{Name: "Χρώμα", Value: "Μαύρο"}},
 		sale.VariantOptions)
+	// The store's own feed title wins over the name, and its identifiers
+	// go out as it entered them.
+	identified := products[0]
+	tr := identified.Translations["el"]
+	tr.FeedTitle = "Φορτιστής USB-C 20W"
+	identified.Translations = map[string]django.Translation{"el": tr}
+	identified.Gtin, identified.Mpn = "5901234123457", "WS-20"
+	it, err := newFeedItem(&identified, ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "Φορτιστής USB-C 20W", it.Title)
+	w := newRSSWriter(ctx)
+	w.Item(it)
+	assert.Contains(t, string(w.Bytes()), "<g:gtin>5901234123457</g:gtin>")
+	assert.Contains(t, string(w.Bytes()), "<g:mpn>WS-20</g:mpn>")
+
 	// The plain specifications the page shows go out as details.
 	assert.Equal(t, []variantOption{{Name: "Υλικό", Value: "Σιλικόνη"}},
 		sale.Details)

@@ -75,6 +75,8 @@ type feedItem struct {
 	EffectiveMinor int64
 	PriorMinor     int64
 	Brand          string
+	Gtin           string
+	Mpn            string
 	CategoryName   string
 	VariantGroup   *int64
 	// ItemGroupTitle and VariantOptions describe a variant: the group's
@@ -105,7 +107,11 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 	if tr.Name == "" || p.MainImagePath == "" || p.EffectivePrice == "" {
 		return nil, nil
 	}
-	title := text.Runes(tr.Name, feedTitleMax)
+	title := tr.FeedTitle
+	if title == "" {
+		title = tr.Name
+	}
+	title = text.Runes(title, feedTitleMax)
 	desc := plainText(tr.Description)
 	if desc == "" {
 		desc = tr.Name
@@ -178,6 +184,8 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 		EffectiveMinor:       effective,
 		PriorMinor:           prior,
 		Brand:                brand,
+		Gtin:                 p.Gtin,
+		Mpn:                  p.Mpn,
 		CategoryName:         categoryName,
 		VariantGroup:         p.VariantGroup,
 		ItemGroupTitle:       groupTitle,
@@ -240,6 +248,14 @@ func (w *rssWriter) Item(it *feedItem) {
 	}
 	fields = append(fields,
 		fmt.Sprintf("<g:brand>%s</g:brand>", escapeXML(it.Brand)))
+	if it.Gtin != "" {
+		fields = append(fields,
+			fmt.Sprintf("<g:gtin>%s</g:gtin>", escapeXML(it.Gtin)))
+	}
+	if it.Mpn != "" {
+		fields = append(fields,
+			fmt.Sprintf("<g:mpn>%s</g:mpn>", escapeXML(it.Mpn)))
+	}
 	if it.CategoryName != "" {
 		fields = append(fields, fmt.Sprintf(
 			"<g:product_type>%s</g:product_type>", escapeXML(it.CategoryName)))
