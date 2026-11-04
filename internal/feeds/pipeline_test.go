@@ -48,7 +48,7 @@ func TestFetchAllProductsStreamsEveryPageInOrder(t *testing.T) {
 	dj, pages := pagedCatalog(t, 5)
 	var ids []int64
 	count, truncated, err := fetchAllProducts(context.Background(), dj,
-		"shop.example.test", "el", func(p django.Product) error {
+		"shop.example.test", "el", func(p django.ProductFeed) error {
 			ids = append(ids, p.ID)
 			return nil
 		})
@@ -68,7 +68,7 @@ func TestFetchAllProductsEmitErrorStopsTheSweep(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, _, err := fetchAllProducts(context.Background(), dj,
-			"shop.example.test", "el", func(p django.Product) error {
+			"shop.example.test", "el", func(p django.ProductFeed) error {
 				if p.ID == 2 {
 					return boom
 				}

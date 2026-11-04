@@ -260,7 +260,7 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 	var skipped int
 	count, truncated, err := fetchAllProducts(
 		ctx, s.dj, t.Domain, t.DefaultLocale,
-		func(p django.Product) error {
+		func(p django.ProductFeed) error {
 			if !p.Active {
 				return nil
 			}

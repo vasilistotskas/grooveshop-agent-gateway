@@ -31,7 +31,7 @@ func fetchAllProducts(
 	ctx context.Context,
 	dj *django.Client,
 	host, lang string,
-	emit func(django.Product) error,
+	emit func(django.ProductFeed) error,
 ) (count int, truncated bool, err error) {
 	first, err := dj.ListProductsPage(ctx, host, lang, 1, pageSize)
 	if err != nil {
@@ -61,9 +61,9 @@ func fetchAllProducts(
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(fetchWorkers)
 
-	slots := make(map[int]chan []django.Product, totalPages)
+	slots := make(map[int]chan []django.ProductFeed, totalPages)
 	for p := 2; p <= totalPages; p++ {
-		slots[p] = make(chan []django.Product, 1)
+		slots[p] = make(chan []django.ProductFeed, 1)
 	}
 	// window tokens are released only after a page is EMITTED, hard-
 	// bounding completed-but-unconsumed pages even if emission stalls.
