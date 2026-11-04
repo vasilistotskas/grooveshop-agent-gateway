@@ -34,6 +34,10 @@ const (
 	// Google's limits for a g:product_detail's name and value.
 	feedDetailNameMax  = 140
 	feedDetailValueMax = 1000
+	// Google's bounds for g:product_highlight: an item with fewer than the
+	// minimum breaks its requirements, so it goes out with none.
+	feedHighlightsMin = 2
+	feedHighlightsMax = 100
 )
 
 // feedContext carries per-generation tenant data every writer needs.
@@ -87,8 +91,10 @@ type feedItem struct {
 	VariantOptions []variantOption
 	// Details are the specifications the product page shows: every
 	// attribute that is not a variant option above.
-	Details  []variantOption
-	Currency string
+	Details []variantOption
+	// Highlights are the store's selling points, within Google's bounds.
+	Highlights []string
+	Currency   string
 }
 
 type variantOption struct {
@@ -102,7 +108,7 @@ type variantOption struct {
 // than emitted broken or at a price checkout would not honour. A
 // malformed money field is an error: it would corrupt every consumer's
 // feed.
-func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
+func newFeedItem(p *django.ProductFeed, ctx *feedContext) (*feedItem, error) {
 	tr := p.Translations[ctx.Locale]
 	if tr.Name == "" || p.MainImagePath == "" || p.EffectivePrice == "" {
 		return nil, nil
@@ -191,8 +197,17 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 		ItemGroupTitle:       groupTitle,
 		VariantOptions:       options,
 		Details:              details,
+		Highlights:           feedHighlights(p.Highlights),
 		Currency:             ctx.Currency,
 	}, nil
+}
+
+// feedHighlights keeps the highlights Google accepts for one item.
+func feedHighlights(highlights []string) []string {
+	if len(highlights) < feedHighlightsMin {
+		return nil
+	}
+	return highlights[:min(len(highlights), feedHighlightsMax)]
 }
 
 // rssWriter accumulates the RSS-dialect feed google.xml, meta.xml and
@@ -273,6 +288,10 @@ func (w *rssWriter) Item(it *feedItem) {
 				"<g:variant_option><g:name>%s</g:name><g:value>%s</g:value>"+
 					"</g:variant_option>", escapeXML(o.Name), escapeXML(o.Value)))
 		}
+	}
+	for _, h := range it.Highlights {
+		fields = append(fields, fmt.Sprintf(
+			"<g:product_highlight>%s</g:product_highlight>", escapeXML(h)))
 	}
 	for _, d := range it.Details {
 		fields = append(fields, fmt.Sprintf(

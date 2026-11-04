@@ -1324,7 +1324,7 @@
         ],
         "type": "object"
       },
-      "PaginatedProductList": {
+      "PaginatedProductFeedList": {
         "properties": {
           "count": {
             "type": "integer"
@@ -1350,7 +1350,7 @@
           },
           "results": {
             "items": {
-              "$ref": "#/components/schemas/Product"
+              "$ref": "#/components/schemas/ProductFeed"
             },
             "type": "array"
           },
@@ -1460,156 +1460,6 @@
         ],
         "type": "object"
       },
-      "Product": {
-        "properties": {
-          "active": {
-            "type": "boolean"
-          },
-          "announcedDiscountPercent": {
-            "nullable": true,
-            "type": "number"
-          },
-          "attributes": {
-            "items": {
-              "properties": {
-                "attributeName": {
-                  "type": "string"
-                },
-                "isVariant": {
-                  "type": "boolean"
-                },
-                "value": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "attributeName",
-                "isVariant",
-                "value"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "brandName": {
-            "nullable": true,
-            "type": "string"
-          },
-          "category": {
-            "nullable": true,
-            "type": "integer"
-          },
-          "effectivePrice": {
-            "nullable": true,
-            "type": "number"
-          },
-          "gtin": {
-            "type": "string"
-          },
-          "id": {
-            "type": "integer"
-          },
-          "imagePaths": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "likesCount": {
-            "type": "integer"
-          },
-          "mainImagePath": {
-            "type": "string"
-          },
-          "mpn": {
-            "type": "string"
-          },
-          "priorPrice": {
-            "nullable": true,
-            "type": "number"
-          },
-          "reviewAverage": {
-            "type": "number"
-          },
-          "reviewCount": {
-            "type": "integer"
-          },
-          "slug": {
-            "type": "string"
-          },
-          "stock": {
-            "type": "integer"
-          },
-          "translations": {
-            "additionalProperties": {
-              "properties": {
-                "description": {
-                  "type": "string"
-                },
-                "feedTitle": {
-                  "type": "string"
-                },
-                "name": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "description",
-                "name"
-              ],
-              "type": "object"
-            },
-            "type": "object"
-          },
-          "uuid": {
-            "type": "string"
-          },
-          "variantGroup": {
-            "nullable": true,
-            "type": "integer"
-          },
-          "variantGroupTitle": {
-            "nullable": true,
-            "type": "string"
-          },
-          "vatPercent": {
-            "type": "number"
-          },
-          "viewCount": {
-            "type": "integer"
-          },
-          "weight": {
-            "nullable": true,
-            "properties": {
-              "unit": {
-                "type": "string"
-              },
-              "value": {
-                "type": "number"
-              }
-            },
-            "type": "object"
-          }
-        },
-        "required": [
-          "announcedDiscountPercent",
-          "attributes",
-          "effectivePrice",
-          "id",
-          "imagePaths",
-          "likesCount",
-          "mainImagePath",
-          "priorPrice",
-          "reviewAverage",
-          "reviewCount",
-          "slug",
-          "translations",
-          "uuid",
-          "vatPercent",
-          "viewCount"
-        ],
-        "type": "object"
-      },
       "ProductAlert": {
         "properties": {
           "email": {
@@ -1714,6 +1564,163 @@
           "slug",
           "translations",
           "treeId"
+        ],
+        "type": "object"
+      },
+      "ProductFeed": {
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "announcedDiscountPercent": {
+            "nullable": true,
+            "type": "number"
+          },
+          "attributes": {
+            "items": {
+              "properties": {
+                "attributeName": {
+                  "type": "string"
+                },
+                "isVariant": {
+                  "type": "boolean"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "attributeName",
+                "isVariant",
+                "value"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "brandName": {
+            "nullable": true,
+            "type": "string"
+          },
+          "category": {
+            "nullable": true,
+            "type": "integer"
+          },
+          "effectivePrice": {
+            "nullable": true,
+            "type": "number"
+          },
+          "gtin": {
+            "type": "string"
+          },
+          "highlights": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "imagePaths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "likesCount": {
+            "type": "integer"
+          },
+          "mainImagePath": {
+            "type": "string"
+          },
+          "mpn": {
+            "type": "string"
+          },
+          "priorPrice": {
+            "nullable": true,
+            "type": "number"
+          },
+          "reviewAverage": {
+            "type": "number"
+          },
+          "reviewCount": {
+            "type": "integer"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "stock": {
+            "type": "integer"
+          },
+          "translations": {
+            "additionalProperties": {
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "feedTitle": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "description",
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "uuid": {
+            "type": "string"
+          },
+          "variantGroup": {
+            "nullable": true,
+            "type": "integer"
+          },
+          "variantGroupTitle": {
+            "nullable": true,
+            "type": "string"
+          },
+          "vatPercent": {
+            "type": "number"
+          },
+          "viewCount": {
+            "type": "integer"
+          },
+          "weight": {
+            "nullable": true,
+            "properties": {
+              "unit": {
+                "type": "string"
+              },
+              "value": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "announcedDiscountPercent",
+          "attributes",
+          "effectivePrice",
+          "highlights",
+          "id",
+          "imagePaths",
+          "likesCount",
+          "mainImagePath",
+          "priorPrice",
+          "reviewAverage",
+          "reviewCount",
+          "slug",
+          "translations",
+          "uuid",
+          "vatPercent",
+          "viewCount"
         ],
         "type": "object"
       },
@@ -2848,7 +2855,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PaginatedProductList"
+                  "$ref": "#/components/schemas/PaginatedProductFeedList"
                 }
               }
             },

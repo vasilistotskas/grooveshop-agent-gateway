@@ -73,6 +73,14 @@ type Product struct {
 	VariantGroupTitle *string `json:"variantGroupTitle"`
 }
 
+// ProductFeed is a row of /product/feed: a product and what only the feeds
+// read. Highlights are its selling points in the request language, in the
+// store's order.
+type ProductFeed struct {
+	Product
+	Highlights []string `json:"highlights"`
+}
+
 // ProductAttribute is one of a product's attribute values, translated.
 // IsVariant marks the axes its variant group differs by (Colour,
 // Memory): the ones a shopper picks between.

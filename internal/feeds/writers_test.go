@@ -46,7 +46,15 @@ func testFeedContext() *feedContext {
 	}
 }
 
-func fixtureProducts() []django.Product {
+func fixtureProducts() []django.ProductFeed {
+	rows := make([]django.ProductFeed, 0, 5)
+	for _, p := range fixtureCatalogue() {
+		rows = append(rows, django.ProductFeed{Product: p})
+	}
+	return rows
+}
+
+func fixtureCatalogue() []django.Product {
 	return []django.Product{
 		{
 			// Plain product, no discount.
@@ -199,6 +207,23 @@ func TestRSSItemRules(t *testing.T) {
 	assert.Contains(t, string(w.Bytes()), "<g:gtin>5901234123457</g:gtin>")
 	assert.Contains(t, string(w.Bytes()), "<g:mpn>WS-20</g:mpn>")
 
+	// Highlights go out only within Google's bounds: one is too few.
+	identified.Highlights = []string{"Μόνο ένα"}
+	it, err = newFeedItem(&identified, ctx)
+	require.NoError(t, err)
+	assert.Empty(t, it.Highlights)
+	identified.Highlights = []string{"Χωράει στην τσέπη", "Φορτίζει χωρίς καλώδιο"}
+	it, err = newFeedItem(&identified, ctx)
+	require.NoError(t, err)
+	w = newRSSWriter(ctx)
+	w.Item(it)
+	assert.Contains(t, string(w.Bytes()),
+		"<g:product_highlight>Χωράει στην τσέπη</g:product_highlight>")
+	identified.Highlights = make([]string, feedHighlightsMax+1)
+	it, err = newFeedItem(&identified, ctx)
+	require.NoError(t, err)
+	assert.Len(t, it.Highlights, feedHighlightsMax)
+
 	// The plain specifications the page shows go out as details.
 	assert.Equal(t, []variantOption{{Name: "Υλικό", Value: "Σιλικόνη"}},
 		sale.Details)
@@ -214,9 +239,9 @@ func TestRSSItemRules(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, unpriced, "no effective price -> skipped")
 
-	for _, mutate := range []func(*django.Product){
-		func(p *django.Product) { p.EffectivePrice = "not-money" },
-		func(p *django.Product) { p.PriorPrice = "not-money" },
+	for _, mutate := range []func(*django.ProductFeed){
+		func(p *django.ProductFeed) { p.EffectivePrice = "not-money" },
+		func(p *django.ProductFeed) { p.PriorPrice = "not-money" },
 	} {
 		bad := products[0]
 		mutate(&bad)
@@ -273,7 +298,7 @@ func TestFeedPricingFollowsOmnibus(t *testing.T) {
 					`"category":262,"stock":1,"active":true,` +
 					`"mainImagePath":"m.jpg",` + tc.payload + `}`)))
 			dec.UseNumber()
-			var p django.Product
+			var p django.ProductFeed
 			require.NoError(t, dec.Decode(&p))
 
 			ctx := testFeedContext()
@@ -374,7 +399,7 @@ func TestRSSItemWithoutCategory(t *testing.T) {
 	ctx.CategoryNames[0] = "Κατηγορία μηδέν"
 	product := fixtureProducts()[0]
 
-	var decoded django.Product
+	var decoded django.ProductFeed
 	require.NoError(t, json.Unmarshal([]byte(`{"category":null}`), &decoded))
 	product.Category = decoded.Category
 	require.Nil(t, product.Category)
