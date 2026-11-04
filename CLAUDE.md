@@ -203,6 +203,12 @@ the gateway's side of the infrastructure deploy gate. How it is built, read
 and tagged: `.claude/rules/django-consumer-contract.md` (loads with
 `internal/django/**` and `contract/**`).
 
+A pull request that changes the contract also runs the API contract check
+(`.github/workflows/api-contract.yml`, required on `main`): the contract
+must not require anything the Django that production and staging run does
+not serve. The rule and how to split a change are in
+`grooveshop-django-api/api-contract/README.md`.
+
 ## Cross-repo contracts
 
 - Django repo (`../grooveshop-django-api`): `tenant/resolve` endpoint shape,
