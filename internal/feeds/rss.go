@@ -31,6 +31,13 @@ const (
 	feedDescriptionMax = 5000
 	// Google takes up to 10 additional images per product.
 	feedAdditionalImagesMax = 10
+	// Google's limits for a g:product_detail's name and value.
+	feedDetailNameMax  = 140
+	feedDetailValueMax = 1000
+	// Google's bounds for g:product_highlight: an item with fewer than the
+	// minimum breaks its requirements, so it goes out with none.
+	feedHighlightsMin = 2
+	feedHighlightsMax = 100
 )
 
 // feedContext carries per-generation tenant data every writer needs.
@@ -72,6 +79,8 @@ type feedItem struct {
 	EffectiveMinor int64
 	PriorMinor     int64
 	Brand          string
+	Gtin           string
+	Mpn            string
 	CategoryName   string
 	VariantGroup   *int64
 	// ItemGroupTitle and VariantOptions describe a variant: the group's
@@ -80,7 +89,12 @@ type feedItem struct {
 	// attribute tells apart.
 	ItemGroupTitle string
 	VariantOptions []variantOption
-	Currency       string
+	// Details are the specifications the product page shows: every
+	// attribute that is not a variant option above.
+	Details []variantOption
+	// Highlights are the store's selling points, within Google's bounds.
+	Highlights []string
+	Currency   string
 }
 
 type variantOption struct {
@@ -94,12 +108,16 @@ type variantOption struct {
 // than emitted broken or at a price checkout would not honour. A
 // malformed money field is an error: it would corrupt every consumer's
 // feed.
-func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
+func newFeedItem(p *django.ProductFeed, ctx *feedContext) (*feedItem, error) {
 	tr := p.Translations[ctx.Locale]
 	if tr.Name == "" || p.MainImagePath == "" || p.EffectivePrice == "" {
 		return nil, nil
 	}
-	title := text.Runes(tr.Name, feedTitleMax)
+	title := tr.FeedTitle
+	if title == "" {
+		title = tr.Name
+	}
+	title = text.Runes(title, feedTitleMax)
 	desc := plainText(tr.Description)
 	if desc == "" {
 		desc = tr.Name
@@ -117,18 +135,24 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 		}
 	}
 
-	var options []variantOption
+	var options, details []variantOption
+	for _, a := range p.Attributes {
+		if a.AttributeName == "" || a.Value == "" {
+			continue
+		}
+		if a.IsVariant && p.VariantGroup != nil {
+			options = append(options,
+				variantOption{Name: a.AttributeName, Value: a.Value})
+			continue
+		}
+		details = append(details, variantOption{
+			Name:  text.Runes(a.AttributeName, feedDetailNameMax),
+			Value: text.Runes(a.Value, feedDetailValueMax),
+		})
+	}
 	var groupTitle string
-	if p.VariantGroup != nil {
-		for _, a := range p.Attributes {
-			if a.IsVariant && a.AttributeName != "" && a.Value != "" {
-				options = append(options,
-					variantOption{Name: a.AttributeName, Value: a.Value})
-			}
-		}
-		if p.VariantGroupTitle != nil {
-			groupTitle = *p.VariantGroupTitle
-		}
+	if p.VariantGroup != nil && p.VariantGroupTitle != nil {
+		groupTitle = *p.VariantGroupTitle
 	}
 
 	var additional []string
@@ -166,12 +190,24 @@ func newFeedItem(p *django.Product, ctx *feedContext) (*feedItem, error) {
 		EffectiveMinor:       effective,
 		PriorMinor:           prior,
 		Brand:                brand,
+		Gtin:                 p.Gtin,
+		Mpn:                  p.Mpn,
 		CategoryName:         categoryName,
 		VariantGroup:         p.VariantGroup,
 		ItemGroupTitle:       groupTitle,
 		VariantOptions:       options,
+		Details:              details,
+		Highlights:           feedHighlights(p.Highlights),
 		Currency:             ctx.Currency,
 	}, nil
+}
+
+// feedHighlights keeps the highlights Google accepts for one item.
+func feedHighlights(highlights []string) []string {
+	if len(highlights) < feedHighlightsMin {
+		return nil
+	}
+	return highlights[:min(len(highlights), feedHighlightsMax)]
 }
 
 // rssWriter accumulates the RSS-dialect feed google.xml, meta.xml and
@@ -227,6 +263,14 @@ func (w *rssWriter) Item(it *feedItem) {
 	}
 	fields = append(fields,
 		fmt.Sprintf("<g:brand>%s</g:brand>", escapeXML(it.Brand)))
+	if it.Gtin != "" {
+		fields = append(fields,
+			fmt.Sprintf("<g:gtin>%s</g:gtin>", escapeXML(it.Gtin)))
+	}
+	if it.Mpn != "" {
+		fields = append(fields,
+			fmt.Sprintf("<g:mpn>%s</g:mpn>", escapeXML(it.Mpn)))
+	}
 	if it.CategoryName != "" {
 		fields = append(fields, fmt.Sprintf(
 			"<g:product_type>%s</g:product_type>", escapeXML(it.CategoryName)))
@@ -244,6 +288,16 @@ func (w *rssWriter) Item(it *feedItem) {
 				"<g:variant_option><g:name>%s</g:name><g:value>%s</g:value>"+
 					"</g:variant_option>", escapeXML(o.Name), escapeXML(o.Value)))
 		}
+	}
+	for _, h := range it.Highlights {
+		fields = append(fields, fmt.Sprintf(
+			"<g:product_highlight>%s</g:product_highlight>", escapeXML(h)))
+	}
+	for _, d := range it.Details {
+		fields = append(fields, fmt.Sprintf(
+			"<g:product_detail><g:attribute_name>%s</g:attribute_name>"+
+				"<g:attribute_value>%s</g:attribute_value></g:product_detail>",
+			escapeXML(d.Name), escapeXML(d.Value)))
 	}
 	w.buf.WriteString("    <item>\n      ")
 	w.buf.WriteString(strings.Join(fields, "\n      "))

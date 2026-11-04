@@ -33,6 +33,7 @@
       <g:item_group_id>77</g:item_group_id>
       <g:item_group_title>Θήκη Κινητού</g:item_group_title>
       <g:variant_option><g:name>Χρώμα</g:name><g:value>Μαύρο</g:value></g:variant_option>
+      <g:product_detail><g:attribute_name>Υλικό</g:attribute_name><g:attribute_value>Σιλικόνη</g:attribute_value></g:product_detail>
     </item>
     <item>
       <g:id>4</g:id>

@@ -29,6 +29,9 @@ type Page[T any] struct {
 type Translation struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// FeedTitle is the title the store wrote for product feeds, when it
+	// differs from the name; a product's only.
+	FeedTitle string `json:"feedTitle" contract:"optional"`
 }
 
 // Product covers list and detail shapes; money and percentages stay
@@ -43,9 +46,13 @@ type Product struct {
 	Category     *int64  `json:"category"`
 	VariantGroup *int64  `json:"variantGroup"`
 	BrandName    *string `json:"brandName"`
-	Stock        int     `json:"stock" contract:"optional"`
-	Active       bool    `json:"active" contract:"optional"`
-	Weight       *struct {
+	// Gtin and Mpn are the identifiers the store entered; empty when it
+	// has none.
+	Gtin   string `json:"gtin" contract:"optional"`
+	Mpn    string `json:"mpn" contract:"optional"`
+	Stock  int    `json:"stock" contract:"optional"`
+	Active bool   `json:"active" contract:"optional"`
+	Weight *struct {
 		Unit  string      `json:"unit" contract:"optional"`
 		Value json.Number `json:"value" contract:"optional"`
 	} `json:"weight"`
@@ -64,6 +71,14 @@ type Product struct {
 	// VariantGroupTitle is the variant group's name in the request
 	// language; null without a group or a name.
 	VariantGroupTitle *string `json:"variantGroupTitle"`
+}
+
+// ProductFeed is a row of /product/feed: a product and what only the feeds
+// read. Highlights are its selling points in the request language, in the
+// store's order.
+type ProductFeed struct {
+	Product
+	Highlights []string `json:"highlights"`
 }
 
 // ProductAttribute is one of a product's attribute values, translated.

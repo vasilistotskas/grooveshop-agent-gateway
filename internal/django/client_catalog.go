@@ -174,12 +174,12 @@ func (c *Client) ListAllCategories(
 // pages out concurrently; 100 is the paginator maximum page size).
 func (c *Client) ListProductsPage(
 	ctx context.Context, host, lang string, page, pageSize int,
-) (*Page[Product], error) {
+) (*Page[ProductFeed], error) {
 	q := url.Values{
 		"page":     {strconv.Itoa(page)},
 		"pageSize": {strconv.Itoa(pageSize)},
 	}
-	var out Page[Product]
+	var out Page[ProductFeed]
 	err := c.get(ctx, request{
 		path:     "/product/feed",
 		host:     host,
