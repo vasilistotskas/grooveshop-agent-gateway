@@ -395,6 +395,19 @@ func (h *Handler) selectPayWay(
 	return nil
 }
 
+// applyRegion settles the delivery region from the submitted address's
+// state, whenever one was submitted: its country decides whether a region
+// is needed at all.
+func (h *Handler) applyRegion(
+	r *http.Request, t *tenant.Tenant, s *checkout.Session,
+	fd *FulfillmentDetails,
+) error {
+	if fd == nil || fd.Address == nil {
+		return nil
+	}
+	return checkout.ResolveRegion(r.Context(), h.dj, t, s, fd.Address.State)
+}
+
 // --- Endpoints -------------------------------------------------------------
 
 func (h *Handler) tenantOf(w http.ResponseWriter, r *http.Request) (
@@ -476,6 +489,11 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
 	applyFulfillment(s, req.FulfillmentDetails, nil)
+	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
+		h.releaseIdem(r, t.SchemaName, "create", key)
+		upstreamError(w, err)
+		return
+	}
 	if err := h.selectPayWay(r, t, s); err != nil {
 		h.releaseIdem(r, t.SchemaName, "create", key)
 		upstreamError(w, err)
@@ -551,6 +569,16 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Before any cart write: a failed lookup must leave the cart and the
+	// stored session agreeing. Nothing here is saved until the end.
+	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
+	applyFulfillment(s, req.FulfillmentDetails,
+		req.SelectedFulfillmentOptions)
+	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
+		fail()
+		upstreamError(w, err)
+		return
+	}
 	if req.LineItems != nil {
 		if err := h.syncCart(r, t, s.CartID, req.LineItems); err != nil {
 			fail()
@@ -567,9 +595,6 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
-	applyFulfillment(s, req.FulfillmentDetails,
-		req.SelectedFulfillmentOptions)
 	if err := h.selectPayWay(r, t, s); err != nil {
 		fail()
 		upstreamError(w, err)

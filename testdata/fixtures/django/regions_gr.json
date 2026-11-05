@@ -1,0 +1,20 @@
+[
+  {
+    "translations": {"el": {"name": "Αττική"}},
+    "alpha": "GR-14",
+    "country": "GR",
+    "sortOrder": 1,
+    "createdAt": "2026-08-31T23:33:30.517941+03:00",
+    "updatedAt": "2026-08-31T23:33:30.517949+03:00",
+    "uuid": "8181ca06-f24c-4223-a894-f0ace0df5315"
+  },
+  {
+    "translations": {"el": {"name": "Κεντρική Μακεδονία"}, "en": {"name": "Central Macedonia"}},
+    "alpha": "GR-17",
+    "country": "GR",
+    "sortOrder": 2,
+    "createdAt": "2026-08-31T23:33:30.517941+03:00",
+    "updatedAt": "2026-08-31T23:33:30.517949+03:00",
+    "uuid": "3f0a1c3e-5a53-4b0f-9b57-6f1c3f8a2d11"
+  }
+]

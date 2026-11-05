@@ -177,6 +177,19 @@ type Category struct {
 	TreeID       int64                  `json:"treeId"`
 }
 
+// RegionTranslation is a region's name in one language. A store may hold
+// a region in only some of its languages.
+type RegionTranslation struct {
+	Name string `json:"name" contract:"optional"`
+}
+
+// Region is a delivery region of a country. Alpha is what an order names
+// it by (OrderCreate.RegionID).
+type Region struct {
+	Alpha        string                       `json:"alpha"`
+	Translations map[string]RegionTranslation `json:"translations"`
+}
+
 // PayWayTranslation is the customer-facing copy; the method's name is
 // not translated upstream — it is derived from PayWay.Key (Label).
 type PayWayTranslation struct {
