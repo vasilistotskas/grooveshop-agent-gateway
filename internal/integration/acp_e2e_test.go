@@ -40,6 +40,63 @@ func acpCall(
 	return resp, decoded
 }
 
+// Django deletes the cart with the order, so a completed session renders
+// from the order, and its continue_url leads to the order, not to a cart
+// that no longer exists.
+func TestACPCompletedSessionRendersFromTheOrder(t *testing.T) {
+	stack := startUCPGateway(t)
+	stack.faults.cartDeletedOnOrder.Store(true)
+	base := stack.gw.URL + "/acp/checkout_sessions"
+
+	resp, created := acpCall(t, http.MethodPost, base, map[string]any{
+		"line_items":   []map[string]any{{"id": "1", "quantity": 2}},
+		"currency":     "EUR",
+		"capabilities": map[string]any{},
+		"buyer": map[string]any{
+			"first_name": "Μαρία", "last_name": "Παπαδοπούλου",
+			"email": "maria@example.test", "phone_number": "+306912345678",
+		},
+		"fulfillment_details": map[string]any{
+			"name": "Μαρία Παπαδοπούλου",
+			"address": map[string]any{
+				"name": "Μαρία Παπαδοπούλου", "line_one": "Πανεπιστημίου 12",
+				"city": "Αθήνα", "state": "GR-14", "country": "GR",
+				"postal_code": "10431",
+			},
+		},
+	}, uuid.NewString())
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	session := base + "/" + created["id"].(string)
+	resp, _ = acpCall(t, http.MethodPost, session, map[string]any{
+		"selected_fulfillment_options": []map[string]any{{
+			"type": "shipping", "option_id": "acs:home_delivery",
+			"item_ids": []string{"410"},
+		}},
+	}, uuid.NewString())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	assertRendered := func(resp *http.Response, out map[string]any) {
+		t.Helper()
+		require.Equal(t, http.StatusOK, resp.StatusCode, "%v", out)
+		assert.Equal(t, "completed", out["status"])
+		assert.Contains(t, out["continue_url"],
+			"/checkout/success/"+fixtureOrderUUID)
+		amounts := map[string]float64{}
+		for _, row := range out["totals"].([]any) {
+			total := row.(map[string]any)
+			amounts[total["type"].(string)] = total["amount"].(float64)
+		}
+		assert.EqualValues(t, fixtureOrderTotal, amounts["total"])
+	}
+
+	resp, completed := acpCall(t, http.MethodPost, session+"/complete",
+		map[string]any{"payment_data": map[string]any{}}, uuid.NewString())
+	assertRendered(resp, completed)
+	resp, fetched := acpCall(t, http.MethodGet, session, nil, "")
+	assertRendered(resp, fetched)
+	assert.EqualValues(t, 1, stack.faults.orderCreates.Load())
+}
+
 func TestACPEndToEnd(t *testing.T) {
 	stack := startUCPGateway(t)
 	gw := stack.gw
