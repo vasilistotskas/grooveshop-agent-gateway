@@ -474,12 +474,12 @@ func toolset(h *handlers) []tool {
 	}
 }
 
-// Handler wraps the server in the stateless streamable HTTP transport.
 // maxRequestBodyBytes bounds a request: tool arguments are a few KB at most,
 // and the SDK default of 4 MiB is a lot of buffering for an anonymous
 // endpoint.
 const maxRequestBodyBytes = 256 << 10
 
+// Handler wraps the server in the stateless streamable HTTP transport.
 func Handler(d Deps, log *slog.Logger) http.Handler {
 	cache := &serverCache{deps: d, servers: map[string]*mcp.Server{}}
 	return mcp.NewStreamableHTTPHandler(
