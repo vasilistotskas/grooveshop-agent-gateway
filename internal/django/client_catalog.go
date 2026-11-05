@@ -193,6 +193,26 @@ func (c *Client) ListProductsPage(
 	return &out, nil
 }
 
+// Regions lists a country's delivery regions; a country without any, or
+// one Django does not know, answers an empty list.
+func (c *Client) Regions(
+	ctx context.Context, host, lang, countryCode string,
+) ([]Region, error) {
+	var out []Region
+	err := c.get(ctx, request{
+		path: "/region/{alpha}/get_regions_by_country_alpha_2",
+		rawPath: "/region/" + url.PathEscape(countryCode) +
+			"/get_regions_by_country_alpha_2",
+		host:     host,
+		language: lang,
+		out:      &out,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PayWays lists active payment methods, optionally filtered by carrier
 // compatibility (providerCode + kind), mirroring the storefront checkout.
 func (c *Client) PayWays(

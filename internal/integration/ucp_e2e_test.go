@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
@@ -177,6 +178,10 @@ type checkoutFaults struct {
 	// gateway cannot know.
 	orderCreate  atomic.Bool
 	orderCreates atomic.Int32
+	// regionLookup makes the country's region list answer 502.
+	regionLookup atomic.Bool
+	// cartWrites counts the line writes the cart received.
+	cartWrites atomic.Int32
 	// agentProtocol is the attribution the last order create carried.
 	agentProtocol atomic.Value
 }
@@ -186,6 +191,20 @@ type checkoutFaults struct {
 func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	t.Helper()
 	outer := http.NewServeMux()
+	inner := fakeDjangoMux(t)
+	outer.HandleFunc("GET /api/v1/region/GR/get_regions_by_country_alpha_2",
+		func(w http.ResponseWriter, r *http.Request) {
+			if faults.regionLookup.Load() {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			inner.ServeHTTP(w, r)
+		})
+	outer.HandleFunc("POST /api/v1/cart/item",
+		func(w http.ResponseWriter, r *http.Request) {
+			faults.cartWrites.Add(1)
+			inner.ServeHTTP(w, r)
+		})
 	outer.HandleFunc("POST /api/v1/cart/reserve-stock",
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -205,6 +224,9 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			assert.NotEmpty(t, body["payWayId"])
 			assert.NotEmpty(t, body["email"])
+			// Django refuses an order without a region when the country
+			// has any, and Greece does.
+			assert.Equal(t, "GR-14", body["regionId"])
 			// Every agent checkout linked the terms and privacy policy,
 			// so every order it places accepts them.
 			assert.Equal(t, true, body["termsAccepted"])
@@ -231,7 +253,6 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				"provider": "viva_wallet"
 			}`))
 		})
-	inner := fakeDjangoMux(t)
 	outer.Handle("/", inner)
 	return outer
 }
@@ -302,6 +323,75 @@ func startUCPGateway(t *testing.T) ucpStack {
 	}
 }
 
+// The region is resolved before the cart is touched: an update that fails
+// on it must leave the cart as the stored session knows it.
+func TestRegionLookupFailureLeavesTheCartAlone(t *testing.T) {
+	stack := startUCPGateway(t)
+	platform := httptest.NewServer(newWebhookSink().handler())
+	t.Cleanup(platform.Close)
+	meta := map[string]any{"ucp-agent": map[string]any{
+		"profile": servePlatformProfile(t, platform.URL+"/ucp/orders", nil),
+	}}
+	greek := map[string]any{
+		"kind": "home_delivery", "providerCode": "acs", "countryCode": "GR",
+		"city": "Αθήνα", "zipcode": "10431", "street": "Πανεπιστημίου",
+		"streetNumber": "12", "regionId": "GR-14",
+	}
+
+	t.Run("ucp", func(t *testing.T) {
+		session := connectMCP(t, stack.gw.URL)
+		res := callTool(t, session, "create_checkout", map[string]any{
+			"meta": meta, "cart_id": fixtureCartID,
+			"checkout": map[string]any{},
+		})
+		require.False(t, res.IsError)
+
+		stack.faults.regionLookup.Store(true)
+		t.Cleanup(func() { stack.faults.regionLookup.Store(false) })
+		writes := stack.faults.cartWrites.Load()
+		res = callTool(t, session, "update_checkout", map[string]any{
+			"meta": meta, "id": structured(t, res)["id"],
+			"checkout": map[string]any{
+				"fulfillment": greek,
+				"line_items": []any{map[string]any{
+					"item": map[string]any{"id": "2"}, "quantity": 1,
+				}},
+			},
+		})
+		assert.True(t, res.IsError)
+		assert.Equal(t, writes, stack.faults.cartWrites.Load())
+	})
+
+	t.Run("acp", func(t *testing.T) {
+		stack.faults.regionLookup.Store(false)
+		base := stack.gw.URL + "/acp/checkout_sessions"
+		resp, created := acpCall(t, http.MethodPost, base, map[string]any{
+			"line_items":   []map[string]any{{"id": "1", "quantity": 1}},
+			"currency":     "EUR",
+			"capabilities": map[string]any{},
+		}, uuid.NewString())
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+		stack.faults.regionLookup.Store(true)
+		writes := stack.faults.cartWrites.Load()
+		resp, _ = acpCall(t, http.MethodPost,
+			base+"/"+created["id"].(string), map[string]any{
+				"line_items": []map[string]any{{"id": "2", "quantity": 1}},
+				"fulfillment_details": map[string]any{
+					"name": "Μαρία Παπαδοπούλου",
+					"address": map[string]any{
+						"name":     "Μαρία Παπαδοπούλου",
+						"line_one": "Πανεπιστημίου 12", "city": "Αθήνα",
+						"state": "GR-14", "country": "GR",
+						"postal_code": "10431",
+					},
+				},
+			}, uuid.NewString())
+		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+		assert.Equal(t, writes, stack.faults.cartWrites.Load())
+	})
+}
+
 func TestUCPEndToEnd(t *testing.T) {
 	stack := startUCPGateway(t)
 	gw, key := stack.gw, stack.key
@@ -339,7 +429,42 @@ func TestUCPEndToEnd(t *testing.T) {
 		"kind": "home_delivery", "providerCode": "acs",
 		"countryCode": "GR", "city": "Αθήνα", "zipcode": "10431",
 		"street": "Πανεπιστημίου", "streetNumber": "12",
+		"regionId": "GR-14",
 	}
+
+	t.Run("a country with regions blocks completion until one is chosen",
+		func(t *testing.T) {
+			noRegion := map[string]any{}
+			for k, v := range fulfillment {
+				if k != "regionId" {
+					noRegion[k] = v
+				}
+			}
+			res := callTool(t, session, "create_checkout", map[string]any{
+				"meta":    meta(""),
+				"cart_id": fixtureCartID,
+				"checkout": map[string]any{
+					"buyer": buyer, "fulfillment": noRegion,
+					"payment": codInstrument,
+				},
+			})
+			require.False(t, res.IsError)
+			created := structured(t, res)
+			assert.Equal(t, "incomplete", created["status"])
+			assert.Contains(t, fmt.Sprint(created["messages"]),
+				"fulfillment.regionId, one of: GR-14 (Αττική)")
+
+			res = callTool(t, session, "update_checkout", map[string]any{
+				"meta": meta(""),
+				"id":   created["id"],
+				"checkout": map[string]any{
+					"fulfillment": fulfillment,
+				},
+			})
+			require.False(t, res.IsError)
+			assert.Equal(t, "ready_for_complete",
+				structured(t, res)["status"])
+		})
 
 	t.Run("well-known profile serves the signing key", func(t *testing.T) {
 		resp, err := http.Get(gw.URL + "/.well-known/ucp")

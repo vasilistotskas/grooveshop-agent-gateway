@@ -78,6 +78,8 @@ type OrderCreate struct {
 	City         string `json:"city"`
 	Zipcode      string `json:"zipcode"`
 	CountryID    string `json:"countryId"`
+	// RegionID is required upstream when the country has regions.
+	RegionID     string `json:"regionId,omitempty"`
 	DocumentType string `json:"documentType,omitempty"`
 
 	ShippingProviderCode string `json:"shippingProviderCode,omitempty"`

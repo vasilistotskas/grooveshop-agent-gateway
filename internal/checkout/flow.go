@@ -154,6 +154,7 @@ func (f *Flow) Complete(
 			City:                 s.Fulfillment.City,
 			Zipcode:              s.Fulfillment.Zipcode,
 			CountryID:            s.Fulfillment.CountryCode,
+			RegionID:             s.Fulfillment.RegionID,
 			ShippingProviderCode: s.Fulfillment.ProviderCode,
 			ShippingKind:         s.Fulfillment.Kind,
 			AcsStationExternalID: s.Fulfillment.AcsStationExternalID,
