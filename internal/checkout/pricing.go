@@ -149,7 +149,9 @@ func ComputePricing(
 }
 
 // orderPricing reads the totals of a placed order. Its discounts arrive as
-// one sum, not per offer, and every reduction of the amount due counts.
+// one sum, not per offer. A gift card is not one of them: it is a way to pay,
+// so Django's grand total leaves it out, and counting it here would leave
+// the rows short of that total.
 func orderPricing(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant, orderUUID string,
 ) (*Pricing, error) {
@@ -195,7 +197,6 @@ func orderPricing(
 	}
 	for _, reduction := range []string{
 		b.Discount.String(), b.LoyaltyDiscount.String(),
-		b.GiftCardAmount.String(),
 	} {
 		amount, err := money.MinorUnits(reduction)
 		if err != nil {

@@ -41,7 +41,7 @@ func TestComputePricingPlacedOrder(t *testing.T) {
 					"itemsSubtotal": 79.16, "shippingCost": 3,
 					"paymentMethodFee": 2, "discount": 5,
 					"loyaltyDiscount": 1, "giftCardAmount": 0.5,
-					"grandTotal": 77.66, "currency": "EUR"
+					"grandTotal": 78.16, "amountDue": 77.66, "currency": "EUR"
 				}
 			}`))
 		})
@@ -68,8 +68,9 @@ func TestComputePricingPlacedOrder(t *testing.T) {
 	assert.EqualValues(t, 300, p.DeliveryFee)
 	assert.True(t, p.HasPaymentFee)
 	assert.EqualValues(t, 200, p.PaymentFee)
-	assert.EqualValues(t, 650, p.DiscountTotal, "every reduction counts")
-	assert.EqualValues(t, 7766, p.Total)
+	assert.EqualValues(t, 600, p.DiscountTotal,
+		"a gift card pays for an order, it does not discount it")
+	assert.EqualValues(t, 7816, p.Total, "Django's grand total")
 	assert.Equal(t, p.Total,
 		p.ItemsSubtotal+p.DeliveryFee+p.PaymentFee-p.DiscountTotal,
 		"the rows a platform shows add up to the total")
