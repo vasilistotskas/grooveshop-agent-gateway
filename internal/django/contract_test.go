@@ -188,6 +188,13 @@ var djangoContract = []contractCall{
 		names: map[string]string{"PayWay": "PayWay"},
 	},
 	{
+		fn: "Regions", method: http.MethodGet,
+		path:   "/region/{alpha}/get_regions_by_country_alpha_2",
+		status: http.StatusOK,
+		out:    reflect.TypeFor[[]Region](),
+		names:  map[string]string{"Region": "Region"},
+	},
+	{
 		fn: "GetCart", method: http.MethodGet,
 		path: "/cart", status: http.StatusOK,
 		out:   reflect.TypeFor[Cart](),

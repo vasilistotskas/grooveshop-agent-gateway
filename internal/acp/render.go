@@ -195,7 +195,7 @@ func renderFulfillment(
 				Name:       name,
 				LineOne:    line,
 				City:       f.City,
-				State:      "",
+				State:      f.RegionID,
 				Country:    f.CountryCode,
 				PostalCode: f.Zipcode,
 			},
@@ -347,6 +347,10 @@ func appendStateMessages(s *checkout.Session, out *Session) {
 		missing("$.fulfillment_details.address.line_one",
 			"line_one must end with the house number, e.g. "+
 				"\"Main Street 12\".")
+	}
+	if choices := s.RegionChoices(); choices != "" {
+		missing("$.fulfillment_details.address.state",
+			"state must name a region of the country, one of: "+choices)
 	}
 	if f.ProviderCode == "" || f.Kind == "" {
 		missing("$.selected_fulfillment_options",

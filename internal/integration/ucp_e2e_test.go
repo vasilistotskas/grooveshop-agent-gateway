@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
@@ -205,6 +206,9 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			assert.NotEmpty(t, body["payWayId"])
 			assert.NotEmpty(t, body["email"])
+			// Django refuses an order without a region when the country
+			// has any, and Greece does.
+			assert.Equal(t, "GR-14", body["regionId"])
 			// Every agent checkout linked the terms and privacy policy,
 			// so every order it places accepts them.
 			assert.Equal(t, true, body["termsAccepted"])
@@ -339,7 +343,42 @@ func TestUCPEndToEnd(t *testing.T) {
 		"kind": "home_delivery", "providerCode": "acs",
 		"countryCode": "GR", "city": "Αθήνα", "zipcode": "10431",
 		"street": "Πανεπιστημίου", "streetNumber": "12",
+		"regionId": "GR-14",
 	}
+
+	t.Run("a country with regions blocks completion until one is chosen",
+		func(t *testing.T) {
+			noRegion := map[string]any{}
+			for k, v := range fulfillment {
+				if k != "regionId" {
+					noRegion[k] = v
+				}
+			}
+			res := callTool(t, session, "create_checkout", map[string]any{
+				"meta":    meta(""),
+				"cart_id": fixtureCartID,
+				"checkout": map[string]any{
+					"buyer": buyer, "fulfillment": noRegion,
+					"payment": codInstrument,
+				},
+			})
+			require.False(t, res.IsError)
+			created := structured(t, res)
+			assert.Equal(t, "incomplete", created["status"])
+			assert.Contains(t, fmt.Sprint(created["messages"]),
+				"fulfillment.regionId, one of: GR-14 (Αττική)")
+
+			res = callTool(t, session, "update_checkout", map[string]any{
+				"meta": meta(""),
+				"id":   created["id"],
+				"checkout": map[string]any{
+					"fulfillment": fulfillment,
+				},
+			})
+			require.False(t, res.IsError)
+			assert.Equal(t, "ready_for_complete",
+				structured(t, res)["status"])
+		})
 
 	t.Run("well-known profile serves the signing key", func(t *testing.T) {
 		resp, err := http.Get(gw.URL + "/.well-known/ucp")

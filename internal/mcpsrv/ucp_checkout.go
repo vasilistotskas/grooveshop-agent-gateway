@@ -122,6 +122,9 @@ func (h *handlers) createCheckout(
 		}
 	}
 	in.Checkout.applyTo(s)
+	if err := h.applyRegion(ctx, t, s, &in.Checkout); err != nil {
+		return nil, zero, err
+	}
 	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
 		return nil, zero, err
 	}
@@ -132,6 +135,24 @@ func (h *handlers) createCheckout(
 	}
 	res, out, err := h.checkoutResult(ctx, t, s, neg)
 	return h.discountAnnotated(res, out, err, s, hasCodes)
+}
+
+// applyRegion settles the delivery region whenever a fulfillment was
+// submitted: its country decides whether one is needed at all.
+func (h *handlers) applyRegion(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	in *UCPCheckoutIn,
+) error {
+	if in.Fulfillment == nil {
+		return nil
+	}
+	if err := checkout.ResolveRegion(
+		ctx, h.deps.Django, t, s, in.Fulfillment.RegionID,
+	); err != nil {
+		return upstreamErr(err,
+			"the delivery regions are unavailable; the checkout is unchanged")
+	}
+	return nil
 }
 
 // applyPayment honours a payment selection submitted before completion:
@@ -217,6 +238,9 @@ func (h *handlers) updateCheckout(
 		}
 	}
 	in.Checkout.applyTo(s)
+	if err := h.applyRegion(ctx, t, s, &in.Checkout); err != nil {
+		return nil, zero, err
+	}
 	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
 		return nil, zero, err
 	}
