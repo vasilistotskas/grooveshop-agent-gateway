@@ -569,6 +569,16 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Before any cart write: a failed lookup must leave the cart and the
+	// stored session agreeing. Nothing here is saved until the end.
+	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
+	applyFulfillment(s, req.FulfillmentDetails,
+		req.SelectedFulfillmentOptions)
+	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
+		fail()
+		upstreamError(w, err)
+		return
+	}
 	if req.LineItems != nil {
 		if err := h.syncCart(r, t, s.CartID, req.LineItems); err != nil {
 			fail()
@@ -584,14 +594,6 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 			upstreamError(w, err)
 			return
 		}
-	}
-	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
-	applyFulfillment(s, req.FulfillmentDetails,
-		req.SelectedFulfillmentOptions)
-	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
-		fail()
-		upstreamError(w, err)
-		return
 	}
 	if err := h.selectPayWay(r, t, s); err != nil {
 		fail()
