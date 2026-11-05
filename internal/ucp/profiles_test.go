@@ -2,6 +2,7 @@ package ucp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,24 @@ func platformProfileJSON(t *testing.T, webhookURL string) string {
 		"fixtures", "ucp", "platform_profile.json"))
 	require.NoError(t, err)
 	return strings.ReplaceAll(string(raw), "{{webhook_url}}", webhookURL)
+}
+
+// Staging only fetches a platform profile over public https, so the agent
+// protocols runbook points at this file in the public repository. It names
+// no webhook: staging has no public endpoint to receive one.
+func TestRunbookPlatformProfileIsValid(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata",
+		"fixtures", "ucp", "runbook_platform_profile.json"))
+	require.NoError(t, err)
+	schema, err := CompileSpec("profile.json#/$defs/platform_schema")
+	require.NoError(t, err)
+	var doc any
+	require.NoError(t, json.Unmarshal(raw, &doc))
+	require.NoError(t, schema.Validate(doc))
+
+	var profile PlatformProfile
+	require.NoError(t, json.Unmarshal(raw, &profile))
+	assert.Equal(t, Version, profile.UCP.Version)
 }
 
 type profileServer struct {

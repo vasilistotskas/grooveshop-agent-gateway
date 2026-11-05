@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -22,6 +23,24 @@ func authTenant(schema, token string) *tenant.Tenant {
 		ACPBearerToken: token,
 		Domain:         schema + ".example.test",
 	}
+}
+
+// The spec's request item has no quantity, so omitting one buys one. One
+// that is sent reaches Django, which refuses it below 1.
+func TestCartLinesQuantity(t *testing.T) {
+	lines, err := cartLines([]ItemRef{
+		{ID: "1"},
+		{ID: "2", Quantity: new(3)},
+		{ID: "3", Quantity: new(0)},
+		{ID: "4", Quantity: new(-1)},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []checkout.Line{
+		{ProductID: 1, Quantity: 1},
+		{ProductID: 2, Quantity: 3},
+		{ProductID: 3, Quantity: 0},
+		{ProductID: 4, Quantity: -1},
+	}, lines)
 }
 
 func TestAuthPerTenantBearer(t *testing.T) {

@@ -65,7 +65,11 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   `Authorization: Bearer` is verified against Django `/agent/me`
   (60s in-memory cache, SHA-256 keys); invalid tokens get 401 + the
   RFC 9728 `WWW-Authenticate` challenge; anonymous requests pass
-  through. Account tools forward the bearer — Django enforces scopes.
+  through, except a call to an account tool, which gets the same
+  challenge naming the scopes of every account tool the store serves
+  (`mcpsrv.RequireLinkedAccount`), because a client starts OAuth on a
+  401 and on nothing else. Account tools forward the bearer — Django
+  enforces scopes.
 - `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:v4:{host}`
   → Django; singleflight; 60s negative cache; stale-if-error) + middleware
   (tenant from the **real Host header only** — inbound X-Forwarded-Host is

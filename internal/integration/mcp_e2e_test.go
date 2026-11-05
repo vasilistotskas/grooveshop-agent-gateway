@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -500,13 +501,35 @@ func connectMCPWithBearer(
 func TestMCPAccountTools(t *testing.T) {
 	gw := startGateway(t)
 
-	t.Run("anonymous my_orders explains the OAuth link", func(t *testing.T) {
-		session := connectMCP(t, gw.URL)
-		res := callTool(t, session, "my_orders", map[string]any{})
-		require.True(t, res.IsError)
-		text := res.Content[0].(*mcp.TextContent).Text
-		assert.Contains(t, text, "oauth-protected-resource/mcp")
-	})
+	t.Run("anonymous my_orders is challenged, so a client starts OAuth",
+		func(t *testing.T) {
+			call := func(tool string) *http.Response {
+				t.Helper()
+				req, err := http.NewRequest(http.MethodPost, gw.URL+"/mcp",
+					strings.NewReader(`{"jsonrpc":"2.0","id":1,`+
+						`"method":"tools/call","params":{"name":"`+tool+
+						`","arguments":{}}}`))
+				require.NoError(t, err)
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Accept",
+					"application/json, text/event-stream")
+				resp, err := http.DefaultClient.Do(req)
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = resp.Body.Close() })
+				return resp
+			}
+
+			resp := call("my_orders")
+			assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+			challenge := resp.Header.Get("WWW-Authenticate")
+			assert.Contains(t, challenge, "orders:read")
+			assert.Contains(t, challenge,
+				`/.well-known/oauth-protected-resource/mcp"`)
+
+			// The rest of /mcp stays open to anonymous agents.
+			assert.Equal(t, http.StatusOK,
+				call("get_store_policies").StatusCode)
+		})
 
 	t.Run("linked my_orders returns the shopper's orders", func(t *testing.T) {
 		session := connectMCPWithBearer(t, gw.URL, "linked-token")

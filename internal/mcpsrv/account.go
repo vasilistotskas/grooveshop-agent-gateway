@@ -15,8 +15,9 @@ import (
 )
 
 // linkedFor extracts the request's linked-account credential. The
-// identity middleware only sets it for verified bearer tokens, so
-// absence means the agent has not completed the OAuth account link.
+// identity middleware only sets it for verified bearer tokens, and
+// RequireLinkedAccount challenges an anonymous call on /mcp before it
+// gets here, so absence means another surface called the tool.
 func (h *handlers) linkedFor(
 	ctx context.Context, t *tenant.Tenant,
 ) (*identity.Linked, error) {

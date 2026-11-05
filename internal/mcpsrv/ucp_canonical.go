@@ -153,11 +153,8 @@ func (c *UCPCheckoutIn) lines() ([]checkout.Line, error) {
 				"checkout.line_items[%d].item.id %q is not a product id",
 				i, li.Item.ID)
 		}
-		qty := li.Quantity
-		if qty <= 0 {
-			qty = 1
-		}
-		out = append(out, checkout.Line{ProductID: id, Quantity: qty})
+		out = append(out,
+			checkout.Line{ProductID: id, Quantity: li.Quantity})
 	}
 	return out, nil
 }
