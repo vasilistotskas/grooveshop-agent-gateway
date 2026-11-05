@@ -659,6 +659,15 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		upstreamError(w, err)
 		return
 	}
+	applyBuyer(s, req.Buyer, nil)
+	s.Recompute()
+	// Readiness first: a pay way is chosen only once the delivery is known,
+	// so an unready session has none, and that says nothing about the store.
+	if s.Status == checkout.StatusIncomplete {
+		h.releaseIdem(r, t.SchemaName, scope, key)
+		h.completeError(w, checkout.ErrNotReady)
+		return
+	}
 	if s.PayWayID == 0 {
 		h.releaseIdem(r, t.SchemaName, scope, key)
 		writeError(w, http.StatusBadRequest, Error{
@@ -668,8 +677,6 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	applyBuyer(s, req.Buyer, nil)
-	s.Recompute()
 
 	record := idemRecord{
 		SessionID: s.ID, BodyHash: bodyHash(raw), Status: http.StatusOK,
