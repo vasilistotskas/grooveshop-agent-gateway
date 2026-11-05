@@ -210,6 +210,27 @@ func TestACPEndToEnd(t *testing.T) {
 		assert.Equal(t, "completed", fetched["status"])
 	})
 
+	t.Run("a currency the store does not sell in is refused",
+		func(t *testing.T) {
+			other := map[string]any{
+				"line_items":   []map[string]any{{"id": "1", "quantity": 1}},
+				"currency":     "USD",
+				"capabilities": map[string]any{},
+			}
+			key := uuid.NewString()
+			resp, refused := acpCall(t, http.MethodPost, base, other, key)
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			assert.Equal(t, "invalid", refused["code"])
+			assert.Equal(t, "$.currency", refused["param"])
+			assert.Contains(t, refused["message"], "EUR")
+
+			// Nothing was created, so the key is free for the real attempt.
+			other["currency"] = "eur"
+			resp, _ = acpCall(t, http.MethodPost, base, other, key)
+			assert.Equal(t, http.StatusCreated, resp.StatusCode,
+				"the store's own currency, in any case, is accepted")
+		})
+
 	t.Run("completing an unready session says so, not that the store "+
 		"cannot be paid", func(t *testing.T) {
 		resp, created := acpCall(t, http.MethodPost, base, createBody,
