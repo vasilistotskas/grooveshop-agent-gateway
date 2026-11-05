@@ -178,6 +178,10 @@ type checkoutFaults struct {
 	// gateway cannot know.
 	orderCreate  atomic.Bool
 	orderCreates atomic.Int32
+	// regionLookup makes the country's region list answer 502.
+	regionLookup atomic.Bool
+	// cartWrites counts the line writes the cart received.
+	cartWrites atomic.Int32
 	// agentProtocol is the attribution the last order create carried.
 	agentProtocol atomic.Value
 }
@@ -187,6 +191,20 @@ type checkoutFaults struct {
 func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	t.Helper()
 	outer := http.NewServeMux()
+	inner := fakeDjangoMux(t)
+	outer.HandleFunc("GET /api/v1/region/GR/get_regions_by_country_alpha_2",
+		func(w http.ResponseWriter, r *http.Request) {
+			if faults.regionLookup.Load() {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			inner.ServeHTTP(w, r)
+		})
+	outer.HandleFunc("POST /api/v1/cart/item",
+		func(w http.ResponseWriter, r *http.Request) {
+			faults.cartWrites.Add(1)
+			inner.ServeHTTP(w, r)
+		})
 	outer.HandleFunc("POST /api/v1/cart/reserve-stock",
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -235,7 +253,6 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				"provider": "viva_wallet"
 			}`))
 		})
-	inner := fakeDjangoMux(t)
 	outer.Handle("/", inner)
 	return outer
 }
@@ -304,6 +321,75 @@ func startUCPGateway(t *testing.T) ucpStack {
 	return ucpStack{
 		gw: srv, key: key, rdb: rdb, faults: faults,
 	}
+}
+
+// The region is resolved before the cart is touched: an update that fails
+// on it must leave the cart as the stored session knows it.
+func TestRegionLookupFailureLeavesTheCartAlone(t *testing.T) {
+	stack := startUCPGateway(t)
+	platform := httptest.NewServer(newWebhookSink().handler())
+	t.Cleanup(platform.Close)
+	meta := map[string]any{"ucp-agent": map[string]any{
+		"profile": servePlatformProfile(t, platform.URL+"/ucp/orders", nil),
+	}}
+	greek := map[string]any{
+		"kind": "home_delivery", "providerCode": "acs", "countryCode": "GR",
+		"city": "Αθήνα", "zipcode": "10431", "street": "Πανεπιστημίου",
+		"streetNumber": "12", "regionId": "GR-14",
+	}
+
+	t.Run("ucp", func(t *testing.T) {
+		session := connectMCP(t, stack.gw.URL)
+		res := callTool(t, session, "create_checkout", map[string]any{
+			"meta": meta, "cart_id": fixtureCartID,
+			"checkout": map[string]any{},
+		})
+		require.False(t, res.IsError)
+
+		stack.faults.regionLookup.Store(true)
+		t.Cleanup(func() { stack.faults.regionLookup.Store(false) })
+		writes := stack.faults.cartWrites.Load()
+		res = callTool(t, session, "update_checkout", map[string]any{
+			"meta": meta, "id": structured(t, res)["id"],
+			"checkout": map[string]any{
+				"fulfillment": greek,
+				"line_items": []any{map[string]any{
+					"item": map[string]any{"id": "2"}, "quantity": 1,
+				}},
+			},
+		})
+		assert.True(t, res.IsError)
+		assert.Equal(t, writes, stack.faults.cartWrites.Load())
+	})
+
+	t.Run("acp", func(t *testing.T) {
+		stack.faults.regionLookup.Store(false)
+		base := stack.gw.URL + "/acp/checkout_sessions"
+		resp, created := acpCall(t, http.MethodPost, base, map[string]any{
+			"line_items":   []map[string]any{{"id": "1", "quantity": 1}},
+			"currency":     "EUR",
+			"capabilities": map[string]any{},
+		}, uuid.NewString())
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+		stack.faults.regionLookup.Store(true)
+		writes := stack.faults.cartWrites.Load()
+		resp, _ = acpCall(t, http.MethodPost,
+			base+"/"+created["id"].(string), map[string]any{
+				"line_items": []map[string]any{{"id": "2", "quantity": 1}},
+				"fulfillment_details": map[string]any{
+					"name": "Μαρία Παπαδοπούλου",
+					"address": map[string]any{
+						"name":     "Μαρία Παπαδοπούλου",
+						"line_one": "Πανεπιστημίου 12", "city": "Αθήνα",
+						"state": "GR-14", "country": "GR",
+						"postal_code": "10431",
+					},
+				},
+			}, uuid.NewString())
+		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+		assert.Equal(t, writes, stack.faults.cartWrites.Load())
+	})
 }
 
 func TestUCPEndToEnd(t *testing.T) {

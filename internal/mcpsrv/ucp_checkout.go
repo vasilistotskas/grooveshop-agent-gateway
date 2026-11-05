@@ -150,7 +150,7 @@ func (h *handlers) applyRegion(
 		ctx, h.deps.Django, t, s, in.Fulfillment.RegionID,
 	); err != nil {
 		return upstreamErr(err,
-			"the delivery regions are unavailable; the checkout is unchanged")
+			"the delivery regions are unavailable; retry shortly")
 	}
 	return nil
 }
@@ -207,6 +207,12 @@ func (h *handlers) updateCheckout(
 			"checkout %s is %s and can no longer be updated",
 			s.ID, s.Status)
 	}
+	// Before any cart write: a failed lookup must leave the cart and the
+	// stored session agreeing. Nothing here is saved until the end.
+	in.Checkout.applyTo(s)
+	if err := h.applyRegion(ctx, t, s, &in.Checkout); err != nil {
+		return nil, zero, err
+	}
 	// line_items is full-state on update: the submitted list replaces
 	// the cart's lines. Ignoring it would complete the old order.
 	if in.Checkout.LineItems != nil {
@@ -236,10 +242,6 @@ func (h *handlers) updateCheckout(
 				"the discount code could not be applied; the checkout is "+
 					"unchanged")
 		}
-	}
-	in.Checkout.applyTo(s)
-	if err := h.applyRegion(ctx, t, s, &in.Checkout); err != nil {
-		return nil, zero, err
 	}
 	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
 		return nil, zero, err
