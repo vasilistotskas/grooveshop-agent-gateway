@@ -142,6 +142,33 @@ func addDjango(
 	return h, &keys, &bodies
 }
 
+// Only an omitted quantity defaults. Django refuses one below 1, and an
+// agent reducing a cart must hear that, not find a unit added to it.
+func TestAddToCartQuantity(t *testing.T) {
+	ctx := tenant.NewContext(context.Background(), cartTenant())
+	for _, tc := range []struct {
+		name string
+		sent *int
+		want float64
+	}{
+		{"omitted is one", nil, 1},
+		{"named is sent", new(4), 4},
+		{"zero is the store's to refuse", new(0), 0},
+		{"negative is the store's to refuse", new(-3), -3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status := http.StatusCreated
+			h, _, bodies := addDjango(t, &status)
+			_, _, err := h.addToCart(ctx, nil, AddToCartIn{
+				CartID: fixtureCartID, ProductID: 1, Quantity: tc.sent,
+			})
+			require.NoError(t, err)
+			require.Len(t, *bodies, 1)
+			assert.EqualValues(t, tc.want, (*bodies)[0]["quantity"])
+		})
+	}
+}
+
 // A chat turn's add carries an idempotency key. A repeat of an add whose
 // outcome is unknown reuses it, so the store answers it with the first
 // outcome; once an add succeeded, an identical one is a new change.
@@ -150,7 +177,7 @@ func TestAddToCartIsIdempotentWithinATurn(t *testing.T) {
 	h, keys, _ := addDjango(t, &status)
 	ctx := WithTurn(tenant.NewContext(context.Background(), cartTenant()),
 		NewTurn("8b0f6c1e-4a8d-4c8b-9a37-2f4f1d1c9e01"))
-	in := AddToCartIn{CartID: fixtureCartID, ProductID: 1, Quantity: 2}
+	in := AddToCartIn{CartID: fixtureCartID, ProductID: 1, Quantity: new(2)}
 
 	_, _, err := h.addToCart(ctx, nil, in)
 	require.Error(t, err)
@@ -160,7 +187,7 @@ func TestAddToCartIsIdempotentWithinATurn(t *testing.T) {
 	_, _, err = h.addToCart(ctx, nil, in)
 	require.NoError(t, err)
 	_, _, err = h.addToCart(ctx, nil,
-		AddToCartIn{CartID: fixtureCartID, ProductID: 1, Quantity: 1})
+		AddToCartIn{CartID: fixtureCartID, ProductID: 1, Quantity: new(1)})
 	require.NoError(t, err)
 
 	require.Len(t, *keys, 4)

@@ -185,7 +185,7 @@ type Error struct {
 
 type ItemRef struct {
 	ID       string `json:"id"`
-	Quantity int    `json:"quantity"`
+	Quantity *int   `json:"quantity,omitempty"`
 }
 
 type CreateRequest struct {
