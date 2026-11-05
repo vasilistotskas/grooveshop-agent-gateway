@@ -353,9 +353,11 @@ func cartLines(items []ItemRef) ([]checkout.Line, error) {
 			return nil, fmt.Errorf("%w: unknown item id %q",
 				django.ErrNotFound, ref.ID)
 		}
-		qty := ref.Quantity
-		if qty <= 0 {
-			qty = 1
+		// The spec's request item has no quantity, so a platform that
+		// follows it buys one. One it does send is the store's to refuse.
+		qty := 1
+		if ref.Quantity != nil {
+			qty = *ref.Quantity
 		}
 		lines = append(lines,
 			checkout.Line{ProductID: productID, Quantity: qty})

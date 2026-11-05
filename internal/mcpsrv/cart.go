@@ -171,7 +171,7 @@ func (h *handlers) getCart(
 type AddToCartIn struct {
 	CartID    string `json:"cartId,omitempty" jsonschema:"omit on the first add to create a cart implicitly"`
 	ProductID int64  `json:"productId"`
-	Quantity  int    `json:"quantity,omitempty" jsonschema:"default 1, max 999"`
+	Quantity  *int   `json:"quantity,omitempty" jsonschema:"default 1, max 999"`
 }
 
 func (h *handlers) addToCart(
@@ -186,9 +186,11 @@ func (h *handlers) addToCart(
 	if in.ProductID <= 0 {
 		return nil, out, errors.New("productId is required")
 	}
-	qty := in.Quantity
-	if qty <= 0 {
-		qty = 1
+	// Only an omitted quantity defaults. Django refuses one below 1 in the
+	// store's words: read as 1, an agent reducing a cart would add to it.
+	qty := 1
+	if in.Quantity != nil {
+		qty = *in.Quantity
 	}
 
 	// A signed-in shopper's cart is reached through their cart token,
