@@ -209,7 +209,7 @@ func (b *Builder) BuildCheckout(
 
 	for _, line := range pricing.Lines {
 		out.LineItems = append(out.LineItems, LineItem{
-			ID: strconv.FormatInt(line.CartItemID, 10),
+			ID: strconv.FormatInt(line.LineID, 10),
 			Item: Item{
 				ID:    strconv.FormatInt(line.ProductID, 10),
 				Title: line.Title,

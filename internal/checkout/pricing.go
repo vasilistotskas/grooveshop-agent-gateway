@@ -9,9 +9,11 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
-// PricedLine is one cart line with amounts in ISO 4217 minor units.
+// PricedLine is one line with amounts in ISO 4217 minor units. LineID is
+// its cart item, or, once the order is placed, its product, as get_order
+// names the line.
 type PricedLine struct {
-	CartItemID int64
+	LineID     int64
 	ProductID  int64
 	Title      string
 	ImagePath  string
@@ -67,9 +69,17 @@ type Pricing struct {
 // ComputePricing fetches the cart fresh and derives the totals breakdown
 // (items + selected delivery + selected pay-way fee). Money totals are
 // never stored on the session — Django stays authoritative.
+//
+// Once an order exists it is what the buyer bought, and Django deletes the
+// cart with it (on payment, for an online method), so the totals come from
+// the order and the returned cart is nil.
 func ComputePricing(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant, s *Session,
 ) (*Pricing, *django.Cart, error) {
+	if s.OrderUUID != "" {
+		p, err := orderPricing(ctx, dj, t, s.OrderUUID)
+		return p, nil, err
+	}
 	cart, err := dj.GetCart(ctx, t.Domain, t.DefaultLocale, s.CartID)
 	if err != nil {
 		return nil, nil, err
@@ -88,7 +98,7 @@ func ComputePricing(
 		}
 		p.ItemsSubtotal += lineTotal
 		p.Lines = append(p.Lines, PricedLine{
-			CartItemID: it.ID,
+			LineID:     it.ID,
 			ProductID:  it.Product.ID,
 			Title:      tr.Name,
 			ImagePath:  it.Product.MainImagePath,
@@ -136,6 +146,65 @@ func ComputePricing(
 		p.Total = 0
 	}
 	return p, cart, nil
+}
+
+// orderPricing reads the totals of a placed order. Its discounts arrive as
+// one sum, not per offer, and every reduction of the amount due counts.
+func orderPricing(
+	ctx context.Context, dj *django.Client, t *tenant.Tenant, orderUUID string,
+) (*Pricing, error) {
+	o, err := dj.OrderByUUID(ctx, t.Domain, t.DefaultLocale, orderUUID)
+	if err != nil {
+		return nil, err
+	}
+	p := &Pricing{
+		Lines: make([]PricedLine, 0, len(o.Items)), HasDelivery: true,
+	}
+	for _, it := range o.Items {
+		unit, err := money.MinorUnits(it.Price.String())
+		if err != nil {
+			return nil, err
+		}
+		lineTotal, err := money.MinorUnits(it.TotalPrice.String())
+		if err != nil {
+			return nil, err
+		}
+		p.Lines = append(p.Lines, PricedLine{
+			LineID:     it.Product.ID,
+			ProductID:  it.Product.ID,
+			Title:      django.Localized(it.Product.Translations, t.DefaultLocale).Name,
+			ImagePath:  it.Product.MainImagePath,
+			Quantity:   it.Quantity,
+			UnitMinor:  unit,
+			TotalMinor: lineTotal,
+		})
+	}
+	b := o.PricingBreakdown
+	for _, field := range []struct {
+		into *int64
+		from string
+	}{
+		{&p.ItemsSubtotal, b.ItemsSubtotal.String()},
+		{&p.DeliveryFee, b.ShippingCost.String()},
+		{&p.PaymentFee, b.PaymentMethodFee.String()},
+		{&p.Total, b.GrandTotal.String()},
+	} {
+		if *field.into, err = money.MinorUnits(field.from); err != nil {
+			return nil, err
+		}
+	}
+	for _, reduction := range []string{
+		b.Discount.String(), b.LoyaltyDiscount.String(),
+		b.GiftCardAmount.String(),
+	} {
+		amount, err := money.MinorUnits(reduction)
+		if err != nil {
+			return nil, err
+		}
+		p.DiscountTotal += amount
+	}
+	p.HasPaymentFee = p.PaymentFee > 0
+	return p, nil
 }
 
 // addDiscounts copies Django's per-offer breakdown and its verdict on each

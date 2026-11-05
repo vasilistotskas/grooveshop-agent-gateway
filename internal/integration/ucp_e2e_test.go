@@ -178,6 +178,9 @@ type checkoutFaults struct {
 	// gateway cannot know.
 	orderCreate  atomic.Bool
 	orderCreates atomic.Int32
+	// cartDeletedOnOrder makes the cart go with the first order, as it
+	// does in Django: asked for it, Django answers a new guest cart.
+	cartDeletedOnOrder atomic.Bool
 	// agentProtocol is the attribution the last order create carried.
 	agentProtocol atomic.Value
 }
@@ -187,6 +190,18 @@ type checkoutFaults struct {
 func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	t.Helper()
 	outer := http.NewServeMux()
+	inner := fakeDjangoMux(t)
+	outer.HandleFunc("GET /api/v1/cart",
+		func(w http.ResponseWriter, r *http.Request) {
+			if faults.cartDeletedOnOrder.Load() &&
+				faults.orderCreates.Load() > 0 {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"uuid": "` + uuid.NewString() +
+					`", "items": []}`))
+				return
+			}
+			inner.ServeHTTP(w, r)
+		})
 	outer.HandleFunc("POST /api/v1/cart/reserve-stock",
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -235,7 +250,6 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				"provider": "viva_wallet"
 			}`))
 		})
-	inner := fakeDjangoMux(t)
 	outer.Handle("/", inner)
 	return outer
 }
@@ -304,6 +318,88 @@ func startUCPGateway(t *testing.T) ucpStack {
 	return ucpStack{
 		gw: srv, key: key, rdb: rdb, faults: faults,
 	}
+}
+
+// The placed order's totals in order_by_uuid.json, in minor units.
+const (
+	fixtureOrderSubtotal = 6467
+	fixtureOrderFee      = 450
+	fixtureOrderDiscount = 500
+	fixtureOrderTotal    = 6417
+)
+
+// Django deletes the cart with the order, so a completed checkout renders
+// from the order. Rendering it from the cart failed, and told the agent
+// to retry an order that already existed.
+func TestUCPCompletedCheckoutRendersFromTheOrder(t *testing.T) {
+	stack := startUCPGateway(t)
+	stack.faults.cartDeletedOnOrder.Store(true)
+	session := connectMCP(t, stack.gw.URL)
+	platform := httptest.NewServer(newWebhookSink().handler())
+	t.Cleanup(platform.Close)
+	profile := servePlatformProfile(t, platform.URL+"/ucp/orders", nil)
+	meta := func(idem string) map[string]any {
+		m := map[string]any{"ucp-agent": map[string]any{"profile": profile}}
+		if idem != "" {
+			m["idempotency-key"] = idem
+		}
+		return m
+	}
+	cod := map[string]any{"instruments": []any{map[string]any{
+		"handler_id": ucp.HandlerID,
+		"type":       ucp.InstrumentCashOnDelivery, "selected": true,
+	}}}
+
+	res := callTool(t, session, "create_checkout", map[string]any{
+		"meta": meta(""), "cart_id": fixtureCartID,
+		"checkout": map[string]any{
+			"buyer": map[string]any{
+				"first_name": "Μαρία", "last_name": "Παπαδοπούλου",
+				"email": "maria@example.test", "phone_number": "+306912345678",
+			},
+			"fulfillment": map[string]any{
+				"kind": "home_delivery", "providerCode": "acs",
+				"countryCode": "GR", "city": "Αθήνα", "zipcode": "10431",
+				"street": "Πανεπιστημίου", "streetNumber": "12",
+				"regionId": "GR-14",
+			},
+			"payment": cod,
+		},
+	})
+	require.False(t, res.IsError)
+	id := structured(t, res)["id"]
+
+	assertRendered := func(res *mcp.CallToolResult) {
+		t.Helper()
+		require.False(t, res.IsError, "%v", res.Content)
+		out := structured(t, res)
+		assert.Equal(t, "completed", out["status"])
+		assert.Equal(t, fixtureOrderUUID,
+			out["order"].(map[string]any)["id"])
+		amounts := map[string]float64{}
+		for _, row := range out["totals"].([]any) {
+			total := row.(map[string]any)
+			amounts[total["type"].(string)] = total["amount"].(float64)
+		}
+		assert.EqualValues(t, fixtureOrderSubtotal, amounts["subtotal"])
+		assert.EqualValues(t, fixtureOrderFee, amounts["fee"])
+		assert.EqualValues(t, -fixtureOrderDiscount, amounts["discount"])
+		assert.EqualValues(t, fixtureOrderTotal, amounts["total"])
+		assert.NotEmpty(t, out["line_items"])
+	}
+
+	key := uuid.NewString()
+	assertRendered(callTool(t, session, "complete_checkout", map[string]any{
+		"meta": meta(key), "id": id, "checkout": map[string]any{"payment": cod},
+	}))
+	assertRendered(callTool(t, session, "get_checkout", map[string]any{
+		"meta": meta(""), "id": id,
+	}))
+	assertRendered(callTool(t, session, "complete_checkout", map[string]any{
+		"meta": meta(key), "id": id, "checkout": map[string]any{"payment": cod},
+	}))
+	assert.EqualValues(t, 1, stack.faults.orderCreates.Load(),
+		"a repeated complete places nothing")
 }
 
 func TestUCPEndToEnd(t *testing.T) {

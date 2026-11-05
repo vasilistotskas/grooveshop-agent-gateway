@@ -89,6 +89,10 @@ func Render(
 		// browser and finishes checkout there (card payment included).
 		ContinueURL: links.CartClaim(s.CartID),
 	}
+	// A placed order has no cart left to claim: the buyer goes to the order.
+	if s.OrderUUID != "" {
+		out.ContinueURL = links.OrderSuccess(s.OrderUUID)
+	}
 
 	if s.Buyer != (checkout.Buyer{}) {
 		out.Buyer = &Buyer{
@@ -101,7 +105,7 @@ func Render(
 
 	lineIDs := make([]string, 0, len(pricing.Lines))
 	for _, line := range pricing.Lines {
-		id := strconv.FormatInt(line.CartItemID, 10)
+		id := strconv.FormatInt(line.LineID, 10)
 		lineIDs = append(lineIDs, id)
 		out.LineItems = append(out.LineItems, LineItem{
 			ID: id,
@@ -202,7 +206,8 @@ func renderFulfillment(
 		}
 	}
 
-	if f.CountryCode == "" {
+	// Options are for a buyer still choosing: a placed order has no cart.
+	if f.CountryCode == "" || cart == nil {
 		return
 	}
 	opts, err := dj.ShippingOptions(ctx, t.Domain, t.DefaultLocale, s.CartID,
