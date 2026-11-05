@@ -417,6 +417,7 @@ func TestUCPCompletedCheckoutRendersFromTheOrder(t *testing.T) {
 	}))
 	assert.EqualValues(t, 1, stack.faults.orderCreates.Load(),
 		"a repeated complete places nothing")
+}
 
 // The region is resolved before the cart is touched: an update that fails
 // on it must leave the cart as the stored session knows it.
