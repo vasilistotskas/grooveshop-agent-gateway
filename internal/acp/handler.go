@@ -681,6 +681,15 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Readiness first, and it needs no pay way on ACP. Without a delivery no
+	// pay way can be chosen, which says nothing about what the store offers.
+	applyBuyer(s, req.Buyer, nil)
+	s.Recompute()
+	if s.Status == checkout.StatusIncomplete {
+		h.releaseIdem(r, t.SchemaName, scope, key)
+		h.completeError(w, checkout.ErrNotReady)
+		return
+	}
 	if err := h.selectPayWay(r, t, s); err != nil {
 		h.releaseIdem(r, t.SchemaName, scope, key)
 		upstreamError(w, err)
@@ -695,8 +704,6 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	applyBuyer(s, req.Buyer, nil)
-	s.Recompute()
 
 	record := idemRecord{
 		SessionID: s.ID, BodyHash: bodyHash(raw), Status: http.StatusOK,

@@ -210,6 +210,26 @@ func TestACPEndToEnd(t *testing.T) {
 		assert.Equal(t, "completed", fetched["status"])
 	})
 
+	t.Run("completing an unready session says so, not that the store "+
+		"cannot be paid", func(t *testing.T) {
+		resp, created := acpCall(t, http.MethodPost, base, createBody,
+			uuid.NewString())
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+		key := uuid.NewString()
+		url := base + "/" + created["id"].(string) + "/complete"
+		payment := map[string]any{"payment_data": map[string]any{}}
+		resp, refused := acpCall(t, http.MethodPost, url, payment, key)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.Equal(t, "missing", refused["code"])
+		assert.Contains(t, refused["message"], "missing buyer or fulfillment")
+
+		// Nothing happened, so the key is free for the real attempt.
+		resp, again := acpCall(t, http.MethodPost, url, payment, key)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.Equal(t, "missing", again["code"])
+	})
+
 	t.Run("a state the country does not have keeps the session unready",
 		func(t *testing.T) {
 			resp, created := acpCall(t, http.MethodPost, base, createBody,
