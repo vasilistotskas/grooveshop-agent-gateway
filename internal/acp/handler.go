@@ -448,6 +448,16 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// Refused, not converted: amounts the platform reads as its own
+	// currency would be the store's.
+	if !strings.EqualFold(req.Currency, t.DefaultCurrency) {
+		h.releaseIdem(r, t.SchemaName, "create", key)
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: "invalid", Param: "$.currency",
+			Message: "This store sells in " + t.DefaultCurrency + ".",
+		})
+		return
+	}
 
 	cart, err := h.dj.GetCart(r.Context(), t.Domain, t.DefaultLocale, "")
 	if err != nil {
