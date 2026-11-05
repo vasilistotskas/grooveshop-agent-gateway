@@ -654,18 +654,18 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.selectPayWay(r, t, s); err != nil {
-		h.releaseIdem(r, t.SchemaName, scope, key)
-		upstreamError(w, err)
-		return
-	}
+	// Readiness first, and it needs no pay way on ACP. Without a delivery no
+	// pay way can be chosen, which says nothing about what the store offers.
 	applyBuyer(s, req.Buyer, nil)
 	s.Recompute()
-	// Readiness first: a pay way is chosen only once the delivery is known,
-	// so an unready session has none, and that says nothing about the store.
 	if s.Status == checkout.StatusIncomplete {
 		h.releaseIdem(r, t.SchemaName, scope, key)
 		h.completeError(w, checkout.ErrNotReady)
+		return
+	}
+	if err := h.selectPayWay(r, t, s); err != nil {
+		h.releaseIdem(r, t.SchemaName, scope, key)
+		upstreamError(w, err)
 		return
 	}
 	if s.PayWayID == 0 {
