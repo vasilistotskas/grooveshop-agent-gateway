@@ -142,9 +142,6 @@ func addDjango(
 	return h, &keys, &bodies
 }
 
-// A chat turn's add carries an idempotency key. A repeat of an add whose
-// outcome is unknown reuses it, so the store answers it with the first
-// outcome; once an add succeeded, an identical one is a new change.
 // Only an omitted quantity defaults. Django refuses one below 1, and an
 // agent reducing a cart must hear that, not find a unit added to it.
 func TestAddToCartQuantity(t *testing.T) {
@@ -172,6 +169,9 @@ func TestAddToCartQuantity(t *testing.T) {
 	}
 }
 
+// A chat turn's add carries an idempotency key. A repeat of an add whose
+// outcome is unknown reuses it, so the store answers it with the first
+// outcome; once an add succeeded, an identical one is a new change.
 func TestAddToCartIsIdempotentWithinATurn(t *testing.T) {
 	status := http.StatusBadGateway
 	h, keys, _ := addDjango(t, &status)
