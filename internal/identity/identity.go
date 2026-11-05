@@ -139,6 +139,17 @@ func (v *Verifier) entryToLinked(
 	return &Linked{Bearer: token, Profile: entry.profile}, nil
 }
 
+// WriteChallenge answers 401 with the RFC 9728 challenge, which sends an MCP
+// client to the store's OAuth metadata. params are the challenge's own
+// attributes, such as the error or the scope needed.
+func WriteChallenge(
+	w http.ResponseWriter, domain, params, message string,
+) {
+	w.Header().Set("WWW-Authenticate", "Bearer "+params+
+		`, resource_metadata="`+storefront.OAuthResourceMetadata(domain)+`"`)
+	httpmw.WriteJSONError(w, http.StatusUnauthorized, message)
+}
+
 // Middleware validates an optional Authorization: Bearer header. Runs
 // inside the tenant middleware (it needs the tenant for the upstream
 // probe). Invalid tokens get the RFC 9728 challenge so MCP clients can
@@ -162,10 +173,7 @@ func Middleware(
 			linked, err := v.Verify(r.Context(), t, token)
 			switch {
 			case errors.Is(err, ErrInvalidToken):
-				w.Header().Set("WWW-Authenticate",
-					`Bearer error="invalid_token", resource_metadata="`+
-						storefront.OAuthResourceMetadata(t.Domain)+`"`)
-				httpmw.WriteJSONError(w, http.StatusUnauthorized,
+				WriteChallenge(w, t.Domain, `error="invalid_token"`,
 					"invalid or expired access token")
 				return
 			case err != nil:

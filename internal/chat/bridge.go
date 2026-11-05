@@ -40,16 +40,6 @@ var checkoutTools = map[string]bool{
 	"cancel_checkout":   true,
 }
 
-// accountTools need an OAuth-linked agent credential on the MCP HTTP
-// request — the chat widget's shopper authenticates via the storefront
-// session instead, so these tools are excluded from the bot's toolset
-// (the storefront UI already shows orders and loyalty).
-var accountTools = map[string]bool{
-	"my_orders":         true,
-	"my_loyalty_points": true,
-	"my_favourites":     true,
-}
-
 // bridge is a per-turn in-process MCP client over the shared tool server.
 // The model's tool definitions are derived from the server's own schemas,
 // so the chatbot and external MCP agents can never drift apart.
@@ -109,7 +99,10 @@ func (b *bridge) tools(
 	tools := make([]openai.ChatCompletionToolUnionParam, 0, len(list.Tools))
 	b.offered = make(map[string]bool, len(list.Tools))
 	for _, t := range list.Tools {
-		if accountTools[t.Name] || checkoutTools[t.Name] ||
+		// Account tools need an OAuth-linked credential on the MCP request.
+		// The chat widget's shopper signs in through the storefront, whose
+		// own pages already show orders and loyalty.
+		if mcpsrv.IsAccountTool(t.Name) || checkoutTools[t.Name] ||
 			!mcpsrv.Offered(t.Name, features) {
 			continue
 		}

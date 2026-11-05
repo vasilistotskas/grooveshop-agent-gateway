@@ -103,7 +103,8 @@ func New(d Deps) http.Handler {
 		identity.NewVerifier(d.Django, d.Log), d.Log)
 	mux.Handle("/mcp",
 		tenantMW(tenant.RequireAgentCommerce(
-			identityMW(mcpsrv.Handler(mcpDeps, d.Log)))))
+			identityMW(mcpsrv.RequireLinkedAccount(
+				mcpsrv.Handler(mcpDeps, d.Log))))))
 	// Public documents describing the MCP endpoint, readable cross-origin
 	// (OPTIONS answers the CORS preflight). They share its gate: a store
 	// without an MCP endpoint has nothing to describe.
