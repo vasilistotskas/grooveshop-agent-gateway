@@ -63,6 +63,7 @@ type Fulfillment struct {
 	Zipcode      string `json:"zipcode"`
 	Street       string `json:"street"`
 	StreetNumber string `json:"streetNumber"`
+	RegionID     string `json:"regionId,omitempty" jsonschema:"the delivery region's code or name, required when the country has regions; a checkout without one lists them in its messages"`
 
 	AcsStationExternalID string `json:"acsStationExternalId,omitempty"`
 	AcsStationBranch     string `json:"acsStationBranch,omitempty"`
@@ -110,6 +111,10 @@ type Session struct {
 	Fulfillment Fulfillment `json:"fulfillment"`
 	PayWayID    int64       `json:"payWayId"`
 
+	// RegionOptions are the delivery country's regions, as ResolveRegion
+	// last read them; empty when it has none.
+	RegionOptions []RegionOption `json:"regionOptions,omitempty"`
+
 	// DiscountCodes is the last discount-code list the caller submitted
 	// (replace semantics: each submission supersedes the previous one);
 	// RejectedDiscounts records why codes from that submission were not
@@ -152,7 +157,8 @@ func (s *Session) Recompute() {
 		return
 	}
 	payReady := s.PayWayID > 0 || !s.payWaySelectionRequired()
-	if s.Buyer.Complete() && s.Fulfillment.Complete() && payReady {
+	if s.Buyer.Complete() && s.Fulfillment.Complete() &&
+		!s.regionMissing() && payReady {
 		s.Status = StatusReadyForComplete
 		return
 	}
@@ -171,6 +177,9 @@ func (s *Session) Missing() []string {
 			"city, zipcode, street, streetNumber; plus the pickup point "+
 			"ids for "+
 			"pickup_point deliveries)")
+	}
+	if choices := s.RegionChoices(); choices != "" {
+		out = append(out, "fulfillment.regionId, one of: "+choices)
 	}
 	if s.PayWayID <= 0 && s.payWaySelectionRequired() {
 		out = append(out, "payWayId (see get_payment_methods)")

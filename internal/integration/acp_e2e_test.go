@@ -53,7 +53,7 @@ func TestACPEndToEnd(t *testing.T) {
 		"name": "Μαρία Παπαδοπούλου",
 		"address": map[string]any{
 			"name": "Μαρία Παπαδοπούλου", "line_one": "Πανεπιστημίου 12",
-			"city": "Αθήνα", "state": "", "country": "GR",
+			"city": "Αθήνα", "state": "ΑΤΤΙΚΗ", "country": "GR",
 			"postal_code": "10431",
 		},
 	}
@@ -172,6 +172,39 @@ func TestACPEndToEnd(t *testing.T) {
 			resp, _ = acpCall(t, http.MethodPost, base, other, key)
 			assert.Equal(t, http.StatusCreated, resp.StatusCode,
 				"the store's own currency, in any case, is accepted")
+		})
+
+	t.Run("a state the country does not have keeps the session unready",
+		func(t *testing.T) {
+			resp, created := acpCall(t, http.MethodPost, base, createBody,
+				uuid.NewString())
+			require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+			resp, updated := acpCall(t, http.MethodPost,
+				base+"/"+created["id"].(string), map[string]any{
+					"buyer": buyer,
+					"fulfillment_details": map[string]any{
+						"name": "Μαρία Παπαδοπούλου",
+						"address": map[string]any{
+							"name":     "Μαρία Παπαδοπούλου",
+							"line_one": "Πανεπιστημίου 12", "city": "Αθήνα",
+							"state": "Bavaria", "country": "GR",
+							"postal_code": "10431",
+						},
+					},
+					"selected_fulfillment_options": []map[string]any{{
+						"type": "shipping", "option_id": "acs:home_delivery",
+						"item_ids": []string{"410"},
+					}},
+				}, uuid.NewString())
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.Equal(t, "not_ready_for_payment", updated["status"])
+			messages := updated["messages"].([]any)
+			require.NotEmpty(t, messages)
+			first := messages[0].(map[string]any)
+			assert.Equal(t, "$.fulfillment_details.address.state",
+				first["param"])
+			assert.Contains(t, first["content"], "GR-14 (Αττική)")
 		})
 
 	t.Run("tokenized instruments are rejected",

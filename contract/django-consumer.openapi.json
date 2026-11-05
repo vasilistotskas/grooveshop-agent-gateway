@@ -983,6 +983,9 @@
           "phone": {
             "type": "string"
           },
+          "regionId": {
+            "type": "string"
+          },
           "shippingKind": {
             "type": "string"
           },
@@ -2126,6 +2129,29 @@
         ],
         "type": "object"
       },
+      "Region": {
+        "properties": {
+          "alpha": {
+            "type": "string"
+          },
+          "translations": {
+            "additionalProperties": {
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "alpha",
+          "translations"
+        ],
+        "type": "object"
+      },
       "ReserveStockResponse": {
         "properties": {
           "message": {
@@ -2952,6 +2978,36 @@
           }
         },
         "summary": "django.Client.GetProductVariants"
+      }
+    },
+    "/api/v1/region/{alpha}/get_regions_by_country_alpha_2": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "alpha",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Region"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.Regions"
       }
     },
     "/api/v1/search/product": {

@@ -122,6 +122,9 @@ func (h *handlers) createCheckout(
 		}
 	}
 	in.Checkout.applyTo(s)
+	if err := h.applyRegion(ctx, t, s, &in.Checkout); err != nil {
+		return nil, zero, err
+	}
 	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
 		return nil, zero, err
 	}
@@ -132,6 +135,24 @@ func (h *handlers) createCheckout(
 	}
 	res, out, err := h.checkoutResult(ctx, t, s, neg)
 	return h.discountAnnotated(res, out, err, s, hasCodes)
+}
+
+// applyRegion settles the delivery region whenever a fulfillment was
+// submitted: its country decides whether one is needed at all.
+func (h *handlers) applyRegion(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	in *UCPCheckoutIn,
+) error {
+	if in.Fulfillment == nil {
+		return nil
+	}
+	if err := checkout.ResolveRegion(
+		ctx, h.deps.Django, t, s, in.Fulfillment.RegionID,
+	); err != nil {
+		return upstreamErr(err,
+			"the delivery regions are unavailable; retry shortly")
+	}
+	return nil
 }
 
 // applyPayment honours a payment selection submitted before completion:
@@ -186,6 +207,12 @@ func (h *handlers) updateCheckout(
 			"checkout %s is %s and can no longer be updated",
 			s.ID, s.Status)
 	}
+	// Before any cart write: a failed lookup must leave the cart and the
+	// stored session agreeing. Nothing here is saved until the end.
+	in.Checkout.applyTo(s)
+	if err := h.applyRegion(ctx, t, s, &in.Checkout); err != nil {
+		return nil, zero, err
+	}
 	// line_items is full-state on update: the submitted list replaces
 	// the cart's lines. Ignoring it would complete the old order.
 	if in.Checkout.LineItems != nil {
@@ -216,7 +243,6 @@ func (h *handlers) updateCheckout(
 					"unchanged")
 		}
 	}
-	in.Checkout.applyTo(s)
 	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
 		return nil, zero, err
 	}
