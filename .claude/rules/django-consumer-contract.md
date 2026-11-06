@@ -6,7 +6,7 @@ paths:
 
 # Django consumer contract
 
-Moved from `CLAUDE.md`; loads when working on the Django client or the
+Loads when working on the Django client or the
 contract files. The code wins over this page.
 
 `encoding/json` zero-fills a field Django stops sending, so a removed or

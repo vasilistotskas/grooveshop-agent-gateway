@@ -13,7 +13,7 @@ paths:
 
 # Chat SSE contract (`/chat`)
 
-Moved from `CLAUDE.md`; loads when working on the chat. The consumer is the
+Loads when working on the chat. The consumer is the
 storefront's `app/composables/useShopChat.ts`, so a change here is a
 cross-repo change. The code wins over this page.
 
@@ -78,7 +78,9 @@ cross-repo change. The code wins over this page.
     `/mcp` requires it;
   - only the chat carries the `chatOnly` tools: `apply_coupon` and
     `remove_coupon`, gated on `promotions`, never on `/mcp` or in
-    discovery. `products` follows the
+    discovery.
+
+  `products` follows the
   `tool` done event of `search_products` (query + `totalHits` as total)
   and `get_product` (the product, then its variants), decoded from the
   tool's structured result (`internal/chat/products.go`), deduplicated
