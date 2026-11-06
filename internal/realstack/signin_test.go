@@ -55,6 +55,7 @@ func browser(t *testing.T) *http.Client {
 	jar, err := cookiejar.New(nil)
 	require.NoError(t, err)
 	return &http.Client{
+		Timeout:   requestTimeout,
 		Jar:       jar,
 		Transport: djangoTransport{target},
 		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
@@ -144,22 +145,21 @@ func signIn(t *testing.T, c *http.Client, authorize string) (*http.Response, str
 	return resp, page
 }
 
-// A real client's whole path: it reads the store's metadata, registers itself,
-// sends the shopper to sign in and consent, redeems the code with PKCE, and
-// uses the token it was given.
-func TestRealSignInLinksAnAccount(t *testing.T) {
-	c := browser(t)
-	base := "https://" + apiHost
-	store := "https://" + storeHost + "/mcp"
+// authServer is the store's OAuth metadata, as a client reads it.
+type authServer struct {
+	Authorization string `json:"authorization_endpoint"`
+	Token         string `json:"token_endpoint"`
+	Registration  string `json:"registration_endpoint"`
+}
 
-	resp, err := c.Get(base + "/.well-known/oauth-authorization-server")
+// registerClient reads the metadata and registers a client the way a real one
+// does, through dynamic client registration.
+func registerClient(t *testing.T, c *http.Client) (authServer, string) {
+	t.Helper()
+	resp, err := c.Get("https://" + apiHost + "/.well-known/oauth-authorization-server")
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var server struct {
-		Authorization string `json:"authorization_endpoint"`
-		Token         string `json:"token_endpoint"`
-		Registration  string `json:"registration_endpoint"`
-	}
+	var server authServer
 	require.NoError(t, json.Unmarshal([]byte(read(t, resp)), &server))
 
 	registration, err := json.Marshal(map[string]any{
@@ -176,28 +176,42 @@ func TestRealSignInLinksAnAccount(t *testing.T) {
 	require.NoError(t, err)
 	body := read(t, resp)
 	require.Equal(t, http.StatusCreated, resp.StatusCode, body)
-	var client struct {
+	var registered struct {
 		ID string `json:"client_id"`
 	}
-	require.NoError(t, json.Unmarshal([]byte(body), &client))
+	require.NoError(t, json.Unmarshal([]byte(body), &registered))
+	return server, registered.ID
+}
 
-	raw := make([]byte, 32)
-	_, err = rand.Read(raw)
-	require.NoError(t, err)
-	verifier := base64.RawURLEncoding.EncodeToString(raw)
+// authorizeURL is the sign-in link a client sends the shopper to.
+func authorizeURL(server authServer, clientID, resource, verifier string) string {
 	challenge := sha256.Sum256([]byte(verifier))
-
-	authorize := url.Values{
+	return server.Authorization + "?" + url.Values{
 		"response_type":         {"code"},
-		"client_id":             {client.ID},
+		"client_id":             {clientID},
 		"redirect_uri":          {callbackURL},
 		"scope":                 {"profile orders:read"},
 		"state":                 {"real-stack"},
-		"resource":              {store},
+		"resource":              {resource},
 		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challenge[:])},
 		"code_challenge_method": {"S256"},
-	}
-	resp, page := signIn(t, c, server.Authorization+"?"+authorize.Encode())
+	}.Encode()
+}
+
+// A real client's whole path: it reads the store's metadata, registers itself,
+// sends the shopper to sign in and consent, redeems the code with PKCE, and
+// uses the token it was given.
+func TestRealSignInLinksAnAccount(t *testing.T) {
+	c := browser(t)
+	store := "https://" + storeHost + "/mcp"
+	server, clientID := registerClient(t, c)
+
+	raw := make([]byte, 32)
+	_, err := rand.Read(raw)
+	require.NoError(t, err)
+	verifier := base64.RawURLEncoding.EncodeToString(raw)
+
+	resp, page := signIn(t, c, authorizeURL(server, clientID, store, verifier))
 	refused, _ := resp.Location()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "%v\n%s", refused, tail(page))
 
@@ -218,7 +232,7 @@ func TestRealSignInLinksAnAccount(t *testing.T) {
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"redirect_uri":  {callbackURL},
-		"client_id":     {client.ID},
+		"client_id":     {clientID},
 		"code_verifier": {verifier},
 		"resource":      {store},
 	})
@@ -237,16 +251,21 @@ func TestRealSignInLinksAnAccount(t *testing.T) {
 
 func TestAuthorizeRefusesAResourceThatIsNotTheStore(t *testing.T) {
 	c := browser(t)
-	query := url.Values{
-		"response_type": {"code"},
-		"client_id":     {running.seeded.ClientID},
-		"redirect_uri":  {callbackURL},
-		"scope":         {"profile"},
-		"resource":      {"https://other.example/mcp"},
-	}
-	resp, page := signIn(t, c, "https://"+apiHost+"/identity/o/authorize?"+query.Encode())
-	// allauth renders the refusal as a page. The sign-in test proves the same
-	// step shows the consent form for the store's own resource.
+	server, clientID := registerClient(t, c)
+	const verifier = "real-stack-verifier-long-enough-for-the-pkce-rule-0123"
+
+	// allauth renders the refusal as a page, so what proves it is the consent
+	// form: absent for another resource, present for the same client and
+	// request naming the store's own.
+	resp, page := signIn(t, c, authorizeURL(
+		server, clientID, "https://other.example/mcp", verifier))
 	require.Equal(t, http.StatusOK, resp.StatusCode, tail(page))
 	assert.NotContains(t, page, `name="request"`, "no consent form")
+
+	resp, err := c.Get(authorizeURL(
+		server, clientID, "https://"+storeHost+"/mcp", verifier))
+	require.NoError(t, err)
+	page = read(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode, tail(page))
+	assert.Contains(t, page, `name="request"`, "the store's own gets consent")
 }
