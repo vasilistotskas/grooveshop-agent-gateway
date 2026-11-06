@@ -54,6 +54,16 @@ about 12 minutes, so `.github/workflows/real-stack.yml` runs it before a release
 nightly and when the test changes. Locally it needs `REALSTACK_DJANGO_IMAGE`
 and `REALSTACK_GATEWAY_IMAGE`, and a lot of memory.
 
+## Releasing
+
+A release is a pushed `vX.Y.Z` tag. Before tagging, get an independent review of
+everything since the last tag (`git diff <last tag> origin/main`), briefed with
+the code and not with your conclusions, and read it before you tag. CodeRabbit
+and PR Lens read one pull request at a time and have passed bugs a full read
+found. A test written with its fix does not prove the contract: check the other
+side's code. `release.yml` also refuses to publish unless the real-stack test
+passes.
+
 ## Architecture
 
 - `cmd/gateway` — wiring only: config → clients → mux → graceful shutdown.
