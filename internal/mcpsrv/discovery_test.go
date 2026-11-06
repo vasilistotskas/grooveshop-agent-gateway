@@ -102,7 +102,7 @@ func TestDiscoveryDocuments(t *testing.T) {
 				"entries": [{
 					"identifier": "urn:air:shop.example.test:mcp:store",
 					"type": "application/mcp-server-card+json",
-					"url": "https://www.shop.example.test/mcp/server-card",
+					"url": "https://shop.example.test/mcp/server-card",
 					"displayName": "Demo Store",
 					"description": "Shopping tools for Demo Store: catalog, cart, checkout and order tracking.",
 					"representativeQueries": [
@@ -127,7 +127,7 @@ func TestDiscoveryDocuments(t *testing.T) {
 				"entries": [{
 					"identifier": "urn:air:shop.example.test:mcp:store",
 					"type": "application/mcp-server-card+json",
-					"url": "https://www.shop.example.test/mcp/server-card",
+					"url": "https://shop.example.test/mcp/server-card",
 					"displayName": "Demo Store",
 					"description": "Shopping tools for Demo Store: catalog, cart, checkout and order tracking.",
 					"representativeQueries": [
@@ -265,7 +265,7 @@ func TestARDChecksRejectTheBareCatalogEntry(t *testing.T) {
 		`"host":{"displayName":"Demo Store","identifier":"shop.example.test"},` +
 		`"entries":[{"identifier":"urn:air:shop.example.test:mcp:store",` +
 		`"type":"application/mcp-server-card+json",` +
-		`"url":"https://www.shop.example.test/mcp/server-card"}]}`
+		`"url":"https://shop.example.test/mcp/server-card"}]}`
 
 	doc, err := jsonschema.UnmarshalJSON(strings.NewReader(body))
 	require.NoError(t, err)

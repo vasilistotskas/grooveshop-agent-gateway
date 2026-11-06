@@ -56,7 +56,7 @@ func storeEntry(t *tenant.Tenant) catalogEntry {
 	return catalogEntry{
 		Identifier:  "urn:air:" + publisher(t) + ":mcp:store",
 		Type:        serverCardMediaType,
-		URL:         storefront.MCPServerCard(t.Domain),
+		URL:         storefront.MCPServerCard(publisher(t)),
 		DisplayName: id.Title,
 		Description: id.Description(),
 		// The tools this store is served: one it switched off is not

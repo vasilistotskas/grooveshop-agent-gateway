@@ -58,9 +58,10 @@ func TestServerCardMatchesTheExtensionSchema(t *testing.T) {
 
 	// No primitives: the extension excludes tools from cards.
 	assert.NotContains(t, rec.Body.String(), `"tools"`)
-	// The endpoint follows the host the card was fetched on.
+	// The primary domain, not the host the card was fetched on: a client
+	// can only link an account on the resource the OAuth metadata names.
 	assert.Contains(t, rec.Body.String(),
-		`"url":"https://www.shop.example.test/mcp"`)
+		`"url":"https://shop.example.test/mcp"`)
 }
 
 // The card's identity must not contradict what initialize reports.
