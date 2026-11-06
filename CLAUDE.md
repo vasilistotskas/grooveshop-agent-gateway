@@ -235,7 +235,9 @@ not serve. The rule and how to split a change are in
   `/.well-known/ai-catalog.json` are both cut from one entry
   (`mcpsrv.storeEntry`), so they cannot drift from each other or from
   the Server Card. `identifier` is `urn:air:<primary domain in
-  ASCII>:mcp:store`; `capabilities` come from the same `toolset` that
+  ASCII>:mcp:store`, and the entry and the Server Card's endpoint name
+  the primary domain too, because a client refuses to link an account on
+  a host other than the resource the OAuth metadata names; `capabilities` come from the same `toolset` that
   `NewServer` registers for the store's features (`toolNamesFor`), so a
   new tool is advertised automatically and a switched-off one is not;
   `representativeQueries` sit beside the tool definitions. Both share

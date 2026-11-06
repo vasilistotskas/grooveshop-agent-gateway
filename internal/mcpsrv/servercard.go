@@ -120,8 +120,11 @@ func ServerCardHandler(version string, site storefront.Site) http.Handler {
 			Title:       id.Title,
 			WebsiteURL:  site.Links(t.Domain, t.DefaultLocale).Home(),
 			Remotes: []remote{{
-				Type:                      "streamable-http",
-				URL:                       storefront.MCP(t.Domain),
+				Type: "streamable-http",
+				// The primary domain, whichever host the card was fetched
+				// on: the store's OAuth metadata names it as the resource,
+				// and a client refuses to link an account on any other.
+				URL:                       storefront.MCP(publisher(t)),
 				SupportedProtocolVersions: mcp.SupportedProtocolVersions(),
 			}},
 		}
