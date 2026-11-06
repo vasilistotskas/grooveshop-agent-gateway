@@ -223,7 +223,7 @@ func acpRequest(
 	}
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out map[string]any
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
 	return resp.StatusCode, out
@@ -322,7 +322,7 @@ func TestDiscoveryNamesThePrimaryDomainOnAnyHost(t *testing.T) {
 	req.Host = aliasHost
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	var card struct {
 		Remotes []struct {

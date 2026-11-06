@@ -308,7 +308,7 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 	if err != nil {
 		return nil, cleanup, err
 	}
-	defer profile.Close()
+	defer func() { _ = profile.Close() }()
 	if _, err := start(profileImage, "profile",
 		testcontainers.WithFiles(testcontainers.ContainerFile{
 			Reader:            profile,
@@ -360,7 +360,7 @@ func containerLogs(
 	if err != nil {
 		return "", err
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	var b bytes.Buffer
 	if _, err := io.Copy(&b, r); err != nil {
 		return "", err

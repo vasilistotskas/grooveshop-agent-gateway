@@ -95,7 +95,7 @@ func formFields(t *testing.T, page string) (string, url.Values) {
 
 func read(t *testing.T, resp *http.Response) string {
 	t.Helper()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	return string(body)
