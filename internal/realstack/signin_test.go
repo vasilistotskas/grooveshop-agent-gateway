@@ -153,8 +153,8 @@ type authServer struct {
 }
 
 // registerClient reads the metadata and registers a client the way a real one
-// does, through dynamic client registration.
-func registerClient(t *testing.T, c *http.Client) (authServer, string) {
+// does, through dynamic client registration. Registration may name no scope.
+func registerClient(t *testing.T, c *http.Client, scope string) (authServer, string) {
 	t.Helper()
 	resp, err := c.Get("https://" + apiHost + "/.well-known/oauth-authorization-server")
 	require.NoError(t, err)
@@ -162,14 +162,17 @@ func registerClient(t *testing.T, c *http.Client) (authServer, string) {
 	var server authServer
 	require.NoError(t, json.Unmarshal([]byte(read(t, resp)), &server))
 
-	registration, err := json.Marshal(map[string]any{
+	metadata := map[string]any{
 		"client_name":                "Real-stack sign-in",
-		"scope":                      "profile orders:read",
 		"redirect_uris":              []string{callbackURL},
 		"grant_types":                []string{"authorization_code"},
 		"response_types":             []string{"code"},
 		"token_endpoint_auth_method": "none",
-	})
+	}
+	if scope != "" {
+		metadata["scope"] = scope
+	}
+	registration, err := json.Marshal(metadata)
 	require.NoError(t, err)
 	resp, err = c.Post(server.Registration, "application/json",
 		strings.NewReader(string(registration)))
@@ -204,7 +207,7 @@ func authorizeURL(server authServer, clientID, resource, verifier string) string
 func TestRealSignInLinksAnAccount(t *testing.T) {
 	c := browser(t)
 	store := "https://" + storeHost + "/mcp"
-	server, clientID := registerClient(t, c)
+	server, clientID := registerClient(t, c, "profile orders:read")
 
 	raw := make([]byte, 32)
 	_, err := rand.Read(raw)
@@ -251,7 +254,9 @@ func TestRealSignInLinksAnAccount(t *testing.T) {
 
 func TestAuthorizeRefusesAResourceThatIsNotTheStore(t *testing.T) {
 	c := browser(t)
-	server, clientID := registerClient(t, c)
+	// Some clients name no scope when they register. The consent form below
+	// proves such a client can still ask for the commerce scopes.
+	server, clientID := registerClient(t, c, "")
 	const verifier = "real-stack-verifier-long-enough-for-the-pkce-rule-0123"
 
 	// allauth renders the refusal as a page, so what proves it is the consent
