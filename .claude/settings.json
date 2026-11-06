@@ -1,9 +1,5 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "permissions": {
-    "deny": [],
-    "ask": []
-  },
   "hooks": {
     "PreToolUse": [
       {
@@ -11,7 +7,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-sensitive.mjs\"",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-sensitive.mjs"
+            ],
             "timeout": 15
           }
         ]
@@ -23,7 +22,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/auto-fmt.mjs\"",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/auto-fmt.mjs"
+            ],
             "statusMessage": "gofmt + go vet…",
             "timeout": 180
           }
