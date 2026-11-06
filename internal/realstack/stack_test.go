@@ -277,6 +277,11 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 	if _, err := manage(nil, "migrate_schemas", "--noinput"); err != nil {
 		return nil, cleanup, err
 	}
+	// The host the gateway resolves stores on: a platform tenant's.
+	if _, err := manage(nil, "bootstrap_platform",
+		"--domain", "localhost"); err != nil {
+		return nil, cleanup, err
+	}
 	if _, err := manage(nil, "tenant_create",
 		"--name", "Demostore", "--slug", "demostore", "--schema", "demostore",
 		"--domain", storeHost, "--extra-domains", aliasHost, apiHost,

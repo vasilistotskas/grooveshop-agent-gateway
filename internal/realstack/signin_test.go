@@ -31,12 +31,18 @@ const callbackURL = "http://127.0.0.1:1/callback"
 type djangoTransport struct{ endpoint *url.URL }
 
 func (d djangoTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	r = r.Clone(r.Context())
-	r.Host = r.URL.Host
-	r.URL.Scheme = d.endpoint.Scheme
-	r.URL.Host = d.endpoint.Host
-	r.Header.Set("X-Forwarded-Proto", "https")
-	return http.DefaultTransport.RoundTrip(r)
+	sent := r.Clone(r.Context())
+	sent.Host = r.URL.Host
+	sent.URL.Scheme = d.endpoint.Scheme
+	sent.URL.Host = d.endpoint.Host
+	sent.Header.Set("X-Forwarded-Proto", "https")
+	resp, err := http.DefaultTransport.RoundTrip(sent)
+	if err != nil {
+		return nil, err
+	}
+	// The caller's URL, not the container's: forms resolve against it.
+	resp.Request = r
+	return resp, nil
 }
 
 func browser(t *testing.T) *http.Client {
@@ -132,7 +138,10 @@ func signIn(t *testing.T, c *http.Client, authorize string) (*http.Response, str
 	form.Set("login", running.seeded.BuyerEmail)
 	form.Set("password", running.seeded.BuyerPassword)
 	resp = postForm(t, c, resp.Request.URL, action, form)
-	return resp, read(t, resp)
+	page = read(t, resp)
+	assert.Contains(t, resp.Request.URL.Path, "/identity/o/authorize",
+		"signing in leads back to the authorize step")
+	return resp, page
 }
 
 // A real client's whole path: it reads the store's metadata, registers itself,
@@ -234,6 +243,6 @@ func TestAuthorizeRefusesAResourceThatIsNotTheStore(t *testing.T) {
 		"resource":      {"https://other.example/mcp"},
 	}
 	resp, page := signIn(t, c, "https://"+apiHost+"/identity/o/authorize?"+query.Encode())
-	assert.GreaterOrEqual(t, resp.StatusCode, http.StatusBadRequest, tail(page))
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, tail(page))
 	assert.NotContains(t, page, `name="request"`, "no consent form")
 }
