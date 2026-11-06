@@ -70,7 +70,23 @@ type stack struct {
 	gatewayURL string
 	profileURL string
 	django     testcontainers.Container
+	gateway    testcontainers.Container
 	seeded     seeded
+}
+
+// printLogs shows what the services said, for a failed run in CI. Everything
+// in this stack is throwaway, so nothing here is a secret worth hiding.
+func (s *stack) printLogs(ctx context.Context) {
+	for name, c := range map[string]testcontainers.Container{
+		"django": s.django, "gateway": s.gateway,
+	} {
+		out, err := containerLogs(ctx, c)
+		if err != nil {
+			log.Printf("real stack: %s logs: %v", name, err)
+			continue
+		}
+		log.Printf("real stack: %s logs:\n%s", name, tail(out))
+	}
 }
 
 var running *stack
@@ -84,6 +100,9 @@ func TestMain(m *testing.M) {
 	}
 	running = s
 	code := m.Run()
+	if code != 0 {
+		s.printLogs(ctx)
+	}
 	cleanup()
 	os.Exit(code)
 }
@@ -289,8 +308,13 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 		return nil, cleanup, err
 	}
 
+	// Static files are collected at start, as the deployment's init container
+	// does: Django's pages need their manifest.
 	django, err := start(djangoImage, "backend",
 		testcontainers.WithEnv(djangoEnv),
+		testcontainers.WithCmd("sh", "-c",
+			".venv/bin/python manage.py collectstatic --noinput && "+
+				"exec .venv/bin/gunicorn -c gunicorn.conf.py asgi:application"),
 		testcontainers.WithExposedPorts("8000/tcp"),
 		// Django redirects plain http to https unless the proxy says it was
 		// https, as the ingress does.
@@ -349,6 +373,7 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 		gatewayURL: endpoint,
 		profileURL: "http://profile:8090/profile.json",
 		django:     django,
+		gateway:    gateway,
 		seeded:     data,
 	}, cleanup, nil
 }
@@ -369,7 +394,7 @@ func containerLogs(
 }
 
 func tail(s string) string {
-	const keep = 4000
+	const keep = 12000
 	if len(s) > keep {
 		return s[len(s)-keep:]
 	}

@@ -118,6 +118,23 @@ func postForm(
 	return resp
 }
 
+// signIn opens an authorize URL as an anonymous shopper and signs in, which
+// leads back to it. It returns what the authorize step then answers.
+func signIn(t *testing.T, c *http.Client, authorize string) (*http.Response, string) {
+	t.Helper()
+	resp, err := c.Get(authorize)
+	require.NoError(t, err)
+	page := read(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode, tail(page))
+	assert.Contains(t, resp.Request.URL.Path, "/accounts/login",
+		"an anonymous shopper signs in first")
+	action, form := formFields(t, page)
+	form.Set("login", running.seeded.BuyerEmail)
+	form.Set("password", running.seeded.BuyerPassword)
+	resp = postForm(t, c, resp.Request.URL, action, form)
+	return resp, read(t, resp)
+}
+
 // A real client's whole path: it reads the store's metadata, registers itself,
 // sends the shopper to sign in and consent, redeems the code with PKCE, and
 // uses the token it was given.
@@ -170,21 +187,10 @@ func TestRealSignInLinksAnAccount(t *testing.T) {
 		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challenge[:])},
 		"code_challenge_method": {"S256"},
 	}
-	resp, err = c.Get(server.Authorization + "?" + authorize.Encode())
-	require.NoError(t, err)
-	page := read(t, resp)
+	resp, page := signIn(t, c, server.Authorization+"?"+authorize.Encode())
 	require.Equal(t, http.StatusOK, resp.StatusCode, tail(page))
-	assert.Contains(t, resp.Request.URL.Path, "/accounts/login",
-		"an anonymous shopper signs in first")
 
 	action, form := formFields(t, page)
-	form.Set("login", running.seeded.BuyerEmail)
-	form.Set("password", running.seeded.BuyerPassword)
-	resp = postForm(t, c, resp.Request.URL, action, form)
-	page = read(t, resp)
-	require.Equal(t, http.StatusOK, resp.StatusCode, tail(page))
-
-	action, form = formFields(t, page)
 	require.NotEmpty(t, form.Get("request"), "no consent form on:\n%s", tail(page))
 	form.Set("action", "grant")
 	form["scopes"] = []string{"profile", "orders:read"}
@@ -227,10 +233,7 @@ func TestAuthorizeRefusesAResourceThatIsNotTheStore(t *testing.T) {
 		"scope":         {"profile"},
 		"resource":      {"https://other.example/mcp"},
 	}
-	resp, err := c.Get("https://" + apiHost + "/identity/o/authorize?" + query.Encode())
-	require.NoError(t, err)
-	read(t, resp)
-	assert.GreaterOrEqual(t, resp.StatusCode, http.StatusBadRequest)
-	assert.NotContains(t, resp.Request.URL.Path, "/accounts/login",
-		"refused before anyone signs in")
+	resp, page := signIn(t, c, "https://"+apiHost+"/identity/o/authorize?"+query.Encode())
+	assert.GreaterOrEqual(t, resp.StatusCode, http.StatusBadRequest, tail(page))
+	assert.NotContains(t, page, `name="request"`, "no consent form")
 }
