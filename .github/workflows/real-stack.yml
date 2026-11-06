@@ -12,6 +12,8 @@ on:
   pull_request:
     paths:
       - 'internal/realstack/**'
+      - 'docs/agent-protocols-runbook.md'
+      - 'scripts/agent-*.sh'
       - '.github/workflows/real-stack.yml'
 
 permissions:
