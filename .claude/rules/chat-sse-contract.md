@@ -4,6 +4,11 @@ paths:
   - "internal/mcpsrv/turn.go"
   - "internal/mcpsrv/cart_activity.go"
   - "internal/mcpsrv/shopper_attribution.go"
+  - "internal/mcpsrv/server.go"
+  - "internal/mcpsrv/cart.go"
+  - "internal/django/language.go"
+  - "internal/django/caller.go"
+  - "internal/django/cart_token.go"
 ---
 
 # Chat SSE contract (`/chat`)

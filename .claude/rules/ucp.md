@@ -4,6 +4,8 @@ paths:
   - "internal/mcpsrv/ucp_*.go"
   - "internal/mcpsrv/order.go"
   - "internal/httpsig/**"
+  - "internal/checkout/**"
+  - "internal/chat/bridge.go"
 ---
 
 # UCP conventions

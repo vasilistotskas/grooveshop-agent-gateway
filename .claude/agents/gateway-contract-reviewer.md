@@ -48,7 +48,11 @@ reading the whole tree.
   `AddTool` wrapper turns a plain returned Go `error` into exactly that, so
   a bare error is fine; only a `*jsonrpc.Error` becomes a protocol error,
   which agents cannot act on. Flag a `jsonrpc.Error` (or a panic) on a
-  business path, and flag error text that is not actionable.
+  business path, and flag error text that is not actionable. The one exception
+  is UCP discovery in `internal/mcpsrv/ucp_negotiation.go` (`negotiate`): a
+  platform profile that cannot be fetched, validated or version-matched, or a
+  spent discovery budget, is the spec's transport error (`-32001` / `-32000`)
+  and stays a `*jsonrpc.Error`.
 
 ### 4. Error handling
 - Errors unwrap to the sentinels (`ErrNotFound`, `ErrConflict`, `ErrThrottled`,

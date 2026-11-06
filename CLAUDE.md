@@ -145,7 +145,8 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   SDK wraps it into exactly that; only a `*jsonrpc.Error` becomes a
   protocol error, so never return one for a business condition. The single exception is UCP discovery: a platform
   profile that cannot be fetched, validated or version-matched is the
-  spec's transport error `-32001` (`mcpsrv.negotiate`).
+  spec's transport error `-32001`, and a spent discovery budget is its
+  retryable `-32000` (`mcpsrv.negotiate`).
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before
