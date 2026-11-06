@@ -237,7 +237,7 @@ func TestRealSignInLinksAnAccount(t *testing.T) {
 		"resource":      {store},
 	})
 	require.NoError(t, err)
-	body = read(t, resp)
+	body := read(t, resp)
 	require.Equal(t, http.StatusOK, resp.StatusCode, body)
 	var token struct {
 		Access string `json:"access_token"`

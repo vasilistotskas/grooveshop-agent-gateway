@@ -46,7 +46,7 @@ func connect(t *testing.T, token string) *mcp.ClientSession {
 		&mcp.Implementation{Name: "real-stack", Version: "test"}, nil)
 	session, err := client.Connect(context.Background(),
 		&mcp.StreamableClientTransport{
-			Endpoint:             running.gatewayURL + "/mcp",
+			Endpoint: running.gatewayURL + "/mcp",
 			HTTPClient: &http.Client{
 				Timeout:   requestTimeout,
 				Transport: hostTransport{storeHost, token},

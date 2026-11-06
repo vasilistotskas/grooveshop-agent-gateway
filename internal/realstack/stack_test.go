@@ -61,7 +61,6 @@ var seedScript string
 // seeded is what testdata/seed.py prints.
 type seeded struct {
 	ACPToken      string `json:"acpToken"`
-	ClientID      string `json:"clientId"`
 	LinkedToken   string `json:"linkedToken"`
 	ForeignToken  string `json:"foreignToken"`
 	BuyerEmail    string `json:"buyerEmail"`
