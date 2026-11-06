@@ -183,6 +183,8 @@ type checkoutFaults struct {
 	cartDeletedOnOrder atomic.Bool
 	// regionLookup makes the country's region list answer 502.
 	regionLookup atomic.Bool
+	// orderRead makes reading a placed order answer 502.
+	orderRead atomic.Bool
 	// cartWrites counts the line writes the cart received.
 	cartWrites atomic.Int32
 	// agentProtocol is the attribution the last order create carried.
@@ -195,6 +197,14 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	t.Helper()
 	outer := http.NewServeMux()
 	inner := fakeDjangoMux(t)
+	outer.HandleFunc("GET /api/v1/order/uuid/{uuid}",
+		func(w http.ResponseWriter, r *http.Request) {
+			if faults.orderRead.Load() {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			inner.ServeHTTP(w, r)
+		})
 	outer.HandleFunc("GET /api/v1/cart",
 		func(w http.ResponseWriter, r *http.Request) {
 			if faults.cartDeletedOnOrder.Load() &&
@@ -405,7 +415,19 @@ func TestUCPCompletedCheckoutRendersFromTheOrder(t *testing.T) {
 		assert.NotEmpty(t, out["line_items"])
 	}
 
+	// The order goes through but cannot be read back: the answer must say it
+	// exists, or the agent would order again.
 	key := uuid.NewString()
+	stack.faults.orderRead.Store(true)
+	res = callTool(t, session, "complete_checkout", map[string]any{
+		"meta": meta(key), "id": id, "checkout": map[string]any{"payment": cod},
+	})
+	require.True(t, res.IsError)
+	failure := res.Content[0].(*mcp.TextContent).Text
+	assert.Contains(t, failure, "order "+fixtureOrderUUID+" is placed")
+	assert.Contains(t, failure, "do not start a new checkout")
+	stack.faults.orderRead.Store(false)
+
 	assertRendered(callTool(t, session, "complete_checkout", map[string]any{
 		"meta": meta(key), "id": id, "checkout": map[string]any{"payment": cod},
 	}))
@@ -417,6 +439,14 @@ func TestUCPCompletedCheckoutRendersFromTheOrder(t *testing.T) {
 	}))
 	assert.EqualValues(t, 1, stack.faults.orderCreates.Load(),
 		"a repeated complete places nothing")
+
+	stack.faults.orderRead.Store(true)
+	res = callTool(t, session, "get_checkout", map[string]any{
+		"meta": meta(""), "id": id,
+	})
+	require.True(t, res.IsError)
+	assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
+		"order "+fixtureOrderUUID+" is placed")
 }
 
 // The region is resolved before the cart is touched: an update that fails

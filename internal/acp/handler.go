@@ -883,6 +883,12 @@ func (h *Handler) render(
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "acp render failed",
 			slog.String("session", s.ID), slog.String("error", err.Error()))
+		if s.OrderUUID != "" {
+			writeUnavailable(w, "Order "+s.OrderUUID+" is placed, but the "+
+				"session cannot be rendered right now. Read the session "+
+				"again, and do not start a new checkout.")
+			return
+		}
 		writeUnavailable(w, "The session cannot be rendered right now.")
 		return
 	}

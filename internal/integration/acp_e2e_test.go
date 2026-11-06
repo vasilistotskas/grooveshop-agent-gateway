@@ -89,12 +89,27 @@ func TestACPCompletedSessionRendersFromTheOrder(t *testing.T) {
 		assert.EqualValues(t, fixtureOrderTotal, amounts["total"])
 	}
 
+	// The order goes through but cannot be read back: the answer must say it
+	// exists, or the platform would order again.
+	stack.faults.orderRead.Store(true)
+	resp, failed := acpCall(t, http.MethodPost, session+"/complete",
+		map[string]any{"payment_data": map[string]any{}}, uuid.NewString())
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	assert.Contains(t, failed["message"], "Order "+fixtureOrderUUID+" is placed")
+	assert.Contains(t, failed["message"], "do not start a new checkout")
+	stack.faults.orderRead.Store(false)
+
 	resp, completed := acpCall(t, http.MethodPost, session+"/complete",
 		map[string]any{"payment_data": map[string]any{}}, uuid.NewString())
 	assertRendered(resp, completed)
 	resp, fetched := acpCall(t, http.MethodGet, session, nil, "")
 	assertRendered(resp, fetched)
 	assert.EqualValues(t, 1, stack.faults.orderCreates.Load())
+
+	stack.faults.orderRead.Store(true)
+	resp, failed = acpCall(t, http.MethodGet, session, nil, "")
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	assert.Contains(t, failed["message"], "Order "+fixtureOrderUUID+" is placed")
 }
 
 func TestACPEndToEnd(t *testing.T) {
