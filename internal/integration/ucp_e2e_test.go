@@ -415,7 +415,19 @@ func TestUCPCompletedCheckoutRendersFromTheOrder(t *testing.T) {
 		assert.NotEmpty(t, out["line_items"])
 	}
 
+	// The order goes through but cannot be read back: the answer must say it
+	// exists, or the agent would order again.
 	key := uuid.NewString()
+	stack.faults.orderRead.Store(true)
+	res = callTool(t, session, "complete_checkout", map[string]any{
+		"meta": meta(key), "id": id, "checkout": map[string]any{"payment": cod},
+	})
+	require.True(t, res.IsError)
+	failure := res.Content[0].(*mcp.TextContent).Text
+	assert.Contains(t, failure, "order "+fixtureOrderUUID+" is placed")
+	assert.Contains(t, failure, "do not start a new checkout")
+	stack.faults.orderRead.Store(false)
+
 	assertRendered(callTool(t, session, "complete_checkout", map[string]any{
 		"meta": meta(key), "id": id, "checkout": map[string]any{"payment": cod},
 	}))
@@ -428,7 +440,6 @@ func TestUCPCompletedCheckoutRendersFromTheOrder(t *testing.T) {
 	assert.EqualValues(t, 1, stack.faults.orderCreates.Load(),
 		"a repeated complete places nothing")
 
-	// A failed read must not send the agent to order again.
 	stack.faults.orderRead.Store(true)
 	res = callTool(t, session, "get_checkout", map[string]any{
 		"meta": meta(""), "id": id,
