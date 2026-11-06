@@ -39,6 +39,9 @@ const (
 	storeHost = "demostore.localhost"
 	aliasHost = "alias.demostore.localhost"
 	apiHost   = "api.demostore.localhost"
+
+	// platformHost resolves to the public schema; a domain needs two labels.
+	platformHost = "platform.localhost"
 )
 
 const (
@@ -279,7 +282,7 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 	}
 	// The host the gateway resolves stores on: a platform tenant's.
 	if _, err := manage(nil, "bootstrap_platform",
-		"--domain", "localhost"); err != nil {
+		"--domain", platformHost); err != nil {
 		return nil, cleanup, err
 	}
 	if _, err := manage(nil, "tenant_create",
@@ -357,7 +360,7 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 			// Development lets the gateway fetch a profile over plain http.
 			"ENV":                       "development",
 			"DJANGO_BASE_URL":           "http://backend:8000/api/v1",
-			"DJANGO_PUBLIC_HOST":        "localhost",
+			"DJANGO_PUBLIC_HOST":        platformHost,
 			"REDIS_URL":                 "redis://redis:6379/1",
 			"INTERNAL_EVENTS_SECRET":    secret,
 			"ASSETS_HOST":               "assets.localhost",
