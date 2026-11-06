@@ -26,7 +26,7 @@ release that drops, loosens or retypes one of those properties.
   `go test ./internal/django -run TestDjangoConsumerContract -update`, and
   commit the file; without `-update` a stale file fails the test.
 - **Every call is registered.** `TestDjangoContractCoversEveryCall` parses
-  the package's non-test `*.go` sources and fails when a `c.get`/`c.send` call is missing
+  the `Client` methods in the package's non-test `*.go` sources and fails when a `c.get`/`c.send` call is missing
   from the registry or differs from it (path, method, query keys and
   whether each is always sent, body and response types). Paths must be
   templated string literals (`/product/{id}`, concrete one in `rawPath`).
