@@ -63,6 +63,16 @@ func testTenant() *tenant.Tenant {
 	}
 }
 
+// A platform that fetched the profile on another of the store's hosts must
+// still be led to the server its OAuth metadata names.
+func TestProfileEndpointNamesThePrimaryDomain(t *testing.T) {
+	tn := testTenant()
+	tn.Domain = "www.shop.example.test"
+	profile := BuildProfile(tn, testKey(t), "production")
+	assert.Equal(t, "https://shop.example.test/mcp",
+		profile.UCP.Services["dev.ucp.shopping"][0].Endpoint)
+}
+
 func testKey(t *testing.T) *SigningKey {
 	t.Helper()
 	encoded, err := newEncodedKey()

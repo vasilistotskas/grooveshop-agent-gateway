@@ -72,7 +72,7 @@ func BuildProfile(
 					Version:   Version,
 					Spec:      specBase + "/specification/overview/",
 					Transport: "mcp",
-					Endpoint:  storefront.MCP(t.Domain),
+					Endpoint:  storefront.MCP(t.PrimaryHost()),
 					// The OpenRPC document defining the MCP tool
 					// surface. Declaring it asserts a machine-checkable
 					// contract, so it may only appear while every method
