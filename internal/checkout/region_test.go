@@ -73,6 +73,17 @@ func TestResolveRegion(t *testing.T) {
 	}
 }
 
+func TestResolveRegionReadsTheCountryInAnyCase(t *testing.T) {
+	f := homeDelivery()
+	f.CountryCode = "gr"
+	s := &Session{Fulfillment: f}
+	require.NoError(t, ResolveRegion(
+		context.Background(), regionDjango(t, http.StatusOK),
+		regionTenant(), s, "Αττική"))
+	assert.Equal(t, "GR", s.Fulfillment.CountryCode)
+	assert.Equal(t, "GR-14", s.Fulfillment.RegionID)
+}
+
 func TestResolveRegionFirstMatchWins(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/region/GR/get_regions_by_country_alpha_2",
