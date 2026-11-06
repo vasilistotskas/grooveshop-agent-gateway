@@ -197,7 +197,6 @@ func orderTotals(o *django.Order) ([]LineItemTotal, error) {
 	}{
 		{"discount", "Discount", p.Discount.String()},
 		{"loyaltyDiscount", "Loyalty discount", p.LoyaltyDiscount.String()},
-		{"giftCardAmount", "Gift card", p.GiftCardAmount.String()},
 	} {
 		v, err := amount(d.label, d.raw)
 		if err != nil {
