@@ -444,6 +444,12 @@ func (h *handlers) checkoutResult(
 	payload, err := h.deps.UCP.BuildCheckout(ctx, t, s,
 		neg.Declaration(ucp.CapabilityCheckout))
 	if err != nil {
+		if s.OrderUUID != "" {
+			return nil, zero, fmt.Errorf(
+				"order %s is placed, but the checkout could not be rendered; "+
+					"read it again with get_checkout, and do not start a "+
+					"new checkout", s.OrderUUID)
+		}
 		return nil, zero, upstreamErr(err,
 			"checkout state could not be rendered; retry")
 	}

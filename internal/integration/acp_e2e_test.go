@@ -95,6 +95,12 @@ func TestACPCompletedSessionRendersFromTheOrder(t *testing.T) {
 	resp, fetched := acpCall(t, http.MethodGet, session, nil, "")
 	assertRendered(resp, fetched)
 	assert.EqualValues(t, 1, stack.faults.orderCreates.Load())
+
+	// A failed read must not send the platform to order again.
+	stack.faults.orderRead.Store(true)
+	resp, failed := acpCall(t, http.MethodGet, session, nil, "")
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	assert.Contains(t, failed["message"], "Order "+fixtureOrderUUID+" is placed")
 }
 
 func TestACPEndToEnd(t *testing.T) {
