@@ -300,9 +300,17 @@ func TestAccountToolsChallengeOrAnswer(t *testing.T) {
 	})
 	t.Run("a token bound to this store answers", func(t *testing.T) {
 		s := connect(t, running.seeded.LinkedToken)
-		for _, tool := range []string{"my_orders", "my_loyalty_points", "my_favourites"} {
-			structured(t, call(t, s, tool, map[string]any{}))
+		// The store's plan decides which it serves, so ask it.
+		tools, err := s.ListTools(context.Background(), nil)
+		require.NoError(t, err)
+		answered := 0
+		for _, tool := range tools.Tools {
+			if strings.HasPrefix(tool.Name, "my_") {
+				structured(t, call(t, s, tool.Name, map[string]any{}))
+				answered++
+			}
 		}
+		assert.Positive(t, answered, "the store must serve an account tool")
 	})
 	// Django answers 401 for a token bound elsewhere. A 403 reads as a missing
 	// scope, and the client would never be asked to link again.

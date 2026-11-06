@@ -164,6 +164,7 @@ func TestRealSignInLinksAnAccount(t *testing.T) {
 
 	registration, err := json.Marshal(map[string]any{
 		"client_name":                "Real-stack sign-in",
+		"scope":                      "profile orders:read",
 		"redirect_uris":              []string{callbackURL},
 		"grant_types":                []string{"authorization_code"},
 		"response_types":             []string{"code"},
@@ -197,7 +198,8 @@ func TestRealSignInLinksAnAccount(t *testing.T) {
 		"code_challenge_method": {"S256"},
 	}
 	resp, page := signIn(t, c, server.Authorization+"?"+authorize.Encode())
-	require.Equal(t, http.StatusOK, resp.StatusCode, tail(page))
+	refused, _ := resp.Location()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "%v\n%s", refused, tail(page))
 
 	action, form := formFields(t, page)
 	require.NotEmpty(t, form.Get("request"), "no consent form on:\n%s", tail(page))
@@ -243,6 +245,8 @@ func TestAuthorizeRefusesAResourceThatIsNotTheStore(t *testing.T) {
 		"resource":      {"https://other.example/mcp"},
 	}
 	resp, page := signIn(t, c, "https://"+apiHost+"/identity/o/authorize?"+query.Encode())
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, tail(page))
+	// allauth renders the refusal as a page. The sign-in test proves the same
+	// step shows the consent form for the store's own resource.
+	require.Equal(t, http.StatusOK, resp.StatusCode, tail(page))
 	assert.NotContains(t, page, `name="request"`, "no consent form")
 }
