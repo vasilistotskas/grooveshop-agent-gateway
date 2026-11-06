@@ -34,6 +34,7 @@ and no PSP secrets.
 go build ./...                                   # Compile
 go test ./internal/...                           # Unit tests
 go test -tags integration ./internal/integration/...  # Docker-backed tests
+go test -tags realstack ./internal/realstack/...      # A real Django; see below
 golangci-lint run                                # Lint (v2 config)
 go run ./cmd/gateway                             # Run (needs .env vars exported)
 docker build -t agent-gateway .                  # Production image
@@ -46,6 +47,12 @@ cgo; the local Go builds with `CGO_ENABLED=0` and has no C compiler, so
 The `/gateway-test` skill wraps these. `.claude/` also registers a
 `gateway-contract-reviewer` subagent for the invariants below, and hooks that
 `gofmt` and `go vet` each edited file.
+
+The real-stack test (`internal/realstack`) runs the gateway image against a
+real Django, its database and its search, including a real sign-in. It takes
+about 12 minutes, so `.github/workflows/real-stack.yml` runs it before a release,
+nightly and when the test changes. Locally it needs `REALSTACK_DJANGO_IMAGE`
+and `REALSTACK_GATEWAY_IMAGE`, and a lot of memory.
 
 ## Architecture
 
