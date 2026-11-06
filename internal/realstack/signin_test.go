@@ -1,0 +1,236 @@
+//go:build realstack
+
+package realstack
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"html"
+	"io"
+	"net/http"
+	"net/http/cookiejar"
+	"net/url"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// The redirect a native client registers. Nothing listens there: the sign-in
+// stops at the redirect and reads the code from it.
+const callbackURL = "http://127.0.0.1:1/callback"
+
+// django is a browser's view of the store's API host: https URLs and secure
+// cookies, while the bytes go to the container the way the ingress sends them,
+// plain http with X-Forwarded-Proto.
+type djangoTransport struct{ endpoint *url.URL }
+
+func (d djangoTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Host = r.URL.Host
+	r.URL.Scheme = d.endpoint.Scheme
+	r.URL.Host = d.endpoint.Host
+	r.Header.Set("X-Forwarded-Proto", "https")
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+func browser(t *testing.T) *http.Client {
+	t.Helper()
+	endpoint, err := running.django.PortEndpoint(
+		context.Background(), "8000/tcp", "http")
+	require.NoError(t, err)
+	target, err := url.Parse(endpoint)
+	require.NoError(t, err)
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	return &http.Client{
+		Jar:       jar,
+		Transport: djangoTransport{target},
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if strings.HasPrefix(req.URL.String(), callbackURL) {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+	}
+}
+
+var (
+	formTag  = regexp.MustCompile(`(?is)<form\b[^>]*>`)
+	inputTag = regexp.MustCompile(`(?is)<input\b[^>]*>`)
+)
+
+func attr(tag, name string) string {
+	m := regexp.MustCompile(`(?is)\b` + name + `="([^"]*)"`).FindStringSubmatch(tag)
+	if m == nil {
+		return ""
+	}
+	return html.UnescapeString(m[1])
+}
+
+// formFields reads a page's POST form: where it posts, and its hidden inputs.
+func formFields(t *testing.T, page string) (string, url.Values) {
+	t.Helper()
+	var action string
+	for _, tag := range formTag.FindAllString(page, -1) {
+		if strings.EqualFold(attr(tag, "method"), "post") {
+			action = attr(tag, "action")
+			break
+		}
+	}
+	values := url.Values{}
+	for _, tag := range inputTag.FindAllString(page, -1) {
+		if strings.EqualFold(attr(tag, "type"), "hidden") {
+			values.Set(attr(tag, "name"), attr(tag, "value"))
+		}
+	}
+	require.NotEmpty(t, values.Get("csrfmiddlewaretoken"), "no form on:\n%s", tail(page))
+	return action, values
+}
+
+func read(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return string(body)
+}
+
+func postForm(
+	t *testing.T, c *http.Client, from *url.URL, action string, values url.Values,
+) *http.Response {
+	t.Helper()
+	target, err := from.Parse(action)
+	require.NoError(t, err)
+	req, err := http.NewRequest(http.MethodPost, target.String(),
+		strings.NewReader(values.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Django's CSRF check on a secure request needs the page it came from.
+	req.Header.Set("Referer", from.String())
+	resp, err := c.Do(req)
+	require.NoError(t, err)
+	return resp
+}
+
+// A real client's whole path: it reads the store's metadata, registers itself,
+// sends the shopper to sign in and consent, redeems the code with PKCE, and
+// uses the token it was given.
+func TestRealSignInLinksAnAccount(t *testing.T) {
+	c := browser(t)
+	base := "https://" + apiHost
+	store := "https://" + storeHost + "/mcp"
+
+	resp, err := c.Get(base + "/.well-known/oauth-authorization-server")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var server struct {
+		Authorization string `json:"authorization_endpoint"`
+		Token         string `json:"token_endpoint"`
+		Registration  string `json:"registration_endpoint"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(read(t, resp)), &server))
+
+	registration, err := json.Marshal(map[string]any{
+		"client_name":                "Real-stack sign-in",
+		"redirect_uris":              []string{callbackURL},
+		"grant_types":                []string{"authorization_code"},
+		"response_types":             []string{"code"},
+		"token_endpoint_auth_method": "none",
+	})
+	require.NoError(t, err)
+	resp, err = c.Post(server.Registration, "application/json",
+		strings.NewReader(string(registration)))
+	require.NoError(t, err)
+	body := read(t, resp)
+	require.Equal(t, http.StatusCreated, resp.StatusCode, body)
+	var client struct {
+		ID string `json:"client_id"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &client))
+
+	raw := make([]byte, 32)
+	_, err = rand.Read(raw)
+	require.NoError(t, err)
+	verifier := base64.RawURLEncoding.EncodeToString(raw)
+	challenge := sha256.Sum256([]byte(verifier))
+
+	authorize := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {client.ID},
+		"redirect_uri":          {callbackURL},
+		"scope":                 {"profile orders:read"},
+		"state":                 {"real-stack"},
+		"resource":              {store},
+		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challenge[:])},
+		"code_challenge_method": {"S256"},
+	}
+	resp, err = c.Get(server.Authorization + "?" + authorize.Encode())
+	require.NoError(t, err)
+	page := read(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode, tail(page))
+	assert.Contains(t, resp.Request.URL.Path, "/accounts/login",
+		"an anonymous shopper signs in first")
+
+	action, form := formFields(t, page)
+	form.Set("login", running.seeded.BuyerEmail)
+	form.Set("password", running.seeded.BuyerPassword)
+	resp = postForm(t, c, resp.Request.URL, action, form)
+	page = read(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode, tail(page))
+
+	action, form = formFields(t, page)
+	require.NotEmpty(t, form.Get("request"), "no consent form on:\n%s", tail(page))
+	form.Set("action", "grant")
+	form["scopes"] = []string{"profile", "orders:read"}
+	resp = postForm(t, c, resp.Request.URL, action, form)
+	read(t, resp)
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	location, err := resp.Location()
+	require.NoError(t, err)
+	code := location.Query().Get("code")
+	require.NotEmpty(t, code, "redirected to %s", location)
+	assert.Equal(t, "real-stack", location.Query().Get("state"))
+
+	resp, err = c.PostForm(server.Token, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {callbackURL},
+		"client_id":     {client.ID},
+		"code_verifier": {verifier},
+		"resource":      {store},
+	})
+	require.NoError(t, err)
+	body = read(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	var token struct {
+		Access string `json:"access_token"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &token))
+	require.NotEmpty(t, token.Access)
+
+	s := connect(t, token.Access)
+	structured(t, call(t, s, "my_orders", map[string]any{}))
+}
+
+func TestAuthorizeRefusesAResourceThatIsNotTheStore(t *testing.T) {
+	c := browser(t)
+	query := url.Values{
+		"response_type": {"code"},
+		"client_id":     {running.seeded.ClientID},
+		"redirect_uri":  {callbackURL},
+		"scope":         {"profile"},
+		"resource":      {"https://other.example/mcp"},
+	}
+	resp, err := c.Get("https://" + apiHost + "/identity/o/authorize?" + query.Encode())
+	require.NoError(t, err)
+	read(t, resp)
+	assert.GreaterOrEqual(t, resp.StatusCode, http.StatusBadRequest)
+	assert.NotContains(t, resp.Request.URL.Path, "/accounts/login",
+		"refused before anyone signs in")
+}
