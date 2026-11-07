@@ -49,7 +49,17 @@ jobs:
         run: |
           tag=$(gh release view --repo vasilistotskas/grooveshop-django-api \
             --json tagName --jq .tagName)
-          echo "image=gro0ve/grooveshop-django-api:${tag}" >> "$GITHUB_OUTPUT"
+          image="gro0ve/grooveshop-django-api:${tag}"
+          # A release exists a few minutes before its image does.
+          for _ in $(seq 1 40); do
+            if docker manifest inspect "$image" > /dev/null 2>&1; then
+              echo "image=$image" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "$image did not appear within 20 minutes" >&2
+          exit 1
 
       - name: Real-stack tests
         env:
