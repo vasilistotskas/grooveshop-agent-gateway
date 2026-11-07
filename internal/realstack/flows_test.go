@@ -206,12 +206,22 @@ func TestAgedOrderStaysReadableOnlyToTheGateway(t *testing.T) {
 	}))
 	assert.Equal(t, "completed", placed["status"])
 
-	assert.Contains(t, errorText(t, call(t, s, "get_order", map[string]any{
-		"meta": meta(""), "id": orderID,
-	})), "no order "+orderID+" exists")
-	assert.Contains(t, errorText(t, call(t, s, "track_order", map[string]any{
-		"orderUuid": orderID,
-	})), "no order was found")
+	// A client learns nothing from it: an aged order and no order read the same.
+	const unknown = "00000000-0000-4000-8000-000000000000"
+	getOrder := func(id string) string {
+		return errorText(t, call(t, s, "get_order", map[string]any{
+			"meta": meta(""), "id": id,
+		}))
+	}
+	trackOrder := func(id string) string {
+		return errorText(t, call(t, s, "track_order", map[string]any{
+			"orderUuid": id,
+		}))
+	}
+	assert.Contains(t, getOrder(orderID), "no order can be opened")
+	assert.Equal(t, getOrder(unknown), getOrder(orderID))
+	assert.Contains(t, trackOrder(orderID), "no order can be opened")
+	assert.Equal(t, trackOrder(unknown), trackOrder(orderID))
 }
 
 func totalOf(t *testing.T, payload map[string]any) float64 {
