@@ -1,8 +1,8 @@
 # Agent protocols runbook
 
-Real flows that prove MCP, UCP and ACP work end to end. Every result below was observed, not assumed. The real-stack test (`internal/realstack`) runs every block marked `bash runbook` as written, against a real Django, so this page cannot drift from the code. Run the [smoke check](#1-smoke-check) after any production change.
+Real flows that prove MCP, UCP and ACP work end to end. Every result below was observed, not assumed. The real-stack test (`internal/realstack`) runs every block marked `bash runbook` as written, against a real Django, so those commands cannot drift from the code. It runs nightly, before every gateway release, and when this page changes. Run the [smoke check](#1-smoke-check) after any production change.
 
-Last run: 2026-11-06, gateway v1.37.1, Django v3.226.2, on staging and production. The local flows ran on 2026-11-05 with gateway v1.37.1 and Django v3.226.1 plus #490.
+Last run: the smoke check on 2026-11-07, gateway v1.37.2, on production (Django v3.228.3) and staging (Django v3.229.0). The staging flows on 2026-11-06, gateway v1.37.2, Django v3.228.1. The local flows on 2026-11-05, gateway v1.37.1, Django v3.226.1 plus #490.
 
 ## Where each flow may run
 
@@ -31,7 +31,9 @@ Last run: 2026-11-06, gateway v1.37.1, Django v3.226.2, on staging and productio
 
 The staging run logged no ERROR or CRITICAL, checked in VictoriaLogs. The same filter finds 2 over the last 7 days, so the check does match real errors.
 
-The staging flows ran on 2026-11-06, after production took the same versions on 2026-11-05. They were meant to run first, but the promote went ahead without them. They passed, so nothing needs undoing.
+A real sign-in, consent and PKCE (M2 without the staging password), and the refusal of a token bound elsewhere, run in the real-stack test.
+
+The first staging flows ran on 2026-11-06, after production took the same versions on 2026-11-05. They were meant to run first, but the promote went ahead without them. They passed, so nothing needs undoing.
 
 ## 1. Smoke check
 
@@ -47,7 +49,7 @@ bash scripts/agent-smoke.sh production   # or staging
 
 **Expected:** `SMOKE PASSED`, exit 0.
 
-**Observed:** PASS on production and on staging, 2026-11-06, gateway v1.37.1. Every OAuth store serves one signing key.
+**Observed:** PASS on production and on staging, 2026-11-07, gateway v1.37.2. Every OAuth store serves one signing key.
 
 The stores differ on purpose, so do not "fix" these: on production, webside serves 25 tools and demo 26, because demo has loyalty on. A store with its catalogue off serves 4 tools and answers 404 on UCP, ACP and feeds.
 
@@ -55,12 +57,12 @@ The stores differ on purpose, so do not "fix" these: on production, webside serv
 
 ```bash
 # MCP Inspector, the official client
-npx -y @modelcontextprotocol/inspector@2.14.0 --cli https://webside.gr/mcp --transport http --method tools/list
+npx -y @modelcontextprotocol/inspector --cli https://webside.gr/mcp --transport http --method tools/list
 
 # UCP profile against the spec, with the official CLI (cargo install ucp-schema)
 curl -s https://webside.gr/.well-known/ucp > profile.json
 ucp-schema validate profile.json \
-  --schema grooveshop-agent-gateway/internal/ucp/spec/2026-08-25/profile.json \
+  --schema internal/ucp/spec/2026-08-25/profile.json \
   --def business_schema --response --op read --json
 ```
 
@@ -155,7 +157,7 @@ Open Claude Code, ask it to show your orders at the store, then use `/mcp` to au
 With MCP Inspector, from a real terminal so it can open your browser:
 
 ```bash
-npx -y @modelcontextprotocol/inspector@2.14.0 --cli https://demo-staging.grooveshop.space/mcp --transport http --method tools/call --tool-name my_orders
+npx -y @modelcontextprotocol/inspector --cli https://demo-staging.grooveshop.space/mcp --transport http --method tools/call --tool-name my_orders
 ```
 
 **Expected:** after you sign in, `my_orders`, `my_loyalty_points` and `my_favourites` return that shopper's data.
@@ -392,18 +394,19 @@ These were checked and left as they are:
 - **A repeat UCP cancel answers OK, even with a new key.** The spec says a business SHOULD send an error, but the gateway keeps no cancel keys, so it cannot tell a retry from a repeat, and nothing is at risk.
 - **An unknown `pay_way_id` is accepted at update and refused at complete.** It is safe, because no order is placed, but it is reported late.
 - **An unknown JSON-RPC method answers plain 400.** That is the MCP SDK's own answer, not -32601.
-- **A guest-order UUID stops working once the order has an owner.** `get_order` and `track_order` then answer not found.
+- **A guest-order UUID stops working once the order has an owner, or `GUEST_ORDER_ACCESS_DAYS` after the order.** `get_order` and `track_order` then answer not found.
 - **A placed checkout's €0 shipping row stays**, to match what the buyer approved. `get_order` leaves it out.
 - **ACP accepts `quantity`, which the spec's request item does not have.** Omitted, it means one.
 - **The challenge asks for every account scope at once.** Tokens are opaque to the gateway, so it could not step a grant up later. The shopper can narrow it on the consent screen.
 - **Line ids change when a checkout completes.** Before the order they are cart item ids, after it product ids, as `get_order` names them. The cart ids no longer exist by then.
 - **An update can leave the cart half-changed.** `SyncCartLines` writes line by line, so if Django refuses a later line, earlier ones stay. The update answers an error and the session is not saved. Line lists are full-state, so the next update corrects it, and a render always shows the real cart.
 - **A checkout create fills its cart before the region lookup.** If the lookup fails, the lines stay in the cart and no session is saved. An update looks the region up first, so a failure there changes nothing.
+- **Tool schemas use `type: ["null","array"]` and similar.** Inspector `--strict` warns about them, 124 times across 21 tools on 2026-11-06. It is legal JSON Schema and no client has failed on it, so nothing changed. Look again if a client fails.
 - **If an order's outcome is unknown, the checkout cannot render.** When Django's answer to `POST /order` is lost, the session stays `complete_in_progress` with no order id, so a read goes to a cart that may be gone and fails. It is safe: it cannot place a second order. Not exercised here.
 
 ## 8. Bugs these flows found
 
-Each is fixed at its root in its own PR, and all are live on production unless the table says otherwise. Fake-Django tests could not have found them, so the e2e fake now deletes the cart with the order and requires a region, as Django does.
+Each is fixed at its root in its own PR, and all are live on production unless the table says otherwise. Fake-Django tests could not have found them, so the e2e fake now deletes the cart with the order and requires a region, as Django does, and the real-stack test runs the flows against Django itself.
 
 | Bug | Effect on production | Fix |
 |---|---|---|
@@ -416,4 +419,10 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 | ACP `complete` on an unready session blamed the store | A platform would abandon a checkout it could finish | gateway #58 |
 | ACP ignored `currency` | A USD request silently got EUR amounts | gateway #59 |
 | Staging basic auth covered the OAuth paths | OAuth could not be tested with a real client | infra #247 |
-| A gift card counted as a discount in order totals | None today: no gateway order can carry a gift card | gateway #63, merged, not yet in a release. It ships with the next gateway tag |
+| A gift card counted as a discount in order totals | None today: no gateway order can carry a gift card | gateway #63 |
+| A token for another resource got 403 instead of 401 | The gateway read it as a missing scope, so the client was never sent to link again | Django #495 |
+| An error reading a placed order hid the order | The agent was told to retry an order that existed | gateway #64 |
+| A lower-case country code found no region | Buyers from clients that send `gr` could not check out | gateway #65 |
+| Discovery named whichever host was asked | A store's secondary domain advertised itself instead of the primary | gateway #66 |
+| A client registering with no `scope` got `openid` alone | It could not link an account: asking for the commerce scopes ended in `invalid_scope` | Django #500 |
+| Flower logged a clean stop as an uncaught error | No shopper effect, but the error blocked `promote.py production` | Django #502 |
