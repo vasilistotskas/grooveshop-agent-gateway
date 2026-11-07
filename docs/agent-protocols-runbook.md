@@ -109,9 +109,9 @@ docker run -d --name agent-gateway-local --network $NET -p 127.0.0.1:18080:8080 
 3. Point the helpers at it. `ENV=development` lets the gateway fetch a profile over plain http, so serve one from any container on the same network:
 
 ```bash
+. scripts/agent-lib.sh
 export GW=http://127.0.0.1:18080 STORE=demo.localhost
 export UCP_PROFILE="http://<your-container>:8090/profile.json"
-export ACP_TOKEN="<the demo tenant's acp_bearer_token>"
 ```
 
 Local gotchas:
@@ -248,6 +248,9 @@ Leave out `regionId` and the checkout stays `incomplete`, with a message listing
 
 ```bash
 VIVA="<the viva_wallet id from get_payment_methods>"
+BUYER='{"first_name":"Runbook","last_name":"Buyer","email":"runbook+ucp@example.com","phone_number":"+306912345678"}'
+FUL='{"kind":"home_delivery","providerCode":"flat_rate","countryCode":"GR","city":"Αθήνα","zipcode":"10431","street":"Πανεπιστημίου","streetNumber":"12","regionId":"GR-14"}'
+PID=$(tool search_products '{"query":"θήκη","limit":1}' | j 't.products[0].id')
 R=$(tool create_checkout "{\"meta\":$(ucp_meta),\"checkout\":{\"line_items\":[{\"item\":{\"id\":\"$PID\"},\"quantity\":1}],\"buyer\":$BUYER,\"fulfillment\":$FUL,\"pay_way_id\":$VIVA}}")
 ID=$(j 't.id' <<<"$R")
 tool complete_checkout "{\"meta\":$(ucp_meta "$(uuid)"),\"id\":\"$ID\",\"checkout\":{}}" | j 'JSON.stringify({status:t.status,continue_url:t.continue_url,messages:(t.messages||[]).map(m=>m.code)})'
@@ -290,7 +293,11 @@ tool cancel_checkout "{\"meta\":$(ucp_meta "$(uuid)"),\"id\":\"$(j 't.id' <<<"$R
 
 ## 5. ACP
 
-ACP needs the tenant's `acp_bearer_token`, and every POST needs an `Idempotency-Key`.
+ACP needs the tenant's `acp_bearer_token`, on staging as on local, and every POST needs an `Idempotency-Key`. Without the token, every call gets 401:
+
+```bash
+export ACP_TOKEN="<the demo tenant's acp_bearer_token>"
+```
 
 ### A1. Buy with cash on delivery
 

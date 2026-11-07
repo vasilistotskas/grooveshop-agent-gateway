@@ -13,7 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var runbookAnyBlock = regexp.MustCompile("(?ms)^```bash[^\n]*\n(.*?)^```$")
+var (
+	runbookAnyBlock = regexp.MustCompile("(?ms)^```bash[^\n]*\n(.*?)^```$")
+	shellVarUse     = regexp.MustCompile(`\$\{?([A-Z_][A-Z0-9_]*)`)
+	shellVarSet     = regexp.MustCompile(`(?m)(?:^|[\s;])([A-Z_][A-Z0-9_]*)=`)
+)
 
 // readRunbook returns the page as a reader sees it, whatever the checkout's line
 // endings.
@@ -36,5 +40,19 @@ func TestRunbookBlocksParse(t *testing.T) {
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		assert.NoError(t, cmd.Run(), "%s\n%s", stderr.String(), block[1])
+	}
+}
+
+// A reader may start at any flow in a fresh shell, so no block may lean on a
+// variable an earlier one set. The helpers read GW and STORE themselves.
+func TestRunbookBlocksDefineTheirVariables(t *testing.T) {
+	for _, block := range runbookAnyBlock.FindAllStringSubmatch(readRunbook(t), -1) {
+		set := map[string]bool{}
+		for _, m := range shellVarSet.FindAllStringSubmatch(block[1], -1) {
+			set[m[1]] = true
+		}
+		for _, m := range shellVarUse.FindAllStringSubmatch(block[1], -1) {
+			assert.True(t, set[m[1]], "%s is not set in:\n%s", m[1], block[1])
+		}
 	}
 }
