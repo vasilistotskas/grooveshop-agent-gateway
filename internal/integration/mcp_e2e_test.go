@@ -115,7 +115,8 @@ func fakeDjangoMux(t *testing.T) http.Handler {
 		"order_by_uuid.json")
 	mux.HandleFunc("GET /api/v1/agent/internal/order/b9be45e5-6062-4976-ae7b-2c31eb2ad689",
 		func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("X-Internal-Token") == "" {
+			got := r.Header.Get("X-Internal-Token")
+			if got != "test-secret" && got != internalSecret {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
