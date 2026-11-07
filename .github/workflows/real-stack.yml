@@ -13,6 +13,8 @@ on:
     paths:
       - 'internal/realstack/**'
       - '.github/workflows/real-stack.yml'
+      - 'docs/agent-protocols-runbook.md'
+      - 'scripts/agent-*.sh'
 
 permissions:
   contents: read
