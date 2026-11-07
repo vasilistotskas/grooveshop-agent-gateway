@@ -1,0 +1,68 @@
+# The gateway against a real Django, its database and its search, with no
+# fake in between. A clean Django takes minutes to migrate, so this runs before
+# a release (release.yml calls it), nightly because Django releases on its own
+# schedule, and on a pull request only when the test itself changes.
+name: Real stack
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    paths:
+      - 'internal/realstack/**'
+      - '.github/workflows/real-stack.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  real-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build the gateway image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: agent-gateway:real-stack
+          build-args: |
+            VERSION=${{ github.sha }}
+          cache-from: type=gha
+
+      # The latest release, not production's pin: the pin lives in a private
+      # repository, and the API contract check already guards it.
+      - name: Choose the Django release
+        id: django
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view --repo vasilistotskas/grooveshop-django-api \
+            --json tagName --jq .tagName)
+          image="gro0ve/grooveshop-django-api:${tag}"
+          # A release exists a few minutes before its image does.
+          for _ in $(seq 1 40); do
+            if docker manifest inspect "$image" > /dev/null 2>&1; then
+              echo "image=$image" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "$image did not appear within 20 minutes" >&2
+          exit 1
+
+      - name: Real-stack tests
+        env:
+          REALSTACK_DJANGO_IMAGE: ${{ steps.django.outputs.image }}
+          REALSTACK_GATEWAY_IMAGE: agent-gateway:real-stack
+        run: go test -tags realstack -count=1 -timeout 40m -v ./internal/realstack/...
