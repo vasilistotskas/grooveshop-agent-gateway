@@ -155,7 +155,7 @@ func ComputePricing(
 func orderPricing(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant, orderUUID string,
 ) (*Pricing, error) {
-	o, err := dj.OrderByUUID(ctx, t.Domain, t.DefaultLocale, orderUUID)
+	o, err := dj.PlacedOrder(ctx, t.Domain, t.DefaultLocale, orderUUID)
 	if err != nil {
 		return nil, err
 	}

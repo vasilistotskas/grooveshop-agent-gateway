@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
@@ -177,6 +178,7 @@ func (f *Flow) Complete(
 	}
 	s.OrderID = order.ID
 	s.OrderUUID = order.UUID
+	s.PlacedAt = time.Now().UTC()
 	if err := f.st.IndexOrder(ctx, s); err != nil {
 		f.log.ErrorContext(ctx, "checkout: order index write failed",
 			slog.String("order", order.UUID),

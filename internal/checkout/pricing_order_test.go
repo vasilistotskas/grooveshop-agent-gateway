@@ -27,7 +27,7 @@ func TestComputePricingPlacedOrder(t *testing.T) {
 		func(http.ResponseWriter, *http.Request) {
 			t.Error("a placed order must not read the cart")
 		})
-	mux.HandleFunc("GET /api/v1/order/uuid/"+placedOrderUUID,
+	mux.HandleFunc("GET /api/v1/agent/internal/order/"+placedOrderUUID,
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{
