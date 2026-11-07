@@ -305,9 +305,10 @@ export ACP_TOKEN="<the demo tenant's acp_bearer_token>"
 
 ```bash runbook
 PID=$(tool search_products '{"query":"θήκη","limit":1}' | j 't.products[0].id')
-acp POST /checkout_sessions "{\"line_items\":[{\"id\":\"$PID\",\"quantity\":1}],\"currency\":\"EUR\",\"capabilities\":{}}" "$(uuid)" | tee r.txt | tail -1
-ID=$(sed '$d' r.txt | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>console.log(JSON.parse(s).id))')
-LINE=$(sed '$d' r.txt | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>console.log(JSON.parse(s).line_items[0].id))')
+R=$(acp POST /checkout_sessions "{\"line_items\":[{\"id\":\"$PID\",\"quantity\":1}],\"currency\":\"EUR\",\"capabilities\":{}}" "$(uuid)")
+tail -1 <<<"$R"
+ID=$(sed '$d' <<<"$R" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>console.log(JSON.parse(s).id))')
+LINE=$(sed '$d' <<<"$R" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>console.log(JSON.parse(s).line_items[0].id))')
 
 ADDR='{"name":"Runbook Buyer","line_one":"Πανεπιστημίου 12","city":"Αθήνα","state":"Αττική","country":"GR","postal_code":"10431"}'
 acp POST "/checkout_sessions/$ID" "{\"buyer\":{\"first_name\":\"Runbook\",\"last_name\":\"Buyer\",\"email\":\"runbook+acp@example.com\",\"phone_number\":\"+306912345678\"},\"fulfillment_details\":{\"name\":\"Runbook Buyer\",\"address\":$ADDR}}" "$(uuid)" | tail -1
