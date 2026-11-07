@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"testing"
 	"time"
 
@@ -50,10 +49,9 @@ func runbookBlocks(t *testing.T, page string) map[string]string {
 // The commands a person or a later session copies must work, so they run here
 // exactly as the page prints them.
 func TestRunbookCommandsRunAsWritten(t *testing.T) {
-	root := filepath.Join("..", "..")
-	raw, err := os.ReadFile(filepath.Join(root, "docs", "agent-protocols-runbook.md"))
+	root, err := filepath.Abs(filepath.Join("..", ".."))
 	require.NoError(t, err)
-	page := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	page := readRunbook(t)
 	blocks := runbookBlocks(t, page)
 
 	// One block per flow, each under a flow's heading: any other would not run.
@@ -71,8 +69,7 @@ func TestRunbookCommandsRunAsWritten(t *testing.T) {
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "bash", "-c",
 				"set -eo pipefail\n. scripts/agent-lib.sh\n"+block)
-			cmd.Dir, err = filepath.Abs(root)
-			require.NoError(t, err)
+			cmd.Dir = root
 			cmd.Env = append(os.Environ(),
 				"GW="+running.gatewayURL,
 				"STORE="+storeHost,

@@ -97,7 +97,7 @@ Use the demo store. Its accounts are the ones testers may use, and it is the onl
 
 ```bash
 NET=grooveshop-django-api_grooveshop-backbone
-SECRET=<the AGENT_GATEWAY_INTERNAL_SECRET from step 1>
+SECRET="<the AGENT_GATEWAY_INTERNAL_SECRET from step 1>"
 docker run -d --name agent-redis-local --network $NET redis:8-alpine
 docker run -d --name agent-gateway-local --network $NET -p 127.0.0.1:18080:8080 \
   -e ENV=development -e DJANGO_BASE_URL=http://backend:8000/api/v1 -e DJANGO_PUBLIC_HOST=localhost \
@@ -110,8 +110,8 @@ docker run -d --name agent-gateway-local --network $NET -p 127.0.0.1:18080:8080 
 
 ```bash
 export GW=http://127.0.0.1:18080 STORE=demo.localhost
-export UCP_PROFILE=http://<your-container>:8090/profile.json
-export ACP_TOKEN=<the demo tenant's acp_bearer_token>
+export UCP_PROFILE="http://<your-container>:8090/profile.json"
+export ACP_TOKEN="<the demo tenant's acp_bearer_token>"
 ```
 
 Local gotchas:
@@ -247,7 +247,7 @@ Leave out `regionId` and the checkout stays `incomplete`, with a message listing
 **Label:** Staging. **Purpose:** an online method cannot be paid by an agent, so the checkout must hand off to the provider's page. Never open the link, so no payment is made.
 
 ```bash
-VIVA=<the viva_wallet id from get_payment_methods>
+VIVA="<the viva_wallet id from get_payment_methods>"
 R=$(tool create_checkout "{\"meta\":$(ucp_meta),\"checkout\":{\"line_items\":[{\"item\":{\"id\":\"$PID\"},\"quantity\":1}],\"buyer\":$BUYER,\"fulfillment\":$FUL,\"pay_way_id\":$VIVA}}")
 ID=$(j 't.id' <<<"$R")
 tool complete_checkout "{\"meta\":$(ucp_meta "$(uuid)"),\"id\":\"$ID\",\"checkout\":{}}" | j 'JSON.stringify({status:t.status,continue_url:t.continue_url,messages:(t.messages||[]).map(m=>m.code)})'
