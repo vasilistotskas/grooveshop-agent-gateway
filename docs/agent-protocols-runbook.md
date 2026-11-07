@@ -395,7 +395,7 @@ These were checked and left as they are:
 - **A repeat UCP cancel answers OK, even with a new key.** The spec says a business SHOULD send an error, but the gateway keeps no cancel keys, so it cannot tell a retry from a repeat, and nothing is at risk.
 - **An unknown `pay_way_id` is accepted at update and refused at complete.** It is safe, because no order is placed, but it is reported late.
 - **An unknown JSON-RPC method answers plain 400.** That is the MCP SDK's own answer, not -32601.
-- **A guest-order UUID stops working once the order has an owner, or `GUEST_ORDER_ACCESS_DAYS` after the order.** `get_order` and `track_order` then answer not found.
+- **A guest-order UUID stops working once the order has an owner, or `GUEST_ORDER_ACCESS_DAYS` after the order.** `get_order` and `track_order` then answer that no order can be opened with that id, with the same words as for an unknown id. The gateway's own reads use a private route, so order webhooks keep working.
 - **A placed checkout's €0 shipping row stays**, to match what the buyer approved. `get_order` leaves it out.
 - **ACP accepts `quantity`, which the spec's request item does not have.** Omitted, it means one.
 - **The challenge asks for every account scope at once.** Tokens are opaque to the gateway, so it could not step a grant up later. The shopper can narrow it on the consent screen.
@@ -427,3 +427,7 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 | Discovery named whichever host was asked | A store's secondary domain advertised itself instead of the primary | gateway #66 |
 | A client registering with no `scope` got `openid` alone | It could not link an account: asking for the commerce scopes ended in `invalid_scope` | Django #500 |
 | Flower logged a clean stop as an uncaught error | No shopper effect, but the error blocked `promote.py production` | Django #502 |
+| The gateway read its own orders through the guest route | From 14 days after an agent order, the platform stopped getting order webhooks | Django #504, gateway #72 |
+| `get_order` called an expired guest order unavailable | The agent was told to retry something that could never work | gateway #72 |
+| Every save restarted a placed checkout's lifetime | Repeated calls could keep a session alive indefinitely | gateway #72 |
+| The UCP profile named whichever host was asked | A client reading it on a secondary domain was sent to a server it could not link an account on | gateway #71 |
