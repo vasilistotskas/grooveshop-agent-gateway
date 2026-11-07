@@ -2,6 +2,7 @@ package checkout
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -146,6 +147,24 @@ func TestRecompute(t *testing.T) {
 			assert.Equal(t, status, s.Status)
 		}
 	})
+}
+
+func TestPlacedSessionLifeCountsFromPlacement(t *testing.T) {
+	now := time.Now()
+	placed := func(age time.Duration, status Status) *Session {
+		return &Session{Status: status, PlacedAt: now.Add(-age)}
+	}
+
+	assert.Equal(t, activeTTL, (&Session{Status: StatusIncomplete}).ttl(now))
+	assert.Equal(t, terminalTTL, (&Session{Status: StatusCompleted}).ttl(now))
+	assert.Equal(t, activeTTL,
+		placed(time.Hour, StatusRequiresEscalation).ttl(now))
+	assert.Equal(t, 10*time.Minute,
+		placed(terminalTTL-10*time.Minute, StatusRequiresEscalation).ttl(now))
+	assert.Equal(t, time.Hour,
+		placed(terminalTTL-time.Hour, StatusCompleted).ttl(now))
+	assert.LessOrEqual(t,
+		placed(terminalTTL, StatusRequiresEscalation).ttl(now), time.Duration(0))
 }
 
 func TestTerminal(t *testing.T) {
