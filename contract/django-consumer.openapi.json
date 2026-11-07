@@ -2381,6 +2381,33 @@
   },
   "openapi": "3.0.3",
   "paths": {
+    "/api/v1/agent/internal/order/{uuid}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderDetail"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.PlacedOrder"
+      }
+    },
     "/api/v1/agent/me": {
       "get": {
         "responses": {

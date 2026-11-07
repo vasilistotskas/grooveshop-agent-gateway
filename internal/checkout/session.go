@@ -125,6 +125,8 @@ type Session struct {
 	OrderID    int64  `json:"orderId,omitempty"`
 	OrderUUID  string `json:"orderUuid,omitempty"`
 	PaymentURL string `json:"paymentUrl,omitempty"`
+	// PlacedAt ends the session terminalTTL later, whatever happens to it.
+	PlacedAt time.Time `json:"placedAt,omitzero"`
 
 	// WebhookURL is the platform's order-update delivery target,
 	// registered at create time.
@@ -137,6 +139,21 @@ type Session struct {
 // Terminal reports whether the session can no longer change.
 func (s *Session) Terminal() bool {
 	return s.Status == StatusCompleted || s.Status == StatusCanceled
+}
+
+// ttl is how long the session may still live. Calls keep an open session alive,
+// but not a placed one: it reads its order with the gateway's secret, past the
+// limit on a guest's order uuid, so it must end long before that limit however
+// often a caller holding its id touches it.
+func (s *Session) ttl(now time.Time) time.Duration {
+	ttl := activeTTL
+	if s.Terminal() {
+		ttl = terminalTTL
+	}
+	if s.PlacedAt.IsZero() {
+		return ttl
+	}
+	return min(ttl, s.PlacedAt.Add(terminalTTL).Sub(now))
 }
 
 // payWaySelectionRequired reports whether readiness includes an explicit

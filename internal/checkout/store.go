@@ -105,13 +105,16 @@ func (st *Store) Load(ctx context.Context, schema, id string) (*Session, error) 
 
 func (st *Store) Save(ctx context.Context, s *Session) error {
 	s.UpdatedAt = time.Now().UTC()
+	ttl := s.ttl(s.UpdatedAt)
+	if ttl <= 0 {
+		if err := st.rdb.Del(ctx, sessionKey(s.Schema, s.ID)).Err(); err != nil {
+			return fmt.Errorf("checkout: save: %w", err)
+		}
+		return nil
+	}
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return fmt.Errorf("checkout: encode: %w", err)
-	}
-	ttl := activeTTL
-	if s.Terminal() {
-		ttl = terminalTTL
 	}
 	if err := st.rdb.Set(ctx, sessionKey(s.Schema, s.ID), raw, ttl).Err(); err != nil {
 		return fmt.Errorf("checkout: save: %w", err)

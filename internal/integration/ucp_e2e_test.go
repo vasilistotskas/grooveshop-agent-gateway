@@ -197,7 +197,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	t.Helper()
 	outer := http.NewServeMux()
 	inner := fakeDjangoMux(t)
-	outer.HandleFunc("GET /api/v1/order/uuid/{uuid}",
+	outer.HandleFunc("GET /api/v1/agent/internal/order/{uuid}",
 		func(w http.ResponseWriter, r *http.Request) {
 			if faults.orderRead.Load() {
 				w.WriteHeader(http.StatusBadGateway)
