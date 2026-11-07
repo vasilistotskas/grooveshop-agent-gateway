@@ -84,14 +84,15 @@ for a in $AS_OF; do
   if [ "$keys" = 0 ] || [ "$keys" = unreadable ]; then bad "JWKS serves no signing key ($keys)"; else ok "JWKS keys: $keys"; fi
 done
 
-# A store with the catalogue and cart off serves only the order tools.
+# A store with the catalogue and cart off serves only the order tools: names,
+# not a count, so a catalogue tool in place of one of them still fails.
 for h in $OFF; do
   echo "== $h (cart and catalogue off)"
   want 'UCP profile is gone' 404 "$(code "https://$h/.well-known/ucp")"
   want 'ACP is gone' 404 "$(code -X POST "https://$h/acp/checkout_sessions" -d '{}')"
   want 'feeds are gone' 404 "$(code "https://$h/feeds/google.xml")"
-  n=$(mcp "$h" tools/list '{}' | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{console.log(JSON.parse(s).result.tools.length)}catch{console.log("unreadable")}})')
-  want 'tools/list' 4 "$n"
+  n=$(mcp "$h" tools/list '{}' | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{console.log(JSON.parse(s).result.tools.map(t=>t.name).sort().join(" "))}catch{console.log("unreadable")}})')
+  want 'tools/list' 'get_order get_store_policies my_orders track_order' "$n"
 done
 
 echo

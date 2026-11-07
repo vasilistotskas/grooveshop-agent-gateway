@@ -7,6 +7,8 @@
 # bearer), UCP_PROFILE (URL of the calling platform's UCP profile).
 
 # rpc METHOD [PARAMS_JSON]: one JSON-RPC call on /mcp, prints the response.
+# Returns curl's status, so a failed call fails its caller whatever its shell
+# options.
 rpc() {
   local auth=() params="${2:-}"
   [ -n "$params" ] || params='{}'
@@ -17,6 +19,7 @@ rpc() {
       -H 'accept: application/json, text/event-stream' \
       -H 'mcp-protocol-version: 2025-11-25' "${auth[@]}" --data-binary @- \
     | sed -n 's/^data: //p;/^{/p'
+  return "${PIPESTATUS[1]}"
 }
 
 # tool NAME [ARGS_JSON]: calls an MCP tool, prints its result.

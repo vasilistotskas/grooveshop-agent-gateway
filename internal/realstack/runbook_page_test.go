@@ -43,16 +43,22 @@ func TestRunbookBlocksParse(t *testing.T) {
 	}
 }
 
-// A reader may start at any flow in a fresh shell, so no block may lean on a
-// variable an earlier one set. The helpers read GW and STORE themselves.
+// A reader may start at any flow in a fresh shell, so a block may use only a
+// variable it has already set. The helpers read GW and STORE themselves.
 func TestRunbookBlocksDefineTheirVariables(t *testing.T) {
 	for _, block := range runbookAnyBlock.FindAllStringSubmatch(readRunbook(t), -1) {
-		set := map[string]bool{}
-		for _, m := range shellVarSet.FindAllStringSubmatch(block[1], -1) {
-			set[m[1]] = true
+		firstSet := map[string]int{}
+		for _, m := range shellVarSet.FindAllStringSubmatchIndex(block[1], -1) {
+			name := block[1][m[2]:m[3]]
+			if _, seen := firstSet[name]; !seen {
+				firstSet[name] = m[2]
+			}
 		}
-		for _, m := range shellVarUse.FindAllStringSubmatch(block[1], -1) {
-			assert.True(t, set[m[1]], "%s is not set in:\n%s", m[1], block[1])
+		for _, m := range shellVarUse.FindAllStringSubmatchIndex(block[1], -1) {
+			name := block[1][m[2]:m[3]]
+			at, set := firstSet[name]
+			assert.True(t, set && at < m[0],
+				"%s is used before it is set in:\n%s", name, block[1])
 		}
 	}
 }
