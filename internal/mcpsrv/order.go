@@ -141,7 +141,10 @@ func (h *handlers) getOrder(
 	order, err := h.deps.Django.OrderByUUID(
 		ctx, t.Domain, lang, in.ID)
 	if err != nil {
-		if errors.Is(err, django.ErrNotFound) {
+		// A 403 is a guest UUID that no longer opens the order, which to an
+		// agent reads the same as one that never did.
+		if errors.Is(err, django.ErrNotFound) ||
+			errors.Is(err, django.ErrForbidden) {
 			return nil, zero, fmt.Errorf("no order %s exists", in.ID)
 		}
 		return nil, zero, upstreamErr(err,

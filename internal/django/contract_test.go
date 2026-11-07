@@ -272,6 +272,12 @@ var djangoContract = []contractCall{
 		names: map[string]string{"ContentPage": "ContentPageDetail"},
 	},
 	{
+		fn: "PlacedOrder", method: http.MethodGet,
+		path: "/agent/internal/order/{uuid}", status: http.StatusOK,
+		out:   reflect.TypeFor[Order](),
+		names: map[string]string{"Order": "OrderDetail"},
+	},
+	{
 		fn: "OrderByUUID", method: http.MethodGet,
 		path: "/order/uuid/{uuid}", status: http.StatusOK,
 		out:   reflect.TypeFor[Order](),

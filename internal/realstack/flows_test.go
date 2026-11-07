@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -169,6 +170,48 @@ func TestUCPOrderReadsBackWithTheSameTotals(t *testing.T) {
 	assert.Equal(t, checkoutID, order["checkout_id"])
 	assert.Equal(t, totalOf(t, placed), totalOf(t, order),
 		"a checkout and its order must agree")
+}
+
+// ageOrder moves an order past what a guest's UUID opens.
+func ageOrder(t *testing.T, orderID string) {
+	t.Helper()
+	script := fmt.Sprintf(`
+from datetime import timedelta
+from django.conf import settings
+from django.utils import timezone
+from django_tenants.utils import schema_context
+from order.models.order import Order
+with schema_context("demostore"):
+    aged = timezone.now() - timedelta(days=settings.GUEST_ORDER_ACCESS_DAYS + 1)
+    assert Order.objects.filter(uuid=%q).update(created_at=aged) == 1
+`, orderID)
+	code, out, err := running.django.Exec(context.Background(), []string{
+		".venv/bin/python", "manage.py", "shell", "-c", script,
+	})
+	require.NoError(t, err)
+	output, err := io.ReadAll(out)
+	require.NoError(t, err)
+	require.Zero(t, code, tail(string(output)))
+}
+
+// Past that limit a guest's UUID opens nothing, so an agent holding one is told
+// the order does not exist, while the gateway still reads the order it placed.
+func TestAgedOrderStaysReadableOnlyToTheGateway(t *testing.T) {
+	s := connect(t, "")
+	checkoutID, orderID := placeUCPOrder(t, s, productID(t, s), "GR")
+	ageOrder(t, orderID)
+
+	placed := structured(t, call(t, s, "get_checkout", map[string]any{
+		"meta": meta(""), "id": checkoutID,
+	}))
+	assert.Equal(t, "completed", placed["status"])
+
+	assert.Contains(t, errorText(t, call(t, s, "get_order", map[string]any{
+		"meta": meta(""), "id": orderID,
+	})), "no order "+orderID+" exists")
+	assert.Contains(t, errorText(t, call(t, s, "track_order", map[string]any{
+		"orderUuid": orderID,
+	})), "no order was found")
 }
 
 func totalOf(t *testing.T, payload map[string]any) float64 {

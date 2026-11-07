@@ -151,7 +151,7 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 					link.Domain, t.SchemaName))
 			return
 		}
-		order, err := d.Django.OrderByUUID(
+		order, err := d.Django.PlacedOrder(
 			ctx, t.Domain, t.DefaultLocale, body.OrderUUID)
 		if errors.Is(err, django.ErrNotFound) {
 			drop("order event for an order that no longer exists", err)

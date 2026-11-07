@@ -112,7 +112,7 @@ func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/cart", fixture(cart))
 	mux.HandleFunc("GET /api/v1/pay_way", fixture("pay_way.json"))
-	mux.HandleFunc("GET /api/v1/order/uuid/b9be45e5-6062-4976-ae7b-2c31eb2ad689",
+	mux.HandleFunc("GET /api/v1/agent/internal/order/b9be45e5-6062-4976-ae7b-2c31eb2ad689",
 		fixture("order_by_uuid.json"))
 	mux.HandleFunc("GET /api/v1/pay_way/1", fixture("pay_way_1.json"))
 	mux.HandleFunc("GET /api/v1/pay_way/2", fixture("pay_way_2.json"))
