@@ -4,11 +4,13 @@ paths:
   - "internal/mcpsrv/ucp_*.go"
   - "internal/mcpsrv/order.go"
   - "internal/httpsig/**"
+  - "internal/checkout/**"
+  - "internal/chat/bridge.go"
 ---
 
 # UCP conventions
 
-Moved from `CLAUDE.md`; loads when working on the UCP packages. The code
+Loads when working on the UCP packages. The code
 wins over this page.
 
 - **Every canonical UCP tool negotiates** (`internal/ucp/negotiate.go`,

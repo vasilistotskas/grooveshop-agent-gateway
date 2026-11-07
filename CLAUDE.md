@@ -34,6 +34,7 @@ and no PSP secrets.
 go build ./...                                   # Compile
 go test ./internal/...                           # Unit tests
 go test -tags integration ./internal/integration/...  # Docker-backed tests
+go test -tags realstack ./internal/realstack/...      # A real Django; see below
 golangci-lint run                                # Lint (v2 config)
 go run ./cmd/gateway                             # Run (needs .env vars exported)
 docker build -t agent-gateway .                  # Production image
@@ -46,6 +47,22 @@ cgo; the local Go builds with `CGO_ENABLED=0` and has no C compiler, so
 The `/gateway-test` skill wraps these. `.claude/` also registers a
 `gateway-contract-reviewer` subagent for the invariants below, and hooks that
 `gofmt` and `go vet` each edited file.
+
+The real-stack test (`internal/realstack`) runs the gateway image against a
+real Django, its database and its search, including a real sign-in. It takes
+about 12 minutes, so `.github/workflows/real-stack.yml` runs it before a release,
+nightly and when the test changes. Locally it needs `REALSTACK_DJANGO_IMAGE`
+and `REALSTACK_GATEWAY_IMAGE`, and a lot of memory.
+
+## Releasing
+
+A release is a pushed `vX.Y.Z` tag. Before tagging, get an independent review of
+everything since the last tag (`git diff <last tag> origin/main`), briefed with
+the code and not with your conclusions, and read it before you tag. CodeRabbit
+and PR Lens read one pull request at a time and have passed bugs a full read
+found. A test written with its fix does not prove the contract: check the other
+side's code. `release.yml` also refuses to publish unless the real-stack test
+passes.
 
 ## Architecture
 
@@ -145,7 +162,8 @@ The `/gateway-test` skill wraps these. `.claude/` also registers a
   SDK wraps it into exactly that; only a `*jsonrpc.Error` becomes a
   protocol error, so never return one for a business condition. The single exception is UCP discovery: a platform
   profile that cannot be fetched, validated or version-matched is the
-  spec's transport error `-32001` (`mcpsrv.negotiate`).
+  spec's transport error `-32001`, and a spent discovery budget is its
+  retryable `-32000` (`mcpsrv.negotiate`).
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before

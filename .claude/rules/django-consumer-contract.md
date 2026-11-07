@@ -6,7 +6,7 @@ paths:
 
 # Django consumer contract
 
-Moved from `CLAUDE.md`; loads when working on the Django client or the
+Loads when working on the Django client or the
 contract files. The code wins over this page.
 
 `encoding/json` zero-fills a field Django stops sending, so a removed or
@@ -26,7 +26,7 @@ release that drops, loosens or retypes one of those properties.
   `go test ./internal/django -run TestDjangoConsumerContract -update`, and
   commit the file; without `-update` a stale file fails the test.
 - **Every call is registered.** `TestDjangoContractCoversEveryCall` parses
-  the `client*.go` sources and fails when a `c.get`/`c.send` call is missing
+  the `Client` methods in the package's non-test `*.go` sources and fails when a `c.get`/`c.send` call is missing
   from the registry or differs from it (path, method, query keys and
   whether each is always sent, body and response types). Paths must be
   templated string literals (`/product/{id}`, concrete one in `rawPath`).
