@@ -56,7 +56,6 @@ with schema_context("demostore"):
                 "acpToken": store.acp_bearer_token,
                 "buyerEmail": user.email,
                 "buyerPassword": password,
-                "clientId": client.id,
                 "linkedToken": mint(user, client, [f"https://{primary}/mcp"]),
                 "foreignToken": mint(user, client, ["https://other.example/mcp"]),
             }

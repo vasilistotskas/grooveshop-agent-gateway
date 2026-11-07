@@ -12,9 +12,9 @@ on:
   pull_request:
     paths:
       - 'internal/realstack/**'
+      - '.github/workflows/real-stack.yml'
       - 'docs/agent-protocols-runbook.md'
       - 'scripts/agent-*.sh'
-      - '.github/workflows/real-stack.yml'
 
 permissions:
   contents: read
@@ -51,10 +51,20 @@ jobs:
         run: |
           tag=$(gh release view --repo vasilistotskas/grooveshop-django-api \
             --json tagName --jq .tagName)
-          echo "image=gro0ve/grooveshop-django-api:${tag}" >> "$GITHUB_OUTPUT"
+          image="gro0ve/grooveshop-django-api:${tag}"
+          # A release exists a few minutes before its image does.
+          for _ in $(seq 1 40); do
+            if docker manifest inspect "$image" > /dev/null 2>&1; then
+              echo "image=$image" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "$image did not appear within 20 minutes" >&2
+          exit 1
 
       - name: Real-stack tests
         env:
           REALSTACK_DJANGO_IMAGE: ${{ steps.django.outputs.image }}
           REALSTACK_GATEWAY_IMAGE: agent-gateway:real-stack
-        run: go test -tags realstack -timeout 40m -v ./internal/realstack/...
+        run: go test -tags realstack -count=1 -timeout 40m -v ./internal/realstack/...

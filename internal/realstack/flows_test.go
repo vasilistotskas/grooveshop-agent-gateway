@@ -18,6 +18,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// requestTimeout bounds one call, so a hung service fails its test rather than
+// waiting for the whole run's timeout.
+const requestTimeout = time.Minute
+
+var client = &http.Client{Timeout: requestTimeout}
+
 // hostTransport sends every request under the store's Host, as its domain
 // would.
 type hostTransport struct {
@@ -40,8 +46,11 @@ func connect(t *testing.T, token string) *mcp.ClientSession {
 		&mcp.Implementation{Name: "real-stack", Version: "test"}, nil)
 	session, err := client.Connect(context.Background(),
 		&mcp.StreamableClientTransport{
-			Endpoint:             running.gatewayURL + "/mcp",
-			HTTPClient:           &http.Client{Transport: hostTransport{storeHost, token}},
+			Endpoint: running.gatewayURL + "/mcp",
+			HTTPClient: &http.Client{
+				Timeout:   requestTimeout,
+				Transport: hostTransport{storeHost, token},
+			},
 			DisableStandaloneSSE: true,
 		}, nil)
 	require.NoError(t, err)
@@ -221,7 +230,7 @@ func acpRequest(
 	if body != nil {
 		req.Header.Set("Idempotency-Key", uuid.NewString())
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	var out map[string]any
@@ -286,7 +295,7 @@ func anonymousAccountCall(t *testing.T, token string) *http.Response {
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp
@@ -328,7 +337,7 @@ func TestDiscoveryNamesThePrimaryDomainOnAnyHost(t *testing.T) {
 		running.gatewayURL+"/mcp/server-card", nil)
 	require.NoError(t, err)
 	req.Host = aliasHost
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
