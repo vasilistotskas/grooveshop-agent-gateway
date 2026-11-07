@@ -54,9 +54,9 @@ type catalogEntry struct {
 func storeEntry(t *tenant.Tenant) catalogEntry {
 	id := IdentityFor(t)
 	return catalogEntry{
-		Identifier:  "urn:air:" + publisher(t) + ":mcp:store",
+		Identifier:  "urn:air:" + t.PrimaryHost() + ":mcp:store",
 		Type:        serverCardMediaType,
-		URL:         storefront.MCPServerCard(publisher(t)),
+		URL:         storefront.MCPServerCard(t.PrimaryHost()),
 		DisplayName: id.Title,
 		Description: id.Description(),
 		// The tools this store is served: one it switched off is not
@@ -71,7 +71,7 @@ func storeCatalog(t *tenant.Tenant) any {
 		SpecVersion: aiCatalogSpecVersion,
 		Host: catalogHost{
 			DisplayName: IdentityFor(t).Title,
-			Identifier:  publisher(t),
+			Identifier:  t.PrimaryHost(),
 		},
 		Entries: []catalogEntry{storeEntry(t)},
 	}

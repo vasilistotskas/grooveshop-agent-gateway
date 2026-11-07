@@ -2,7 +2,10 @@ package tenant
 
 import (
 	"context"
+	"strings"
 	"time"
+
+	"golang.org/x/net/idna"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 )
@@ -36,4 +39,21 @@ func NewContext(ctx context.Context, t *Tenant) context.Context {
 func FromContext(ctx context.Context) (*Tenant, bool) {
 	t, ok := ctx.Value(ctxKey{}).(*Tenant)
 	return t, ok
+}
+
+// PrimaryHost is the store's primary domain as a lower-case ASCII FQDN. Discovery
+// names it rather than the host a request came in on: the store's OAuth metadata
+// names it as the resource, and a client refuses to link an account on any other.
+// It is also the authority of the store's discovery identifier, which admits no
+// IDN form.
+func (t *Tenant) PrimaryHost() string {
+	domain := t.PrimaryDomain
+	if domain == "" {
+		domain = t.Domain
+	}
+	ascii, err := idna.Lookup.ToASCII(strings.TrimSuffix(domain, "."))
+	if err != nil {
+		ascii = domain
+	}
+	return strings.ToLower(ascii)
 }

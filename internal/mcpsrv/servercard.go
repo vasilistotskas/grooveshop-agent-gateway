@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"golang.org/x/net/idna"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
@@ -39,7 +38,7 @@ func IdentityFor(t *tenant.Tenant) Identity {
 	if title == "" {
 		title = t.Name
 	}
-	labels := strings.Split(publisher(t), ".")
+	labels := strings.Split(t.PrimaryHost(), ".")
 	slices.Reverse(labels)
 	// Bounded here, not in the card, so initialize reports the same title.
 	return Identity{
@@ -54,21 +53,6 @@ func (id Identity) Description() string {
 	return text.Runes("Shopping tools for "+id.Title+
 		": catalog, cart, checkout and order tracking.",
 		serverCardDescriptionMax)
-}
-
-// publisher is the tenant's primary domain as a lower-case ASCII FQDN:
-// the stem of its reverse-DNS server name and the authority segment of
-// its discovery identifier, which admits no IDN form.
-func publisher(t *tenant.Tenant) string {
-	domain := t.PrimaryDomain
-	if domain == "" {
-		domain = t.Domain
-	}
-	ascii, err := idna.Lookup.ToASCII(strings.TrimSuffix(domain, "."))
-	if err != nil {
-		ascii = domain
-	}
-	return strings.ToLower(ascii)
 }
 
 // serverCardSchema is the only schema URL a v1 Server Card may declare.
@@ -124,7 +108,7 @@ func ServerCardHandler(version string, site storefront.Site) http.Handler {
 				// The primary domain, whichever host the card was fetched
 				// on: the store's OAuth metadata names it as the resource,
 				// and a client refuses to link an account on any other.
-				URL:                       storefront.MCP(publisher(t)),
+				URL:                       storefront.MCP(t.PrimaryHost()),
 				SupportedProtocolVersions: mcp.SupportedProtocolVersions(),
 			}},
 		}
