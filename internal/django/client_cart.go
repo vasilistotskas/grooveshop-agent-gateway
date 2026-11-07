@@ -262,8 +262,31 @@ func (c *Client) RemoveCoupon(
 	return &out, nil
 }
 
+// PlacedOrder reads an order the gateway itself placed, for its own work: a
+// platform hears about an order for as long as the order moves, which outlives
+// what a guest's UUID opens. Only for a UUID the gateway holds: one a client
+// hands it goes through OrderByUUID, so the client gets the guest's limit.
+func (c *Client) PlacedOrder(
+	ctx context.Context, host, lang, orderUUID string,
+) (*Order, error) {
+	var out Order
+	err := c.get(ctx, request{
+		path:     "/agent/internal/order/{uuid}",
+		rawPath:  "/agent/internal/order/" + url.PathEscape(orderUUID),
+		host:     host,
+		language: lang,
+		headers:  map[string]string{"X-Internal-Token": c.internalSecret},
+		out:      &out,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // OrderByUUID fetches an order through the guest flow: possession of the
-// unguessable UUID in the path IS the authorization.
+// unguessable UUID in the path IS the authorization, for as long as Django
+// lets a guest's UUID open the order.
 func (c *Client) OrderByUUID(
 	ctx context.Context, host, lang, orderUUID string,
 ) (*Order, error) {

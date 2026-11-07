@@ -113,6 +113,15 @@ func fakeDjangoMux(t *testing.T) http.Handler {
 		})
 	route("GET /api/v1/order/uuid/b9be45e5-6062-4976-ae7b-2c31eb2ad689",
 		"order_by_uuid.json")
+	mux.HandleFunc("GET /api/v1/agent/internal/order/b9be45e5-6062-4976-ae7b-2c31eb2ad689",
+		func(w http.ResponseWriter, r *http.Request) {
+			got := r.Header.Get("X-Internal-Token")
+			if got != "test-secret" && got != internalSecret {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			serveFixture(t, w, "order_by_uuid.json")
+		})
 
 	// Agent surface: OIDC-bearer-only endpoints. "Bearer linked-token"
 	// is the valid credential; anything else is rejected the way

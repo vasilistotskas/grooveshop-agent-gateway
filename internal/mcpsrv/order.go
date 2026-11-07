@@ -42,6 +42,13 @@ type TrackOrderOut struct {
 	} `json:"tracking,omitempty"`
 }
 
+// orderNotOpened answers a uuid that opens no order. Django refuses a guest's
+// order once its uuid has expired, so the order may well exist; the same words
+// for an unknown uuid keep that from telling a caller which one it holds.
+const orderNotOpened = "no order can be opened with that id: it may be " +
+	"mistyped, or too old to open without signing in; check it against the " +
+	"confirmation email, then have the shopper sign in or contact the store"
+
 func (h *handlers) trackOrder(
 	ctx context.Context, _ *mcp.CallToolRequest, in TrackOrderIn,
 ) (*mcp.CallToolResult, TrackOrderOut, error) {
@@ -57,9 +64,7 @@ func (h *handlers) trackOrder(
 
 	o, err := h.deps.Django.OrderByUUID(ctx, t.Domain, lang, in.OrderUUID)
 	if err != nil {
-		return nil, out, upstreamErr(err,
-			"no order was found for that UUID; double-check it against "+
-				"the confirmation email")
+		return nil, out, upstreamErr(err, orderNotOpened)
 	}
 
 	out.OrderUUID = o.UUID
@@ -141,8 +146,9 @@ func (h *handlers) getOrder(
 	order, err := h.deps.Django.OrderByUUID(
 		ctx, t.Domain, lang, in.ID)
 	if err != nil {
-		if errors.Is(err, django.ErrNotFound) {
-			return nil, zero, fmt.Errorf("no order %s exists", in.ID)
+		if errors.Is(err, django.ErrNotFound) ||
+			errors.Is(err, django.ErrForbidden) {
+			return nil, zero, errors.New(orderNotOpened)
 		}
 		return nil, zero, upstreamErr(err,
 			"the order service is unavailable")
