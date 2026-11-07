@@ -53,8 +53,14 @@ func TestRunbookCommandsRunAsWritten(t *testing.T) {
 	root := filepath.Join("..", "..")
 	raw, err := os.ReadFile(filepath.Join(root, "docs", "agent-protocols-runbook.md"))
 	require.NoError(t, err)
-	blocks := runbookBlocks(t, strings.ReplaceAll(string(raw), "\r\n", "\n"))
-	require.NotEmpty(t, blocks)
+	page := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	blocks := runbookBlocks(t, page)
+
+	// One block per flow, each under a flow's heading: any other would not run.
+	require.Len(t, blocks, len(runbookBlock.FindAllString(page, -1)))
+	for flow := range runbookExpects {
+		require.Contains(t, blocks, flow, "the page no longer runs this flow")
+	}
 
 	for flow, block := range blocks {
 		t.Run(flow, func(t *testing.T) {

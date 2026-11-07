@@ -50,7 +50,7 @@ for h in $SHOPS; do
   mcp "$h" tools/list '{}' > "$T/tools.json"
   curl -s -m 25 "https://$h/.well-known/ard.json" > "$T/ard.json"
   curl -s -m 25 "https://$h/.well-known/ucp" > "$T/ucp.json"
-  node -e '
+  if ! node -e '
     const fs = require("fs")
     const read = f => JSON.parse(fs.readFileSync(f, "utf8"))
     const tools = read(process.argv[2] + "/tools.json").result.tools.map(t => t.name)
@@ -66,7 +66,10 @@ for h in $SHOPS; do
     say(!drift.length, "ARD capabilities match tools/list" + (drift.length ? ": differ on " + drift : ""))
     say(caps.includes("dev.ucp.shopping.checkout") && caps.includes("dev.ucp.shopping.order"), "UCP " + ucp.ucp.version + ": " + caps.length + " capabilities")
     say(Array.isArray(ucp.keys) && ucp.keys.length > 0, "UCP signing keys: " + (ucp.keys || []).length)
-  ' "$CORE" "$T" | tee "$T/out.txt"
+  ' "$CORE" "$T" > "$T/out.txt" 2>/dev/null; then
+    bad 'tools/list, ARD or UCP answered something unreadable'
+  fi
+  cat "$T/out.txt"
   fails=$((fails + $(grep -c FAIL "$T/out.txt")))
 done
 
@@ -77,7 +80,7 @@ for a in $AS_OF; do
   shop=${a#api.}; shop=${shop#api-}
   want 'protected-resource metadata' 200 "$(code "https://$shop/.well-known/oauth-protected-resource/mcp")"
   want 'authorization server metadata' 200 "$(code "https://$a/.well-known/oauth-authorization-server")"
-  keys=$(curl -s -m 25 "https://$a/.well-known/jwks.json" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{console.log(JSON.parse(s).keys.length)}catch{console.log("unreadable")}})')
+  keys=$(curl -s -m 25 "https://$a/.well-known/jwks.json" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const k=JSON.parse(s).keys;console.log(Array.isArray(k)?k.length:"unreadable")}catch{console.log("unreadable")}})')
   if [ "$keys" = 0 ] || [ "$keys" = unreadable ]; then bad "JWKS serves no signing key ($keys)"; else ok "JWKS keys: $keys"; fi
 done
 
