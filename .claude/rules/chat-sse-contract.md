@@ -45,10 +45,15 @@ cross-repo change. The code wins over this page.
   reads it through `django.Language` — `X-Language`, the search's
   `languageCode` and the translation picked — so product names come
   back in the page's language. `/mcp` names none and stays on the
-  store's default. The refusals and SSE `error` messages speak it, and
-  the prompt tells the model to reply in the language of the shopper's
-  latest message, else in the turn's, named in English
-  (`chat.languageName`). The prompt also forbids naming a product,
+  store's default. The refusals and SSE `error` messages speak the
+  turn's language, and the prompt tells the model to reply in the
+  language of the shopper's latest message, else in the turn's, named in
+  English (`chat.languageName`). A placed order's lines are the
+  exception to the turn's language: they show the name the line was sold
+  under, in the order's language (`OrderItem.ProductName`), never the
+  live product's name. `track_order` shows the SKU it was sold under too
+  (`OrderItem.SKU`); the UCP/ACP order and completed-checkout lines carry
+  the name only. The prompt also forbids naming a product,
   category or brand no tool result showed, and answers return and
   policy questions only from `get_store_policies`. `turnId` is a UUID the widget mints per message and sends
   again when the shopper retries it: each `add_to_cart` of the turn
