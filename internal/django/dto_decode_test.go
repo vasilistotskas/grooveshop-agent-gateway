@@ -155,6 +155,10 @@ func TestDecodeCartAppliedCouponRejection(t *testing.T) {
 func TestDecodeOrderPricingBreakdown(t *testing.T) {
 	o := decodeFixture[Order](t, "order_by_uuid.json")
 
+	require.Len(t, o.Items, 1)
+	assert.Equal(t, "Ιταλικά Ζυμαρικά Classic", o.Items[0].ProductName)
+	assert.Equal(t, "PST-369773", o.Items[0].SKU)
+
 	pb := o.PricingBreakdown
 	assert.Equal(t, "64.67", pb.ItemsSubtotal.String())
 	assert.Equal(t, "5.0", pb.Discount.String())

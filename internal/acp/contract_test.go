@@ -178,6 +178,13 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 				withOrderSchema.Validate(roundTrip(t, payload)))
 			require.NotNil(t, payload.Order)
 			assert.Equal(t, s.ID, payload.Order.CheckoutSessionID)
+			// Renamed after the sale: the line shows what was sold.
+			require.Len(t, payload.LineItems, 1)
+			assert.Equal(t, "Ιταλικά Ζυμαρικά Classic",
+				payload.LineItems[0].Name)
+			assert.Equal(t, "Ιταλικά Ζυμαρικά Classic",
+				payload.LineItems[0].Item.Name)
+			assert.Equal(t, "369773", payload.LineItems[0].Item.ID)
 		})
 
 	t.Run("a store with promotions declares the discount extension", func(t *testing.T) {

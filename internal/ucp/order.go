@@ -114,9 +114,8 @@ func BuildOrder(
 		out.LineItems = append(out.LineItems, OrderLineItem{
 			ID: strconv.FormatInt(item.Product.ID, 10),
 			Item: Item{
-				ID: strconv.FormatInt(item.Product.ID, 10),
-				Title: django.Localized(
-					item.Product.Translations, t.DefaultLocale).Name,
+				ID:    strconv.FormatInt(item.Product.ID, 10),
+				Title: item.ProductName,
 				Price: unit,
 			},
 			Quantity: OrderQuantity{

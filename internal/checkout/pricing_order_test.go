@@ -20,7 +20,8 @@ const placedOrderUUID = "b9be45e5-6062-4976-ae7b-2c31eb2ad689"
 
 // A placed order prices from the order. Django deletes the cart with it,
 // so the cart must not even be asked for: it would answer a new one, and
-// the checkout that placed the order would fail to render.
+// the checkout that placed the order would fail to render. Its lines carry
+// the name they were sold under, not the product's current one.
 func TestComputePricingPlacedOrder(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/cart",
@@ -34,7 +35,8 @@ func TestComputePricingPlacedOrder(t *testing.T) {
 				"id": 684, "uuid": "` + placedOrderUUID + `",
 				"items": [{
 					"product": {"id": 19, "mainImagePath": "p.jpg",
-						"translations": {"el": {"name": "Powerbank"}}},
+						"translations": {"el": {"name": "Powerbank Pro"}}},
+					"productName": "Powerbank", "sku": "PB-19",
 					"quantity": 2, "price": 39.58, "totalPrice": 79.16
 				}],
 				"pricingBreakdown": {

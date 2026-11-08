@@ -174,7 +174,7 @@ func orderPricing(
 		p.Lines = append(p.Lines, PricedLine{
 			LineID:     it.Product.ID,
 			ProductID:  it.Product.ID,
-			Title:      django.Localized(it.Product.Translations, t.DefaultLocale).Name,
+			Title:      it.ProductName,
 			ImagePath:  it.Product.MainImagePath,
 			Quantity:   it.Quantity,
 			UnitMinor:  unit,
