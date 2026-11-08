@@ -16,19 +16,24 @@ type TrackOrderIn struct {
 	OrderUUID string `json:"orderUuid" jsonschema:"the order's UUID from the confirmation email or checkout success page"`
 }
 
+// TrackOrderItem is one order line as it was sold: the name and SKU it was
+// sold under, in the order's language, not the product's current ones.
+type TrackOrderItem struct {
+	Name     string `json:"name"`
+	SKU      string `json:"sku,omitempty"`
+	Quantity int    `json:"quantity"`
+	Total    string `json:"total"`
+}
+
 type TrackOrderOut struct {
-	OrderUUID     string `json:"orderUuid"`
-	Status        string `json:"status"`
-	StatusDisplay string `json:"statusDisplay"`
-	PaymentStatus string `json:"paymentStatus"`
-	IsPaid        bool   `json:"isPaid"`
-	PlacedAt      string `json:"placedAt"`
-	Items         []struct {
-		Name     string `json:"name"`
-		Quantity int    `json:"quantity"`
-		Total    string `json:"total"`
-	} `json:"items"`
-	GrandTotal string `json:"grandTotal"`
+	OrderUUID     string           `json:"orderUuid"`
+	Status        string           `json:"status"`
+	StatusDisplay string           `json:"statusDisplay"`
+	PaymentStatus string           `json:"paymentStatus"`
+	IsPaid        bool             `json:"isPaid"`
+	PlacedAt      string           `json:"placedAt"`
+	Items         []TrackOrderItem `json:"items"`
+	GrandTotal    string           `json:"grandTotal"`
 	// Discount fields mirror the order's pricingBreakdown and are
 	// present only when non-zero.
 	Discount        string `json:"discount,omitempty" jsonschema:"promotion/coupon discount included in grandTotal"`
@@ -79,12 +84,12 @@ func (h *handlers) trackOrder(
 	out.GiftCardAmount = posNum(o.PricingBreakdown.GiftCardAmount)
 	out.Currency = o.PricingBreakdown.Currency
 	for _, it := range o.Items {
-		tr := django.Localized(it.Product.Translations, lang)
-		out.Items = append(out.Items, struct {
-			Name     string `json:"name"`
-			Quantity int    `json:"quantity"`
-			Total    string `json:"total"`
-		}{tr.Name, it.Quantity, num(it.TotalPrice)})
+		out.Items = append(out.Items, TrackOrderItem{
+			Name:     it.ProductName,
+			SKU:      it.SKU,
+			Quantity: it.Quantity,
+			Total:    num(it.TotalPrice),
+		})
 	}
 	if td := o.TrackingDetails; td != nil && td.HasTracking {
 		out.Tracking = &struct {

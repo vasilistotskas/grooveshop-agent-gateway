@@ -347,6 +347,10 @@ func startUCPGateway(t *testing.T) ucpStack {
 	}
 }
 
+// fixtureSoldName is the name order_by_uuid.json's line was sold under;
+// its product has been renamed since.
+const fixtureSoldName = "Ιταλικά Ζυμαρικά Classic"
+
 // The placed order's totals in order_by_uuid.json, in minor units.
 const (
 	fixtureOrderSubtotal = 6467
@@ -412,7 +416,10 @@ func TestUCPCompletedCheckoutRendersFromTheOrder(t *testing.T) {
 		assert.EqualValues(t, fixtureOrderFee, amounts["fee"])
 		assert.EqualValues(t, -fixtureOrderDiscount, amounts["discount"])
 		assert.EqualValues(t, fixtureOrderTotal, amounts["total"])
-		assert.NotEmpty(t, out["line_items"])
+		lines := out["line_items"].([]any)
+		require.Len(t, lines, 1)
+		assert.Equal(t, fixtureSoldName,
+			lines[0].(map[string]any)["item"].(map[string]any)["title"])
 	}
 
 	// The order goes through but cannot be read back: the answer must say it
@@ -735,7 +742,10 @@ func TestUCPEndToEnd(t *testing.T) {
 		require.NoError(t, json.Unmarshal(hook.body, &delivered))
 		assert.Equal(t, fixtureOrderUUID, delivered["id"])
 		assert.Equal(t, checkoutID, delivered["checkout_id"])
-		assert.NotEmpty(t, delivered["line_items"])
+		lines := delivered["line_items"].([]any)
+		require.Len(t, lines, 1)
+		assert.Equal(t, fixtureSoldName,
+			lines[0].(map[string]any)["item"].(map[string]any)["title"])
 		for _, internal := range []string{"schema", "target_url", "targetUrl"} {
 			assert.NotContains(t, delivered, internal)
 		}

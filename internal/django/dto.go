@@ -396,11 +396,17 @@ type AppliedCoupon struct {
 	Rejection    string      `json:"rejection" contract:"nullable"`
 }
 
+// OrderItem is one line of a placed order. ProductName and SKU are what the
+// line was sold as, in the order's language, fixed when it was created: a
+// renderer shows those, never the live Product's name, which can change
+// after the sale. Product stays for the live id, links and image.
 type OrderItem struct {
-	Product    Product     `json:"product"`
-	Quantity   int         `json:"quantity" contract:"optional"`
-	Price      json.Number `json:"price"`
-	TotalPrice json.Number `json:"totalPrice"`
+	Product     Product     `json:"product"`
+	ProductName string      `json:"productName"`
+	SKU         string      `json:"sku"`
+	Quantity    int         `json:"quantity" contract:"optional"`
+	Price       json.Number `json:"price"`
+	TotalPrice  json.Number `json:"totalPrice"`
 }
 
 type TrackingDetails struct {

@@ -423,6 +423,12 @@ func TestMCPEndToEnd(t *testing.T) {
 		require.False(t, res.IsError)
 		out := structured(t, res)
 		assert.Equal(t, "PROCESSING", out["status"])
+		// The product was renamed after the sale: the line reads as sold.
+		items := out["items"].([]any)
+		require.Len(t, items, 1)
+		line := items[0].(map[string]any)
+		assert.Equal(t, fixtureSoldName, line["name"])
+		assert.Equal(t, "PST-369773", line["sku"])
 		tracking := out["tracking"].(map[string]any)
 		assert.Equal(t, "acs", tracking["carrier"])
 		assert.Contains(t, tracking["url"], "acscourier.net")

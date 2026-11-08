@@ -373,6 +373,11 @@ func TestBuildOrderMatchesOrderSchema(t *testing.T) {
 	assert.Contains(t, out.PermalinkURL, "/checkout/success/"+order.UUID)
 	require.NotEmpty(t, out.LineItems)
 
+	// The product was renamed after the sale: the line keeps the name it
+	// was sold under, and the live product only for its id.
+	assert.Equal(t, "Ιταλικά Ζυμαρικά Classic", out.LineItems[0].Item.Title)
+	assert.Equal(t, "369773", out.LineItems[0].Item.ID)
+
 	// Exactly one subtotal and one total, as the schema demands.
 	counts := map[string]int{}
 	for _, tot := range out.Totals {

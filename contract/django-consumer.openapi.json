@@ -1190,8 +1190,14 @@
                   ],
                   "type": "object"
                 },
+                "productName": {
+                  "type": "string"
+                },
                 "quantity": {
                   "type": "integer"
+                },
+                "sku": {
+                  "type": "string"
                 },
                 "totalPrice": {
                   "type": "number"
@@ -1200,6 +1206,8 @@
               "required": [
                 "price",
                 "product",
+                "productName",
+                "sku",
                 "totalPrice"
               ],
               "type": "object"
