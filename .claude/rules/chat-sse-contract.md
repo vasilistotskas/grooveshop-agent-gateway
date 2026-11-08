@@ -45,7 +45,11 @@ cross-repo change. The code wins over this page.
   reads it through `django.Language` — `X-Language`, the search's
   `languageCode` and the translation picked — so product names come
   back in the page's language. `/mcp` names none and stays on the
-  store's default. The refusals and SSE `error` messages speak it, and
+  store's default. The exception is a placed order's lines
+  (`track_order`, and the UCP/ACP order and completed-checkout lines):
+  they show the name and SKU the line was sold under, in the order's
+  language (`OrderItem.ProductName`, `SKU`), never the live product's
+  name in the turn's language. The refusals and SSE `error` messages speak it, and
   the prompt tells the model to reply in the language of the shopper's
   latest message, else in the turn's, named in English
   (`chat.languageName`). The prompt also forbids naming a product,
