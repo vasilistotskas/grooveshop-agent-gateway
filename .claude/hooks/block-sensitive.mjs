@@ -29,7 +29,8 @@ catch {
 const filePath = input.tool_input?.file_path || ''
 if (!filePath) process.exit(0)
 
-const p = filePath.split('\\').join('/')
+// Matched in lower case: on a case-insensitive disk `UV.LOCK` opens `uv.lock`.
+const p = filePath.split('\\').join('/').toLowerCase()
 const base = p.split('/').pop()
 
 /** [test, reason] pairs. First match wins. */
