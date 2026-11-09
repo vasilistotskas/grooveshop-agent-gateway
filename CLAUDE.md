@@ -13,6 +13,7 @@ cluster-only internal endpoint and the operational routes:
 | Path | Surface |
 |---|---|
 | `POST /mcp` | MCP server (stateless streamable HTTP): the UCP checkout capability's five canonical tools + ergonomic commerce tools + account tools (`my_orders`, `my_loyalty_points`, `my_favourites`); a tool whose store feature is off is neither listed nor callable |
+| `POST /mcp/admin` | Store-admin MCP server (`internal/adminmcp`): the store's own team reads orders, sales, profit, products and stock, customers, reviews and contact messages, by role, read only. Every call needs a staff bearer from Django's staff issuer on `STAFF_CONNECT_HOST`; `GET /.well-known/oauth-protected-resource/mcp/admin` names it |
 | `GET /mcp/server-card` | MCP Server Card (SEP-2127): identity and remotes only — no tools, which clients read from `tools/list`. Name/title/version match `initialize` (`mcpsrv.IdentityFor`) |
 | `GET /.well-known/ard.json` | Agentic Resource Discovery manifest (ARD v0.91, `application/json`): one entry for the MCP server, with the card's title/description, the tool names the store's `tools/list` serves as `capabilities` and `representativeQueries` |
 | `GET /.well-known/ai-catalog.json` | AI Catalog (`application/ai-catalog+json`): the same entry as `ard.json`, name and description included, because Lighthouse validates this document against the ARD schema |
@@ -87,6 +88,19 @@ passes.
   (`mcpsrv.RequireLinkedAccount`), because a client starts OAuth on a
   401 and on nothing else. Account tools forward the bearer — Django
   enforces scopes.
+- `internal/adminmcp` — `/mcp/admin`, a separate MCP server with its own
+  tools and middleware. `RequireStaff` refuses a call without a staff
+  bearer (401 + RFC 9728 challenge naming every read scope and
+  `/.well-known/oauth-protected-resource/mcp/admin`), verifies one against
+  Django `/agent/staff/me` (60s cache keyed by SHA-256(schema, token)) and
+  forwards it to `/api/v1/agent/staff/*`, which checks the scope, the role
+  and the team on every call. A scope not granted or not open to the role
+  is refused before Django is asked. Customer-written text comes back as
+  `{untrusted: true, source, text}`. Staff tokens come from Django's staff
+  issuer, never the store's own (that one signs in customers), and are
+  bound to the store's `/mcp/admin` on its primary domain. Every tool is
+  read only; a write tool needs the owner's approval first
+  (`grooveshop-docs/src/dev/flows/staff-mcp.md`).
 - `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:v4:{host}`
   → Django; singleflight; 60s negative cache; stale-if-error) + middleware
   (tenant from the **real Host header only** — inbound X-Forwarded-Host is
