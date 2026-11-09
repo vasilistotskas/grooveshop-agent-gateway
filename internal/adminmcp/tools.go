@@ -44,8 +44,42 @@ type ListOrdersIn struct {
 	Limit         int    `json:"limit,omitempty" jsonschema:"how many, capped by the store"`
 }
 
+// Order is an order row with the name its customer typed marked
+// untrusted.
+type Order struct {
+	ID            int64      `json:"id"`
+	UUID          string     `json:"uuid"`
+	Status        string     `json:"status"`
+	StatusDisplay string     `json:"statusDisplay"`
+	PaymentStatus string     `json:"paymentStatus"`
+	PaymentMethod string     `json:"paymentMethod"`
+	PlacedAt      string     `json:"placedAt"`
+	ShippedAt     *string    `json:"shippedAt"`
+	CustomerName  *Untrusted `json:"customerName,omitempty"`
+	CustomerEmail string     `json:"customerEmail"`
+	Total         string     `json:"total"`
+	Currency      string     `json:"currency"`
+}
+
+func orderOf(o django.StaffOrder) Order {
+	return Order{
+		ID:            o.ID,
+		UUID:          o.UUID,
+		Status:        o.Status,
+		StatusDisplay: o.StatusDisplay,
+		PaymentStatus: o.PaymentStatus,
+		PaymentMethod: o.PaymentMethod,
+		PlacedAt:      o.PlacedAt,
+		ShippedAt:     o.ShippedAt,
+		CustomerName:  untrusted("customer", o.CustomerName),
+		CustomerEmail: o.CustomerEmail,
+		Total:         o.Total,
+		Currency:      o.Currency,
+	}
+}
+
 type ListOrdersOut struct {
-	Orders []django.StaffOrder `json:"orders"`
+	Orders []Order `json:"orders"`
 }
 
 func (h *handlers) listOrders(
@@ -67,26 +101,28 @@ func (h *handlers) listOrders(
 	if err != nil {
 		return nil, ListOrdersOut{}, upstreamErr(err, "no orders found")
 	}
-	if orders == nil {
-		orders = []django.StaffOrder{}
+	out := ListOrdersOut{Orders: make([]Order, 0, len(orders))}
+	for _, o := range orders {
+		out.Orders = append(out.Orders, orderOf(o))
 	}
-	return nil, ListOrdersOut{Orders: orders}, nil
+	return nil, out, nil
 }
 
 type GetOrderIn struct {
 	OrderID int64 `json:"orderId" jsonschema:"the order id from list_orders"`
 }
 
-// OrderDetail is the order with the customer's note marked untrusted.
+// OrderDetail is the order with what its customer typed (name, city,
+// note) marked untrusted.
 type OrderDetail struct {
-	django.StaffOrder
+	Order
 	ItemsTotal      string                  `json:"itemsTotal"`
 	Shipping        string                  `json:"shipping"`
 	PaymentFee      string                  `json:"paymentFee"`
 	Discount        string                  `json:"discount"`
 	ShippingCarrier string                  `json:"shippingCarrier"`
 	TrackingNumber  string                  `json:"trackingNumber"`
-	City            string                  `json:"city"`
+	City            *Untrusted              `json:"city,omitempty"`
 	Country         *string                 `json:"country"`
 	CustomerNote    *Untrusted              `json:"customerNote,omitempty"`
 	Lines           []django.StaffOrderLine `json:"lines"`
@@ -106,14 +142,14 @@ func (h *handlers) getOrder(
 			"no order with that id in this store; find it with list_orders")
 	}
 	return nil, OrderDetail{
-		StaffOrder:      o.StaffOrder,
+		Order:           orderOf(o.StaffOrder),
 		ItemsTotal:      o.ItemsTotal,
 		Shipping:        o.Shipping,
 		PaymentFee:      o.PaymentFee,
 		Discount:        o.Discount,
 		ShippingCarrier: o.ShippingCarrier,
 		TrackingNumber:  o.TrackingNumber,
-		City:            o.City,
+		City:            untrusted("customer", o.City),
 		Country:         o.Country,
 		CustomerNote:    untrusted("customer", o.CustomerNotes),
 		Lines:           o.Lines,
@@ -195,8 +231,19 @@ type SearchIn struct {
 	Limit  int    `json:"limit,omitempty" jsonschema:"how many, capped by the store"`
 }
 
+// Customer is a customer with the name they typed marked untrusted.
+type Customer struct {
+	ID          int64      `json:"id"`
+	Name        *Untrusted `json:"name,omitempty"`
+	Email       string     `json:"email"`
+	JoinedAt    string     `json:"joinedAt"`
+	IsActive    bool       `json:"isActive"`
+	Orders      int64      `json:"orders"`
+	LastOrderAt *string    `json:"lastOrderAt"`
+}
+
 type FindCustomersOut struct {
-	Customers []django.StaffCustomer `json:"customers"`
+	Customers []Customer `json:"customers"`
 }
 
 func (h *handlers) findCustomers(
@@ -211,10 +258,19 @@ func (h *handlers) findCustomers(
 	if err != nil {
 		return nil, FindCustomersOut{}, upstreamErr(err, "no customers found")
 	}
-	if customers == nil {
-		customers = []django.StaffCustomer{}
+	out := FindCustomersOut{Customers: make([]Customer, 0, len(customers))}
+	for _, c := range customers {
+		out.Customers = append(out.Customers, Customer{
+			ID:          c.ID,
+			Name:        untrusted("customer", c.Name),
+			Email:       c.Email,
+			JoinedAt:    c.JoinedAt,
+			IsActive:    c.IsActive,
+			Orders:      c.Orders,
+			LastOrderAt: c.LastOrderAt,
+		})
 	}
-	return nil, FindCustomersOut{Customers: customers}, nil
+	return nil, out, nil
 }
 
 type ListReviewsIn struct {
@@ -276,7 +332,7 @@ type LimitIn struct {
 // untrusted.
 type Message struct {
 	ID        int64      `json:"id"`
-	Name      string     `json:"name"`
+	Name      *Untrusted `json:"name,omitempty"`
 	Email     string     `json:"email"`
 	Subject   *Untrusted `json:"subject,omitempty"`
 	CreatedAt string     `json:"createdAt"`
@@ -303,7 +359,7 @@ func (h *handlers) listMessages(
 	for _, m := range rows {
 		out.Messages = append(out.Messages, Message{
 			ID:        m.ID,
-			Name:      m.Name,
+			Name:      untrusted("sender", m.Name),
 			Email:     m.Email,
 			Subject:   untrusted("sender", m.Subject),
 			CreatedAt: m.CreatedAt,
