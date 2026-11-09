@@ -42,6 +42,10 @@ const (
 
 	// platformHost resolves to the public schema; a domain needs two labels.
 	platformHost = "platform.localhost"
+
+	// connectHost is where a store's staff connect an AI app: Django's
+	// staff issuer, on the public schema.
+	connectHost = "connect.localhost"
 )
 
 const (
@@ -238,6 +242,7 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 		"AGENT_GATEWAY_INTERNAL_SECRET": secret,
 		"AGENT_GATEWAY_INTERNAL_URL":    "http://gateway:8080",
 		"IDP_OIDC_PRIVATE_KEY":          key,
+		"STAFF_CONNECT_HOST":            connectHost,
 	}
 	// A one-off management command, in a container of its own.
 	manage := func(
@@ -363,6 +368,7 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 			"REDIS_URL":                 "redis://redis:6379/1",
 			"INTERNAL_EVENTS_SECRET":    secret,
 			"ASSETS_HOST":               "assets.localhost",
+			"STAFF_CONNECT_HOST":        connectHost,
 			"STOREFRONT_DEFAULT_LOCALE": "el",
 		}),
 		testcontainers.WithExposedPorts("8080/tcp"),

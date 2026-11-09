@@ -77,6 +77,13 @@ type Config struct {
 	// empty image URL instead.
 	AssetsHost string
 
+	// StaffConnectHost is the platform host where a store's staff connect
+	// an AI app to /mcp/admin: Django's staff OAuth issuer
+	// (connect.grooveshop.space), named as the authorization server in
+	// /mcp/admin's protected-resource metadata. A platform host, never a
+	// tenant's, and required: the staff tools are unusable without it.
+	StaffConnectHost string
+
 	// StorefrontDefaultLocale is the language the storefront's
 	// unprefixed pages render: its build-time DEFAULT_LOCALE
 	// (i18n/locales.ts), the same on every tenant whatever the tenant's
@@ -144,6 +151,7 @@ func Load() (Config, error) {
 		InternalSecret:          os.Getenv("INTERNAL_EVENTS_SECRET"),
 		RedisURL:                os.Getenv("REDIS_URL"),
 		AssetsHost:              os.Getenv("ASSETS_HOST"),
+		StaffConnectHost:        os.Getenv("STAFF_CONNECT_HOST"),
 		StorefrontDefaultLocale: os.Getenv("STOREFRONT_DEFAULT_LOCALE"),
 		MediaURLTemplate: envOr("MEDIA_IMAGE_URL_TEMPLATE",
 			"https://{assets_host}/media_stream-image/{path}"+
@@ -249,6 +257,9 @@ func Load() (Config, error) {
 	}
 	if cfg.StorefrontDefaultLocale == "" {
 		missing = append(missing, "STOREFRONT_DEFAULT_LOCALE")
+	}
+	if cfg.StaffConnectHost == "" {
+		missing = append(missing, "STAFF_CONNECT_HOST")
 	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf(

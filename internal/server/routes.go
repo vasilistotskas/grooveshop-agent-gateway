@@ -15,6 +15,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/acp"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/adminmcp"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/chat"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
@@ -105,6 +106,20 @@ func New(d Deps) http.Handler {
 		tenantMW(tenant.RequireAgentCommerce(
 			identityMW(mcpsrv.RequireLinkedAccount(
 				mcpsrv.Handler(mcpDeps, d.Log))))))
+	// The store-admin MCP server: the store's own team, by role, read
+	// only. A separate server with its own tools and authorization server
+	// (Django's staff issuer on the platform's connect host); every call
+	// needs a staff bearer bound to this store (internal/adminmcp).
+	mux.Handle(adminmcp.Path,
+		tenantMW(adminmcp.RequireStaff(
+			adminmcp.NewVerifier(d.Django), d.Log)(
+			adminmcp.Handler(adminmcp.Deps{
+				Django:  d.Django,
+				Log:     d.Log,
+				Version: d.Version,
+			}))))
+	mux.Handle("GET /.well-known/oauth-protected-resource"+adminmcp.Path,
+		tenantMW(adminmcp.ResourceMetadataHandler(d.Cfg.StaffConnectHost)))
 	// Public documents describing the MCP endpoint, readable cross-origin
 	// (OPTIONS answers the CORS preflight). They share its gate: a store
 	// without an MCP endpoint has nothing to describe.

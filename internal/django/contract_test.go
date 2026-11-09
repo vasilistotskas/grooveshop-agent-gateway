@@ -105,6 +105,88 @@ var djangoContract = []contractCall{
 		names: map[string]string{"AgentFavourite": "AgentFavourite"},
 	},
 	{
+		fn: "StaffMe", method: http.MethodGet,
+		path: "/agent/staff/me", status: http.StatusOK,
+		out: reflect.TypeFor[StaffProfile](),
+		names: map[string]string{
+			"StaffProfile": "StaffMe", "StaffScope": "StaffScope",
+		},
+	},
+	{
+		fn: "StaffOrders", method: http.MethodGet,
+		path: "/agent/staff/orders", status: http.StatusOK,
+		query: []contractParam{
+			{"status", false}, {"paymentStatus", false},
+			{"placedFrom", false}, {"placedTo", false},
+			{"search", false}, {"limit", false},
+		},
+		out:   reflect.TypeFor[[]StaffOrder](),
+		names: map[string]string{"StaffOrder": "StaffOrder"},
+	},
+	{
+		fn: "StaffOrder", method: http.MethodGet,
+		path: "/agent/staff/orders/{id}", status: http.StatusOK,
+		out: reflect.TypeFor[StaffOrderDetail](),
+		names: map[string]string{
+			"StaffOrderDetail": "StaffOrderDetail",
+			"StaffOrderLine":   "StaffOrderLine",
+		},
+	},
+	{
+		fn: "StaffSales", method: http.MethodGet,
+		path: "/agent/staff/sales", status: http.StatusOK,
+		query: []contractParam{
+			{"start", false}, {"end", false}, {"bucket", false},
+		},
+		out: reflect.TypeFor[StaffSalesReport](),
+		names: map[string]string{
+			"StaffSalesReport": "StaffSalesReport",
+			"StaffSalesRow":    "StaffSalesRow",
+		},
+	},
+	{
+		fn: "StaffProfit", method: http.MethodGet,
+		path: "/agent/staff/profit", status: http.StatusOK,
+		query: []contractParam{
+			{"start", false}, {"end", false}, {"bucket", false},
+		},
+		out: reflect.TypeFor[StaffProfitReport](),
+		names: map[string]string{
+			"StaffProfitReport": "StaffProfitReport",
+			"StaffProfitRow":    "StaffProfitRow",
+		},
+	},
+	{
+		fn: "StaffProducts", method: http.MethodGet,
+		path: "/agent/staff/products", status: http.StatusOK,
+		query: []contractParam{
+			{"search", false}, {"lowStock", false}, {"limit", false},
+		},
+		out:   reflect.TypeFor[[]StaffProduct](),
+		names: map[string]string{"StaffProduct": "StaffProduct"},
+	},
+	{
+		fn: "StaffCustomers", method: http.MethodGet,
+		path: "/agent/staff/customers", status: http.StatusOK,
+		query: []contractParam{{"search", false}, {"limit", false}},
+		out:   reflect.TypeFor[[]StaffCustomer](),
+		names: map[string]string{"StaffCustomer": "StaffCustomer"},
+	},
+	{
+		fn: "StaffReviews", method: http.MethodGet,
+		path: "/agent/staff/reviews", status: http.StatusOK,
+		query: []contractParam{{"status", false}, {"limit", false}},
+		out:   reflect.TypeFor[[]StaffReview](),
+		names: map[string]string{"StaffReview": "StaffReview"},
+	},
+	{
+		fn: "StaffMessages", method: http.MethodGet,
+		path: "/agent/staff/messages", status: http.StatusOK,
+		query: []contractParam{{"limit", false}},
+		out:   reflect.TypeFor[[]StaffMessage](),
+		names: map[string]string{"StaffMessage": "StaffMessage"},
+	},
+	{
 		fn: "SearchProducts", method: http.MethodGet,
 		path: "/search/product", status: http.StatusOK,
 		query: []contractParam{

@@ -14,6 +14,7 @@ func setRequired(t *testing.T) {
 	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 	t.Setenv("INTERNAL_EVENTS_SECRET", "s3cret")
 	t.Setenv("ASSETS_HOST", "assets.platform.test")
+	t.Setenv("STAFF_CONNECT_HOST", "connect.platform.test")
 	t.Setenv("STOREFRONT_DEFAULT_LOCALE", "el")
 }
 
@@ -109,6 +110,18 @@ func TestLoadRequiresAssetsHost(t *testing.T) {
 	_, err := Load()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ASSETS_HOST")
+}
+
+// STAFF_CONNECT_HOST is required: /mcp/admin's protected-resource
+// metadata names it as the authorization server, and a guessed host would
+// send a store's staff to sign in somewhere that is not the platform's.
+func TestLoadRequiresStaffConnectHost(t *testing.T) {
+	setRequired(t)
+	t.Setenv("STAFF_CONNECT_HOST", "")
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "STAFF_CONNECT_HOST")
 }
 
 // The storefront's build default decides which links carry a language
