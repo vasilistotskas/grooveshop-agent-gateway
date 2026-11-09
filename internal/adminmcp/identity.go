@@ -130,6 +130,8 @@ func (v *Verifier) Verify(
 		case errors.Is(err, django.ErrUnauthorized):
 			entry.invalid = true
 		default:
+			// Not cached: a 404 (the store switched access off) or an
+			// outage answers the next call afresh.
 			return nil, err
 		}
 		v.mu.Lock()
@@ -165,7 +167,9 @@ func RequireStaff(
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			t, ok := tenant.FromContext(r.Context())
-			if !ok {
+			if !ok || !t.Features.StaffAIAccess {
+				// A store that has not let its team connect an AI app
+				// has no /mcp/admin, as Django has no staff surface.
 				httpmw.WriteJSONError(w, http.StatusNotFound, "not found")
 				return
 			}
@@ -181,6 +185,11 @@ func RequireStaff(
 			case errors.Is(err, ErrInvalidToken):
 				WriteChallenge(w, t, `error="invalid_token"`,
 					"invalid or expired access token")
+				return
+			case errors.Is(err, django.ErrNotFound):
+				// The store switched it off and this pod's copy of its
+				// configuration has not caught up yet: Django is right.
+				httpmw.WriteJSONError(w, http.StatusNotFound, "not found")
 				return
 			case err != nil:
 				log.ErrorContext(r.Context(), "staff token verification failed",

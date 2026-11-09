@@ -34,11 +34,23 @@ var staffScopes = []string{
 	"admin:messages:read",
 }
 
+// managePy runs a Django shell script in the running backend.
+func managePy(t *testing.T, script string) {
+	t.Helper()
+	code, out, err := running.django.Exec(context.Background(), []string{
+		".venv/bin/python", "manage.py", "shell", "-c", script,
+	})
+	require.NoError(t, err)
+	output, err := io.ReadAll(out)
+	require.NoError(t, err)
+	require.Zero(t, code, tail(string(output)))
+}
+
 // staffMember creates a platform identity with a role in the store, or in
 // no store when role is empty.
 func staffMember(t *testing.T, email, role string) {
 	t.Helper()
-	script := fmt.Sprintf(`
+	managePy(t, fmt.Sprintf(`
 from django_tenants.utils import get_public_schema_name, schema_context
 from tenant.models import Tenant, UserTenantMembership
 from user.models import UserAccount
@@ -49,14 +61,7 @@ with schema_context(get_public_schema_name()):
         UserTenantMembership.objects.create(
             user=user, tenant=Tenant.objects.get(schema_name="demostore"),
             role=%q, is_active=True)
-`, email, staffPassword, role, role)
-	code, out, err := running.django.Exec(context.Background(), []string{
-		".venv/bin/python", "manage.py", "shell", "-c", script,
-	})
-	require.NoError(t, err)
-	output, err := io.ReadAll(out)
-	require.NoError(t, err)
-	require.Zero(t, code, tail(string(output)))
+`, email, staffPassword, role, role))
 }
 
 // staffClient registers a client with the staff issuer, through dynamic

@@ -530,6 +530,9 @@ type StoreFeatures struct {
 	Favourites     bool `json:"favourites"`
 	Loyalty        bool `json:"loyalty"`
 	Promotions     bool `json:"promotions"`
+	// StaffAIAccess: the store lets its team connect their own AI app to
+	// /mcp/admin. Off by default: what the app reads goes to its provider.
+	StaffAIAccess bool `json:"staffAiAccess"`
 }
 
 // AgentCommerceOn reports whether the agent-commerce surface (MCP,

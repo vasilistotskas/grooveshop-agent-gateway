@@ -86,12 +86,19 @@ for a in $AS_OF; do
   if [ "$keys" = 0 ] || [ "$keys" = unreadable ]; then bad "JWKS serves no signing key ($keys)"; else ok "JWKS keys: $keys"; fi
 done
 
-# The store-admin connector (/mcp/admin): an anonymous call and a bogus token
-# are both challenged, the store's metadata names the staff issuer on the
-# connect host, and that host serves the issuer and nothing else. Nothing is
-# signed in to and no token is minted, so it is safe on production.
+# The store-admin connector (/mcp/admin). A store switches it on for its
+# team (off by default): off, the endpoint and its metadata both answer 404;
+# on, an anonymous call and a bogus token are both challenged and the
+# metadata names the staff issuer on the connect host. Nothing is signed in
+# to and no token is minted, so it is safe on production.
 for h in $SHOPS; do
   echo "== $h/mcp/admin"
+  prm=$(code "https://$h/.well-known/oauth-protected-resource/mcp/admin")
+  if [ "$prm" = 404 ]; then
+    want 'staff AI access off: /mcp/admin' 404 "$(code -X POST "https://$h/mcp/admin" -H 'content-type: application/json' -d '{}')"
+    continue
+  fi
+  want 'metadata' 200 "$prm"
   headers=$(curl -s -m 25 -o /dev/null -D - -X POST "https://$h/mcp/admin" \
     -H 'content-type: application/json' -d '{}')
   want 'anonymous call' 401 "$(code -X POST "https://$h/mcp/admin" -H 'content-type: application/json' -d '{}')"

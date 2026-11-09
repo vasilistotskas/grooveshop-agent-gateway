@@ -27,7 +27,7 @@ func ResourceMetadataHandler(connectHost string) http.Handler {
 	issuer := storefront.Origin(connectHost)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t, ok := tenant.FromContext(r.Context())
-		if !ok {
+		if !ok || !t.Features.StaffAIAccess {
 			httpmw.WriteJSONError(w, http.StatusNotFound, "not found")
 			return
 		}

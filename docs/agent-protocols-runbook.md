@@ -400,11 +400,11 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 
 ## 7. Store-admin connector (`/mcp/admin`)
 
-A store's owner and staff connect their own AI app to `https://<store>/mcp/admin` and read the store by their role. Every tool only reads. Their tokens come from Django's staff issuer on the platform's connect host (`connect.grooveshop.space`, staging `connect-staging.grooveshop.space`), never from the store's own issuer, which signs in customers. Design and the proposed write tools: `grooveshop-docs/src/dev/flows/staff-mcp.md`.
+A store's owner and staff connect their own AI app to `https://<store>/mcp/admin` and read the store by their role. Every tool only reads. **A store switches it on** (`STAFF_AI_ACCESS_ENABLED`, off by default, served as `features.staffAiAccess`). While it is off, `/mcp/admin` and its metadata answer 404. Turning it off cuts connected apps at once: Django answers 404 and the gateway passes that on. Turning it on reaches the gateway within its 5-minute tenant cache. Their tokens come from Django's staff issuer on the platform's connect host (`connect.grooveshop.space`, staging `connect-staging.grooveshop.space`), never from the store's own issuer, which signs in customers. Design and the proposed write tools: `grooveshop-docs/src/dev/flows/staff-mcp.md`.
 
 ### S1. Smoke
 
-**Label:** Smoke. It is part of `scripts/agent-smoke.sh`. For each store:
+**Label:** Smoke. It is part of `scripts/agent-smoke.sh`. A store with the switch off must answer 404 on both `/mcp/admin` and its metadata. For each store that has it on:
 - an anonymous call and a bogus token both get 401;
 - the challenge names `/.well-known/oauth-protected-resource/mcp/admin`;
 - that document names the store's `/mcp/admin` as the resource and the connect host as the authorization server;
@@ -428,7 +428,7 @@ The chain:
 claude mcp add --transport http grooveshop-demo-admin https://demo-staging.grooveshop.space/mcp/admin
 ```
 
-Ask for the store's latest orders, then use `/mcp` to authenticate. Your browser opens on `connect-staging.grooveshop.space`: answer the staging basic-auth prompt, sign in with a staff account of the demo store, and approve. Ask again. Remove it afterwards with `claude mcp remove grooveshop-demo-admin`.
+The demo store must have **Store Settings → `STAFF_AI_ACCESS_ENABLED`** on. Ask for the store's latest orders, then use `/mcp` to authenticate. Your browser opens on `connect-staging.grooveshop.space`: answer the staging basic-auth prompt, sign in with a staff account of the demo store, and approve. Ask again. Remove it afterwards with `claude mcp remove grooveshop-demo-admin`.
 
 **Expected:**
 - `whoami` names the store and the role.

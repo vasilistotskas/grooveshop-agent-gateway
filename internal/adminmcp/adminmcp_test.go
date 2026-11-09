@@ -30,6 +30,7 @@ func acme() *tenant.Tenant {
 			StoreName:     "Acme",
 			PrimaryDomain: "shop.acme.test",
 			DefaultLocale: "el",
+			Features:      django.StoreFeatures{StaffAIAccess: true},
 		},
 		Domain: "shop.acme.test",
 	}
@@ -278,4 +279,52 @@ func TestTheResourceMetadataNamesTheStaffIssuer(t *testing.T) {
 	assert.Equal(t, []any{"https://connect.platform.test"},
 		doc["authorization_servers"])
 	assert.Len(t, doc["scopes_supported"], len(ReadScopes))
+}
+
+// A store that has not let its team connect an AI app has no /mcp/admin
+// and no metadata for it, whatever the token.
+func TestAStoreWithAccessOffServesNothing(t *testing.T) {
+	f := &fakeDjango{granted: ReadScopes}
+	off := acme()
+	off.Features.StaffAIAccess = false
+	h := stack(f.serve(t), off)
+
+	for _, token := range []string{"", goodToken} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, Path, strings.NewReader(`{}`))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		h.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusNotFound, rec.Code, token)
+	}
+	assert.Zero(t, f.meCalls.Load(), "Django is not asked")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/.well-known/oauth-protected-resource"+Path, nil)
+	ResourceMetadataHandler("connect.platform.test").ServeHTTP(rec,
+		req.WithContext(tenant.NewContext(req.Context(), off)))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// The store switched access off and this pod has not caught up: Django's
+// 404 is passed on, not reported as an outage.
+func TestDjangosNotFoundIsPassedOn(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"detail":"Not found."}`))
+		}))
+	t.Cleanup(srv.Close)
+	dj := django.New(srv.URL+"/api/v1", "api.acme.test", "secret",
+		5*time.Second, quietLog(), obs.NewMetrics())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, Path, strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+goodToken)
+	stack(dj, acme()).ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }

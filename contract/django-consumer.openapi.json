@@ -2812,6 +2812,9 @@
           },
           "promotions": {
             "type": "boolean"
+          },
+          "staffAiAccess": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -2821,7 +2824,8 @@
           "loyalty",
           "productAlerts",
           "productReviews",
-          "promotions"
+          "promotions",
+          "staffAiAccess"
         ],
         "type": "object"
       },

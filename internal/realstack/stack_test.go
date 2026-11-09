@@ -301,6 +301,19 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 		"--skip", "pages"); err != nil {
 		return nil, cleanup, err
 	}
+	// The demo store lets its team connect an AI app to /mcp/admin (off
+	// by default). Set before the gateway first resolves the store, which
+	// it then keeps for minutes.
+	if _, err := manage(nil, "shell", "-c", `
+from django_tenants.utils import schema_context
+from extra_settings.models import Setting
+with schema_context("demostore"):
+    Setting.objects.update_or_create(
+        name="STAFF_AI_ACCESS_ENABLED",
+        defaults={"value_type": "bool", "value_bool": True})
+`); err != nil {
+		return nil, cleanup, err
+	}
 	if _, err := manage(nil, "meilisearch_sync_all_indexes",
 		"--all-tenants"); err != nil {
 		return nil, cleanup, err

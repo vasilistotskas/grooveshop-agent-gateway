@@ -101,7 +101,7 @@ passes.
   bound to the store's `/mcp/admin` on its primary domain. Every tool is
   read only; a write tool needs the owner's approval first
   (`grooveshop-docs/src/dev/flows/staff-mcp.md`).
-- `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:v4:{host}`
+- `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:v5:{host}`
   → Django; singleflight; 60s negative cache; stale-if-error) + middleware
   (tenant from the **real Host header only** — inbound X-Forwarded-Host is
   deliberately ignored; spoofing it must never switch tenants).
@@ -216,7 +216,7 @@ passes.
   `0` / `""` are "not stated" and are left out, a missing or malformed
   value fails the call) and links `Links.ReturnPolicy` only while
   `/content-page/return-policy` is published (a 404 means it is not).
-- Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:v4:{host}`,
+- Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:v5:{host}`,
   versioned with the cached `TenantConfig` shape: bump it when a field is
   added, or entries an older pod wrote decode it as its zero value.
 - No tenant label on Prometheus metrics (unbounded cardinality) — tenant
