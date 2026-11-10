@@ -63,12 +63,14 @@ func refused(err error) bool {
 type Placement int
 
 const (
-	// NothingPlaced: refused, and nothing was created. The caller
-	// releases its key, so the same key can try again.
-	NothingPlaced Placement = iota
 	// OrderMayExist: an order exists, or may. The caller spends its key,
 	// so a retry re-renders the session and never places a second order.
-	OrderMayExist
+	// It is the zero value: a Placement nobody set must not release a
+	// key.
+	OrderMayExist Placement = iota
+	// NothingPlaced: refused, and nothing was created. The caller
+	// releases its key, so the same key can try again.
+	NothingPlaced
 )
 
 // completionSteps sizes the part of Complete that runs without its
@@ -87,15 +89,12 @@ type Flow struct {
 	log    *slog.Logger
 }
 
-// NewFlow takes the Django client's own timeout: Complete is bounded by
-// it once the caller's context no longer applies.
 func NewFlow(
-	dj *django.Client, st *Store, site storefront.Site,
-	upstreamTimeout time.Duration, log *slog.Logger,
+	dj *django.Client, st *Store, site storefront.Site, log *slog.Logger,
 ) *Flow {
 	return &Flow{
 		dj: dj, st: st, site: site,
-		budget: completionSteps * upstreamTimeout, log: log,
+		budget: completionSteps * dj.Timeout(), log: log,
 	}
 }
 
@@ -115,6 +114,10 @@ func (f *Flow) Complete(
 		// Nothing is stored for a session that was not admitted. A
 		// snapshot that reads in progress is another attempt's, and
 		// saving it would overwrite that attempt's session.
+		return NothingPlaced, err
+	}
+	// No order exists yet, so a caller that has already left gets none.
+	if err := ctx.Err(); err != nil {
 		return NothingPlaced, err
 	}
 

@@ -250,13 +250,28 @@ func (h *Handler) storeIdem(
 	if err != nil {
 		return
 	}
-	_ = h.rdb.Set(r.Context(), idemRedisKey(schema, scope, key), raw,
-		24*time.Hour).Err()
+	if err := h.rdb.Set(r.Context(), idemRedisKey(schema, scope, key), raw,
+		24*time.Hour).Err(); err != nil {
+		h.logUnsettled(r, scope, "record", err)
+	}
 }
 
 // releaseIdem clears an inflight claim after a failed attempt.
 func (h *Handler) releaseIdem(r *http.Request, schema, scope, key string) {
-	_ = h.rdb.Del(r.Context(), idemRedisKey(schema, scope, key)).Err()
+	if err := h.rdb.Del(r.Context(), idemRedisKey(schema, scope, key)).
+		Err(); err != nil {
+		h.logUnsettled(r, scope, "release", err)
+	}
+}
+
+// logUnsettled reports a key left as its claim wrote it: "inflight" for
+// a minute, which answers the platform's retry 409 until it lapses.
+func (h *Handler) logUnsettled(
+	r *http.Request, scope, action string, err error,
+) {
+	h.log.ErrorContext(r.Context(), "acp: idempotency key not settled",
+		slog.String("scope", scope), slog.String("action", action),
+		slog.String("error", err.Error()))
 }
 
 // --- Input mapping ---------------------------------------------------------
@@ -694,6 +709,7 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 
 	// Readiness first, and it needs no pay way on ACP. Without a delivery no
 	// pay way can be chosen, which says nothing about what the store offers.
+	buyer, payWay, status := s.Buyer, s.PayWayID, s.Status
 	applyBuyer(s, req.Buyer, nil)
 	s.Recompute()
 	if s.Status == checkout.StatusIncomplete {
@@ -705,6 +721,18 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		h.releaseIdem(r, t.SchemaName, scope, key)
 		upstreamError(w, err)
 		return
+	}
+	// What this call submitted is the buyer's latest word whether or not
+	// the call places the order. It is stored now, because a refused
+	// completion stores nothing: a later complete that omits the buyer
+	// would otherwise place the order for the one before.
+	if s.Open() && (s.Buyer != buyer || s.PayWayID != payWay ||
+		s.Status != status) {
+		if err := h.store.Save(r.Context(), s); err != nil {
+			h.releaseIdem(r, t.SchemaName, scope, key)
+			writeUnavailable(w, "Checkout is temporarily unavailable.")
+			return
+		}
 	}
 	if s.PayWayID == 0 {
 		h.releaseIdem(r, t.SchemaName, scope, key)
@@ -723,13 +751,18 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	// The key is settled even for a platform that has gone: its retry
 	// must find what this attempt did.
 	settled := r.WithContext(context.WithoutCancel(r.Context()))
-	if placement == checkout.OrderMayExist {
-		h.storeIdem(settled, t.SchemaName, scope, key, record)
-	} else {
+	if placement == checkout.NothingPlaced {
 		h.releaseIdem(settled, t.SchemaName, scope, key)
+	} else {
+		h.storeIdem(settled, t.SchemaName, scope, key, record)
 	}
 	if err != nil {
 		h.completeError(w, err)
+		return
+	}
+	if r.Context().Err() != nil {
+		// The platform has gone: there is nobody to answer, and reading
+		// the order back on its ended request could only fail.
 		return
 	}
 	h.render(w, r, t, s, http.StatusOK)

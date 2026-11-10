@@ -33,7 +33,11 @@ type completionSurface struct {
 	ready func(t *testing.T) string
 	// complete asks for the order under key and returns the status the
 	// surface rendered, "" when it answered with an error or not at all.
-	complete func(ctx context.Context, id, key string) string
+	// submit is what the call carries beyond the least a completion
+	// needs: members of ACP's body, or of UCP's checkout object.
+	complete func(
+		ctx context.Context, id, key string, submit map[string]any,
+	) string
 	// keyName is where the surface keeps that key's state in Redis.
 	keyName func(id, key string) string
 }
@@ -77,10 +81,19 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			require.Equal(t, "ready_for_payment", updated["status"])
 			return id
 		},
-		complete: func(ctx context.Context, id, key string) string {
+		complete: func(
+			ctx context.Context, id, key string, submit map[string]any,
+		) string {
+			body := map[string]any{"payment_data": map[string]any{}}
+			for member, value := range submit {
+				body[member] = value
+			}
+			raw, err := json.Marshal(body)
+			if err != nil {
+				return ""
+			}
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-				base+"/"+id+"/complete",
-				bytes.NewReader([]byte(`{"payment_data": {}}`)))
+				base+"/"+id+"/complete", bytes.NewReader(raw))
 			if err != nil {
 				return ""
 			}
@@ -150,12 +163,16 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			require.Equal(t, "ready_for_complete", created["status"])
 			return created["id"].(string)
 		},
-		complete: func(ctx context.Context, id, key string) string {
+		complete: func(
+			ctx context.Context, id, key string, submit map[string]any,
+		) string {
+			if submit == nil {
+				submit = map[string]any{}
+			}
 			res, err := session.CallTool(ctx, &mcp.CallToolParams{
 				Name: "complete_checkout",
 				Arguments: map[string]any{
-					"meta": meta(key), "id": id,
-					"checkout": map[string]any{"payment": cod},
+					"meta": meta(key), "id": id, "checkout": submit,
 				},
 			})
 			if err != nil || res.IsError {
@@ -233,32 +250,55 @@ func TestCompleteBookkeepingIsTheSameOnBothSurfaces(t *testing.T) {
 		name  string
 		fault *atomic.Bool
 		want  bookkeeping
+		// untouched: the completion must not write the session at all.
+		untouched bool
 	}{
-		{"an order placed", nil, bookkeeping{
+		{name: "an order placed", want: bookkeeping{
 			Session: checkout.StatusCompleted, Linked: true, Key: keySpent,
 		}},
-		{"an order the store did not confirm", &stack.faults.orderCreate,
-			bookkeeping{
+		{name: "an order the store did not confirm",
+			fault: &stack.faults.orderCreate, want: bookkeeping{
 				Session: checkout.StatusCompleteInProgress, Key: keySpent,
 			}},
-		{"an order the store refused", &stack.faults.orderRefuse,
-			bookkeeping{
+		{name: "an order the store refused",
+			fault: &stack.faults.orderRefuse, want: bookkeeping{
+				Session: checkout.StatusReadyForComplete, Key: keyReleased,
+			}},
+		// Refused before the order is sent, by a call that submits
+		// nothing new: neither the handler nor the flow has anything
+		// to store.
+		{name: "stock that ran out", fault: &stack.faults.stockShort,
+			untouched: true, want: bookkeeping{
 				Session: checkout.StatusReadyForComplete, Key: keyReleased,
 			}},
 	}
 	for _, outcome := range outcomes {
 		for _, surface := range surfaces {
 			t.Run(outcome.name+" over "+surface.name, func(t *testing.T) {
+				ctx := context.Background()
 				id := surface.ready(t)
 				if outcome.fault != nil {
 					outcome.fault.Store(true)
 					t.Cleanup(func() { outcome.fault.Store(false) })
 				}
+				before, err := stack.rdb.Get(ctx, "ag:demostore:cs:"+id).
+					Result()
+				require.NoError(t, err)
+				creates := stack.faults.orderCreates.Load()
 				key := uuid.NewString()
-				surface.complete(context.Background(), id, key)
+				surface.complete(ctx, id, key, nil)
 
 				assert.Equal(t, outcome.want,
 					stack.bookkeeping(t, id, surface.keyName(id, key)))
+				if outcome.untouched {
+					after, err := stack.rdb.Get(ctx, "ag:demostore:cs:"+id).
+						Result()
+					require.NoError(t, err)
+					assert.Equal(t, before, after,
+						"the stored session, its updatedAt included")
+					assert.Equal(t, creates,
+						stack.faults.orderCreates.Load())
+				}
 			})
 		}
 	}
@@ -317,12 +357,16 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 			gone := make(chan struct{})
 			go func() {
 				defer close(gone)
-				surface.complete(ctx, id, key)
+				surface.complete(ctx, id, key, nil)
 			}()
 
+			// The store holds its answer while the test waits, and it
+			// must answer before the gateway gives up on it: past the
+			// upstream timeout the outcome is unknown, another case.
+			const wait = ucpUpstreamTimeout / 2
 			select {
 			case <-reached:
-			case <-time.After(15 * time.Second):
+			case <-time.After(wait):
 				t.Fatal("the order was never sent to the store")
 			}
 			stack.faults.orderHold.Store(nil)
@@ -330,7 +374,7 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 			hangUp()
 			select {
 			case <-served.Done():
-			case <-time.After(15 * time.Second):
+			case <-time.After(wait):
 				t.Fatal("the gateway never saw the platform leave")
 			}
 			// Only now does the store answer: the order exists.
@@ -357,10 +401,69 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 			}, 10*time.Second, 20*time.Millisecond)
 
 			assert.Equal(t, "completed",
-				surface.complete(context.Background(), id, key),
+				surface.complete(context.Background(), id, key, nil),
 				"the retry is answered with the order")
 			assert.Equal(t, before+1, stack.faults.orderCreates.Load(),
 				"and places nothing")
+		})
+	}
+}
+
+// What a complete call submits is the buyer's latest word, whether or not
+// that call places the order. A refused one keeps it, so the next
+// complete, which need not repeat it, places the order with it and not
+// with what the checkout held before.
+func TestRefusedCompleteKeepsWhatItSubmitted(t *testing.T) {
+	stack := startUCPGateway(t)
+	submissions := map[string]struct {
+		submit map[string]any
+		// member is where an order's body carries what was submitted.
+		member string
+		want   any
+		stored func(*checkout.Session) any
+	}{
+		// ready stored cash on delivery; pay way 2 is the hosted card.
+		"ucp": {
+			submit: map[string]any{"pay_way_id": 2},
+			member: "payWayId", want: 2,
+			stored: func(s *checkout.Session) any { return s.PayWayID },
+		},
+		"acp": {
+			submit: map[string]any{"buyer": map[string]any{
+				"email": "other@example.test",
+			}},
+			member: "email", want: "other@example.test",
+			stored: func(s *checkout.Session) any { return s.Buyer.Email },
+		},
+	}
+	for _, surface := range completionSurfaces(t, stack) {
+		t.Run(surface.name, func(t *testing.T) {
+			ctx := context.Background()
+			sub := submissions[surface.name]
+			id := surface.ready(t)
+			creates := stack.faults.orderCreates.Load()
+
+			stack.faults.stockShort.Store(true)
+			key := uuid.NewString()
+			require.Empty(t, surface.complete(ctx, id, key, sub.submit),
+				"refused: the stock ran out")
+			stack.faults.stockShort.Store(false)
+
+			assert.Equal(t, bookkeeping{
+				Session: checkout.StatusReadyForComplete, Key: keyReleased,
+			}, stack.bookkeeping(t, id, surface.keyName(id, key)))
+			stored, err := checkout.NewStore(stack.rdb).
+				Load(ctx, "demostore", id)
+			require.NoError(t, err)
+			assert.EqualValues(t, sub.want, sub.stored(stored))
+			require.Equal(t, creates, stack.faults.orderCreates.Load())
+
+			require.NotEmpty(t,
+				surface.complete(ctx, id, uuid.NewString(), nil),
+				"the next complete places the order")
+			require.Equal(t, creates+1, stack.faults.orderCreates.Load())
+			assert.EqualValues(t, sub.want,
+				(*stack.faults.lastOrder.Load())[sub.member])
 		})
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -303,6 +304,7 @@ func (h *handlers) completeCheckout(
 	// makes the payment object authoritative, and it rejects an
 	// instrument the store cannot honour instead of placing an order the
 	// buyer has no way to pay for.
+	payWay, status := s.PayWayID, s.Status
 	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
 		return nil, zero, err
 	}
@@ -312,6 +314,16 @@ func (h *handlers) completeCheckout(
 				"submit one of the instruments the checkout advertised")
 	}
 	s.Recompute()
+	// What this call submitted is the buyer's latest choice whether or
+	// not the call places the order. It is stored now, because a refused
+	// completion stores nothing: a later complete that omits the payment
+	// would otherwise place the order with the choice before this one.
+	if s.Open() && (s.PayWayID != payWay || s.Status != status) {
+		if err := h.deps.Checkout.Save(ctx, s); err != nil {
+			return nil, zero, errors.New(
+				"checkout is temporarily unavailable; retry shortly")
+		}
+	}
 
 	idemKey := in.Meta.IdempotencyKey
 	claimed, err := h.deps.Checkout.ClaimCompletion(
@@ -332,12 +344,15 @@ func (h *handlers) completeCheckout(
 	// The key is settled even for a platform that has gone: its retry
 	// must find what this attempt did.
 	settled := context.WithoutCancel(ctx)
-	if placement == checkout.OrderMayExist {
-		_ = h.deps.Checkout.MarkCompleted(
-			settled, t.SchemaName, s.ID, idemKey)
-	} else {
-		h.deps.Checkout.ReleaseCompletion(
-			settled, t.SchemaName, s.ID, idemKey)
+	settle := h.deps.Checkout.MarkCompleted
+	if placement == checkout.NothingPlaced {
+		settle = h.deps.Checkout.ReleaseCompletion
+	}
+	if err := settle(settled, t.SchemaName, s.ID, idemKey); err != nil {
+		h.deps.Log.ErrorContext(ctx, "ucp: completion key not settled",
+			slog.String("session", s.ID),
+			slog.Bool("spent", placement != checkout.NothingPlaced),
+			slog.String("error", err.Error()))
 	}
 	switch {
 	case err == nil:

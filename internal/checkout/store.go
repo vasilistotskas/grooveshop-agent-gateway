@@ -181,8 +181,8 @@ func (st *Store) MarkCompleted(
 // caller can retry.
 func (st *Store) ReleaseCompletion(
 	ctx context.Context, schema, id, idempotencyKey string,
-) {
-	_ = st.rdb.Del(ctx, idemKey(schema, id, idempotencyKey)).Err()
+) error {
+	return st.rdb.Del(ctx, idemKey(schema, id, idempotencyKey)).Err()
 }
 
 // OrderLink ties an order placed through a checkout to what outlives

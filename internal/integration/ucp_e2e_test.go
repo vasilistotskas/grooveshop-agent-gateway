@@ -183,6 +183,10 @@ type checkoutFaults struct {
 	// orderHold runs inside an accepted order creation, before it
 	// answers.
 	orderHold atomic.Pointer[func(*http.Request)]
+	// lastOrder is the body of the last order creation that was accepted.
+	lastOrder atomic.Pointer[map[string]any]
+	// stockShort makes the stock reservation answer a 409 shortfall.
+	stockShort atomic.Bool
 	// cartDeletedOnOrder makes the cart go with the first order, as it
 	// does in Django: asked for it, Django answers a new guest cart.
 	cartDeletedOnOrder atomic.Bool
@@ -237,6 +241,13 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	outer.HandleFunc("POST /api/v1/cart/reserve-stock",
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
+			if faults.stockShort.Load() {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"detail": "Not enough stock.",
+					"failedItems": [{"productId": 1, "productName":
+					"Ζυμαρικά", "available": 1, "requested": 2}]}`))
+				return
+			}
 			_, _ = w.Write([]byte(
 				`{"reservationIds": [77], "message": "reserved"}`))
 		})
@@ -269,6 +280,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			if attribution, ok := body["attribution"].(map[string]any); ok {
 				faults.agentProtocol.Store(attribution["agentProtocol"])
 			}
+			faults.lastOrder.Store(&body)
 			if hold := faults.orderHold.Load(); hold != nil {
 				(*hold)(r)
 			}
@@ -295,6 +307,9 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	outer.Handle("/", inner)
 	return outer
 }
+
+// ucpUpstreamTimeout is how long the stack's gateway waits for Django.
+const ucpUpstreamTimeout = 5 * time.Second
 
 // ucpStack is the full gateway over a fake Django and real Redis.
 type ucpStack struct {
@@ -342,7 +357,7 @@ func startUCPGatewayBehind(
 			"/800/800/contain/entropy/transparent/5/80.webp",
 		TenantCacheTTL:   time.Minute,
 		NegativeCacheTTL: time.Minute,
-		UpstreamTimeout:  5 * time.Second,
+		UpstreamTimeout:  ucpUpstreamTimeout,
 		RateLimitPerMin:  6000,
 		RateLimitBurst:   1000,
 	}

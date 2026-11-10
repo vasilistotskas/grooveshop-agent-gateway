@@ -43,7 +43,7 @@ func startFlow(t *testing.T, upstreamTimeout time.Duration) flowStack {
 	store := checkout.NewStore(rdb)
 	return flowStack{
 		flow: checkout.NewFlow(dj, store, storefront.NewSite("el"),
-			upstreamTimeout, quietLogger()),
+			quietLogger()),
 		store: store, rdb: rdb, faults: faults,
 		tenant: &tenant.Tenant{
 			TenantConfig: django.TenantConfig{

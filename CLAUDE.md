@@ -195,17 +195,22 @@ passes.
 - **A completion finishes without its caller.** `checkout.Flow.Complete`
   runs on the caller's context only until the order is about to be
   created. From the in-progress save on it is detached
-  (`context.WithoutCancel`) and bounded by three upstream timeouts
-  (`completionSteps`), because Django has the order whether or not the
-  platform is still connected. It alone stores the session and the
-  order link (a completion refused before that stores nothing), and
-  returns a `checkout.Placement`: `OrderMayExist` spends the caller's
-  idempotency key, `NothingPlaced` releases it. The
-  ACP handler and the UCP tool only settle their own key by it (ACP's
-  body-hash record, UCP's completion claim) and map the error; neither
-  saves the session after a completion. An ACP request's context ends
-  when the platform disconnects, and so does an MCP tool's for a client
-  on protocol 2026-07-28 or later (`PropagateRequestCancellation`).
+  (`context.WithoutCancel`) and bounded by three of the Django
+  client's timeouts (`completionSteps`), because Django has the order
+  whether or not the platform is still connected. It alone stores the
+  session and the order link from there on, and returns a
+  `checkout.Placement`: `OrderMayExist` (the zero value) spends the
+  caller's idempotency key, `NothingPlaced` releases it. A completion
+  refused before the in-progress save stores nothing. So the ACP
+  handler and the UCP tool store what the call itself submitted (ACP's
+  buyer, UCP's payment) before they call it, under the session lock
+  and only for a session that is still open: a refused call keeps the
+  buyer's latest choice. After it they only settle their own key by
+  the placement (ACP's body-hash record, UCP's completion claim) and
+  map the error; neither saves the session again. An ACP request's
+  context ends when the platform disconnects, and so does an MCP
+  tool's for a client on protocol 2026-07-28 or later
+  (`PropagateRequestCancellation`).
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before
