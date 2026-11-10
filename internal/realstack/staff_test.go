@@ -219,9 +219,29 @@ func TestStaffConnectsAnAIAppAndReadsTheStore(t *testing.T) {
 		"a STAFF role is never offered the takings")
 	assert.NotContains(t, page, `value="admin:profit:read"`)
 
+	s := connectAdmin(t, grant(t, c, server, clientID, v, resp, page,
+		[]string{"admin:orders:read", "admin:catalog:read"}))
+	me := structured(t, call(t, s, "whoami", map[string]any{}))
+	assert.Equal(t, "staff", me["role"])
+	structured(t, call(t, s, "list_orders", map[string]any{"limit": 5}))
+	structured(t, call(t, s, "list_products", map[string]any{"limit": 5}))
+	// Not granted at consent, and not open to the role.
+	assert.Contains(t, errorText(t, call(t, s, "sales_report",
+		map[string]any{})), `"code":"not_allowed"`)
+	assert.Contains(t, errorText(t, call(t, s, "find_customers",
+		map[string]any{})), `"code":"not_granted"`)
+}
+
+// grant approves the scopes on the consent page and trades the code
+// for the access token.
+func grant(
+	t *testing.T, c *http.Client, server authServer, clientID, v string,
+	resp *http.Response, page string, scopes []string,
+) string {
+	t.Helper()
 	action, form := formFields(t, consentForm(t, page))
 	form.Set("action", "grant")
-	form["scopes"] = []string{"admin:orders:read", "admin:catalog:read"}
+	form["scopes"] = scopes
 	resp = postForm(t, c, resp.Request.URL, action, form)
 	granted := read(t, resp)
 	require.Equal(t, http.StatusFound, resp.StatusCode, tail(granted))
@@ -246,17 +266,56 @@ func TestStaffConnectsAnAIAppAndReadsTheStore(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal([]byte(body), &token))
 
-	s := connectAdmin(t, token.Access)
-	me := structured(t, call(t, s, "whoami", map[string]any{}))
-	assert.Equal(t, "staff", me["role"])
-	structured(t, call(t, s, "list_orders", map[string]any{"limit": 5}))
-	structured(t, call(t, s, "list_products", map[string]any{"limit": 5}))
-	// Not granted at consent, and not open to the role.
-	assert.Contains(t, errorText(t, call(t, s, "sales_report",
-		map[string]any{})), `"code":"not_allowed"`)
-	assert.Contains(t, errorText(t, call(t, s, "find_customers",
-		map[string]any{})), `"code":"not_granted"`)
+	return token.Access
 }
+
+// Django renders an amount as a JSON number; each money tool answers
+// with two-place decimal strings, read here from a real store.
+func TestAnOwnerReadsAmountsFromTheRealStore(t *testing.T) {
+	staffMember(t, "staff-owner@realstack.test", "owner")
+	c := browser(t)
+	server, clientID := staffClient(t, c)
+	v := verifier(t)
+	resp, page := staffSignIn(t, c,
+		staffAuthorizeURL(server, clientID, v), "staff-owner@realstack.test")
+	require.Equal(t, http.StatusOK, resp.StatusCode, tail(page))
+	s := connectAdmin(t, grant(t, c, server, clientID, v, resp, page,
+		staffScopes))
+
+	products := structured(t, call(t, s, "list_products",
+		map[string]any{"limit": 5}))["products"].([]any)
+	require.NotEmpty(t, products, "the real store has products")
+	for _, row := range products {
+		assert.Regexp(t, twoPlaces, row.(map[string]any)["price"])
+		assert.Regexp(t, twoPlaces, row.(map[string]any)["finalPrice"])
+	}
+
+	sales := structured(t, call(t, s, "sales_report",
+		map[string]any{"bucket": "month"}))["total"].(map[string]any)
+	for _, field := range []string{
+		"salesNet", "salesGross", "returnsNet", "turnover", "vat",
+		"averageOrderValue", "awaitingCollection",
+	} {
+		assert.Regexp(t, twoPlaces, sales[field], field)
+	}
+
+	profit := structured(t, call(t, s, "profit_report",
+		map[string]any{}))["total"].(map[string]any)
+	for _, field := range []string{
+		"revenue", "cogs", "grossProfit", "paymentFees", "deliveryCosts",
+		"otherExpenses", "operatingProfit",
+	} {
+		assert.Regexp(t, twoPlaces, profit[field], field)
+	}
+
+	orders := structured(t, call(t, s, "list_orders",
+		map[string]any{"limit": 5}))["orders"].([]any)
+	for _, row := range orders {
+		assert.Regexp(t, twoPlaces, row.(map[string]any)["total"])
+	}
+}
+
+var twoPlaces = regexp.MustCompile(`^-?[0-9]+[.][0-9]{2}$`)
 
 // Anyone without a staff token is sent to sign in, and a customer's token
 // from the store's own issuer is not a staff token.
