@@ -7,23 +7,24 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/text"
 )
 
-// maxRequestIDRunes is the 64 characters Django keeps of an inbound
+// maxRequestIDLen is the 64 characters Django keeps of an inbound
 // X-Correlation-ID (core/middleware/correlation_id.py), which is where
-// the gateway sends this id: one id means the same on both sides.
-const maxRequestIDRunes = 64
+// the gateway sends this id. The id is visible ASCII, so a byte is a
+// character on both sides and one id means the same to each.
+const maxRequestIDLen = 64
 
 // RequestID honors an inbound X-Request-Id (set by upstream proxies) or
 // mints one, exposing it on the context and the response. An inbound id
-// is cleaned as Django cleans a correlation id: ASCII control characters
-// dropped, then cut to maxRequestIDRunes.
+// keeps its visible ASCII only, trimmed and cut to maxRequestIDLen; if
+// nothing is left, one is minted.
 func RequestID() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			id := text.Runes(strings.Map(dropControl,
-				r.Header.Get("X-Request-Id")), maxRequestIDRunes)
+			id := strings.TrimSpace(strings.Map(visibleASCII,
+				r.Header.Get("X-Request-Id")))
+			id = id[:min(len(id), maxRequestIDLen)]
 			if id == "" {
 				id = uuid.NewString()
 			}
@@ -34,9 +35,10 @@ func RequestID() func(http.Handler) http.Handler {
 	}
 }
 
-// dropControl mirrors Django's [\x00-\x1f\x7f]: C0 controls and DEL.
-func dropControl(r rune) rune {
-	if r < 0x20 || r == 0x7f {
+// visibleASCII drops controls, DEL and everything outside ASCII (an
+// invalid UTF-8 byte arrives as U+FFFD and goes too).
+func visibleASCII(r rune) rune {
+	if r < 0x20 || r >= 0x7f {
 		return -1
 	}
 	return r

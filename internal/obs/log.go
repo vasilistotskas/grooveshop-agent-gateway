@@ -82,6 +82,8 @@ func tenantOf(ctx context.Context) string {
 // contextHandler adds the request id and tenant the record's context
 // carries. A record that already names one keeps its own: the stale
 // tenant line names the tenant it resolved before the request's is set.
+// That check reads the record's own attributes only, not those a logger
+// carries from With, so a logger bound to a tenant is for detached work.
 type contextHandler struct {
 	slog.Handler
 }

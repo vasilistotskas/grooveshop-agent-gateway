@@ -156,6 +156,34 @@ func TestServeLogsTheRequestItCut(t *testing.T) {
 	assert.Contains(t, access.String(), "request_id=")
 }
 
+// A panic in the middleware, outside httpmw.Recover, reaches net/http's
+// own recover; its line goes through the gateway's handler, at error.
+func TestServeLogsAMiddlewarePanicThroughTheGatewayLogger(t *testing.T) {
+	handler := httpmw.RequestID()(httpmw.Logging(slog.New(slog.DiscardHandler))(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic("middleware boom")
+		})))
+	ctx, stop := stoppable(t)
+	url, logs, done := startServe(t, ctx, handler, podTiming)
+
+	req, err := http.NewRequestWithContext(context.Background(),
+		http.MethodGet, url, nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+	require.Error(t, err, "net/http drops the connection")
+
+	assert.Eventually(t, func() bool {
+		return strings.Contains(logs.String(), "middleware boom")
+	}, 5*time.Second, 10*time.Millisecond)
+	assert.Contains(t, logs.String(), "level=ERROR")
+	assert.Contains(t, logs.String(), "http: panic serving")
+	stop()
+	require.NoError(t, waitServe(t, done, podTiming.drain+podTiming.final))
+}
+
 // A handler that ignores the cancellation is cut when the window ends,
 // and that is a warning, not a failed exit.
 func TestServeCutsWhatOutlivesTheWindow(t *testing.T) {

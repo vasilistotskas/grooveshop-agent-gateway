@@ -35,22 +35,38 @@ func BearerToken(r *http.Request) (token string, ok bool) {
 	return strings.TrimSpace(rest), true
 }
 
-// statusWriter records the response status for logging and metrics.
+// statusWriter records the response status for logging and metrics: the
+// first final status sent. net/http ignores a later WriteHeader (a 500
+// after a stream began), and so does the record.
 type statusWriter struct {
 	http.ResponseWriter
 	status int
 }
 
 func (w *statusWriter) WriteHeader(code int) {
-	w.status = code
+	// 1xx informational responses precede the final status.
+	if w.status == 0 && code >= http.StatusOK {
+		w.status = code
+	}
 	w.ResponseWriter.WriteHeader(code)
 }
 
 func (w *statusWriter) Write(b []byte) (int, error) {
+	w.sent()
+	return w.ResponseWriter.Write(b)
+}
+
+// sent records net/http's implicit 200, which the first write or flush
+// sends.
+func (w *statusWriter) sent() {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	return w.ResponseWriter.Write(b)
+}
+
+// started reports whether a status has been sent.
+func (w *statusWriter) started() bool {
+	return w.status != 0
 }
 
 // Status is the code the client received: a handler that returned without
@@ -66,6 +82,7 @@ func (w *statusWriter) Status() int {
 // middleware chain.
 func (w *statusWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		w.sent()
 		f.Flush()
 	}
 }

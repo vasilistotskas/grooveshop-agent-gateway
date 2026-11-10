@@ -150,10 +150,17 @@ passes.
   (`core/middleware/correlation_id.py`).
 - `internal/httpmw` — request-id, access log, rate limit, RED metrics,
   recover, outermost first (`server.withGlobalChain`). Recover wraps the
-  mux directly, so a panic reaches Metrics and the access log as a 500;
-  Metrics sits right around it and sees the `r.Pattern` the mux sets. An
-  inbound `X-Request-Id` is cleaned by Django's correlation-id rule (C0
-  controls and DEL dropped, 64 characters kept), else one is minted.
+  mux directly, so a handler panic is logged and still gets its access
+  line and metric: a 500, or the status already sent if the response
+  had begun (the status writer keeps the first one). A panic in the
+  middleware itself is outside it: net/http recovers it, drops the
+  connection and logs it at error through the gateway's logger
+  (`Server.ErrorLog` in `serve.go`), with no access line or metric.
+  `http.ErrAbortHandler` is passed on to net/http, which aborts the
+  response silently. Metrics sits right around Recover and sees the
+  `r.Pattern` the mux sets. An inbound `X-Request-Id` keeps its visible
+  ASCII only, trimmed and cut to 64 bytes (the 64 characters Django keeps
+  of `X-Correlation-ID`), else one is minted.
 - `internal/obs` — slog JSON to stdout, Prometheus registry, health.
   The logger's context handler adds `request_id` and `tenant` to every
   line logged with a request's context (`obs.WithRequestID`; the tenant

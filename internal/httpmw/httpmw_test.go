@@ -39,13 +39,18 @@ func TestRequestIDMintsAndEchoes(t *testing.T) {
 func TestRequestIDHonorsInbound(t *testing.T) {
 	cases := []struct{ name, inbound, want string }{
 		{"kept", "req-123", "req-123"},
-		// Django's rule (core/middleware/correlation_id.py): C0 controls
-		// and DEL dropped, then 64 characters kept.
+		// Visible ASCII only, so a byte is a character on both sides and
+		// Django's 64-character cut (core/middleware/correlation_id.py)
+		// keeps the whole id.
 		{"controls dropped", "req\t-\x011\x7f23", "req-123"},
+		{"non-ASCII removed", "req-αβ123", "req-123"},
+		{"invalid UTF-8 removed", "req-\xff\xfe123", "req-123"},
+		{"surrounding space trimmed", "  req 123  ", "req 123"},
 		{"capped", strings.Repeat("ab", 40), strings.Repeat("ab", 32)},
-		{"capped in runes", strings.Repeat("α", 70), strings.Repeat("α", 64)},
 		// Nothing left is no id: one is minted.
 		{"emptied", "\x01\x02", ""},
+		{"only non-ASCII", "αβγ", ""},
+		{"only space", "   ", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -77,6 +82,41 @@ func TestRecoverConvertsPanicTo500(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// A panic after the response began keeps the status the client got and
+// writes nothing more into the body; the panic is still logged.
+func TestRecoverLeavesAStartedResponseAlone(t *testing.T) {
+	var buf bytes.Buffer
+	h := Recover(slog.New(slog.NewJSONHandler(&buf, nil)))(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("data: 1\n\n"))
+			panic("boom")
+		}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "data: 1\n\n", rec.Body.String())
+	assert.Contains(t, buf.String(), `"msg":"panic recovered"`)
+}
+
+// net/http's way to abort a response silently (http.ErrAbortHandler) is
+// passed on: no log line, no 500.
+func TestRecoverPassesOnErrAbortHandler(t *testing.T) {
+	var buf bytes.Buffer
+	h := Recover(slog.New(slog.NewJSONHandler(&buf, nil)))(http.HandlerFunc(
+		func(http.ResponseWriter, *http.Request) {
+			panic(http.ErrAbortHandler)
+		}))
+
+	rec := httptest.NewRecorder()
+	assert.PanicsWithValue(t, http.ErrAbortHandler, func() {
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	})
+	assert.Empty(t, buf.String())
+	assert.False(t, rec.Code == http.StatusInternalServerError ||
+		rec.Body.Len() > 0, "nothing was written")
 }
 
 func TestRateLimiterRejectsBurstOverflow(t *testing.T) {

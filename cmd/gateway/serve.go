@@ -65,6 +65,10 @@ func serve(
 		ReadTimeout:       t.read,
 		IdleTimeout:       idleTimeout,
 		BaseContext:       func(net.Listener) context.Context { return base },
+		// net/http's own lines (a panic in the middleware outside
+		// httpmw.Recover, an accept failure) go through the gateway's
+		// handler, as JSON like every other line.
+		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelError),
 		// No WriteTimeout: it is a deadline on every write of the
 		// response, so it would cut SSE (chat) and streamable MCP.
 	}
