@@ -347,6 +347,12 @@ not serve. The rule and how to split a change are in
     - `CHAT_VISITOR_TURNS_PER_DAY` per client IP per store per UTC day.
   
   A refused turn spends from neither budget and gets the store's localized `rate_limited` message with a 429 and a `Retry-After` until the full window resets.
+
+  Inside a turn (`chat.runTurn`):
+  - At most `CHAT_MAX_ITERATIONS` model calls. The last one is sent `tool_choice: none`, and tool calls a provider returns there anyway are not run.
+  - The model client is built once (`chat.New`) with no SDK retries. A provider throttle, answered as a 429 or sent as an error inside the stream (`chat.providerErrorOf`), ends the turn after one call with SSE `error {code: rate_limited, retryAfter}`.
+  - `CHAT_TURN_TIMEOUT`, counted from the turn's start, bounds the model calls and when a tool call may start. Once it has passed, no further tool call of the batch starts, and the turn ends with the generic, retryable `error {message}`; a stalled provider ends the same way. A tool call already running is never cut, so a cart call is not cut midway. A turn can still fail after a cart change Django accepted, with nothing telling the shopper: that is #94. A retry with the same `turnId` does not add a product twice: `add_to_cart` sends an `Idempotency-Key` derived from the turn (`mcpsrv.Turn`), which Django's `core/middleware/idempotency.py` answers with the first outcome.
+  - A shutdown cancels the deadline's context too, and `handle` checks for it (`httpmw.ErrShuttingDown`) before anything else, so a turn cut by shutdown is reported as one.
 - Infra repo: manifests under `manifests/app-constructs/grooveshop/base/`,
   path rules on the storefront ingress.
 - B2B/wholesale pricing (Django `b2b/` app) is RETAIL-ONLY here by

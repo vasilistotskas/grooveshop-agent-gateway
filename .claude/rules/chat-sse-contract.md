@@ -22,10 +22,11 @@ cross-repo change. The code wins over this page.
   (`error`: the call failed, and the model was told why),
   `products {tool, query?, total?, products: [{id}]}`,
   `error {message, code?, retryAfter?}` (`code: rate_limited` when the
-  model provider throttled the turn, `retryAfter` its wait in seconds;
-  a turn still running when the pod's shutdown drain ends gets the
-  `turn_failed` message with no code, and the widget's retry reaches
-  another pod),
+  model provider throttled the turn, with a 429 or an error inside its
+  stream, `retryAfter` its wait in seconds; a turn past
+  `CHAT_TURN_TIMEOUT`, or still running when the pod's shutdown drain
+  ends, gets the `turn_failed` message with no code, and the widget's
+  retry, on another pod after a shutdown, resends it),
   `done {conversationId, cartId?, cartMutated, cartTokenRefused}`.
   The request is `{message, conversationId?, cartId?, cartToken?,
   turnId?, locale?, attribution?}`. `attribution` is the tab's first
