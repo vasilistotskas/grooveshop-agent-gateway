@@ -298,7 +298,9 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		attrs := []any{
 			slog.String("tenant", t.SchemaName),
 			slog.String("conversation", conv.ID),
-			slog.String("error", err.Error()),
+			// A provider error's text carries its body: capped like
+			// upstream_response.
+			slog.String("error", text.Ellipsize(err.Error(), 2048)),
 		}
 		// The status line alone is undebuggable — surface the model
 		// API's error body and the failing request shape.
@@ -318,24 +320,25 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 				slog.String("upstream_request", text.Ellipsize(
 					redactAuth(string(apierr.DumpRequest(true))), 8192)))
 		}
-		if refusal, ok := modelRefusalOf(err); ok {
-			attrs = append(attrs,
-				slog.Int("upstream_status", refusal.status),
-				slog.String("upstream_response",
-					text.Ellipsize(refusal.body, 2048)),
-			)
+		if perr, ok := providerErrorOf(err); ok {
+			attrs = append(attrs, slog.String("upstream_response",
+				text.Ellipsize(perr.body, 2048)))
+			if perr.status != 0 {
+				attrs = append(attrs,
+					slog.Int("upstream_status", perr.status))
+			}
 			// Rate limits are the one upstream failure the shopper can
 			// act on (wait) — don't present them as a generic outage.
 			// Lift which quota died out of the body so triage reads one
 			// field instead of a 2KB blob.
-			if refusal.status == http.StatusTooManyRequests {
+			if perr.status == http.StatusTooManyRequests {
 				failure = errorEvent{
 					Message:    messageFor(lang, msgRateLimited),
 					Code:       codeRateLimited,
-					RetryAfter: refusal.retryAfter(),
+					RetryAfter: perr.retryAfter(),
 				}
 				for field, re := range quotaFields {
-					if m := re.FindStringSubmatch(refusal.body); m != nil {
+					if m := re.FindStringSubmatch(perr.body); m != nil {
 						attrs = append(attrs, slog.String(field, m[1]))
 					}
 				}
@@ -418,10 +421,13 @@ func (s *Service) runTurn(
 	// The credential is the tenant's own: a request's options apply after
 	// the client's, so the shared ones can never override it.
 	apiKey := option.WithAPIKey(t.ChatAPIKey)
-	// The deadline bounds the model calls only. A tool call is never cut
-	// by it: Django may have accepted a cart change the turn would then
-	// not know of. Each Django call has its own timeout.
-	modelCtx, cancel := context.WithTimeout(ctx, s.cfg.ChatTurnTimeout)
+	// The turn's deadline bounds its model calls and when a tool call may
+	// start. A tool call already running keeps ctx and finishes under its
+	// own Django timeout: cut midway, a cart change Django accepted would
+	// go unrecorded. A turn can still fail after a cart change; saying so
+	// to the shopper is #94, and a retry with the same turnId does not
+	// add a product twice (mcpsrv.Turn).
+	turnCtx, cancel := context.WithTimeout(ctx, s.cfg.ChatTurnTimeout)
 	defer cancel()
 
 	var text strings.Builder
@@ -448,7 +454,7 @@ func (s *Service) runTurn(
 		}
 
 		stream := s.model.Chat.Completions.NewStreaming(
-			modelCtx, params, apiKey)
+			turnCtx, params, apiKey)
 		acc := openai.ChatCompletionAccumulator{}
 		// Gemini 3 models attach a per-tool-call
 		// ``extra_content.google.thought_signature`` that MUST be echoed
@@ -514,6 +520,13 @@ func (s *Service) runTurn(
 		}
 		messages = append(messages, assistant)
 		for i, tc := range msg.ToolCalls {
+			// The turn fails here, and its messages are never stored, so
+			// the tool calls left unanswered reach no later request.
+			if err := turnCtx.Err(); err != nil {
+				return "", "", false, fmt.Errorf(
+					"chat: turn ended before tool %s: %w",
+					tc.Function.Name, err)
+			}
 			// Every tool call id needs its tool message, so the excess is
 			// answered with an error rather than dropped.
 			if i >= maxToolCallsPerIteration {
@@ -594,11 +607,12 @@ var quotaFields = map[string]*regexp.Regexp{
 	"retry_hint":   regexp.MustCompile(`retry in ([0-9.]+s)`),
 }
 
-// modelRefusal is the model provider's error a turn ended on, whether it
+// providerError is the model provider's error a turn ended on, whether it
 // answered the request with one or sent one inside the stream.
-type modelRefusal struct {
-	// status is the HTTP status; inside the stream, the error's code,
-	// which carries it in OpenRouter's and Google's error shapes.
+type providerError struct {
+	// status is the HTTP status. Inside the stream it is the error's
+	// code when that is a number, quoted or not, as OpenRouter's
+	// mid-stream errors carry it; 0 for a named code ("not_found").
 	status int
 	// body is the response dump, or the stream event's data.
 	body string
@@ -606,7 +620,7 @@ type modelRefusal struct {
 	header http.Header
 }
 
-func modelRefusalOf(err error) (modelRefusal, bool) {
+func providerErrorOf(err error) (providerError, bool) {
 	if apierr, ok := errors.AsType[*openai.Error](err); ok {
 		var header http.Header
 		if apierr.Response != nil {
@@ -614,7 +628,7 @@ func modelRefusalOf(err error) (modelRefusal, bool) {
 		}
 		// RawJSON misses non-object error bodies (Gemini wraps errors in
 		// an ARRAY) — the response dump is the source of truth.
-		return modelRefusal{
+		return providerError{
 			status: apierr.StatusCode,
 			body:   string(apierr.DumpResponse(true)),
 			header: header,
@@ -627,17 +641,17 @@ func modelRefusalOf(err error) (modelRefusal, bool) {
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(serr.Event.Data, &event)
-		status, _ := strconv.Atoi(string(event.Error.Code))
-		return modelRefusal{status: status, body: string(serr.Event.Data)},
+		status, _ := strconv.Atoi(strings.Trim(string(event.Error.Code), `"`))
+		return providerError{status: status, body: string(serr.Event.Data)},
 			true
 	}
-	return modelRefusal{}, false
+	return providerError{}, false
 }
 
 // retryAfter is how long the model provider asked to wait, in whole
 // seconds rounded up: its Retry-After header, else the hint in its body
 // (Gemini's "retry in 12.3s"); 0 when it said neither.
-func (m modelRefusal) retryAfter() int {
+func (m providerError) retryAfter() int {
 	if s, err := strconv.Atoi(m.header.Get("Retry-After")); err == nil &&
 		s > 0 {
 		return s

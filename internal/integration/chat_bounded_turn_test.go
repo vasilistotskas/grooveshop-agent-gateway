@@ -4,8 +4,10 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -93,6 +95,50 @@ func TestChatStalledProviderIsCutAtTheTurnDeadline(t *testing.T) {
 	assert.Contains(t, logs.String(), "context deadline exceeded")
 	assert.NotContains(t, logs.String(), "chat turn cut by shutdown")
 	assert.NotContains(t, logs.String(), "chat turn abandoned by client")
+}
+
+// Once the turn's deadline has passed, no further tool call of the batch
+// starts: the one running finishes (a cart call is never cut midway),
+// the next does not run, and the turn ends with the retryable failure.
+func TestChatTurnDeadlineStopsTheToolCallsNotYetStarted(t *testing.T) {
+	var batch strings.Builder
+	for i, id := range []string{"call_slow", "call_next"} {
+		chunk(&batch, fmt.Sprintf(`{"role":"assistant","tool_calls":[{`+
+			`"index":%d,"id":%q,"type":"function","function":{"name":`+
+			`"add_to_cart","arguments":"{\"productId\": 1}"}}]}`, i, id), "")
+	}
+	chunk(&batch, `{}`, "tool_calls")
+	batch.WriteString("data: [DONE]\n\n")
+	fake := &fakeChatAPI{scripts: []string{batch.String()}}
+
+	var adds atomic.Int32
+	base := fakeDjangoMux(t)
+	djangoH := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/cart/item" {
+			// The first add outlasts the turn's deadline.
+			if adds.Add(1) == 1 {
+				time.Sleep(time.Second)
+			}
+		}
+		base.ServeHTTP(w, r)
+	})
+	logs := &lockedBuffer{}
+	gw, _ := newChatGateway(t, fake, djangoH,
+		slog.New(slog.NewJSONHandler(logs, nil)), func(c *config.Config) {
+			c.ChatTurnTimeout = 300 * time.Millisecond
+		})
+
+	events := postChat(t, gw.URL, map[string]any{"message": "βάλε δύο"})
+
+	assert.EqualValues(t, 1, adds.Load(), "the queued add_to_cart ran")
+	assert.Equal(t, []any{"running", "done"}, toolStatuses(events),
+		"the running add finishes")
+	failure := lastEvent(t, events, "error")
+	assert.Nil(t, failure["code"])
+	assert.Contains(t, failure["message"], "διακόπηκε")
+	assert.EqualValues(t, 1, fake.calls.Load())
+	assert.Contains(t, logs.String(), "chat: turn ended before tool "+
+		"add_to_cart: context deadline exceeded")
 }
 
 // The last iteration must answer in prose: tool calls a provider returns

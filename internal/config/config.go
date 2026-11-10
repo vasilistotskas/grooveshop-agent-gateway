@@ -126,8 +126,9 @@ type Config struct {
 	ChatMaxTokens     int
 	ChatMaxTurns      int
 	ChatMaxIterations int
-	// ChatTurnTimeout bounds a turn's model calls, counted from the
-	// turn's start; tool calls are never cut by it.
+	// ChatTurnTimeout bounds a turn's model calls and when a tool call
+	// may start, counted from the turn's start; a running tool call is
+	// never cut by it.
 	ChatTurnTimeout time.Duration
 	ChatRatePerMin  int
 	ChatRateBurst   int
