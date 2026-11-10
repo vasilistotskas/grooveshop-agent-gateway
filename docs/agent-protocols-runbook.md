@@ -104,7 +104,8 @@ docker run -d --name agent-redis-local --network $NET redis:8-alpine
 docker run -d --name agent-gateway-local --network $NET -p 127.0.0.1:18080:8080 \
   -e ENV=development -e DJANGO_BASE_URL=http://backend:8000/api/v1 -e DJANGO_PUBLIC_HOST=localhost \
   -e REDIS_URL=redis://agent-redis-local:6379/0 -e INTERNAL_EVENTS_SECRET="$SECRET" \
-  -e ASSETS_HOST=assets.localhost -e STOREFRONT_DEFAULT_LOCALE=el \
+  -e ASSETS_HOST=assets.localhost -e STAFF_CONNECT_HOST=connect.localhost \
+  -e STOREFRONT_DEFAULT_LOCALE=el \
   "gro0ve/grooveshop-agent-gateway:$(git describe --tags --abbrev=0)"
 ```
 
