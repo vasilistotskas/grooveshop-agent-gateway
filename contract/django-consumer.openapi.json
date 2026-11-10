@@ -262,6 +262,9 @@
           "currency": {
             "type": "string"
           },
+          "freeThresholdValue": {
+            "type": "number"
+          },
           "id": {
             "type": "integer"
           },
@@ -475,6 +478,7 @@
           "appliedCoupons",
           "appliedPromotions",
           "currency",
+          "freeThresholdValue",
           "id",
           "items",
           "promotionDiscount",

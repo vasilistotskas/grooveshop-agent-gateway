@@ -356,7 +356,9 @@ type CartItem struct {
 // header and auto-creates one on first GET. TotalDiscountValue is the
 // product-markdown savings already baked into item prices, while
 // PromotionDiscount is the server-evaluated promotion/coupon discount
-// still to subtract from TotalPrice.
+// still to subtract from TotalPrice. FreeThresholdValue is what Django
+// judges every "free above X" on, free shipping and a pay way's fee
+// alike: the items after PromotionDiscount, never TotalPrice.
 type Cart struct {
 	ID                    int64              `json:"id"`
 	UUID                  string             `json:"uuid"`
@@ -365,6 +367,7 @@ type Cart struct {
 	TotalVatValue         json.Number        `json:"totalVatValue"`
 	TotalDiscountValue    json.Number        `json:"totalDiscountValue"`
 	PromotionDiscount     json.Number        `json:"promotionDiscount"`
+	FreeThresholdValue    json.Number        `json:"freeThresholdValue"`
 	PromotionFreeShipping bool               `json:"promotionFreeShipping"`
 	AppliedPromotions     []AppliedPromotion `json:"appliedPromotions"`
 	AppliedCoupons        []AppliedCoupon    `json:"appliedCoupons"`

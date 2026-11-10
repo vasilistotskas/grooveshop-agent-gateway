@@ -259,7 +259,7 @@ func deliveryFee(
 	opts, err := dj.ShippingOptions(ctx, t.Domain, t.DefaultLocale, s.CartID,
 		django.ShippingQuery{
 			CountryCode:      f.CountryCode,
-			OrderValueAmount: cart.TotalPrice.String(),
+			OrderValueAmount: cart.FreeThresholdValue.String(),
 			Currency:         t.DefaultCurrency,
 			WeightGrams:      strconv.Itoa(cart.TotalWeightGrams),
 		})
@@ -278,8 +278,8 @@ func deliveryFee(
 	return 0, false
 }
 
-// paymentFee resolves the chosen pay way's fee, waived above its free
-// threshold.
+// paymentFee resolves the chosen pay way's fee, waived once the cart's
+// FreeThresholdValue reaches its free threshold.
 func paymentFee(
 	pw *django.PayWay, cart *django.Cart,
 ) (int64, bool) {
@@ -294,11 +294,11 @@ func paymentFee(
 	if err != nil {
 		return 0, false
 	}
-	cartTotal, err := money.MinorUnits(cart.TotalPrice.String())
+	value, err := money.MinorUnits(cart.FreeThresholdValue.String())
 	if err != nil {
 		return 0, false
 	}
-	if cost == 0 || (threshold > 0 && cartTotal >= threshold) {
+	if cost == 0 || (threshold > 0 && value >= threshold) {
 		return 0, false
 	}
 	return cost, true

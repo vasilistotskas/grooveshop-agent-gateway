@@ -213,7 +213,7 @@ func renderFulfillment(
 	opts, err := dj.ShippingOptions(ctx, t.Domain, t.DefaultLocale, s.CartID,
 		django.ShippingQuery{
 			CountryCode:      f.CountryCode,
-			OrderValueAmount: cart.TotalPrice.String(),
+			OrderValueAmount: cart.FreeThresholdValue.String(),
 			Currency:         t.DefaultCurrency,
 			WeightGrams:      strconv.Itoa(cart.TotalWeightGrams),
 		})

@@ -35,6 +35,7 @@ type CartOut struct {
 	RefusedCoupons     []RefusedCouponOut `json:"refusedCoupons,omitempty" jsonschema:"coupon codes attached to the cart that do not apply now, with the store's reason"`
 	FreeShipping       bool               `json:"freeShipping,omitempty" jsonschema:"a promotion grants free delivery on this cart"`
 	TotalWeightGrams   int                `json:"totalWeightGrams" jsonschema:"cart weight; pass it with cartId to get_shipping_options so options the cart is too heavy or too large for are left out"`
+	FreeThresholdValue string             `json:"freeThresholdValue" jsonschema:"what free shipping and a payment method's freeThreshold are judged on: the items after promotionDiscount, excluding shipping and fees; compare thresholds with this, never with total"`
 }
 
 // RefusedCouponOut is an attached coupon the store refuses now — its item
@@ -57,6 +58,7 @@ func (h *handlers) cartOut(
 		TotalDiscountValue: posNum(c.TotalDiscountValue),
 		FreeShipping:       c.PromotionFreeShipping,
 		TotalWeightGrams:   c.TotalWeightGrams,
+		FreeThresholdValue: num(c.FreeThresholdValue),
 	}
 	for _, coupon := range c.AppliedCoupons {
 		if coupon.Rejection != "" {
