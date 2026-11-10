@@ -271,6 +271,18 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	assistantText, cartID, cartMutated, err := s.runTurn(r, t, conv, req.Message, sse)
+	if err != nil &&
+		errors.Is(context.Cause(r.Context()), httpmw.ErrShuttingDown) {
+		// The pod is stopping: the widget offers the retry, which
+		// another pod serves.
+		s.log.InfoContext(r.Context(), "chat turn cut by shutdown",
+			slog.String("tenant", t.SchemaName),
+			slog.String("conversation", conv.ID))
+		sse.event("error", errorEvent{
+			Message: messageFor(lang, msgTurnFailed),
+		})
+		return
+	}
 	if err != nil && r.Context().Err() != nil {
 		// The shopper pressed stop or left: nobody is reading the stream,
 		// and a disconnect is not a server fault.

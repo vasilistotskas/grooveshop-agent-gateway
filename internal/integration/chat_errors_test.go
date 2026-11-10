@@ -4,8 +4,12 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 )
 
 const chatCartID = "29eb4495-e018-45e7-b59c-6646302bd4ef"
@@ -240,4 +245,40 @@ func TestChatQuotaRefusalSaysWhenToRetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Positive(t, wait)
 	assert.LessOrEqual(t, wait, 24*60*60, "the visitor's window is a day")
+}
+
+// A turn still running when the pod's shutdown drain ends is cancelled
+// as a shutdown: it ends with the turn-failed error event, in the
+// turn's language, which the widget offers to retry, not with a stream
+// cut short.
+func TestChatTurnCutByShutdownEndsWithAnErrorEvent(t *testing.T) {
+	asked := make(chan struct{})
+	var once sync.Once
+	// The body is read first: the server notices the gateway hanging up
+	// only once it reads past the body.
+	model := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		once.Do(func() { close(asked) })
+		<-r.Context().Done()
+	})
+	handler := chatGatewayHandler(t, startRedis(t), model,
+		fakeDjangoMux(t), quietLogger())
+	base, shutdown := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { shutdown(nil) })
+	gw := httptest.NewUnstartedServer(handler)
+	gw.Config.BaseContext = func(net.Listener) context.Context { return base }
+	gw.Start()
+	t.Cleanup(gw.Close)
+	go func() {
+		<-asked
+		shutdown(httpmw.ErrShuttingDown)
+	}()
+
+	events := postChat(t, gw.URL, map[string]any{"message": "γεια"})
+
+	failure := lastEvent(t, events, "error")
+	assert.Equal(t, "Η συνομιλία διακόπηκε προσωρινά — δοκίμασε ξανά.",
+		failure["message"])
+	assert.NotContains(t, failure, "code")
+	assert.Equal(t, "error", events[len(events)-1].name)
 }

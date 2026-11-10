@@ -67,7 +67,17 @@ passes.
 
 ## Architecture
 
-- `cmd/gateway` — wiring only: config → clients → mux → graceful shutdown.
+- `cmd/gateway` — wiring: config → clients → mux, then `serve`
+  (`serve.go`), the one piece of logic, tested. At SIGTERM (after the
+  Deployment's 10s preStop sleep) in-flight requests drain for 10s with
+  live contexts; then every request context is cancelled with cause
+  `httpmw.ErrShuttingDown`, and a stream gets 5s to write its last
+  event (the chat sends its `turn_failed` `error`). What is still open
+  is closed, logged at warn, and the process exits 0: 25s, inside
+  `terminationGracePeriodSeconds: 30`. `IdleTimeout` (120s) sits above
+  Traefik's 90s backend idle timeout. No `ReadTimeout`/`WriteTimeout`:
+  a read deadline that passes while a stream is open cancels it;
+  Traefik's entrypoint `readTimeout` bounds request bodies.
 - `internal/config` — env config, fail-fast `Load()`: unknown `ENV` or
   `LOG_LEVEL` values refuse to boot, and `ENV` (production | staging |
   development | test) is folded into `AllowLocalWebhooks` and
