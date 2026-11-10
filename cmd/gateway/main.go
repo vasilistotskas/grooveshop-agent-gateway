@@ -63,7 +63,7 @@ func run() error {
 	}
 	dispatcher := ucp.NewDispatcher(rdb, keys, log, consumer,
 		cfg.AllowLocalWebhooks)
-	profiles, err := ucp.NewProfileResolver(cfg.AllowLocalWebhooks)
+	profiles, err := ucp.NewProfileResolver(cfg.AllowLocalWebhooks, log)
 	if err != nil {
 		return err
 	}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/media"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -150,12 +151,18 @@ func (s *Service) Get(
 // crawler's timeout, and tying it to the first caller would cancel it
 // for every waiter and restart it from zero on the next request — a
 // feed that never lands. An abandoned sweep still fills the cache the
-// next crawler reads, and singleflight keeps it to one per tenant.
+// next crawler reads, and singleflight keeps it to one per tenant. A
+// panic is logged and returned as an error (obs.Recover): here for the
+// whole generation on the singleflight goroutine, and in
+// fetchAllProducts for pages 2..N, fetched on errgroup goroutines.
 func (s *Service) refresh(t *tenant.Tenant) <-chan singleflight.Result {
-	return s.sf.DoChan(t.SchemaName, func() (any, error) {
+	return s.sf.DoChan(t.SchemaName, func() (_ any, err error) {
 		ctx, cancel := context.WithTimeout(
 			context.Background(), generationTimeout)
 		defer cancel()
+		defer obs.Recover(ctx,
+			s.log.With(slog.String("tenant", t.SchemaName)),
+			"feeds: generation", &err)
 		return nil, s.generate(ctx, t)
 	})
 }
@@ -259,7 +266,8 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 
 	var skipped int
 	count, truncated, err := fetchAllProducts(
-		ctx, s.dj, t.Domain, t.DefaultLocale,
+		ctx, s.dj, s.log.With(slog.String("tenant", t.SchemaName)),
+		t.Domain, t.DefaultLocale,
 		func(p django.ProductFeed) error {
 			if !p.Active {
 				return nil

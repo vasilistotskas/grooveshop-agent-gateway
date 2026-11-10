@@ -96,13 +96,15 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (*Tenant, error) {
 // detached from the leader's cancellation — the first agent hanging up
 // must not fail the resolve for every healthy request waiting on it —
 // and stays bounded by the Django client's per-attempt timeout. Each
-// caller still stops waiting when its own context ends.
+// caller still stops waiting when its own context ends. A panic in fn
+// is logged and returned as an error (obs.Recover).
 func (r *Resolver) shared(
 	ctx context.Context, key string, fn func(context.Context) (any, error),
 ) (any, error) {
 	detached := context.WithoutCancel(ctx)
 	select {
-	case res := <-r.sf.DoChan(key, func() (any, error) {
+	case res := <-r.sf.DoChan(key, func() (_ any, err error) {
+		defer obs.Recover(detached, r.log, "tenant: resolve", &err)
 		return fn(detached)
 	}):
 		return res.Val, res.Err

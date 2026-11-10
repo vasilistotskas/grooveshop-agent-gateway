@@ -7,10 +7,13 @@ package feeds
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strconv"
 
 	"golang.org/x/sync/errgroup"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
 const (
@@ -26,10 +29,13 @@ const (
 
 // fetchAllProducts streams the catalog in page order through emit. Returns
 // the number of products emitted and whether the page cap truncated the
-// sweep.
+// sweep. A panic while fetching a page fails the sweep like any other
+// page error (obs.Recover): errgroup does not recover it, and on its
+// goroutine it would end the process.
 func fetchAllProducts(
 	ctx context.Context,
 	dj *django.Client,
+	log *slog.Logger,
 	host, lang string,
 	emit func(django.ProductFeed) error,
 ) (count int, truncated bool, err error) {
@@ -52,10 +58,6 @@ func fetchAllProducts(
 		totalPages = maxPages
 	}
 
-	// Every early return below cancels the producer and the in-flight
-	// fetches: the errgroup only cancels its context on a failed task or
-	// on Wait, so an emit error that returned without either would leave
-	// the producer parked on the window forever.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	g, gctx := errgroup.WithContext(ctx)
@@ -69,15 +71,23 @@ func fetchAllProducts(
 	// bounding completed-but-unconsumed pages even if emission stalls.
 	window := make(chan struct{}, emitWindow)
 
+	produced := make(chan struct{})
 	go func() {
+		defer close(produced)
 		for p := 2; p <= totalPages; p++ {
 			select {
 			case window <- struct{}{}:
 			case <-gctx.Done():
 				return
 			}
+			// select picks at random when the sweep has also ended.
+			if gctx.Err() != nil {
+				return
+			}
 			page := p
-			g.Go(func() error {
+			g.Go(func() (err error) {
+				defer obs.Recover(gctx, log,
+					"feeds: page "+strconv.Itoa(page), &err)
 				res, err := dj.ListProductsPage(gctx, host, lang, page, pageSize)
 				if err != nil {
 					return fmt.Errorf("feeds: page %d: %w", page, err)
@@ -87,27 +97,33 @@ func fetchAllProducts(
 			})
 		}
 	}()
+	// stop ends the sweep on every return. The producer must be done
+	// before Wait (a g.Go racing Wait panics the WaitGroup), and the
+	// fetches after it, so that no goroutine outlives the sweep.
+	stop := func() error {
+		cancel()
+		<-produced
+		return g.Wait()
+	}
 
 	for p := 2; p <= totalPages; p++ {
 		select {
 		case products := <-slots[p]:
 			for _, prod := range products {
 				if err := emit(prod); err != nil {
+					_ = stop()
 					return count, truncated, err
 				}
 				count++
 			}
 			<-window
 		case <-gctx.Done():
-			// A fetch failed: surface the group's error.
-			if err := g.Wait(); err != nil {
+			// A fetch failed or the caller's context ended: surface why.
+			if err := stop(); err != nil {
 				return count, truncated, err
 			}
 			return count, truncated, gctx.Err()
 		}
 	}
-	if err := g.Wait(); err != nil {
-		return count, truncated, err
-	}
-	return count, truncated, nil
+	return count, truncated, stop()
 }
