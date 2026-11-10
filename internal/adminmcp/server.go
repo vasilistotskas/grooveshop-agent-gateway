@@ -229,13 +229,8 @@ func add[In, Out any](
 				outcome = te.Code
 			}
 		}
-		schema := ""
-		if t, ok := tenant.FromContext(ctx); ok {
-			schema = t.SchemaName
-		}
 		log.InfoContext(ctx, "staff tool call",
 			slog.String("tool", def.Name),
-			slog.String("tenant", schema),
 			slog.String("outcome", outcome),
 			slog.Int64("duration_ms", time.Since(start).Milliseconds()))
 		return res, out, err

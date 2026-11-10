@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -136,7 +135,7 @@ func addDjango(
 			_, _ = w.Write([]byte(`{"detail": "busy", "code": "error"}`))
 		}))
 	t.Cleanup(srv.Close)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.DiscardHandler)
 	h := &handlers{deps: Deps{Site: testSite, Django: django.New(srv.URL+"/api/v1",
 		"api.example.test", "secret", 5*time.Second, log, nil)}}
 	return h, &keys, &bodies

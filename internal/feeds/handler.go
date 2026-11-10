@@ -27,7 +27,6 @@ func (s *Service) Handler(kind string) http.Handler {
 		gz, meta, err := s.Get(r.Context(), t, kind)
 		if err != nil {
 			s.log.ErrorContext(r.Context(), "feed generation failed",
-				slog.String("tenant", t.SchemaName),
 				slog.String("kind", kind),
 				slog.String("error", err.Error()),
 			)

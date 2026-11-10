@@ -2,7 +2,6 @@ package mcpsrv
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -44,7 +43,7 @@ func cartHandlers(
 			_, _ = w.Write([]byte(`{"detail": "refused"}`))
 		}))
 	t.Cleanup(srv.Close)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.DiscardHandler)
 	return &handlers{deps: Deps{Site: testSite, Django: django.New(srv.URL+"/api/v1",
 		"api.example.test", "secret", 5*time.Second, log, nil)}}, &seen
 }
@@ -146,7 +145,7 @@ func cartRoutes(
 			}
 		}))
 	t.Cleanup(srv.Close)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.DiscardHandler)
 	return &handlers{deps: Deps{Site: testSite, Django: django.New(srv.URL+"/api/v1",
 		"api.example.test", "secret", 5*time.Second, log, nil)}}
 }

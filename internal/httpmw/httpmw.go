@@ -3,12 +3,10 @@
 package httpmw
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
-	"sync"
 )
 
 // ErrShuttingDown is the cause (context.Cause) of a request context the
@@ -16,41 +14,6 @@ import (
 // tells it from a client that left, and ends its stream with a final
 // event.
 var ErrShuttingDown = errors.New("server shutting down")
-
-type ctxKeyRequestID struct{}
-
-// RequestIDFromContext returns the request id set by RequestID.
-func RequestIDFromContext(ctx context.Context) string {
-	id, _ := ctx.Value(ctxKeyRequestID{}).(string)
-	return id
-}
-
-// Extras is a mutable per-request holder that inner handlers fill and the
-// access-log middleware reads after the handler returns. It exists because
-// tenant resolution happens inside routing, after Logging has already
-// captured its request copy — a plain context value set there would be
-// invisible to the outer middleware.
-type Extras struct {
-	mu     sync.Mutex
-	tenant string
-}
-
-type ctxKeyExtras struct{}
-
-// SetTenant records the resolved tenant schema for the access log.
-func SetTenant(ctx context.Context, schema string) {
-	if e, ok := ctx.Value(ctxKeyExtras{}).(*Extras); ok {
-		e.mu.Lock()
-		e.tenant = schema
-		e.mu.Unlock()
-	}
-}
-
-func (e *Extras) getTenant() string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.tenant
-}
 
 // WriteJSONError writes the gateway's uniform `{"error": msg}` body. Every
 // surface that is not bound to a protocol error shape (ACP has its own)
@@ -72,22 +35,38 @@ func BearerToken(r *http.Request) (token string, ok bool) {
 	return strings.TrimSpace(rest), true
 }
 
-// statusWriter records the response status for logging and metrics.
+// statusWriter records the response status for logging and metrics: the
+// first final status sent. net/http ignores a later WriteHeader (a 500
+// after a stream began), and so does the record.
 type statusWriter struct {
 	http.ResponseWriter
 	status int
 }
 
 func (w *statusWriter) WriteHeader(code int) {
-	w.status = code
+	// 1xx informational responses precede the final status.
+	if w.status == 0 && code >= http.StatusOK {
+		w.status = code
+	}
 	w.ResponseWriter.WriteHeader(code)
 }
 
 func (w *statusWriter) Write(b []byte) (int, error) {
+	w.sent()
+	return w.ResponseWriter.Write(b)
+}
+
+// sent records net/http's implicit 200, which the first write or flush
+// sends.
+func (w *statusWriter) sent() {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	return w.ResponseWriter.Write(b)
+}
+
+// started reports whether a status has been sent.
+func (w *statusWriter) started() bool {
+	return w.status != 0
 }
 
 // Status is the code the client received: a handler that returned without
@@ -103,6 +82,7 @@ func (w *statusWriter) Status() int {
 // middleware chain.
 func (w *statusWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		w.sent()
 		f.Flush()
 	}
 }

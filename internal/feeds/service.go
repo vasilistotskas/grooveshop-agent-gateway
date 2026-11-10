@@ -161,7 +161,7 @@ func (s *Service) refresh(t *tenant.Tenant) <-chan singleflight.Result {
 			context.Background(), generationTimeout)
 		defer cancel()
 		defer obs.Recover(ctx,
-			s.log.With(slog.String("tenant", t.SchemaName)),
+			s.log.With(slog.String(obs.KeyTenant, t.SchemaName)),
 			"feeds: generation", &err)
 		return nil, s.generate(ctx, t)
 	})
@@ -266,7 +266,7 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 
 	var skipped int
 	count, truncated, err := fetchAllProducts(
-		ctx, s.dj, s.log.With(slog.String("tenant", t.SchemaName)),
+		ctx, s.dj, s.log.With(slog.String(obs.KeyTenant, t.SchemaName)),
 		t.Domain, t.DefaultLocale,
 		func(p django.ProductFeed) error {
 			if !p.Active {
@@ -288,8 +288,9 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 		return err
 	}
 	if truncated {
-		s.log.Warn("feed catalog sweep hit the page cap — feed truncated",
-			slog.String("tenant", t.SchemaName),
+		s.log.WarnContext(ctx,
+			"feed catalog sweep hit the page cap — feed truncated",
+			slog.String(obs.KeyTenant, t.SchemaName),
 			slog.Int("pages", maxPages))
 	}
 
@@ -315,8 +316,8 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 		return err
 	}
 
-	s.log.Info("feeds generated",
-		slog.String("tenant", t.SchemaName),
+	s.log.InfoContext(ctx, "feeds generated",
+		slog.String(obs.KeyTenant, t.SchemaName),
 		slog.Int("products", count),
 		slog.Int("skipped_no_name_or_image", skipped),
 		slog.Bool("overtaken_by_invalidation", overtaken),

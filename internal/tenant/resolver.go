@@ -157,7 +157,7 @@ func (r *Resolver) resolveSlow(ctx context.Context, domain string) (*Tenant, err
 			})
 			r.count("stale")
 			r.log.WarnContext(ctx, "serving stale tenant config",
-				slog.String("tenant", stale.SchemaName),
+				slog.String(obs.KeyTenant, stale.SchemaName),
 				slog.String("host", domain),
 				slog.String("error", err.Error()),
 			)

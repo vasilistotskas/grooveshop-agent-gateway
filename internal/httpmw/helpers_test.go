@@ -57,6 +57,28 @@ func TestStatusWriterDefaultsToOK(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, sw.Status())
 }
 
+// The status recorded is the one the client received: the first final
+// one. A later WriteHeader, which net/http ignores, does not replace it,
+// and a write or a flush sends the implicit 200.
+func TestStatusWriterKeepsTheFirstStatus(t *testing.T) {
+	for name, start := range map[string]func(*statusWriter){
+		"header": func(sw *statusWriter) { sw.WriteHeader(http.StatusOK) },
+		"write":  func(sw *statusWriter) { _, _ = sw.Write([]byte("x")) },
+		"flush":  func(sw *statusWriter) { sw.Flush() },
+		"after an informational status": func(sw *statusWriter) {
+			sw.WriteHeader(http.StatusEarlyHints)
+			sw.WriteHeader(http.StatusOK)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sw := wrap(httptest.NewRecorder())
+			start(sw)
+			sw.WriteHeader(http.StatusInternalServerError)
+			assert.Equal(t, http.StatusOK, sw.Status())
+		})
+	}
+}
+
 // http.ResponseController reaches the underlying writer through Unwrap,
 // so flushing (SSE) and deadlines keep working behind the chain.
 func TestStatusWriterUnwrapsForResponseController(t *testing.T) {

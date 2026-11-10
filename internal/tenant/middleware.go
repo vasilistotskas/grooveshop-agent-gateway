@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
 // Middleware resolves the request's tenant from the real Host header and
@@ -62,7 +63,7 @@ func middleware(
 				}
 				t = full
 			}
-			httpmw.SetTenant(req.Context(), t.SchemaName)
+			obs.SetTenant(req.Context(), t.SchemaName)
 			next.ServeHTTP(w, req.WithContext(NewContext(req.Context(), t)))
 		})
 	}

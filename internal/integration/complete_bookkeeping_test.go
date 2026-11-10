@@ -423,10 +423,12 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 				return err == nil && held == 0
 			}, 10*time.Second, 20*time.Millisecond)
 			// The order was not read back for a caller that had gone,
-			// and the log says which order went unanswered.
-			assert.Contains(t,
-				stack.logs.with("order placed", "session="+id),
-				"order="+fixtureOrderUUID)
+			// and the log says which order went unanswered, under the
+			// request and store it was placed for.
+			placed := stack.logs.with("order placed", "session="+id)
+			assert.Contains(t, placed, "order="+fixtureOrderUUID)
+			assert.Contains(t, placed, "request_id=")
+			assert.Contains(t, placed, "tenant=demostore")
 
 			assert.Equal(t, "completed",
 				surface.complete(context.Background(), id, key, nil),

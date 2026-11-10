@@ -145,11 +145,32 @@ passes.
   The gateway decides and mints nothing here: Django believes the
   address only beside a correct `X-Origin-Verify` (`core/client_ip.py`),
   and the inbound `X-Real-Ip` (Traefik's own peer) is never relayed.
-- `internal/httpmw` — recover, request-id, access log, RED metrics, per-IP
-  rate limit. Metrics wraps the mux directly so `r.Pattern` is populated;
-  tenant middleware runs *inside* routing (per route group), and enriches
-  the access log via `httpmw.SetTenant` (the `Extras` holder).
+  Every call made with a request's context (`Client.do`) also sends its
+  request id as `X-Correlation-ID`, the id Django logs the call under
+  (`core/middleware/correlation_id.py`).
+- `internal/httpmw` — request-id, access log, rate limit, RED metrics,
+  recover, outermost first (`server.withGlobalChain`). Recover wraps the
+  mux directly, so a handler panic is logged and still gets its access
+  line and metric: a 500, or the status already sent if the response
+  had begun (the status writer keeps the first one). A panic in the
+  middleware itself is outside it: net/http recovers it, drops the
+  connection and logs it at error through the gateway's logger
+  (`Server.ErrorLog` in `serve.go`), with no access line or metric.
+  `http.ErrAbortHandler` is passed on to net/http, which aborts the
+  response silently. Metrics sits right around Recover and sees the
+  `r.Pattern` the mux sets. An inbound `X-Request-Id` keeps its visible
+  ASCII only, trimmed and cut to 64 bytes (the 64 characters Django keeps
+  of `X-Correlation-ID`), else one is minted.
 - `internal/obs` — slog JSON to stdout, Prometheus registry, health.
+  The logger's context handler adds `request_id` and `tenant` to every
+  line logged with a request's context (`obs.WithRequestID`; the tenant
+  slot the access log installs and the tenant middleware fills with
+  `obs.SetTenant`, as do the `/internal/*` routes from their body). A
+  context detached with `context.WithoutCancel` keeps both, so work
+  that outlives its caller and `obs.Recover` still name the request. Log
+  with the context whenever one is in scope (sloglint enforces it); a
+  line naming a store uses the key `tenant` (`obs.KeyTenant`), never
+  `schema`, and only where no request context carries it.
   `/healthz` is process-only; `/readyz` gates on Redis ONLY — Django-down
   must never flip readiness (agents get actionable errors, not 502s).
 - `internal/server` — mux assembly; new route groups register here.

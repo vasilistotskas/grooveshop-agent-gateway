@@ -380,7 +380,7 @@ func startUCPGatewayBehind(
 	rdb := startRedis(t)
 
 	logs := new(logLines)
-	log := slog.New(slog.NewTextHandler(logs, nil))
+	log := slog.New(obs.NewContextHandler(slog.NewTextHandler(logs, nil)))
 	metrics := obs.NewMetrics()
 	cfg := config.Config{
 		Env: config.EnvTest,

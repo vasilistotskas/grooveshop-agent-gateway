@@ -65,13 +65,18 @@ func serve(
 		ReadTimeout:       t.read,
 		IdleTimeout:       idleTimeout,
 		BaseContext:       func(net.Listener) context.Context { return base },
+		// net/http's own lines (a panic in the middleware outside
+		// httpmw.Recover, an accept failure) go through the gateway's
+		// handler, as JSON like every other line.
+		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelError),
 		// No WriteTimeout: it is a deadline on every write of the
 		// response, so it would cut SSE (chat) and streamable MCP.
 	}
 
 	served := make(chan error, 1)
 	go func() {
-		log.Info("listening", slog.String("addr", ln.Addr().String()))
+		log.InfoContext(ctx, "listening",
+			slog.String("addr", ln.Addr().String()))
 		served <- srv.Serve(ln)
 	}()
 	select {
@@ -80,7 +85,7 @@ func serve(
 	case <-ctx.Done():
 	}
 
-	log.Info("shutting down")
+	log.InfoContext(ctx, "shutting down")
 	shutdownCtx, cancel := context.WithTimeout(
 		context.Background(), t.drain+t.final,
 	)
@@ -93,7 +98,8 @@ func serve(
 	if !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	log.Warn("closing requests still open after the shutdown window",
+	log.WarnContext(ctx,
+		"closing requests still open after the shutdown window",
 		slog.Duration("window", t.drain+t.final))
 	return srv.Close()
 }

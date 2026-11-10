@@ -249,8 +249,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if retryAfter > 0 {
-		s.log.InfoContext(r.Context(), "chat turn refused by quota",
-			slog.String("tenant", t.SchemaName))
+		s.log.InfoContext(r.Context(), "chat turn refused by quota")
 		w.Header().Set("Retry-After", strconv.Itoa(seconds(retryAfter)))
 		fail(http.StatusTooManyRequests, msgRateLimited)
 		return
@@ -279,7 +278,6 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		// The pod is stopping: the widget offers the retry, which
 		// another pod serves.
 		s.log.InfoContext(r.Context(), "chat turn cut by shutdown",
-			slog.String("tenant", t.SchemaName),
 			slog.String("conversation", conv.ID))
 		sse.event("error", errorEvent{
 			Message: messageFor(lang, msgTurnFailed),
@@ -290,13 +288,11 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		// The shopper pressed stop or left: nobody is reading the stream,
 		// and a disconnect is not a server fault.
 		s.log.InfoContext(r.Context(), "chat turn abandoned by client",
-			slog.String("tenant", t.SchemaName),
 			slog.String("conversation", conv.ID))
 		return
 	}
 	if err != nil {
 		attrs := []any{
-			slog.String("tenant", t.SchemaName),
 			slog.String("conversation", conv.ID),
 			// A provider error's text carries its body: capped like
 			// upstream_response.

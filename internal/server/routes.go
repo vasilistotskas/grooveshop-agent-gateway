@@ -206,21 +206,30 @@ func New(d Deps) http.Handler {
 		tenantSecretsMW(tenant.RequireAgentCommerce(
 			chatLimiter.Middleware()(chatSvc.Handler()))))
 
-	// Global chain, outermost first. Metrics sits directly around the mux so
-	// r.Pattern (set during routing) is visible when it records.
 	limiter := httpmw.NewRateLimiter(
 		d.Cfg.RateLimitPerMin, d.Cfg.RateLimitBurst, d.Metrics,
 	)
-	var h http.Handler = mux
-	h = httpmw.Metrics(d.Metrics)(h)
+	return withGlobalChain(mux, d.Log, d.Metrics, limiter)
+}
+
+// withGlobalChain wraps the mux in the middleware every route shares,
+// built from the mux outwards.
+func withGlobalChain(
+	mux http.Handler, log *slog.Logger, metrics *obs.Metrics,
+	limiter *httpmw.RateLimiter,
+) http.Handler {
+	// Recover is innermost, so a handler panic reaches Metrics and
+	// Logging as a 500 and its line carries the request id and tenant.
+	// It hands the mux the request it got, and Metrics, directly around
+	// it, sees r.Pattern, which the mux sets during routing.
+	h := httpmw.Recover(log)(mux)
+	h = httpmw.Metrics(metrics)(h)
 	// Outside Metrics: it hands the mux a new request, whose r.Pattern
 	// Metrics would not see.
 	h = django.RelayCaller(h)
 	h = exceptInternal(limiter.Middleware(), h)
-	h = httpmw.Logging(d.Log)(h)
-	h = httpmw.RequestID()(h)
-	h = httpmw.Recover(d.Log)(h)
-	return h
+	h = httpmw.Logging(log)(h)
+	return httpmw.RequestID()(h)
 }
 
 // exceptInternal applies mw to every route but /internal/*. Those are
