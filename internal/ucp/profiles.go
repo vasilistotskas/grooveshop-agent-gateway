@@ -117,8 +117,9 @@ func NewProfileResolver(
 }
 
 // Resolve returns the validated profile at raw. Every failure is a
-// *DiscoveryError, except ErrDiscoveryBusy and the caller's own context
-// ending.
+// *DiscoveryError, except ErrDiscoveryBusy, the caller's own context
+// ending, and a panic in the fetch, recovered as "ucp: profile fetch:
+// panicked" (obs.Recover).
 func (r *ProfileResolver) Resolve(
 	ctx context.Context, raw string,
 ) (*PlatformProfile, error) {

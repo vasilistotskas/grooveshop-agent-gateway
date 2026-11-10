@@ -7,10 +7,13 @@ package feeds
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strconv"
 
 	"golang.org/x/sync/errgroup"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
 const (
@@ -26,10 +29,13 @@ const (
 
 // fetchAllProducts streams the catalog in page order through emit. Returns
 // the number of products emitted and whether the page cap truncated the
-// sweep.
+// sweep. A panic while fetching a page fails the sweep like any other
+// page error (obs.Recover): errgroup does not recover it, and on its
+// goroutine it would end the process.
 func fetchAllProducts(
 	ctx context.Context,
 	dj *django.Client,
+	log *slog.Logger,
 	host, lang string,
 	emit func(django.ProductFeed) error,
 ) (count int, truncated bool, err error) {
@@ -79,7 +85,9 @@ func fetchAllProducts(
 				return
 			}
 			page := p
-			g.Go(func() error {
+			g.Go(func() (err error) {
+				defer obs.Recover(gctx, log,
+					"feeds: page "+strconv.Itoa(page), &err)
 				res, err := dj.ListProductsPage(gctx, host, lang, page, pageSize)
 				if err != nil {
 					return fmt.Errorf("feeds: page %d: %w", page, err)
@@ -110,7 +118,7 @@ func fetchAllProducts(
 			}
 			<-window
 		case <-gctx.Done():
-			// A fetch failed: surface the group's error.
+			// A fetch failed or the caller's context ended: surface why.
 			if err := stop(); err != nil {
 				return count, truncated, err
 			}

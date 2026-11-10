@@ -152,7 +152,9 @@ func (s *Service) Get(
 // for every waiter and restart it from zero on the next request — a
 // feed that never lands. An abandoned sweep still fills the cache the
 // next crawler reads, and singleflight keeps it to one per tenant. A
-// panic in the sweep is logged and returned as an error (obs.Recover).
+// panic is logged and returned as an error (obs.Recover): here for the
+// whole generation on the singleflight goroutine, and in
+// fetchAllProducts for pages 2..N, fetched on errgroup goroutines.
 func (s *Service) refresh(t *tenant.Tenant) <-chan singleflight.Result {
 	return s.sf.DoChan(t.SchemaName, func() (_ any, err error) {
 		ctx, cancel := context.WithTimeout(
@@ -264,7 +266,8 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 
 	var skipped int
 	count, truncated, err := fetchAllProducts(
-		ctx, s.dj, t.Domain, t.DefaultLocale,
+		ctx, s.dj, s.log.With(slog.String("tenant", t.SchemaName)),
+		t.Domain, t.DefaultLocale,
 		func(p django.ProductFeed) error {
 			if !p.Active {
 				return nil
