@@ -2,11 +2,35 @@ package adminmcp
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
 )
+
+// amount renders an amount Django sent as a JSON number as the
+// two-place decimal string a tool answers with ("12.5" → "12.50").
+// Django's amounts all carry two places; one that does not parse is
+// passed on as sent.
+func amount(n json.Number) string {
+	minor, err := money.MinorUnits(n.String())
+	if err != nil {
+		return n.String()
+	}
+	return money.Format(minor)
+}
+
+// ratio renders a figure Django leaves null when it has no base to
+// divide by (a margin on no revenue): nil then, the amount otherwise.
+func ratio(n json.Number) *string {
+	if n == "" {
+		return nil
+	}
+	out := amount(n)
+	return &out
+}
 
 type WhoamiOut struct {
 	Email     string              `json:"email"`
@@ -73,7 +97,7 @@ func orderOf(o django.StaffOrder) Order {
 		ShippedAt:     o.ShippedAt,
 		CustomerName:  untrusted("customer", o.CustomerName),
 		CustomerEmail: o.CustomerEmail,
-		Total:         o.Total,
+		Total:         amount(o.Total),
 		Currency:      o.Currency,
 	}
 }
@@ -116,16 +140,26 @@ type GetOrderIn struct {
 // note) marked untrusted.
 type OrderDetail struct {
 	Order
-	ItemsTotal      string                  `json:"itemsTotal"`
-	Shipping        string                  `json:"shipping"`
-	PaymentFee      string                  `json:"paymentFee"`
-	Discount        string                  `json:"discount"`
-	ShippingCarrier string                  `json:"shippingCarrier"`
-	TrackingNumber  string                  `json:"trackingNumber"`
-	City            *Untrusted              `json:"city,omitempty"`
-	Country         *string                 `json:"country"`
-	CustomerNote    *Untrusted              `json:"customerNote,omitempty"`
-	Lines           []django.StaffOrderLine `json:"lines"`
+	ItemsTotal      string      `json:"itemsTotal"`
+	Shipping        string      `json:"shipping"`
+	PaymentFee      string      `json:"paymentFee"`
+	Discount        string      `json:"discount"`
+	ShippingCarrier string      `json:"shippingCarrier"`
+	TrackingNumber  string      `json:"trackingNumber"`
+	City            *Untrusted  `json:"city,omitempty"`
+	Country         *string     `json:"country"`
+	CustomerNote    *Untrusted  `json:"customerNote,omitempty"`
+	Lines           []OrderLine `json:"lines"`
+}
+
+// OrderLine is one line of an order.
+type OrderLine struct {
+	ProductID *int64 `json:"productId"`
+	Name      string `json:"name"`
+	SKU       string `json:"sku"`
+	Quantity  int64  `json:"quantity"`
+	UnitPrice string `json:"unitPrice"`
+	LineTotal string `json:"lineTotal"`
 }
 
 func (h *handlers) getOrder(
@@ -141,18 +175,29 @@ func (h *handlers) getOrder(
 		return nil, OrderDetail{}, upstreamErr(err,
 			"no order with that id in this store; find it with list_orders")
 	}
+	lines := make([]OrderLine, 0, len(o.Lines))
+	for _, l := range o.Lines {
+		lines = append(lines, OrderLine{
+			ProductID: l.ProductID,
+			Name:      l.Name,
+			SKU:       l.SKU,
+			Quantity:  l.Quantity,
+			UnitPrice: amount(l.UnitPrice),
+			LineTotal: amount(l.LineTotal),
+		})
+	}
 	return nil, OrderDetail{
 		Order:           orderOf(o.StaffOrder),
-		ItemsTotal:      o.ItemsTotal,
-		Shipping:        o.Shipping,
-		PaymentFee:      o.PaymentFee,
-		Discount:        o.Discount,
+		ItemsTotal:      amount(o.ItemsTotal),
+		Shipping:        amount(o.Shipping),
+		PaymentFee:      amount(o.PaymentFee),
+		Discount:        amount(o.Discount),
 		ShippingCarrier: o.ShippingCarrier,
 		TrackingNumber:  o.TrackingNumber,
 		City:            untrusted("customer", o.City),
 		Country:         o.Country,
 		CustomerNote:    untrusted("customer", o.CustomerNotes),
-		Lines:           o.Lines,
+		Lines:           lines,
 	}, nil
 }
 
@@ -168,34 +213,135 @@ func (in ReportIn) query() django.StaffReportQuery {
 	}
 }
 
+// SalesRow is the takings of one period, or of the whole range.
+type SalesRow struct {
+	Period             *string `json:"period"`
+	Orders             int64   `json:"orders"`
+	Units              int64   `json:"units"`
+	SalesNet           string  `json:"salesNet"`
+	SalesGross         string  `json:"salesGross"`
+	ReturnsNet         string  `json:"returnsNet"`
+	Turnover           string  `json:"turnover"`
+	VAT                string  `json:"vat"`
+	AverageOrderValue  string  `json:"averageOrderValue"`
+	AwaitingCollection string  `json:"awaitingCollection"`
+}
+
+func salesRowOf(r django.StaffSalesRow) SalesRow {
+	return SalesRow{
+		Period:             r.Period,
+		Orders:             r.Orders,
+		Units:              r.Units,
+		SalesNet:           amount(r.SalesNet),
+		SalesGross:         amount(r.SalesGross),
+		ReturnsNet:         amount(r.ReturnsNet),
+		Turnover:           amount(r.Turnover),
+		VAT:                amount(r.VAT),
+		AverageOrderValue:  amount(r.AverageOrderValue),
+		AwaitingCollection: amount(r.AwaitingCollection),
+	}
+}
+
+type SalesReport struct {
+	Start    string     `json:"start"`
+	End      string     `json:"end"`
+	Bucket   *string    `json:"bucket"`
+	Currency string     `json:"currency"`
+	Rows     []SalesRow `json:"rows"`
+	Total    SalesRow   `json:"total"`
+}
+
 func (h *handlers) salesReport(
 	ctx context.Context, _ *mcp.CallToolRequest, in ReportIn,
-) (*mcp.CallToolResult, django.StaffSalesReport, error) {
+) (*mcp.CallToolResult, SalesReport, error) {
 	t, lang, staff, err := h.call(ctx, ScopeSales)
 	if err != nil {
-		return nil, django.StaffSalesReport{}, err
+		return nil, SalesReport{}, err
 	}
 	report, err := h.deps.Django.StaffSales(ctx, t.Domain, lang,
 		staff.Bearer, in.query())
 	if err != nil {
-		return nil, django.StaffSalesReport{}, upstreamErr(err, "no report")
+		return nil, SalesReport{}, upstreamErr(err, "no report")
 	}
-	return nil, *report, nil
+	out := SalesReport{
+		Start:    report.Start,
+		End:      report.End,
+		Bucket:   report.Bucket,
+		Currency: report.Currency,
+		Rows:     make([]SalesRow, 0, len(report.Rows)),
+		Total:    salesRowOf(report.Total),
+	}
+	for _, r := range report.Rows {
+		out.Rows = append(out.Rows, salesRowOf(r))
+	}
+	return nil, out, nil
+}
+
+// ProfitRow is the profit of one period, or of the whole range. A
+// margin or coverage with nothing to divide by is null.
+type ProfitRow struct {
+	Period          *string `json:"period"`
+	Revenue         string  `json:"revenue"`
+	COGS            string  `json:"cogs"`
+	GrossProfit     string  `json:"grossProfit"`
+	GrossMargin     *string `json:"grossMargin"`
+	PaymentFees     string  `json:"paymentFees"`
+	DeliveryCosts   string  `json:"deliveryCosts"`
+	OtherExpenses   string  `json:"otherExpenses"`
+	OperatingProfit string  `json:"operatingProfit"`
+	CostCoverage    *string `json:"costCoverage"`
+	FeeCoverage     *string `json:"feeCoverage"`
+}
+
+func profitRowOf(r django.StaffProfitRow) ProfitRow {
+	return ProfitRow{
+		Period:          r.Period,
+		Revenue:         amount(r.Revenue),
+		COGS:            amount(r.COGS),
+		GrossProfit:     amount(r.GrossProfit),
+		GrossMargin:     ratio(r.GrossMargin),
+		PaymentFees:     amount(r.PaymentFees),
+		DeliveryCosts:   amount(r.DeliveryCosts),
+		OtherExpenses:   amount(r.OtherExpenses),
+		OperatingProfit: amount(r.OperatingProfit),
+		CostCoverage:    ratio(r.CostCoverage),
+		FeeCoverage:     ratio(r.FeeCoverage),
+	}
+}
+
+type ProfitReport struct {
+	Start    string      `json:"start"`
+	End      string      `json:"end"`
+	Bucket   *string     `json:"bucket"`
+	Currency string      `json:"currency"`
+	Rows     []ProfitRow `json:"rows"`
+	Total    ProfitRow   `json:"total"`
 }
 
 func (h *handlers) profitReport(
 	ctx context.Context, _ *mcp.CallToolRequest, in ReportIn,
-) (*mcp.CallToolResult, django.StaffProfitReport, error) {
+) (*mcp.CallToolResult, ProfitReport, error) {
 	t, lang, staff, err := h.call(ctx, ScopeProfit)
 	if err != nil {
-		return nil, django.StaffProfitReport{}, err
+		return nil, ProfitReport{}, err
 	}
 	report, err := h.deps.Django.StaffProfit(ctx, t.Domain, lang,
 		staff.Bearer, in.query())
 	if err != nil {
-		return nil, django.StaffProfitReport{}, upstreamErr(err, "no report")
+		return nil, ProfitReport{}, upstreamErr(err, "no report")
 	}
-	return nil, *report, nil
+	out := ProfitReport{
+		Start:    report.Start,
+		End:      report.End,
+		Bucket:   report.Bucket,
+		Currency: report.Currency,
+		Rows:     make([]ProfitRow, 0, len(report.Rows)),
+		Total:    profitRowOf(report.Total),
+	}
+	for _, r := range report.Rows {
+		out.Rows = append(out.Rows, profitRowOf(r))
+	}
+	return nil, out, nil
 }
 
 type ListProductsIn struct {
@@ -204,8 +350,22 @@ type ListProductsIn struct {
 	Limit    int    `json:"limit,omitempty" jsonschema:"how many, capped by the store"`
 }
 
+// Product is a product row with its prices and stock.
+type Product struct {
+	ID                int64  `json:"id"`
+	Name              string `json:"name"`
+	SKU               string `json:"sku"`
+	Price             string `json:"price"`
+	FinalPrice        string `json:"finalPrice"`
+	Currency          string `json:"currency"`
+	Stock             int64  `json:"stock"`
+	LowStockThreshold int64  `json:"lowStockThreshold"`
+	LowStock          bool   `json:"lowStock"`
+	Published         bool   `json:"published"`
+}
+
 type ListProductsOut struct {
-	Products []django.StaffProduct `json:"products"`
+	Products []Product `json:"products"`
 }
 
 func (h *handlers) listProducts(
@@ -220,10 +380,22 @@ func (h *handlers) listProducts(
 	if err != nil {
 		return nil, ListProductsOut{}, upstreamErr(err, "no products found")
 	}
-	if products == nil {
-		products = []django.StaffProduct{}
+	out := ListProductsOut{Products: make([]Product, 0, len(products))}
+	for _, p := range products {
+		out.Products = append(out.Products, Product{
+			ID:                p.ID,
+			Name:              p.Name,
+			SKU:               p.SKU,
+			Price:             amount(p.Price),
+			FinalPrice:        amount(p.FinalPrice),
+			Currency:          p.Currency,
+			Stock:             p.Stock,
+			LowStockThreshold: p.LowStockThreshold,
+			LowStock:          p.LowStock,
+			Published:         p.Published,
+		})
 	}
-	return nil, ListProductsOut{Products: products}, nil
+	return nil, out, nil
 }
 
 type SearchIn struct {

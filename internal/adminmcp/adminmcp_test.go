@@ -105,6 +105,18 @@ func (f *fakeDjango) serve(t *testing.T) *django.Client {
 					`"message":"Hello"}]`))
 			case "orders":
 				_, _ = w.Write([]byte(`[]`))
+			case "products":
+				// Django sends amounts as JSON numbers.
+				_, _ = w.Write([]byte(`[{"id":4,"name":"Mug","sku":"M1",` +
+					`"price":12.5,"finalPrice":9,"currency":"EUR","stock":3,` +
+					`"lowStockThreshold":5,"lowStock":true,"published":true}]`))
+			case "profit":
+				_, _ = w.Write([]byte(`{"start":"2026-10-01","end":"2026-10-31",` +
+					`"bucket":null,"currency":"EUR","rows":[],"total":{` +
+					`"period":null,"revenue":0,"cogs":0,"grossProfit":0,` +
+					`"grossMargin":null,"paymentFees":1.2,"deliveryCosts":0,` +
+					`"otherExpenses":0,"operatingProfit":-1.2,` +
+					`"costCoverage":null,"feeCoverage":100}}`))
 			default:
 				w.WriteHeader(http.StatusNotFound)
 			}
@@ -132,14 +144,14 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(r)
 }
 
-func connect(t *testing.T, h http.Handler, token string) *mcp.ClientSession {
+func connect(t *testing.T, h http.Handler) *mcp.ClientSession {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).
 		Connect(context.Background(), &mcp.StreamableClientTransport{
 			Endpoint:   srv.URL + Path,
-			HTTPClient: &http.Client{Transport: bearer{token}},
+			HTTPClient: &http.Client{Transport: bearer{goodToken}},
 		}, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
@@ -194,7 +206,7 @@ func TestAnInvalidTokenIsChallengedAndTheVerdictCachedPerStore(t *testing.T) {
 
 func TestEveryToolOnlyReads(t *testing.T) {
 	f := &fakeDjango{granted: ReadScopes}
-	session := connect(t, stack(f.serve(t), acme()), goodToken)
+	session := connect(t, stack(f.serve(t), acme()))
 
 	listed, err := session.ListTools(context.Background(), nil)
 	require.NoError(t, err)
@@ -217,7 +229,7 @@ func TestEveryToolOnlyReads(t *testing.T) {
 
 func TestCustomerTextComesBackMarkedUntrusted(t *testing.T) {
 	f := &fakeDjango{granted: ReadScopes}
-	session := connect(t, stack(f.serve(t), acme()), goodToken)
+	session := connect(t, stack(f.serve(t), acme()))
 
 	res, err := session.CallTool(context.Background(),
 		&mcp.CallToolParams{Name: "list_reviews"})
@@ -253,7 +265,7 @@ func TestCustomerTextComesBackMarkedUntrusted(t *testing.T) {
 
 func TestAScopeNotGrantedIsRefusedWithoutAskingTheStore(t *testing.T) {
 	f := &fakeDjango{granted: []string{ScopeReviews}}
-	session := connect(t, stack(f.serve(t), acme()), goodToken)
+	session := connect(t, stack(f.serve(t), acme()))
 
 	res, err := session.CallTool(context.Background(),
 		&mcp.CallToolParams{Name: "list_orders"})
@@ -327,4 +339,36 @@ func TestDjangosNotFoundIsPassedOn(t *testing.T) {
 	stack(dj, acme()).ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// Django renders a decimal as a JSON number (COERCE_DECIMAL_TO_STRING is
+// off there); a tool answers with two-place decimal strings.
+func TestAmountsArriveAsNumbersAndLeaveAsDecimalStrings(t *testing.T) {
+	f := &fakeDjango{granted: ReadScopes}
+	session := connect(t, stack(f.serve(t), acme()))
+
+	res, err := session.CallTool(context.Background(),
+		&mcp.CallToolParams{Name: "list_products"})
+	require.NoError(t, err)
+	require.False(t, res.IsError, "%v", res.Content)
+	raw, err := json.Marshal(res.StructuredContent)
+	require.NoError(t, err)
+	var products ListProductsOut
+	require.NoError(t, json.Unmarshal(raw, &products))
+	require.Len(t, products.Products, 1)
+	assert.Equal(t, "12.50", products.Products[0].Price)
+	assert.Equal(t, "9.00", products.Products[0].FinalPrice)
+
+	res, err = session.CallTool(context.Background(),
+		&mcp.CallToolParams{Name: "profit_report"})
+	require.NoError(t, err)
+	require.False(t, res.IsError, "%v", res.Content)
+	raw, err = json.Marshal(res.StructuredContent)
+	require.NoError(t, err)
+	var profit ProfitReport
+	require.NoError(t, json.Unmarshal(raw, &profit))
+	assert.Equal(t, "-1.20", profit.Total.OperatingProfit)
+	assert.Nil(t, profit.Total.GrossMargin, "no revenue, no margin")
+	require.NotNil(t, profit.Total.FeeCoverage)
+	assert.Equal(t, "100.00", *profit.Total.FeeCoverage)
 }

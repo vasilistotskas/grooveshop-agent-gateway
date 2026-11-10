@@ -2,6 +2,7 @@ package django
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -12,8 +13,8 @@ import (
 // the store's /mcp/admin, held by someone on the store's team now; the
 // gateway forwards the token verbatim. 401 unwraps to ErrUnauthorized
 // (connect again), 403 to ErrForbidden (a scope the app was not granted,
-// or a permission the person's role lacks). Amounts are decimal strings,
-// as Django renders them.
+// or a permission the person's role lacks). Amounts are JSON numbers
+// (COERCE_DECIMAL_TO_STRING=False upstream), kept as json.Number.
 
 // StaffProfile is who is connected, to which store, and what the app may
 // read: each scope, whether it was granted at consent and whether the
@@ -45,35 +46,35 @@ func (p *StaffProfile) Opens(scope string) (granted, allowed bool) {
 }
 
 type StaffOrder struct {
-	ID            int64   `json:"id"`
-	UUID          string  `json:"uuid"`
-	Status        string  `json:"status"`
-	StatusDisplay string  `json:"statusDisplay"`
-	PaymentStatus string  `json:"paymentStatus"`
-	PaymentMethod string  `json:"paymentMethod"`
-	PlacedAt      string  `json:"placedAt"`
-	ShippedAt     *string `json:"shippedAt"`
-	CustomerName  string  `json:"customerName"`
-	CustomerEmail string  `json:"customerEmail"`
-	Total         string  `json:"total"`
-	Currency      string  `json:"currency"`
+	ID            int64       `json:"id"`
+	UUID          string      `json:"uuid"`
+	Status        string      `json:"status"`
+	StatusDisplay string      `json:"statusDisplay"`
+	PaymentStatus string      `json:"paymentStatus"`
+	PaymentMethod string      `json:"paymentMethod"`
+	PlacedAt      string      `json:"placedAt"`
+	ShippedAt     *string     `json:"shippedAt"`
+	CustomerName  string      `json:"customerName"`
+	CustomerEmail string      `json:"customerEmail"`
+	Total         json.Number `json:"total"`
+	Currency      string      `json:"currency"`
 }
 
 type StaffOrderLine struct {
-	ProductID *int64 `json:"productId"`
-	Name      string `json:"name"`
-	SKU       string `json:"sku"`
-	Quantity  int64  `json:"quantity"`
-	UnitPrice string `json:"unitPrice"`
-	LineTotal string `json:"lineTotal"`
+	ProductID *int64      `json:"productId"`
+	Name      string      `json:"name"`
+	SKU       string      `json:"sku"`
+	Quantity  int64       `json:"quantity"`
+	UnitPrice json.Number `json:"unitPrice"`
+	LineTotal json.Number `json:"lineTotal"`
 }
 
 type StaffOrderDetail struct {
 	StaffOrder
-	ItemsTotal      string           `json:"itemsTotal"`
-	Shipping        string           `json:"shipping"`
-	PaymentFee      string           `json:"paymentFee"`
-	Discount        string           `json:"discount"`
+	ItemsTotal      json.Number      `json:"itemsTotal"`
+	Shipping        json.Number      `json:"shipping"`
+	PaymentFee      json.Number      `json:"paymentFee"`
+	Discount        json.Number      `json:"discount"`
 	ShippingCarrier string           `json:"shippingCarrier"`
 	TrackingNumber  string           `json:"trackingNumber"`
 	City            string           `json:"city"`
@@ -83,16 +84,16 @@ type StaffOrderDetail struct {
 }
 
 type StaffSalesRow struct {
-	Period             *string `json:"period"`
-	Orders             int64   `json:"orders"`
-	Units              int64   `json:"units"`
-	SalesNet           string  `json:"salesNet"`
-	SalesGross         string  `json:"salesGross"`
-	ReturnsNet         string  `json:"returnsNet"`
-	Turnover           string  `json:"turnover"`
-	VAT                string  `json:"vat"`
-	AverageOrderValue  string  `json:"averageOrderValue"`
-	AwaitingCollection string  `json:"awaitingCollection"`
+	Period             *string     `json:"period"`
+	Orders             int64       `json:"orders"`
+	Units              int64       `json:"units"`
+	SalesNet           json.Number `json:"salesNet"`
+	SalesGross         json.Number `json:"salesGross"`
+	ReturnsNet         json.Number `json:"returnsNet"`
+	Turnover           json.Number `json:"turnover"`
+	VAT                json.Number `json:"vat"`
+	AverageOrderValue  json.Number `json:"averageOrderValue"`
+	AwaitingCollection json.Number `json:"awaitingCollection"`
 }
 
 type StaffSalesReport struct {
@@ -105,17 +106,17 @@ type StaffSalesReport struct {
 }
 
 type StaffProfitRow struct {
-	Period          *string `json:"period"`
-	Revenue         string  `json:"revenue"`
-	COGS            string  `json:"cogs"`
-	GrossProfit     string  `json:"grossProfit"`
-	GrossMargin     *string `json:"grossMargin"`
-	PaymentFees     string  `json:"paymentFees"`
-	DeliveryCosts   string  `json:"deliveryCosts"`
-	OtherExpenses   string  `json:"otherExpenses"`
-	OperatingProfit string  `json:"operatingProfit"`
-	CostCoverage    *string `json:"costCoverage"`
-	FeeCoverage     *string `json:"feeCoverage"`
+	Period          *string     `json:"period"`
+	Revenue         json.Number `json:"revenue"`
+	COGS            json.Number `json:"cogs"`
+	GrossProfit     json.Number `json:"grossProfit"`
+	GrossMargin     json.Number `json:"grossMargin" contract:"nullable"`
+	PaymentFees     json.Number `json:"paymentFees"`
+	DeliveryCosts   json.Number `json:"deliveryCosts"`
+	OtherExpenses   json.Number `json:"otherExpenses"`
+	OperatingProfit json.Number `json:"operatingProfit"`
+	CostCoverage    json.Number `json:"costCoverage" contract:"nullable"`
+	FeeCoverage     json.Number `json:"feeCoverage" contract:"nullable"`
 }
 
 type StaffProfitReport struct {
@@ -128,16 +129,16 @@ type StaffProfitReport struct {
 }
 
 type StaffProduct struct {
-	ID                int64  `json:"id"`
-	Name              string `json:"name"`
-	SKU               string `json:"sku"`
-	Price             string `json:"price"`
-	FinalPrice        string `json:"finalPrice"`
-	Currency          string `json:"currency"`
-	Stock             int64  `json:"stock"`
-	LowStockThreshold int64  `json:"lowStockThreshold"`
-	LowStock          bool   `json:"lowStock"`
-	Published         bool   `json:"published"`
+	ID                int64       `json:"id"`
+	Name              string      `json:"name"`
+	SKU               string      `json:"sku"`
+	Price             json.Number `json:"price"`
+	FinalPrice        json.Number `json:"finalPrice"`
+	Currency          string      `json:"currency"`
+	Stock             int64       `json:"stock"`
+	LowStockThreshold int64       `json:"lowStockThreshold"`
+	LowStock          bool        `json:"lowStock"`
+	Published         bool        `json:"published"`
 }
 
 type StaffCustomer struct {

@@ -2361,7 +2361,7 @@
             "type": "string"
           },
           "total": {
-            "type": "string"
+            "type": "number"
           },
           "uuid": {
             "type": "string"
@@ -2404,13 +2404,13 @@
             "type": "string"
           },
           "discount": {
-            "type": "string"
+            "type": "number"
           },
           "id": {
             "type": "integer"
           },
           "itemsTotal": {
-            "type": "string"
+            "type": "number"
           },
           "lines": {
             "items": {
@@ -2419,7 +2419,7 @@
             "type": "array"
           },
           "paymentFee": {
-            "type": "string"
+            "type": "number"
           },
           "paymentMethod": {
             "type": "string"
@@ -2435,7 +2435,7 @@
             "type": "string"
           },
           "shipping": {
-            "type": "string"
+            "type": "number"
           },
           "shippingCarrier": {
             "type": "string"
@@ -2447,7 +2447,7 @@
             "type": "string"
           },
           "total": {
-            "type": "string"
+            "type": "number"
           },
           "trackingNumber": {
             "type": "string"
@@ -2483,7 +2483,7 @@
       "StaffOrderLine": {
         "properties": {
           "lineTotal": {
-            "type": "string"
+            "type": "number"
           },
           "name": {
             "type": "string"
@@ -2499,7 +2499,7 @@
             "type": "string"
           },
           "unitPrice": {
-            "type": "string"
+            "type": "number"
           }
         },
         "required": [
@@ -2517,7 +2517,7 @@
             "type": "string"
           },
           "finalPrice": {
-            "type": "string"
+            "type": "number"
           },
           "id": {
             "type": "integer"
@@ -2532,7 +2532,7 @@
             "type": "string"
           },
           "price": {
-            "type": "string"
+            "type": "number"
           },
           "published": {
             "type": "boolean"
@@ -2595,46 +2595,49 @@
       "StaffProfitRow": {
         "properties": {
           "cogs": {
-            "type": "string"
+            "type": "number"
           },
           "costCoverage": {
             "nullable": true,
-            "type": "string"
+            "type": "number"
           },
           "deliveryCosts": {
-            "type": "string"
+            "type": "number"
           },
           "feeCoverage": {
             "nullable": true,
-            "type": "string"
+            "type": "number"
           },
           "grossMargin": {
             "nullable": true,
-            "type": "string"
+            "type": "number"
           },
           "grossProfit": {
-            "type": "string"
+            "type": "number"
           },
           "operatingProfit": {
-            "type": "string"
+            "type": "number"
           },
           "otherExpenses": {
-            "type": "string"
+            "type": "number"
           },
           "paymentFees": {
-            "type": "string"
+            "type": "number"
           },
           "period": {
             "nullable": true,
             "type": "string"
           },
           "revenue": {
-            "type": "string"
+            "type": "number"
           }
         },
         "required": [
           "cogs",
+          "costCoverage",
           "deliveryCosts",
+          "feeCoverage",
+          "grossMargin",
           "grossProfit",
           "operatingProfit",
           "otherExpenses",
@@ -2723,10 +2726,10 @@
       "StaffSalesRow": {
         "properties": {
           "averageOrderValue": {
-            "type": "string"
+            "type": "number"
           },
           "awaitingCollection": {
-            "type": "string"
+            "type": "number"
           },
           "orders": {
             "type": "integer"
@@ -2736,22 +2739,22 @@
             "type": "string"
           },
           "returnsNet": {
-            "type": "string"
+            "type": "number"
           },
           "salesGross": {
-            "type": "string"
+            "type": "number"
           },
           "salesNet": {
-            "type": "string"
+            "type": "number"
           },
           "turnover": {
-            "type": "string"
+            "type": "number"
           },
           "units": {
             "type": "integer"
           },
           "vat": {
-            "type": "string"
+            "type": "number"
           }
         },
         "required": [

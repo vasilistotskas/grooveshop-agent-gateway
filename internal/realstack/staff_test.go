@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -124,6 +125,21 @@ func staffSignIn(
 	return resp, read(t, resp)
 }
 
+// consentForm cuts the consent form out of the page. The page's header
+// carries a sign-out form too, which comes first.
+func consentForm(t *testing.T, page string) string {
+	t.Helper()
+	for _, form := range formBlock.FindAllString(page, -1) {
+		if strings.Contains(form, `name="request"`) {
+			return form
+		}
+	}
+	require.Fail(t, "no consent form", tail(page))
+	return ""
+}
+
+var formBlock = regexp.MustCompile(`(?is)<form\b.*?</form>`)
+
 func verifier(t *testing.T) string {
 	t.Helper()
 	raw := make([]byte, 32)
@@ -203,12 +219,12 @@ func TestStaffConnectsAnAIAppAndReadsTheStore(t *testing.T) {
 		"a STAFF role is never offered the takings")
 	assert.NotContains(t, page, `value="admin:profit:read"`)
 
-	action, form := formFields(t, page)
+	action, form := formFields(t, consentForm(t, page))
 	form.Set("action", "grant")
 	form["scopes"] = []string{"admin:orders:read", "admin:catalog:read"}
 	resp = postForm(t, c, resp.Request.URL, action, form)
-	read(t, resp)
-	require.Equal(t, http.StatusFound, resp.StatusCode)
+	granted := read(t, resp)
+	require.Equal(t, http.StatusFound, resp.StatusCode, tail(granted))
 	location, err := resp.Location()
 	require.NoError(t, err)
 	code := location.Query().Get("code")
