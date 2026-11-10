@@ -3,7 +3,6 @@ package mcpsrv
 import (
 	"bytes"
 	"context"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -78,7 +77,7 @@ func shippingDjango(
 			}
 		}))
 	t.Cleanup(srv.Close)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.DiscardHandler)
 	dj := django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, log, nil)
 	return &handlers{deps: Deps{Site: testSite, Django: dj}}, seen,

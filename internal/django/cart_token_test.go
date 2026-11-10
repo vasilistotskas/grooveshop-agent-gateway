@@ -183,7 +183,8 @@ func TestCartTokenNeverPrintsItsValue(t *testing.T) {
 	_, tok := tokenContext(t)
 	var buf bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(&buf, nil))
-	log.Info("turn", slog.Any("token", tok), "raw", tok)
+	log.Info("turn", slog.Any("token", tok))
+	log.Info("turn", "raw", tok)
 	out := buf.String() + fmt.Sprintf("%v %+v %#v %s", tok, tok, tok, tok)
 
 	assert.NotContains(t, out, testCartToken)

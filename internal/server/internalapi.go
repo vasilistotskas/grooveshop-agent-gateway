@@ -14,6 +14,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/feeds"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
@@ -100,6 +101,7 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 				http.StatusBadRequest)
 			return
 		}
+		obs.SetTenant(ctx, body.SchemaName)
 		retry := func(msg string, err error) {
 			d.Log.ErrorContext(ctx, msg,
 				slog.String("order", body.OrderUUID),
@@ -218,11 +220,11 @@ func internalFeedInvalidate(
 			http.Error(w, "schemaName is required", http.StatusBadRequest)
 			return
 		}
+		obs.SetTenant(r.Context(), body.SchemaName)
 
 		removed, err := svc.Invalidate(r.Context(), body.SchemaName)
 		if err != nil {
 			log.ErrorContext(r.Context(), "feed invalidate failed",
-				slog.String("schema", body.SchemaName),
 				slog.String("error", err.Error()))
 			http.Error(w, "retry", http.StatusServiceUnavailable)
 			return

@@ -2,7 +2,6 @@ package chat
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -71,7 +70,7 @@ func TestBridgeReportsAFailedCartToolAsAFailure(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 		}))
 	t.Cleanup(srv.Close)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.DiscardHandler)
 	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test",
 		Django: django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 			5*time.Second, log, obs.NewMetrics())})
@@ -105,7 +104,7 @@ func TestBridgeReportsARefusedCartToken(t *testing.T) {
 			_, _ = w.Write([]byte(`{"detail": "The cart token is invalid."}`))
 		}))
 	t.Cleanup(srv.Close)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.DiscardHandler)
 	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test",
 		Django: django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 			5*time.Second, log, obs.NewMetrics())})

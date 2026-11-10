@@ -145,11 +145,23 @@ passes.
   The gateway decides and mints nothing here: Django believes the
   address only beside a correct `X-Origin-Verify` (`core/client_ip.py`),
   and the inbound `X-Real-Ip` (Traefik's own peer) is never relayed.
-- `internal/httpmw` — recover, request-id, access log, RED metrics, per-IP
-  rate limit. Metrics wraps the mux directly so `r.Pattern` is populated;
-  tenant middleware runs *inside* routing (per route group), and enriches
-  the access log via `httpmw.SetTenant` (the `Extras` holder).
+  Every call made with a request's context (`Client.do`) also sends its
+  request id as `X-Correlation-ID`, the id Django logs the call under
+  (`core/middleware/correlation_id.py`).
+- `internal/httpmw` — request-id, access log, rate limit, RED metrics,
+  recover, outermost first (`server.withGlobalChain`). Recover wraps the
+  mux directly, so a panic reaches Metrics and the access log as a 500;
+  Metrics sits right around it and sees the `r.Pattern` the mux sets. An
+  inbound `X-Request-Id` is cleaned by Django's correlation-id rule (C0
+  controls and DEL dropped, 64 characters kept), else one is minted.
 - `internal/obs` — slog JSON to stdout, Prometheus registry, health.
+  The logger's context handler adds `request_id` and `tenant` to every
+  line logged with a request's context (`obs.WithRequestID`; the tenant
+  slot the access log installs and the tenant middleware fills with
+  `obs.SetTenant`, as do the `/internal/*` routes from their body). Log
+  with the context whenever one is in scope (sloglint enforces it); a
+  line naming a store uses the key `tenant` (`obs.KeyTenant`), never
+  `schema`, and only where no request context carries it.
   `/healthz` is process-only; `/readyz` gates on Redis ONLY — Django-down
   must never flip readiness (agents get actionable errors, not 502s).
 - `internal/server` — mux assembly; new route groups register here.

@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
 // callerHeaders makes one Django call while serving inbound and returns
@@ -89,4 +91,25 @@ func TestACallWithoutARequestNamesNoCaller(t *testing.T) {
 	assert.Empty(t, got.Get("X-Real-IP"))
 	assert.Empty(t, got.Get("X-Forwarded-For"))
 	assert.Empty(t, got.Get("X-Origin-Verify"))
+	assert.Empty(t, got.Get("X-Correlation-ID"))
+}
+
+// Django logs a call under the gateway request's id, so one id finds
+// both sides of it.
+func TestACallCarriesTheRequestIDAsCorrelationID(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			got = r.Header.Clone()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(fixture(t, "cart_with_items.json"))
+		}))
+	t.Cleanup(srv.Close)
+
+	_, err := newTestClient(t, srv.URL).GetCart(
+		obs.WithRequestID(context.Background(), "req-1"),
+		"shop.example.test", "el", fixtureCartID)
+
+	require.NoError(t, err)
+	assert.Equal(t, "req-1", got.Get("X-Correlation-ID"))
 }

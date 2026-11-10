@@ -178,6 +178,11 @@ func (c *Client) do(ctx context.Context, r request) error {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	setCaller(ctx, req.Header)
+	// Django logs a request under this id (core/middleware/
+	// correlation_id.py), so one id finds both sides of a call.
+	if id := obs.RequestID(ctx); id != "" {
+		req.Header.Set("X-Correlation-ID", id)
+	}
 	for k, v := range r.headers {
 		req.Header.Set(k, v)
 	}

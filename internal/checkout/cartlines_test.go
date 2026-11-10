@@ -3,7 +3,6 @@ package checkout
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -48,7 +47,7 @@ func TestSyncCartLinesBooksTheCartAsTheAgents(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	dj := django.New(srv.URL+"/api/v1", "api.example.test", "secret",
-		5*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		5*time.Second, slog.New(slog.DiscardHandler),
 		obs.NewMetrics())
 
 	for _, protocol := range []string{ProtocolUCP, ProtocolACP} {

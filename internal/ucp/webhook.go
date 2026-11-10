@@ -16,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpsig"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 )
 
@@ -137,7 +138,7 @@ func (d *Dispatcher) Enqueue(ctx context.Context, dl Delivery) error {
 // return before closing Redis.
 func (d *Dispatcher) Run(ctx context.Context) {
 	if err := d.ensureGroup(ctx); err != nil {
-		d.log.Error("webhook consumer group unavailable",
+		d.log.ErrorContext(ctx, "webhook consumer group unavailable",
 			slog.String("error", err.Error()))
 	}
 
@@ -230,7 +231,8 @@ func (d *Dispatcher) read(ctx context.Context, id string) []redis.XMessage {
 	case errors.Is(err, redis.Nil), ctx.Err() != nil:
 		return nil
 	}
-	d.log.Warn("webhook queue read failed", slog.String("error", err.Error()))
+	d.log.WarnContext(ctx, "webhook queue read failed",
+		slog.String("error", err.Error()))
 	_ = d.ensureGroup(ctx)
 	select {
 	case <-time.After(time.Second):
@@ -251,7 +253,8 @@ func (d *Dispatcher) reclaim(ctx context.Context) []redis.XMessage {
 		Count:    deliveryWorkers,
 	}).Result()
 	if err != nil && ctx.Err() == nil {
-		d.log.Warn("webhook reclaim failed", slog.String("error", err.Error()))
+		d.log.WarnContext(ctx, "webhook reclaim failed",
+			slog.String("error", err.Error()))
 	}
 
 	consumers, err := d.rdb.XInfoConsumers(ctx, eventsStream, eventsGroup).
@@ -278,7 +281,8 @@ func (d *Dispatcher) deliver(ctx context.Context, msg redis.XMessage) {
 	if err := json.Unmarshal([]byte(raw), &dl); err != nil ||
 		dl.Schema == "" || dl.TargetURL == "" {
 		// Undeliverable as stored: acknowledge and drop.
-		d.log.Error("webhook delivery corrupt", slog.String("entry", msg.ID))
+		d.log.ErrorContext(ctx, "webhook delivery corrupt",
+			slog.String("entry", msg.ID))
 		d.ack(msg.ID)
 		return
 	}
@@ -298,8 +302,8 @@ func (d *Dispatcher) deliver(ctx context.Context, msg redis.XMessage) {
 			if ctx.Err() != nil {
 				return
 			}
-			d.log.Warn("webhook signing key unavailable",
-				slog.String("schema", dl.Schema),
+			d.log.WarnContext(ctx, "webhook signing key unavailable",
+				slog.String(obs.KeyTenant, dl.Schema),
 				slog.String("error", err.Error()))
 			continue
 		}
@@ -314,9 +318,9 @@ func (d *Dispatcher) deliver(ctx context.Context, msg redis.XMessage) {
 	// Retries exhausted against a live endpoint: give up so the entry
 	// does not cycle forever. There is no dead-letter stream by design;
 	// this permanent-failure log is the record.
-	d.log.Error("webhook delivery failed permanently",
+	d.log.ErrorContext(ctx, "webhook delivery failed permanently",
 		slog.String("delivery", dl.ID),
-		slog.String("schema", dl.Schema))
+		slog.String(obs.KeyTenant, dl.Schema))
 	d.ack(msg.ID)
 }
 
@@ -330,7 +334,7 @@ func (d *Dispatcher) ack(id string) {
 	defer cancel()
 	if err := d.rdb.XAckDel(ctx, eventsStream, eventsGroup, "DELREF", id).
 		Err(); err != nil {
-		d.log.Warn("webhook ack failed; the delivery will repeat",
+		d.log.WarnContext(ctx, "webhook ack failed; the delivery will repeat",
 			slog.String("error", err.Error()))
 	}
 }
@@ -361,14 +365,14 @@ func (d *Dispatcher) post(
 	if err := httpsig.Sign(req, "sig1",
 		signedComponents(req.URL.RawQuery != ""),
 		httpsig.Params{Created: now.Unix()}, key); err != nil {
-		d.log.Error("webhook signing failed",
+		d.log.ErrorContext(ctx, "webhook signing failed",
 			slog.String("delivery", dl.ID), slog.String("error", err.Error()))
 		return false
 	}
 
 	resp, err := d.hc.Do(req)
 	if err != nil {
-		d.log.Warn("webhook post failed",
+		d.log.WarnContext(ctx, "webhook post failed",
 			slog.String("delivery", dl.ID), slog.String("error", err.Error()))
 		return false
 	}

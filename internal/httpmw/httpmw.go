@@ -3,12 +3,10 @@
 package httpmw
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
-	"sync"
 )
 
 // ErrShuttingDown is the cause (context.Cause) of a request context the
@@ -16,41 +14,6 @@ import (
 // tells it from a client that left, and ends its stream with a final
 // event.
 var ErrShuttingDown = errors.New("server shutting down")
-
-type ctxKeyRequestID struct{}
-
-// RequestIDFromContext returns the request id set by RequestID.
-func RequestIDFromContext(ctx context.Context) string {
-	id, _ := ctx.Value(ctxKeyRequestID{}).(string)
-	return id
-}
-
-// Extras is a mutable per-request holder that inner handlers fill and the
-// access-log middleware reads after the handler returns. It exists because
-// tenant resolution happens inside routing, after Logging has already
-// captured its request copy — a plain context value set there would be
-// invisible to the outer middleware.
-type Extras struct {
-	mu     sync.Mutex
-	tenant string
-}
-
-type ctxKeyExtras struct{}
-
-// SetTenant records the resolved tenant schema for the access log.
-func SetTenant(ctx context.Context, schema string) {
-	if e, ok := ctx.Value(ctxKeyExtras{}).(*Extras); ok {
-		e.mu.Lock()
-		e.tenant = schema
-		e.mu.Unlock()
-	}
-}
-
-func (e *Extras) getTenant() string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.tenant
-}
 
 // WriteJSONError writes the gateway's uniform `{"error": msg}` body. Every
 // surface that is not bound to a protocol error shape (ACP has its own)

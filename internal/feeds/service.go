@@ -288,8 +288,9 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 		return err
 	}
 	if truncated {
-		s.log.Warn("feed catalog sweep hit the page cap — feed truncated",
-			slog.String("tenant", t.SchemaName),
+		s.log.WarnContext(ctx,
+			"feed catalog sweep hit the page cap — feed truncated",
+			slog.String(obs.KeyTenant, t.SchemaName),
 			slog.Int("pages", maxPages))
 	}
 
@@ -315,8 +316,8 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 		return err
 	}
 
-	s.log.Info("feeds generated",
-		slog.String("tenant", t.SchemaName),
+	s.log.InfoContext(ctx, "feeds generated",
+		slog.String(obs.KeyTenant, t.SchemaName),
 		slog.Int("products", count),
 		slog.Int("skipped_no_name_or_image", skipped),
 		slog.Bool("overtaken_by_invalidation", overtaken),
