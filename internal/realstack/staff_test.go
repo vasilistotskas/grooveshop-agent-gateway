@@ -223,6 +223,9 @@ func TestStaffConnectsAnAIAppAndReadsTheStore(t *testing.T) {
 		[]string{"admin:orders:read", "admin:catalog:read"}))
 	me := structured(t, call(t, s, "whoami", map[string]any{}))
 	assert.Equal(t, "staff", me["role"])
+	assert.Equal(t, "staff-member@realstack.test", me["email"],
+		"the token names the member who signed in")
+	assert.Equal(t, storeHost, me["domain"], "and the store it was bound to")
 	structured(t, call(t, s, "list_orders", map[string]any{"limit": 5}))
 	structured(t, call(t, s, "list_products", map[string]any{"limit": 5}))
 	// Not granted at consent, and not open to the role.
@@ -281,6 +284,10 @@ func TestAnOwnerReadsAmountsFromTheRealStore(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode, tail(page))
 	s := connectAdmin(t, grant(t, c, server, clientID, v, resp, page,
 		staffScopes))
+	me := structured(t, call(t, s, "whoami", map[string]any{}))
+	assert.Equal(t, "owner", me["role"])
+	assert.Equal(t, "staff-owner@realstack.test", me["email"])
+	assert.Equal(t, storeHost, me["domain"])
 
 	products := structured(t, call(t, s, "list_products",
 		map[string]any{"limit": 5}))["products"].([]any)

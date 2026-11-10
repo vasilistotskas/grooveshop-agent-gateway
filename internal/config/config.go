@@ -267,6 +267,21 @@ func Load() (Config, error) {
 			strings.Join(missing, ", "),
 		)
 	}
+	// Each is put behind https:// or sent as a Host header as it is, so
+	// a scheme, a path or a stray space would build URLs that resolve
+	// nowhere (the staff issuer's address among them) with no error.
+	// url.Parse is no check here: it reads a bare host:port as a scheme.
+	for _, h := range []struct{ name, value string }{
+		{"DJANGO_PUBLIC_HOST", cfg.DjangoPublicHost},
+		{"ASSETS_HOST", cfg.AssetsHost},
+		{"STAFF_CONNECT_HOST", cfg.StaffConnectHost},
+	} {
+		if strings.ContainsAny(h.value, "/?#@ \t\r\n") {
+			return Config{}, fmt.Errorf(
+				"config: %s must be a bare host such as example.com, "+
+					"without scheme or path (got %q)", h.name, h.value)
+		}
+	}
 	// A path segment of the storefront's routes: a bare lowercase
 	// language code, as its locale codes are.
 	if !localeCode.MatchString(cfg.StorefrontDefaultLocale) {

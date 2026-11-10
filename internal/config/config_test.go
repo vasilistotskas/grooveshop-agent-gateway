@@ -126,6 +126,29 @@ func TestLoadRequiresStaffConnectHost(t *testing.T) {
 
 // The storefront's build default decides which links carry a language
 // prefix, so it is required and must be a bare language code.
+// A host is put behind https:// or sent as a Host header as it is: a
+// scheme, path or space is refused at start, and host:port is a host.
+func TestLoadRefusesAHostThatIsNotBare(t *testing.T) {
+	for _, name := range []string{
+		"DJANGO_PUBLIC_HOST", "ASSETS_HOST", "STAFF_CONNECT_HOST",
+	} {
+		for _, value := range []string{
+			"https://connect.platform.test", "connect.platform.test/",
+			"connect.platform.test ", "user@connect.platform.test",
+		} {
+			setRequired(t)
+			t.Setenv(name, value)
+			_, err := Load()
+			require.Error(t, err, "%s=%q", name, value)
+			assert.Contains(t, err.Error(), name)
+		}
+		setRequired(t)
+		t.Setenv(name, "connect.localhost:8000")
+		_, err := Load()
+		require.NoError(t, err, "%s with a port", name)
+	}
+}
+
 func TestLoadValidatesStorefrontDefaultLocale(t *testing.T) {
 	for value, wantErr := range map[string]bool{
 		"": true, "EL": true, "el-GR": true, "/el": true,
