@@ -192,6 +192,8 @@ type checkoutFaults struct {
 	cartDeletedOnOrder atomic.Bool
 	// regionLookup makes the country's region list answer 502.
 	regionLookup atomic.Bool
+	// payWayLookup makes the pay-way list answer 502.
+	payWayLookup atomic.Bool
 	// orderRead makes reading a placed order answer 502.
 	orderRead atomic.Bool
 	// cartWrites counts the line writes the cart received.
@@ -228,6 +230,14 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	outer.HandleFunc("GET /api/v1/region/GR/get_regions_by_country_alpha_2",
 		func(w http.ResponseWriter, r *http.Request) {
 			if faults.regionLookup.Load() {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			inner.ServeHTTP(w, r)
+		})
+	outer.HandleFunc("GET /api/v1/pay_way",
+		func(w http.ResponseWriter, r *http.Request) {
+			if faults.payWayLookup.Load() {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}

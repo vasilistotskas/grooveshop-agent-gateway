@@ -40,6 +40,17 @@ type completionSurface struct {
 	) string
 	// keyName is where the surface keeps that key's state in Redis.
 	keyName func(id, key string) string
+	// cancel abandons the checkout.
+	cancel func(t *testing.T, id string)
+}
+
+// codPayment is UCP's payment object selecting cash on delivery, the
+// fake store's pay way 1.
+func codPayment() map[string]any {
+	return map[string]any{"instruments": []any{map[string]any{
+		"handler_id": ucp.HandlerID,
+		"type":       ucp.InstrumentCashOnDelivery, "selected": true,
+	}}}
 }
 
 func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
@@ -116,6 +127,12 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 		keyName: func(id, key string) string {
 			return "ag:demostore:acp:idem:complete:" + id + ":" + key
 		},
+		cancel: func(t *testing.T, id string) {
+			t.Helper()
+			resp, _ := acpCall(t, http.MethodPost, base+"/"+id+"/cancel",
+				nil, uuid.NewString())
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+		},
 	}
 
 	session := connectMCP(t, stack.gw.URL)
@@ -133,10 +150,6 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 		}
 		return m
 	}
-	cod := map[string]any{"instruments": []any{map[string]any{
-		"handler_id": ucp.HandlerID,
-		"type":       ucp.InstrumentCashOnDelivery, "selected": true,
-	}}}
 	mcpSurface := completionSurface{
 		name: "ucp",
 		ready: func(t *testing.T) string {
@@ -155,7 +168,7 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 						"zipcode": "10431", "street": "Πανεπιστημίου",
 						"streetNumber": "12", "regionId": "GR-14",
 					},
-					"payment": cod,
+					"payment": codPayment(),
 				},
 			})
 			require.False(t, res.IsError, "%v", res.Content)
@@ -191,6 +204,13 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 		},
 		keyName: func(id, key string) string {
 			return "ag:demostore:idem:" + id + ":" + key
+		},
+		cancel: func(t *testing.T, id string) {
+			t.Helper()
+			res := callTool(t, session, "cancel_checkout", map[string]any{
+				"meta": meta(uuid.NewString()), "id": id,
+			})
+			require.False(t, res.IsError, "%v", res.Content)
 		},
 	}
 	return []completionSurface{acp, mcpSurface}
@@ -409,61 +429,242 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 	}
 }
 
+const otherBuyerEmail = "other@example.test"
+
+// otherBuyer is a buyer a complete can submit in place of the one the
+// surfaces' ready checkouts hold.
+func otherBuyer() map[string]any {
+	return map[string]any{"buyer": map[string]any{"email": otherBuyerEmail}}
+}
+
+// changeBy is a complete's submission that differs from what the
+// surface's ready checkout holds: cash on delivery on UCP, where pay way
+// 2 is the hosted card, and the buyer on ACP.
+func changeBy(surface string) map[string]any {
+	if surface == "ucp" {
+		return map[string]any{"pay_way_id": 2}
+	}
+	return otherBuyer()
+}
+
+func (stack ucpStack) storedSession(
+	t *testing.T, id string,
+) *checkout.Session {
+	t.Helper()
+	s, err := checkout.NewStore(stack.rdb).
+		Load(context.Background(), "demostore", id)
+	require.NoError(t, err)
+	return s
+}
+
+// storedBytes is the session as Redis holds it: any write changes it,
+// through updatedAt if through nothing else.
+func (stack ucpStack) storedBytes(t *testing.T, id string) string {
+	t.Helper()
+	raw, err := stack.rdb.Get(context.Background(),
+		"ag:demostore:cs:"+id).Result()
+	require.NoError(t, err)
+	return raw
+}
+
 // What a complete call submits is the buyer's latest word, whether or not
 // that call places the order. A refused one keeps it, so the next
 // complete, which need not repeat it, places the order with it and not
 // with what the checkout held before.
 func TestRefusedCompleteKeepsWhatItSubmitted(t *testing.T) {
 	stack := startUCPGateway(t)
-	submissions := map[string]struct {
-		submit map[string]any
+	surfaces := map[string]completionSurface{}
+	for _, surface := range completionSurfaces(t, stack) {
+		surfaces[surface.name] = surface
+	}
+	payWay := func(s *checkout.Session) any { return s.PayWayID }
+	cases := []struct {
+		name, surface string
+		// refused are the completes the store refuses, in order: the
+		// last one is the buyer's latest word.
+		refused []map[string]any
 		// member is where an order's body carries what was submitted.
 		member string
 		want   any
 		stored func(*checkout.Session) any
 	}{
-		// ready stored cash on delivery; pay way 2 is the hosted card.
-		"ucp": {
-			submit: map[string]any{"pay_way_id": 2},
-			member: "payWayId", want: 2,
-			stored: func(s *checkout.Session) any { return s.PayWayID },
+		{
+			name: "a hosted pay way", surface: "ucp",
+			refused: []map[string]any{{"pay_way_id": 2}},
+			member:  "payWayId", want: 2, stored: payWay,
 		},
-		"acp": {
-			submit: map[string]any{"buyer": map[string]any{
-				"email": "other@example.test",
-			}},
-			member: "email", want: "other@example.test",
+		{
+			// The first refusal leaves the hosted card selected, so
+			// cash on delivery at the end is the instrument's doing.
+			name: "an instrument", surface: "ucp",
+			refused: []map[string]any{
+				{"pay_way_id": 2}, {"payment": codPayment()},
+			},
+			member: "payWayId", want: 1, stored: payWay,
+		},
+		{
+			name: "a buyer", surface: "acp",
+			refused: []map[string]any{otherBuyer()},
+			member:  "email", want: otherBuyerEmail,
 			stored: func(s *checkout.Session) any { return s.Buyer.Email },
 		},
 	}
-	for _, surface := range completionSurfaces(t, stack) {
-		t.Run(surface.name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name+" over "+tc.surface, func(t *testing.T) {
 			ctx := context.Background()
-			sub := submissions[surface.name]
+			surface := surfaces[tc.surface]
 			id := surface.ready(t)
 			creates := stack.faults.orderCreates.Load()
 
 			stack.faults.stockShort.Store(true)
-			key := uuid.NewString()
-			require.Empty(t, surface.complete(ctx, id, key, sub.submit),
-				"refused: the stock ran out")
+			t.Cleanup(func() { stack.faults.stockShort.Store(false) })
+			for _, submit := range tc.refused {
+				key := uuid.NewString()
+				require.Empty(t, surface.complete(ctx, id, key, submit),
+					"refused: the stock ran out")
+				assert.Equal(t, bookkeeping{
+					Session: checkout.StatusReadyForComplete,
+					Key:     keyReleased,
+				}, stack.bookkeeping(t, id, surface.keyName(id, key)))
+			}
 			stack.faults.stockShort.Store(false)
-
-			assert.Equal(t, bookkeeping{
-				Session: checkout.StatusReadyForComplete, Key: keyReleased,
-			}, stack.bookkeeping(t, id, surface.keyName(id, key)))
-			stored, err := checkout.NewStore(stack.rdb).
-				Load(ctx, "demostore", id)
-			require.NoError(t, err)
-			assert.EqualValues(t, sub.want, sub.stored(stored))
+			assert.EqualValues(t, tc.want,
+				tc.stored(stack.storedSession(t, id)))
 			require.Equal(t, creates, stack.faults.orderCreates.Load())
 
 			require.NotEmpty(t,
 				surface.complete(ctx, id, uuid.NewString(), nil),
 				"the next complete places the order")
 			require.Equal(t, creates+1, stack.faults.orderCreates.Load())
-			assert.EqualValues(t, sub.want,
-				(*stack.faults.lastOrder.Load())[sub.member])
+			assert.EqualValues(t, tc.want,
+				(*stack.faults.lastOrder.Load())[tc.member])
 		})
 	}
+}
+
+// On ACP the buyer arrives with complete, ahead of every check the call
+// can fail: it is kept when the session is not ready yet, and when the
+// store's pay ways cannot be read.
+func TestACPCompleteKeepsTheBuyerItCouldNotOrderFor(t *testing.T) {
+	stack := startUCPGateway(t)
+	ctx := context.Background()
+	var acp completionSurface
+	for _, surface := range completionSurfaces(t, stack) {
+		if surface.name == "acp" {
+			acp = surface
+		}
+	}
+
+	t.Run("a session that is not ready", func(t *testing.T) {
+		resp, created := acpCall(t, http.MethodPost,
+			stack.gw.URL+"/acp/checkout_sessions", map[string]any{
+				"line_items":   []map[string]any{{"id": "1", "quantity": 2}},
+				"currency":     "EUR",
+				"capabilities": map[string]any{},
+			}, uuid.NewString())
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+		id := created["id"].(string)
+
+		key := uuid.NewString()
+		require.Empty(t, acp.complete(ctx, id, key, otherBuyer()))
+
+		assert.Equal(t, bookkeeping{
+			Session: checkout.StatusIncomplete, Key: keyReleased,
+		}, stack.bookkeeping(t, id, acp.keyName(id, key)))
+		assert.Equal(t, otherBuyerEmail,
+			stack.storedSession(t, id).Buyer.Email)
+	})
+
+	t.Run("pay ways that cannot be read", func(t *testing.T) {
+		id := acp.ready(t)
+		creates := stack.faults.orderCreates.Load()
+
+		stack.faults.payWayLookup.Store(true)
+		t.Cleanup(func() { stack.faults.payWayLookup.Store(false) })
+		key := uuid.NewString()
+		require.Empty(t, acp.complete(ctx, id, key, otherBuyer()))
+		stack.faults.payWayLookup.Store(false)
+
+		assert.Equal(t, bookkeeping{
+			Session: checkout.StatusReadyForComplete, Key: keyReleased,
+		}, stack.bookkeeping(t, id, acp.keyName(id, key)))
+		assert.Equal(t, otherBuyerEmail,
+			stack.storedSession(t, id).Buyer.Email)
+
+		require.NotEmpty(t, acp.complete(ctx, id, uuid.NewString(), nil))
+		require.Equal(t, creates+1, stack.faults.orderCreates.Load())
+		assert.Equal(t, otherBuyerEmail,
+			(*stack.faults.lastOrder.Load())["email"])
+	})
+}
+
+// A UCP complete whose key another attempt holds, or has finished with,
+// is that attempt's duplicate. The lock can lapse while a complete looks
+// up its payment, so the other attempt may have placed the order by now:
+// the duplicate writes nothing, or it would put its own snapshot over a
+// placed session.
+func TestCompleteWithoutItsClaimWritesNothing(t *testing.T) {
+	stack := startUCPGateway(t)
+	var ucpSurface completionSurface
+	for _, surface := range completionSurfaces(t, stack) {
+		if surface.name == "ucp" {
+			ucpSurface = surface
+		}
+	}
+	for _, claim := range []string{"inflight", "done"} {
+		t.Run("a key that is "+claim, func(t *testing.T) {
+			ctx := context.Background()
+			id := ucpSurface.ready(t)
+			key := uuid.NewString()
+			require.NoError(t, stack.rdb.Set(ctx,
+				ucpSurface.keyName(id, key), claim, time.Minute).Err())
+			before := stack.storedBytes(t, id)
+			creates := stack.faults.orderCreates.Load()
+
+			ucpSurface.complete(ctx, id, key, changeBy("ucp"))
+
+			assert.Equal(t, before, stack.storedBytes(t, id))
+			assert.Equal(t, creates, stack.faults.orderCreates.Load())
+		})
+	}
+}
+
+// A checkout that is canceled, or that has placed its order, is closed:
+// a complete that submits something new is refused and changes nothing
+// in it.
+func TestCompleteLeavesAClosedSessionAsItIs(t *testing.T) {
+	stack := startUCPGateway(t)
+	ctx := context.Background()
+	surfaces := map[string]completionSurface{}
+	for _, surface := range completionSurfaces(t, stack) {
+		surfaces[surface.name] = surface
+	}
+
+	for name, surface := range surfaces {
+		t.Run("canceled, over "+name, func(t *testing.T) {
+			id := surface.ready(t)
+			surface.cancel(t, id)
+			before := stack.storedBytes(t, id)
+
+			require.Empty(t, surface.complete(
+				ctx, id, uuid.NewString(), changeBy(name)))
+
+			assert.Equal(t, before, stack.storedBytes(t, id))
+		})
+	}
+
+	// A checkout answers on either surface by its id. UCP retries the
+	// payment link of an escalated one, so ACP is where a complete could
+	// write to it.
+	t.Run("awaiting payment, over acp", func(t *testing.T) {
+		id := surfaces["ucp"].ready(t)
+		require.Equal(t, "requires_escalation", surfaces["ucp"].complete(
+			ctx, id, uuid.NewString(), changeBy("ucp")))
+		before := stack.storedBytes(t, id)
+
+		require.Empty(t, surfaces["acp"].complete(
+			ctx, id, uuid.NewString(), changeBy("acp")))
+
+		assert.Equal(t, before, stack.storedBytes(t, id))
+	})
 }

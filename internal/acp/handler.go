@@ -100,6 +100,15 @@ func writeUnavailable(w http.ResponseWriter, msg string) {
 	})
 }
 
+// writePlacedUnrendered answers for an order that exists while its
+// session is not rendered: the platform must read it again, not order
+// again.
+func writePlacedUnrendered(w http.ResponseWriter, s *checkout.Session) {
+	writeUnavailable(w, "Order "+s.OrderUUID+" is placed, but the "+
+		"session cannot be rendered right now. Read the session "+
+		"again, and do not start a new checkout.")
+}
+
 func writeSession(w http.ResponseWriter, status int, s *Session) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -243,6 +252,9 @@ func (h *Handler) claimIdem(
 	return key, false, &rec, false
 }
 
+// storeIdem records what a claimed key did. Like releaseIdem it settles
+// the key even for a platform that has gone: a key left in flight
+// answers its retry 409 for a minute.
 func (h *Handler) storeIdem(
 	r *http.Request, schema, scope, key string, rec idemRecord,
 ) {
@@ -250,16 +262,17 @@ func (h *Handler) storeIdem(
 	if err != nil {
 		return
 	}
-	if err := h.rdb.Set(r.Context(), idemRedisKey(schema, scope, key), raw,
-		24*time.Hour).Err(); err != nil {
+	if err := h.rdb.Set(context.WithoutCancel(r.Context()),
+		idemRedisKey(schema, scope, key), raw, 24*time.Hour).
+		Err(); err != nil {
 		h.logUnsettled(r, scope, "record", err)
 	}
 }
 
 // releaseIdem clears an inflight claim after a failed attempt.
 func (h *Handler) releaseIdem(r *http.Request, schema, scope, key string) {
-	if err := h.rdb.Del(r.Context(), idemRedisKey(schema, scope, key)).
-		Err(); err != nil {
+	if err := h.rdb.Del(context.WithoutCancel(r.Context()),
+		idemRedisKey(schema, scope, key)).Err(); err != nil {
 		h.logUnsettled(r, scope, "release", err)
 	}
 }
@@ -707,11 +720,24 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Readiness first, and it needs no pay way on ACP. Without a delivery no
-	// pay way can be chosen, which says nothing about what the store offers.
-	buyer, payWay, status := s.Buyer, s.PayWayID, s.Status
+	buyer, status := s.Buyer, s.Status
 	applyBuyer(s, req.Buyer, nil)
 	s.Recompute()
+	// The buyer this call submitted is the latest word whether or not
+	// the call places the order. It is stored now, because a refused
+	// completion stores nothing: a later complete that omits the buyer
+	// would otherwise place the order for the one before. No Django call
+	// sits between the load and this save, so the lock still holds. The
+	// pay way is not part of it: it is looked up again on every call.
+	if s.Open() && (s.Buyer != buyer || s.Status != status) {
+		if err := h.store.Save(r.Context(), s); err != nil {
+			h.releaseIdem(r, t.SchemaName, scope, key)
+			writeUnavailable(w, "Checkout is temporarily unavailable.")
+			return
+		}
+	}
+	// Readiness first, and it needs no pay way on ACP. Without a delivery no
+	// pay way can be chosen, which says nothing about what the store offers.
 	if s.Status == checkout.StatusIncomplete {
 		h.releaseIdem(r, t.SchemaName, scope, key)
 		h.completeError(w, checkout.ErrNotReady)
@@ -721,18 +747,6 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		h.releaseIdem(r, t.SchemaName, scope, key)
 		upstreamError(w, err)
 		return
-	}
-	// What this call submitted is the buyer's latest word whether or not
-	// the call places the order. It is stored now, because a refused
-	// completion stores nothing: a later complete that omits the buyer
-	// would otherwise place the order for the one before.
-	if s.Open() && (s.Buyer != buyer || s.PayWayID != payWay ||
-		s.Status != status) {
-		if err := h.store.Save(r.Context(), s); err != nil {
-			h.releaseIdem(r, t.SchemaName, scope, key)
-			writeUnavailable(w, "Checkout is temporarily unavailable.")
-			return
-		}
 	}
 	if s.PayWayID == 0 {
 		h.releaseIdem(r, t.SchemaName, scope, key)
@@ -748,21 +762,21 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		SessionID: s.ID, BodyHash: bodyHash(raw), Status: http.StatusOK,
 	}
 	placement, err := h.flow.Complete(r.Context(), t, s)
-	// The key is settled even for a platform that has gone: its retry
-	// must find what this attempt did.
-	settled := r.WithContext(context.WithoutCancel(r.Context()))
 	if placement == checkout.NothingPlaced {
-		h.releaseIdem(settled, t.SchemaName, scope, key)
+		h.releaseIdem(r, t.SchemaName, scope, key)
 	} else {
-		h.storeIdem(settled, t.SchemaName, scope, key, record)
+		h.storeIdem(r, t.SchemaName, scope, key, record)
 	}
 	if err != nil {
 		h.completeError(w, err)
 		return
 	}
 	if r.Context().Err() != nil {
-		// The platform has gone: there is nobody to answer, and reading
-		// the order back on its ended request could only fail.
+		// The platform looks gone, so reading the order back on its
+		// ended request could only fail. A half-closed connection looks
+		// the same and still reads the answer: it is the one a failed
+		// render gives.
+		writePlacedUnrendered(w, s)
 		return
 	}
 	h.render(w, r, t, s, http.StatusOK)
@@ -907,9 +921,7 @@ func (h *Handler) render(
 		h.log.ErrorContext(r.Context(), "acp render failed",
 			slog.String("session", s.ID), slog.String("error", err.Error()))
 		if s.OrderUUID != "" {
-			writeUnavailable(w, "Order "+s.OrderUUID+" is placed, but the "+
-				"session cannot be rendered right now. Read the session "+
-				"again, and do not start a new checkout.")
+			writePlacedUnrendered(w, s)
 			return
 		}
 		writeUnavailable(w, "The session cannot be rendered right now.")

@@ -202,8 +202,7 @@ func (h *handlers) updateCheckout(
 	}
 	defer release()
 
-	if s.Terminal() || s.Status == checkout.StatusRequiresEscalation ||
-		s.Status == checkout.StatusCompleteInProgress {
+	if !s.Open() {
 		return nil, zero, fmt.Errorf(
 			"checkout %s is %s and can no longer be updated",
 			s.ID, s.Status)
@@ -314,16 +313,6 @@ func (h *handlers) completeCheckout(
 				"submit one of the instruments the checkout advertised")
 	}
 	s.Recompute()
-	// What this call submitted is the buyer's latest choice whether or
-	// not the call places the order. It is stored now, because a refused
-	// completion stores nothing: a later complete that omits the payment
-	// would otherwise place the order with the choice before this one.
-	if s.Open() && (s.PayWayID != payWay || s.Status != status) {
-		if err := h.deps.Checkout.Save(ctx, s); err != nil {
-			return nil, zero, errors.New(
-				"checkout is temporarily unavailable; retry shortly")
-		}
-	}
 
 	idemKey := in.Meta.IdempotencyKey
 	claimed, err := h.deps.Checkout.ClaimCompletion(
@@ -340,22 +329,32 @@ func (h *handlers) completeCheckout(
 		return h.checkoutResult(ctx, t, s, neg)
 	}
 
+	// What this call submitted is the buyer's latest choice whether or
+	// not the call places the order. It is stored now, because a refused
+	// completion stores nothing: a later complete that omits the payment
+	// would otherwise place the order with the choice before this one.
+	//
+	// Only under the claim: the payment lookup above can outlast the
+	// session lock, and a retry of this key may have placed the order
+	// meanwhile. This snapshot must not be written over that session.
+	if s.Open() && (s.PayWayID != payWay || s.Status != status) {
+		if err := h.deps.Checkout.Save(ctx, s); err != nil {
+			h.settleCompletion(ctx, s, idemKey, checkout.NothingPlaced)
+			return nil, zero, errors.New(
+				"checkout is temporarily unavailable; retry shortly")
+		}
+	}
+
 	placement, err := h.deps.Flow.Complete(ctx, t, s)
-	// The key is settled even for a platform that has gone: its retry
-	// must find what this attempt did.
-	settled := context.WithoutCancel(ctx)
-	settle := h.deps.Checkout.MarkCompleted
-	if placement == checkout.NothingPlaced {
-		settle = h.deps.Checkout.ReleaseCompletion
-	}
-	if err := settle(settled, t.SchemaName, s.ID, idemKey); err != nil {
-		h.deps.Log.ErrorContext(ctx, "ucp: completion key not settled",
-			slog.String("session", s.ID),
-			slog.Bool("spent", placement != checkout.NothingPlaced),
-			slog.String("error", err.Error()))
-	}
+	h.settleCompletion(ctx, s, idemKey, placement)
 	switch {
 	case err == nil:
+		if ctx.Err() != nil {
+			// The caller has gone: reading the order back for it would
+			// only fail. It is answered as for any placed checkout that
+			// could not be rendered.
+			return nil, zero, unrenderedErr(s)
+		}
 		return h.checkoutResult(ctx, t, s, neg)
 	case errors.Is(err, checkout.ErrOrderOutcomeUnknown):
 		return nil, zero, errors.New(
@@ -387,6 +386,38 @@ func (h *handlers) completeCheckout(
 		return nil, zero, upstreamErr(err,
 			"order placement failed; the cart is unchanged")
 	}
+}
+
+// settleCompletion spends or releases a completion claim by what the
+// attempt did about the order. It runs even for a platform that has
+// gone: its retry must find what this attempt did, not a claim left in
+// flight.
+func (h *handlers) settleCompletion(
+	ctx context.Context, s *checkout.Session, idemKey string,
+	placement checkout.Placement,
+) {
+	settle := h.deps.Checkout.MarkCompleted
+	if placement == checkout.NothingPlaced {
+		settle = h.deps.Checkout.ReleaseCompletion
+	}
+	if err := settle(
+		context.WithoutCancel(ctx), s.Schema, s.ID, idemKey,
+	); err != nil {
+		h.deps.Log.ErrorContext(ctx, "ucp: completion key not settled",
+			slog.String("session", s.ID),
+			slog.Bool("spent", placement != checkout.NothingPlaced),
+			slog.String("error", err.Error()))
+	}
+}
+
+// unrenderedErr is the answer for an order that exists while its
+// checkout is not rendered: the agent must read it again, not order
+// again.
+func unrenderedErr(s *checkout.Session) error {
+	return fmt.Errorf(
+		"order %s is placed, but the checkout could not be rendered; "+
+			"read it again with get_checkout, and do not start a "+
+			"new checkout", s.OrderUUID)
 }
 
 // paymentLinkErr is the truthful answer when the order exists but its
@@ -451,10 +482,7 @@ func (h *handlers) checkoutResult(
 		neg.Declaration(ucp.CapabilityCheckout))
 	if err != nil {
 		if s.OrderUUID != "" {
-			return nil, zero, fmt.Errorf(
-				"order %s is placed, but the checkout could not be rendered; "+
-					"read it again with get_checkout, and do not start a "+
-					"new checkout", s.OrderUUID)
+			return nil, zero, unrenderedErr(s)
 		}
 		return nil, zero, upstreamErr(err,
 			"checkout state could not be rendered; retry")

@@ -167,6 +167,22 @@ func TestPlacedSessionLifeCountsFromPlacement(t *testing.T) {
 		placed(terminalTTL, StatusRequiresEscalation).ttl(now), time.Duration(0))
 }
 
+// Only an open session may be written by a call that is not placing it:
+// a placed, escalated, in-progress or canceled one must not change.
+func TestOpen(t *testing.T) {
+	open := map[Status]bool{
+		StatusIncomplete:         true,
+		StatusReadyForComplete:   true,
+		StatusCompleteInProgress: false,
+		StatusRequiresEscalation: false,
+		StatusCompleted:          false,
+		StatusCanceled:           false,
+	}
+	for status, want := range open {
+		assert.Equal(t, want, (&Session{Status: status}).Open(), status)
+	}
+}
+
 func TestTerminal(t *testing.T) {
 	s := NewSession("public", "shop.test", "ucp", "cart-1")
 	assert.False(t, s.Terminal())

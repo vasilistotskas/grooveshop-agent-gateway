@@ -203,11 +203,15 @@ passes.
   caller's idempotency key, `NothingPlaced` releases it. A completion
   refused before the in-progress save stores nothing. So the ACP
   handler and the UCP tool store what the call itself submitted (ACP's
-  buyer, UCP's payment) before they call it, under the session lock
-  and only for a session that is still open: a refused call keeps the
-  buyer's latest choice. After it they only settle their own key by
-  the placement (ACP's body-hash record, UCP's completion claim) and
-  map the error; neither saves the session again. An ACP request's
+  buyer, UCP's payment) before they call it, so that a refused call
+  keeps the buyer's latest choice: only for a session that is still
+  open (`Session.Open`), and only while they hold both the session
+  lock and their idempotency key. UCP's payment lookup can outlast the
+  lock, so its save comes after the completion claim; ACP saves the
+  buyer before any Django call. After the flow they only settle their
+  own key by the placement (ACP's body-hash record, UCP's completion
+  claim), on a context the caller cannot cancel, and map the error;
+  neither saves the session again. An ACP request's
   context ends when the platform disconnects, and so does an MCP
   tool's for a client on protocol 2026-07-28 or later
   (`PropagateRequestCancellation`).
