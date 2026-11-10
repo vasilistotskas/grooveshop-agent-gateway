@@ -287,6 +287,7 @@ const (
 	codeNotGranted  = "not_granted"
 	codeNotAllowed  = "not_allowed"
 	codeNotFound    = "not_found"
+	codeAccessOff   = "access_off"
 	codeReconnect   = "unauthorized"
 	codeThrottled   = "throttled"
 	codeInvalid     = "invalid"
@@ -312,10 +313,24 @@ func scopeRefusal(p *django.StaffProfile, scope string) error {
 
 // upstreamErr turns a Django failure into a tool error for the store's
 // staff: what happened, and what to do next.
-func upstreamErr(err error, notFound string) error {
+//
+// Django answers a bare 404 on every staff route once the store switches
+// AI app access off, and this pod's copy of the store's settings and the
+// token's verdict can still say on for a few minutes. A 404 is therefore
+// checked against /agent/staff/me before it is reported as missing data:
+// "no orders" while access is off would be a false answer.
+func (h *handlers) upstreamErr(
+	ctx context.Context, err error, notFound string,
+) error {
 	apiErr, _ := errors.AsType[*django.APIError](err)
 	switch {
 	case errors.Is(err, django.ErrNotFound):
+		if h.accessOff(ctx) {
+			return &mcpsrv.ToolError{Code: codeAccessOff, Hint: "the " +
+				"store has switched AI app access off for its team; tell " +
+				"the person: an Owner or Admin can turn it back on in the " +
+				"store settings"}
+		}
 		return &mcpsrv.ToolError{Code: codeNotFound, Hint: notFound}
 	case errors.Is(err, django.ErrForbidden):
 		return &mcpsrv.ToolError{Code: codeNotAllowed, Hint: "the store " +
@@ -344,4 +359,20 @@ func upstreamErr(err error, notFound string) error {
 			Hint: "the store's backend is temporarily unavailable; retry " +
 				"once, then try again later"}
 	}
+}
+
+// accessOff asks Django, uncached, whether the store's staff surface is
+// gone: /agent/staff/me answers 404 only then.
+func (h *handlers) accessOff(ctx context.Context) bool {
+	t, ok := tenant.FromContext(ctx)
+	if !ok {
+		return false
+	}
+	staff, ok := staffFrom(ctx)
+	if !ok {
+		return false
+	}
+	_, err := h.deps.Django.StaffMe(ctx, t.Domain,
+		django.Language(ctx, t.TenantConfig), staff.Bearer)
+	return errors.Is(err, django.ErrNotFound)
 }

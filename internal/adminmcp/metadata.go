@@ -39,7 +39,9 @@ func ResourceMetadataHandler(connectHost string) http.Handler {
 			ResourceName:           identityFor(t).Title,
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "public, max-age=3600")
+		// No shared cache, and no longer than the tenant cache: the
+		// document must answer 404 soon after the store switches off.
+		w.Header().Set("Cache-Control", "private, max-age=300")
 		_ = json.NewEncoder(w).Encode(doc)
 	})
 }

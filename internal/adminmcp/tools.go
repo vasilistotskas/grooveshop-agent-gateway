@@ -123,7 +123,7 @@ func (h *handlers) listOrders(
 			Limit:         in.Limit,
 		})
 	if err != nil {
-		return nil, ListOrdersOut{}, upstreamErr(err, "no orders found")
+		return nil, ListOrdersOut{}, h.upstreamErr(ctx, err, "no orders found")
 	}
 	out := ListOrdersOut{Orders: make([]Order, 0, len(orders))}
 	for _, o := range orders {
@@ -172,7 +172,7 @@ func (h *handlers) getOrder(
 	o, err := h.deps.Django.StaffOrder(ctx, t.Domain, lang, staff.Bearer,
 		in.OrderID)
 	if err != nil {
-		return nil, OrderDetail{}, upstreamErr(err,
+		return nil, OrderDetail{}, h.upstreamErr(ctx, err,
 			"no order with that id in this store; find it with list_orders")
 	}
 	lines := make([]OrderLine, 0, len(o.Lines))
@@ -261,7 +261,7 @@ func (h *handlers) salesReport(
 	report, err := h.deps.Django.StaffSales(ctx, t.Domain, lang,
 		staff.Bearer, in.query())
 	if err != nil {
-		return nil, SalesReport{}, upstreamErr(err, "no report")
+		return nil, SalesReport{}, h.upstreamErr(ctx, err, "no report")
 	}
 	out := SalesReport{
 		Start:    report.Start,
@@ -328,7 +328,7 @@ func (h *handlers) profitReport(
 	report, err := h.deps.Django.StaffProfit(ctx, t.Domain, lang,
 		staff.Bearer, in.query())
 	if err != nil {
-		return nil, ProfitReport{}, upstreamErr(err, "no report")
+		return nil, ProfitReport{}, h.upstreamErr(ctx, err, "no report")
 	}
 	out := ProfitReport{
 		Start:    report.Start,
@@ -378,7 +378,7 @@ func (h *handlers) listProducts(
 	products, err := h.deps.Django.StaffProducts(ctx, t.Domain, lang,
 		staff.Bearer, in.Search, in.LowStock, in.Limit)
 	if err != nil {
-		return nil, ListProductsOut{}, upstreamErr(err, "no products found")
+		return nil, ListProductsOut{}, h.upstreamErr(ctx, err, "no products found")
 	}
 	out := ListProductsOut{Products: make([]Product, 0, len(products))}
 	for _, p := range products {
@@ -428,7 +428,7 @@ func (h *handlers) findCustomers(
 	customers, err := h.deps.Django.StaffCustomers(ctx, t.Domain, lang,
 		staff.Bearer, in.Search, in.Limit)
 	if err != nil {
-		return nil, FindCustomersOut{}, upstreamErr(err, "no customers found")
+		return nil, FindCustomersOut{}, h.upstreamErr(ctx, err, "no customers found")
 	}
 	out := FindCustomersOut{Customers: make([]Customer, 0, len(customers))}
 	for _, c := range customers {
@@ -477,7 +477,7 @@ func (h *handlers) listReviews(
 	rows, err := h.deps.Django.StaffReviews(ctx, t.Domain, lang,
 		staff.Bearer, in.Status, in.Limit)
 	if err != nil {
-		return nil, ListReviewsOut{}, upstreamErr(err, "no reviews found")
+		return nil, ListReviewsOut{}, h.upstreamErr(ctx, err, "no reviews found")
 	}
 	out := ListReviewsOut{Reviews: make([]Review, 0, len(rows))}
 	for _, r := range rows {
@@ -525,7 +525,7 @@ func (h *handlers) listMessages(
 	rows, err := h.deps.Django.StaffMessages(ctx, t.Domain, lang,
 		staff.Bearer, in.Limit)
 	if err != nil {
-		return nil, ListMessagesOut{}, upstreamErr(err, "no messages found")
+		return nil, ListMessagesOut{}, h.upstreamErr(ctx, err, "no messages found")
 	}
 	out := ListMessagesOut{Messages: make([]Message, 0, len(rows))}
 	for _, m := range rows {

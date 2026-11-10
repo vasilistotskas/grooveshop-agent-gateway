@@ -95,8 +95,11 @@ passes.
   Django `/agent/staff/me` (60s cache keyed by SHA-256(schema, token)) and
   forwards it to `/api/v1/agent/staff/*`, which checks the scope, the role
   and the team on every call. A scope not granted or not open to the role
-  is refused before Django is asked. Customer-written text comes back as
-  `{untrusted: true, source, text}`. Staff tokens come from Django's staff
+  is refused before Django is asked; a 403 from Django is reported as
+  `not_allowed` here (the person needs to know it is their role), unlike
+  `/mcp`, and a 404 is checked against `/agent/staff/me` first, so a store
+  that switched access off answers `access_off`, never "no data".
+  Customer-written text comes back as `{untrusted: true, source, text}`. Staff tokens come from Django's staff
   issuer, never the store's own (that one signs in customers), and are
   bound to the store's `/mcp/admin` on its primary domain. Every tool is
   read only; a write tool needs the owner's approval first

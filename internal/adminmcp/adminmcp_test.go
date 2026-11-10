@@ -46,6 +46,7 @@ func quietLog() *slog.Logger {
 // the Authorization header each data call carried.
 type fakeDjango struct {
 	granted  []string
+	off      atomic.Bool
 	meCalls  atomic.Int32
 	dataAuth atomic.Value
 	hits     map[string]*atomic.Int32
@@ -66,6 +67,13 @@ func (f *fakeDjango) serve(t *testing.T) *django.Client {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
+			if f.off.Load() {
+				// The store switched access off: Django has no staff
+				// surface at all.
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"detail":"Not found."}`))
+				return
+			}
 			path := strings.TrimPrefix(r.URL.Path, "/api/v1/agent/staff/")
 			if path != "me" {
 				f.dataAuth.Store(r.Header.Get("Authorization"))
@@ -371,4 +379,65 @@ func TestAmountsArriveAsNumbersAndLeaveAsDecimalStrings(t *testing.T) {
 	assert.Nil(t, profit.Total.GrossMargin, "no revenue, no margin")
 	require.NotNil(t, profit.Total.FeeCoverage)
 	assert.Equal(t, "100.00", *profit.Total.FeeCoverage)
+}
+
+// A store that switches access off while an app is connected: this pod
+// still has the store on and the token's verdict cached, so the tool
+// reaches Django, which answers 404. That is reported as access switched
+// off, never as "no orders".
+func TestAToolAfterTheSwitchGoesOffSaysSo(t *testing.T) {
+	f := &fakeDjango{granted: ReadScopes}
+	session := connect(t, stack(f.serve(t), acme()))
+	res, err := session.CallTool(context.Background(),
+		&mcp.CallToolParams{Name: "whoami"})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	f.off.Store(true)
+	for tool, args := range map[string]map[string]any{
+		"list_orders": {}, "sales_report": {}, "get_order": {"orderId": 7},
+	} {
+		res, err = session.CallTool(context.Background(),
+			&mcp.CallToolParams{Name: tool, Arguments: args})
+		require.NoError(t, err)
+		require.True(t, res.IsError, tool)
+		assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
+			`"code":"access_off"`, tool)
+	}
+}
+
+// With access on, a 404 is what the tool says it is: no such order.
+func TestAnOrderThatIsNotThereIsNotFound(t *testing.T) {
+	f := &fakeDjango{granted: ReadScopes}
+	session := connect(t, stack(f.serve(t), acme()))
+	res, err := session.CallTool(context.Background(),
+		&mcp.CallToolParams{Name: "get_order",
+			Arguments: map[string]any{"orderId": 7}})
+	require.NoError(t, err)
+	require.True(t, res.IsError)
+	assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
+		`"code":"not_found"`)
+}
+
+// A throttled verification is a 429 the client can back off on, not an
+// outage.
+func TestAThrottledVerificationIsPassedOn(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "17")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"detail":"Request was throttled."}`))
+		}))
+	t.Cleanup(srv.Close)
+	dj := django.New(srv.URL+"/api/v1", "api.acme.test", "secret",
+		5*time.Second, quietLog(), obs.NewMetrics())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, Path, strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+goodToken)
+	stack(dj, acme()).ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
+	assert.Equal(t, "17", rec.Header().Get("Retry-After"))
 }
