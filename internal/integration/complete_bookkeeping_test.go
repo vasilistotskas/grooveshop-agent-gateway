@@ -3,10 +3,13 @@
 package integration
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -419,6 +422,11 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 					"ag:demostore:cs:"+id+":lock").Result()
 				return err == nil && held == 0
 			}, 10*time.Second, 20*time.Millisecond)
+			// The order was not read back for a caller that had gone,
+			// and the log says which order went unanswered.
+			assert.Contains(t,
+				stack.logs.with("order placed", "session="+id),
+				"order="+fixtureOrderUUID)
 
 			assert.Equal(t, "completed",
 				surface.complete(context.Background(), id, key, nil),
@@ -427,6 +435,73 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 				"and places nothing")
 		})
 	}
+}
+
+// A platform that closes its sending side and keeps reading looks like
+// one that hung up: its request's context ends the same way. It is still
+// there to read, so a completed order is answered, not left with an
+// empty reply: the order is placed, and the session is to be read again.
+func TestACPCompleteAnswersAPlatformThatOnlyLooksGone(t *testing.T) {
+	watch := new(requestWatch)
+	stack := startUCPGatewayBehind(t, watch.front)
+	var acp completionSurface
+	for _, surface := range completionSurfaces(t, stack) {
+		if surface.name == "acp" {
+			acp = surface
+		}
+	}
+	id := acp.ready(t)
+	reached, answer := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(answer) })
+	defer release()
+	hold := func(*http.Request) {
+		close(reached)
+		<-answer
+	}
+	stack.faults.orderHold.Store(&hold)
+
+	host := stack.gw.Listener.Addr().String()
+	conn, err := net.Dial("tcp", host)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	require.NoError(t, conn.SetDeadline(time.Now().Add(30*time.Second)))
+	const body = `{"payment_data": {}}`
+	_, err = fmt.Fprintf(conn, "POST /acp/checkout_sessions/%s/complete "+
+		"HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\n"+
+		"Content-Type: application/json\r\nIdempotency-Key: %s\r\n"+
+		"Content-Length: %d\r\n\r\n%s",
+		id, host, acpBearerToken, uuid.NewString(), len(body), body)
+	require.NoError(t, err)
+
+	const wait = ucpUpstreamTimeout / 2
+	select {
+	case <-reached:
+	case <-time.After(wait):
+		t.Fatal("the order was never sent to the store")
+	}
+	served := watch.last()
+	require.NoError(t, conn.(*net.TCPConn).CloseWrite())
+	select {
+	case <-served.Done():
+	case <-time.After(wait):
+		t.Fatal("the gateway never saw the platform's side close")
+	}
+	release()
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	var answered map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&answered))
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	assert.Contains(t, answered["message"],
+		"Order "+fixtureOrderUUID+" is placed")
+	assert.Contains(t, answered["message"], "Read the session again")
+	assert.Contains(t,
+		stack.logs.with("acp: order placed", "session="+id),
+		"order="+fixtureOrderUUID)
+	assert.Equal(t, checkout.StatusCompleted,
+		stack.storedSession(t, id).Status)
 }
 
 const otherBuyerEmail = "other@example.test"
@@ -478,35 +553,42 @@ func TestRefusedCompleteKeepsWhatItSubmitted(t *testing.T) {
 		surfaces[surface.name] = surface
 	}
 	payWay := func(s *checkout.Session) any { return s.PayWayID }
+	// refusal is a complete the store refuses, and what the checkout
+	// holds once it has.
+	type refusal struct {
+		submit map[string]any
+		stored any
+	}
 	cases := []struct {
 		name, surface string
-		// refused are the completes the store refuses, in order: the
-		// last one is the buyer's latest word.
-		refused []map[string]any
+		// refused come in order: the last is the buyer's latest word,
+		// and what the order must carry.
+		refused []refusal
 		// member is where an order's body carries what was submitted.
 		member string
-		want   any
-		stored func(*checkout.Session) any
+		read   func(*checkout.Session) any
 	}{
 		{
 			name: "a hosted pay way", surface: "ucp",
-			refused: []map[string]any{{"pay_way_id": 2}},
-			member:  "payWayId", want: 2, stored: payWay,
+			refused: []refusal{{map[string]any{"pay_way_id": 2}, 2}},
+			member:  "payWayId", read: payWay,
 		},
 		{
 			// The first refusal leaves the hosted card selected, so
-			// cash on delivery at the end is the instrument's doing.
+			// cash on delivery after the second is the instrument's
+			// doing.
 			name: "an instrument", surface: "ucp",
-			refused: []map[string]any{
-				{"pay_way_id": 2}, {"payment": codPayment()},
+			refused: []refusal{
+				{map[string]any{"pay_way_id": 2}, 2},
+				{map[string]any{"payment": codPayment()}, 1},
 			},
-			member: "payWayId", want: 1, stored: payWay,
+			member: "payWayId", read: payWay,
 		},
 		{
 			name: "a buyer", surface: "acp",
-			refused: []map[string]any{otherBuyer()},
-			member:  "email", want: otherBuyerEmail,
-			stored: func(s *checkout.Session) any { return s.Buyer.Email },
+			refused: []refusal{{otherBuyer(), otherBuyerEmail}},
+			member:  "email",
+			read:    func(s *checkout.Session) any { return s.Buyer.Email },
 		},
 	}
 	for _, tc := range cases {
@@ -518,25 +600,27 @@ func TestRefusedCompleteKeepsWhatItSubmitted(t *testing.T) {
 
 			stack.faults.stockShort.Store(true)
 			t.Cleanup(func() { stack.faults.stockShort.Store(false) })
-			for _, submit := range tc.refused {
+			for _, refused := range tc.refused {
 				key := uuid.NewString()
-				require.Empty(t, surface.complete(ctx, id, key, submit),
+				require.Empty(t,
+					surface.complete(ctx, id, key, refused.submit),
 					"refused: the stock ran out")
 				assert.Equal(t, bookkeeping{
 					Session: checkout.StatusReadyForComplete,
 					Key:     keyReleased,
 				}, stack.bookkeeping(t, id, surface.keyName(id, key)))
+				require.EqualValues(t, refused.stored,
+					tc.read(stack.storedSession(t, id)))
 			}
 			stack.faults.stockShort.Store(false)
-			assert.EqualValues(t, tc.want,
-				tc.stored(stack.storedSession(t, id)))
 			require.Equal(t, creates, stack.faults.orderCreates.Load())
 
 			require.NotEmpty(t,
 				surface.complete(ctx, id, uuid.NewString(), nil),
 				"the next complete places the order")
 			require.Equal(t, creates+1, stack.faults.orderCreates.Load())
-			assert.EqualValues(t, tc.want,
+			assert.EqualValues(t,
+				tc.refused[len(tc.refused)-1].stored,
 				(*stack.faults.lastOrder.Load())[tc.member])
 		})
 	}

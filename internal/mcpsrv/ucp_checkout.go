@@ -339,20 +339,26 @@ func (h *handlers) completeCheckout(
 	// meanwhile. This snapshot must not be written over that session.
 	if s.Open() && (s.PayWayID != payWay || s.Status != status) {
 		if err := h.deps.Checkout.Save(ctx, s); err != nil {
-			h.settleCompletion(ctx, s, idemKey, checkout.NothingPlaced)
+			h.settleCompletion(ctx, t, s, idemKey, checkout.NothingPlaced)
 			return nil, zero, errors.New(
 				"checkout is temporarily unavailable; retry shortly")
 		}
 	}
 
 	placement, err := h.deps.Flow.Complete(ctx, t, s)
-	h.settleCompletion(ctx, s, idemKey, placement)
+	h.settleCompletion(ctx, t, s, idemKey, placement)
 	switch {
 	case err == nil:
 		if ctx.Err() != nil {
-			// The caller has gone: reading the order back for it would
-			// only fail. It is answered as for any placed checkout that
-			// could not be rendered.
+			// The call's context has ended: the caller hung up, or the
+			// server is shutting down. Reading the order back on it
+			// would only fail, so the call is answered as for any
+			// placed checkout that could not be rendered.
+			h.deps.Log.InfoContext(ctx,
+				"ucp: order placed, checkout not rendered",
+				slog.String("session", s.ID),
+				slog.String("order", s.OrderUUID),
+				slog.String("cause", context.Cause(ctx).Error()))
 			return nil, zero, unrenderedErr(s)
 		}
 		return h.checkoutResult(ctx, t, s, neg)
@@ -389,20 +395,23 @@ func (h *handlers) completeCheckout(
 }
 
 // settleCompletion spends or releases a completion claim by what the
-// attempt did about the order. It runs even for a platform that has
-// gone: its retry must find what this attempt did, not a claim left in
-// flight.
+// attempt did about the order. It runs even when the call's context has
+// ended (a platform that hung up, a shutdown): a retry must find what
+// this attempt did, not a claim left in flight. The Django client's
+// timeout bounds the one Redis write, which go-redis alone would retry
+// against a silent Redis for several times that.
 func (h *handlers) settleCompletion(
-	ctx context.Context, s *checkout.Session, idemKey string,
-	placement checkout.Placement,
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	idemKey string, placement checkout.Placement,
 ) {
 	settle := h.deps.Checkout.MarkCompleted
 	if placement == checkout.NothingPlaced {
 		settle = h.deps.Checkout.ReleaseCompletion
 	}
-	if err := settle(
-		context.WithoutCancel(ctx), s.Schema, s.ID, idemKey,
-	); err != nil {
+	settleCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), h.deps.Django.Timeout())
+	defer cancel()
+	if err := settle(settleCtx, t.SchemaName, s.ID, idemKey); err != nil {
 		h.deps.Log.ErrorContext(ctx, "ucp: completion key not settled",
 			slog.String("session", s.ID),
 			slog.Bool("spent", placement != checkout.NothingPlaced),

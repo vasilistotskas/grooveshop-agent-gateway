@@ -102,10 +102,11 @@ func NewFlow(
 // as that left it. The caller holds the session lock and its idempotency
 // key, and settles the key by the returned Placement.
 //
-// Once the order is about to be created, a caller that leaves no longer
-// stops anything: stopping there would leave Django with an order, its
-// checkout never saved as placed and no order link for get_order or the
-// order webhooks to find it by.
+// Once the order is about to be created, the end of the caller's context
+// (a platform that hangs up, or the server cancelling its requests at
+// shutdown) no longer stops anything: stopping there would leave Django
+// with an order, its checkout never saved as placed and no order link
+// for get_order or the order webhooks to find it by.
 func (f *Flow) Complete(
 	ctx context.Context, t *tenant.Tenant, s *Session,
 ) (Placement, error) {
@@ -116,7 +117,8 @@ func (f *Flow) Complete(
 		// saving it would overwrite that attempt's session.
 		return NothingPlaced, err
 	}
-	// No order exists yet, so a caller that has already left gets none.
+	// No order exists yet, so a call whose context has already ended
+	// (a caller that left, a server shutting down) gets none.
 	if err := ctx.Err(); err != nil {
 		return NothingPlaced, err
 	}

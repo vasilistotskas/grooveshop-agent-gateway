@@ -328,6 +328,36 @@ type ucpStack struct {
 	rdb *redis.Client
 	// faults toggles upstream failures.
 	faults *checkoutFaults
+	// logs is what the gateway logged, from info up.
+	logs *logLines
+}
+
+// logLines collects a gateway's log output for a test to read.
+type logLines struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *logLines) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+// with returns the first line that contains every part, or "".
+func (l *logLines) with(parts ...string) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+lines:
+	for line := range strings.SplitSeq(l.buf.String(), "\n") {
+		for _, part := range parts {
+			if !strings.Contains(line, part) {
+				continue lines
+			}
+		}
+		return line
+	}
+	return ""
 }
 
 // startUCPGateway boots the full stack with real Redis, the webhook
@@ -349,9 +379,8 @@ func startUCPGatewayBehind(
 	t.Cleanup(djangoSrv.Close)
 	rdb := startRedis(t)
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelError + 1,
-	}))
+	logs := new(logLines)
+	log := slog.New(slog.NewTextHandler(logs, nil))
 	metrics := obs.NewMetrics()
 	cfg := config.Config{
 		Env: config.EnvTest,
@@ -393,7 +422,7 @@ func startUCPGatewayBehind(
 	srv := httptest.NewServer(front(handler))
 	t.Cleanup(srv.Close)
 	return ucpStack{
-		gw: srv, key: key, rdb: rdb, faults: faults,
+		gw: srv, key: key, rdb: rdb, faults: faults, logs: logs,
 	}
 }
 

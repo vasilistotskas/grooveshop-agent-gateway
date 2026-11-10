@@ -252,9 +252,19 @@ func (h *Handler) claimIdem(
 	return key, false, &rec, false
 }
 
-// storeIdem records what a claimed key did. Like releaseIdem it settles
-// the key even for a platform that has gone: a key left in flight
-// answers its retry 409 for a minute.
+// settling is the context a claimed key is recorded or released on. It
+// outlives the request's own (a platform that hung up, a shutdown): a
+// key left in flight answers the retry 409 for a minute. The Django
+// client's timeout bounds the one Redis write, which go-redis alone
+// would retry against a silent Redis for several times that.
+func (h *Handler) settling(r *http.Request) (
+	context.Context, context.CancelFunc,
+) {
+	return context.WithTimeout(
+		context.WithoutCancel(r.Context()), h.dj.Timeout())
+}
+
+// storeIdem records what a claimed key did.
 func (h *Handler) storeIdem(
 	r *http.Request, schema, scope, key string, rec idemRecord,
 ) {
@@ -262,17 +272,20 @@ func (h *Handler) storeIdem(
 	if err != nil {
 		return
 	}
-	if err := h.rdb.Set(context.WithoutCancel(r.Context()),
-		idemRedisKey(schema, scope, key), raw, 24*time.Hour).
-		Err(); err != nil {
+	ctx, cancel := h.settling(r)
+	defer cancel()
+	if err := h.rdb.Set(ctx, idemRedisKey(schema, scope, key), raw,
+		24*time.Hour).Err(); err != nil {
 		h.logUnsettled(r, scope, "record", err)
 	}
 }
 
 // releaseIdem clears an inflight claim after a failed attempt.
 func (h *Handler) releaseIdem(r *http.Request, schema, scope, key string) {
-	if err := h.rdb.Del(context.WithoutCancel(r.Context()),
-		idemRedisKey(schema, scope, key)).Err(); err != nil {
+	ctx, cancel := h.settling(r)
+	defer cancel()
+	if err := h.rdb.Del(ctx, idemRedisKey(schema, scope, key)).
+		Err(); err != nil {
 		h.logUnsettled(r, scope, "release", err)
 	}
 }
@@ -772,10 +785,16 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Context().Err() != nil {
-		// The platform looks gone, so reading the order back on its
-		// ended request could only fail. A half-closed connection looks
-		// the same and still reads the answer: it is the one a failed
-		// render gives.
+		// The request's context has ended: the platform hung up, or the
+		// server is shutting down. Reading the order back on it could
+		// only fail. A platform still connected (a shutdown, or a
+		// half-closed connection, which looks like a hang-up) reads the
+		// answer, so it is the one a failed render gives.
+		h.log.InfoContext(r.Context(),
+			"acp: order placed, session not rendered",
+			slog.String("session", s.ID),
+			slog.String("order", s.OrderUUID),
+			slog.String("cause", context.Cause(r.Context()).Error()))
 		writePlacedUnrendered(w, s)
 		return
 	}
