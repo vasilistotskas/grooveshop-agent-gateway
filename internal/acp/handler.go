@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -97,6 +98,15 @@ func writeUnavailable(w http.ResponseWriter, msg string) {
 	writeError(w, http.StatusServiceUnavailable, Error{
 		Type: "service_unavailable", Message: msg,
 	})
+}
+
+// writePlacedUnrendered answers for an order that exists while its
+// session is not rendered: the platform must read it again, not order
+// again.
+func writePlacedUnrendered(w http.ResponseWriter, s *checkout.Session) {
+	writeUnavailable(w, "Order "+s.OrderUUID+" is placed, but the "+
+		"session cannot be rendered right now. Read the session "+
+		"again, and do not start a new checkout.")
 }
 
 func writeSession(w http.ResponseWriter, status int, s *Session) {
@@ -242,6 +252,19 @@ func (h *Handler) claimIdem(
 	return key, false, &rec, false
 }
 
+// settling is the context a claimed key is recorded or released on. It
+// outlives the request's own (a platform that hung up, a shutdown): a
+// key left in flight answers the retry 409 for a minute. The Django
+// client's timeout bounds the one Redis write, which go-redis alone
+// would retry against a silent Redis for several times that.
+func (h *Handler) settling(r *http.Request) (
+	context.Context, context.CancelFunc,
+) {
+	return context.WithTimeout(
+		context.WithoutCancel(r.Context()), h.dj.Timeout())
+}
+
+// storeIdem records what a claimed key did.
 func (h *Handler) storeIdem(
 	r *http.Request, schema, scope, key string, rec idemRecord,
 ) {
@@ -249,13 +272,32 @@ func (h *Handler) storeIdem(
 	if err != nil {
 		return
 	}
-	_ = h.rdb.Set(r.Context(), idemRedisKey(schema, scope, key), raw,
-		24*time.Hour).Err()
+	ctx, cancel := h.settling(r)
+	defer cancel()
+	if err := h.rdb.Set(ctx, idemRedisKey(schema, scope, key), raw,
+		24*time.Hour).Err(); err != nil {
+		h.logUnsettled(r, scope, "record", err)
+	}
 }
 
 // releaseIdem clears an inflight claim after a failed attempt.
 func (h *Handler) releaseIdem(r *http.Request, schema, scope, key string) {
-	_ = h.rdb.Del(r.Context(), idemRedisKey(schema, scope, key)).Err()
+	ctx, cancel := h.settling(r)
+	defer cancel()
+	if err := h.rdb.Del(ctx, idemRedisKey(schema, scope, key)).
+		Err(); err != nil {
+		h.logUnsettled(r, scope, "release", err)
+	}
+}
+
+// logUnsettled reports a key left as its claim wrote it: "inflight" for
+// a minute, which answers the platform's retry 409 until it lapses.
+func (h *Handler) logUnsettled(
+	r *http.Request, scope, action string, err error,
+) {
+	h.log.ErrorContext(r.Context(), "acp: idempotency key not settled",
+		slog.String("scope", scope), slog.String("action", action),
+		slog.String("error", err.Error()))
 }
 
 // --- Input mapping ---------------------------------------------------------
@@ -691,10 +733,24 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Readiness first, and it needs no pay way on ACP. Without a delivery no
-	// pay way can be chosen, which says nothing about what the store offers.
+	buyer, status := s.Buyer, s.Status
 	applyBuyer(s, req.Buyer, nil)
 	s.Recompute()
+	// The buyer this call submitted is the latest word whether or not
+	// the call places the order. It is stored now, because a refused
+	// completion stores nothing: a later complete that omits the buyer
+	// would otherwise place the order for the one before. No Django call
+	// sits between the load and this save, so the lock still holds. The
+	// pay way is not part of it: it is looked up again on every call.
+	if s.Open() && (s.Buyer != buyer || s.Status != status) {
+		if err := h.store.Save(r.Context(), s); err != nil {
+			h.releaseIdem(r, t.SchemaName, scope, key)
+			writeUnavailable(w, "Checkout is temporarily unavailable.")
+			return
+		}
+	}
+	// Readiness first, and it needs no pay way on ACP. Without a delivery no
+	// pay way can be chosen, which says nothing about what the store offers.
 	if s.Status == checkout.StatusIncomplete {
 		h.releaseIdem(r, t.SchemaName, scope, key)
 		h.completeError(w, checkout.ErrNotReady)
@@ -718,31 +774,28 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	record := idemRecord{
 		SessionID: s.ID, BodyHash: bodyHash(raw), Status: http.StatusOK,
 	}
-	if _, err := h.flow.Complete(r.Context(), t, s); err != nil {
-		switch {
-		case errors.Is(err, checkout.ErrCompletionInProgress):
-			// Another attempt owns the session; this snapshot is stale
-			// and must not overwrite it.
-			h.releaseIdem(r, t.SchemaName, scope, key)
-		case s.OrderUUID != "",
-			errors.Is(err, checkout.ErrOrderOutcomeUnknown):
-			// The order exists, or may: the key is spent so a retry
-			// re-renders, never places a second order.
-			h.storeIdem(r, t.SchemaName, scope, key, record)
-			_ = h.store.Save(r.Context(), s)
-		default:
-			h.releaseIdem(r, t.SchemaName, scope, key)
-			_ = h.store.Save(r.Context(), s)
-		}
+	placement, err := h.flow.Complete(r.Context(), t, s)
+	if placement == checkout.NothingPlaced {
+		h.releaseIdem(r, t.SchemaName, scope, key)
+	} else {
+		h.storeIdem(r, t.SchemaName, scope, key, record)
+	}
+	if err != nil {
 		h.completeError(w, err)
 		return
 	}
-	// Recorded before the save: the order exists now, and a failed save
-	// must not leave the key retryable against a ready session.
-	h.storeIdem(r, t.SchemaName, scope, key, record)
-	if err := h.store.Save(r.Context(), s); err != nil {
-		writeUnavailable(w, "The order was placed but the session could not be "+
-			"saved; retrieve it again shortly.")
+	if r.Context().Err() != nil {
+		// The request's context has ended: the platform hung up, or the
+		// server is shutting down. Reading the order back on it could
+		// only fail. A platform still connected (a shutdown, or a
+		// half-closed connection, which looks like a hang-up) reads the
+		// answer, so it is the one a failed render gives.
+		h.log.InfoContext(r.Context(),
+			"acp: order placed, session not rendered",
+			slog.String("session", s.ID),
+			slog.String("order", s.OrderUUID),
+			slog.String("cause", context.Cause(r.Context()).Error()))
+		writePlacedUnrendered(w, s)
 		return
 	}
 	h.render(w, r, t, s, http.StatusOK)
@@ -862,6 +915,9 @@ func (h *Handler) completeError(w http.ResponseWriter, err error) {
 			Message: "The store did not confirm whether the order was " +
 				"placed; do not retry — retrieve the session later.",
 		})
+	case errors.Is(err, checkout.ErrSessionNotSaved):
+		writeUnavailable(w, "The order was placed but the session could not be "+
+			"saved; retrieve it again shortly.")
 	case errors.Is(err, checkout.ErrPayWayUnavailable):
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "unsupported",
@@ -884,9 +940,7 @@ func (h *Handler) render(
 		h.log.ErrorContext(r.Context(), "acp render failed",
 			slog.String("session", s.ID), slog.String("error", err.Error()))
 		if s.OrderUUID != "" {
-			writeUnavailable(w, "Order "+s.OrderUUID+" is placed, but the "+
-				"session cannot be rendered right now. Read the session "+
-				"again, and do not start a new checkout.")
+			writePlacedUnrendered(w, s)
 			return
 		}
 		writeUnavailable(w, "The session cannot be rendered right now.")

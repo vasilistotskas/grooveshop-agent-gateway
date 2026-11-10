@@ -141,6 +141,13 @@ func (s *Session) Terminal() bool {
 	return s.Status == StatusCompleted || s.Status == StatusCanceled
 }
 
+// Open reports whether the session still takes what an order needs: it
+// is neither placed, nor being placed, nor canceled.
+func (s *Session) Open() bool {
+	return s.Status == StatusIncomplete ||
+		s.Status == StatusReadyForComplete
+}
+
 // ttl is how long the session may still live. Calls keep an open session alive,
 // but not a placed one: it reads its order with the gateway's secret, past the
 // limit on a guest's order uuid, so it must end long before that limit however

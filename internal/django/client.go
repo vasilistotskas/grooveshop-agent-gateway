@@ -55,6 +55,11 @@ func New(
 	}
 }
 
+// Timeout is the longest one call waits for Django.
+func (c *Client) Timeout() time.Duration {
+	return c.hc.Timeout
+}
+
 // request describes one upstream call. Path is the templated path used for
 // metrics labels; query/body/headers are optional.
 type request struct {

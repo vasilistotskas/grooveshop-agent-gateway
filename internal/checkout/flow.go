@@ -32,6 +32,18 @@ var ErrOrderOutcomeUnknown = errors.New(
 
 // ErrPaymentSessionFailed marks an order that exists but whose hosted
 // payment link could not be created. The session stays escalated and
+// ResumePayment mints a fresh link; callers must never report it as a
+// failed order — the buyer would check out again and order twice.
+var ErrPaymentSessionFailed = errors.New(
+	"checkout: the order is placed but its payment link could not be " +
+		"created")
+
+// ErrSessionNotSaved marks an order that is placed while its session
+// could not be stored: the stored session still reads
+// complete_in_progress.
+var ErrSessionNotSaved = errors.New(
+	"checkout: the order is placed but its session could not be saved")
+
 // refused reports whether Django definitively rejected a request (a 4xx),
 // so nothing was created and it is safe to try again.
 func refused(err error) bool {
@@ -46,44 +58,109 @@ func refused(err error) bool {
 	return false
 }
 
-// ResumePayment mints a fresh link; callers must never report it as a
-// failed order — the buyer would check out again and order twice.
-var ErrPaymentSessionFailed = errors.New(
-	"checkout: the order is placed but its payment link could not be " +
-		"created")
+// Placement is what a completion did about the order. It decides the
+// caller's idempotency key, whatever error came with it.
+type Placement int
 
-// Outcome describes what completing a session produced.
-type Outcome struct {
-	// Escalated: the buyer must authorize payment at PaymentURL (Viva
-	// hosted checkout). The session stays open until the webhook lands.
-	Escalated  bool
-	PaymentURL string
+const (
+	// OrderMayExist: an order exists, or may. The caller spends its key,
+	// so a retry re-renders the session and never places a second order.
+	// It is the zero value: a Placement nobody set must not release a
+	// key.
+	OrderMayExist Placement = iota
+	// NothingPlaced: refused, and nothing was created. The caller
+	// releases its key, so the same key can try again.
+	NothingPlaced
+)
 
-	// Completed: the order is placed (offline pay ways — e.g. cash on
-	// delivery — need no payment authorization).
-	Completed bool
-}
+// completionSteps sizes the part of Complete that runs without its
+// caller, in upstream timeouts: one for the order, one for its payment
+// session, one for the Redis writes around them. The Django client cuts
+// each of its calls at one upstream timeout by itself, so however slow
+// Django answers, the writes keep their share.
+const completionSteps = 3
 
 // Flow orchestrates order creation over the existing Django endpoints.
 type Flow struct {
-	dj   *django.Client
-	st   *Store
-	site storefront.Site
-	log  *slog.Logger
+	dj     *django.Client
+	st     *Store
+	site   storefront.Site
+	budget time.Duration
+	log    *slog.Logger
 }
 
 func NewFlow(
 	dj *django.Client, st *Store, site storefront.Site, log *slog.Logger,
 ) *Flow {
-	return &Flow{dj: dj, st: st, site: site, log: log}
+	return &Flow{
+		dj: dj, st: st, site: site,
+		budget: completionSteps * dj.Timeout(), log: log,
+	}
 }
 
-// Complete places the order for a ready session. The caller holds the
-// session lock and the completion claim; Complete mutates the session and
-// the caller persists it.
+// Complete places the order for a ready session and stores the session
+// as that left it. The caller holds the session lock and its idempotency
+// key, and settles the key by the returned Placement.
+//
+// Once the order is about to be created, the end of the caller's context
+// (a platform that hangs up, or the server cancelling its requests at
+// shutdown) no longer stops anything: stopping there would leave Django
+// with an order, its checkout never saved as placed and no order link
+// for get_order or the order webhooks to find it by.
 func (f *Flow) Complete(
 	ctx context.Context, t *tenant.Tenant, s *Session,
-) (*Outcome, error) {
+) (Placement, error) {
+	payWay, err := f.admit(ctx, t, s)
+	if err != nil {
+		// Nothing is stored for a session that was not admitted. A
+		// snapshot that reads in progress is another attempt's, and
+		// saving it would overwrite that attempt's session.
+		return NothingPlaced, err
+	}
+	// No order exists yet, so a call whose context has already ended
+	// (a caller that left, a server shutting down) gets none.
+	if err := ctx.Err(); err != nil {
+		return NothingPlaced, err
+	}
+
+	// From here on the caller's cancellation no longer applies.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), f.budget)
+	defer cancel()
+
+	// Persisted BEFORE the order exists. The session lock can lapse
+	// during the upstream calls below, and a second complete that loads
+	// the session then must see a completion in flight — not a ready
+	// session it would place a second time.
+	s.Status = StatusCompleteInProgress
+	if err := f.st.Save(ctx, s); err != nil {
+		// The write that guards the order was refused: no order is
+		// sent, and the session is not written again.
+		s.Status = StatusReadyForComplete
+		return NothingPlaced, err
+	}
+	placement, err := f.place(ctx, t, s, payWay)
+	if errors.Is(err, ErrOrderOutcomeUnknown) {
+		// Stored in progress, and it stays so.
+		return placement, err
+	}
+	// Placed, or ready again after Django refused the order.
+	if saveErr := f.st.Save(ctx, s); saveErr != nil {
+		f.log.ErrorContext(ctx, "checkout: session save failed",
+			slog.String("session", s.ID),
+			slog.String("order", s.OrderUUID),
+			slog.String("error", saveErr.Error()))
+		if err == nil {
+			err = fmt.Errorf("%w: %w", ErrSessionNotSaved, saveErr)
+		}
+	}
+	return placement, err
+}
+
+// admit checks that the session can be placed and reserves its stock.
+// No order exists yet, so it runs on the caller's context.
+func (f *Flow) admit(
+	ctx context.Context, t *tenant.Tenant, s *Session,
+) (*django.PayWay, error) {
 	switch s.Status {
 	case StatusReadyForComplete:
 	case StatusCompleteInProgress:
@@ -133,16 +210,15 @@ func (f *Flow) Complete(
 	); err != nil {
 		return nil, err
 	}
+	return payWay, nil
+}
 
-	// Persisted BEFORE the order exists. The session lock can lapse
-	// during the upstream calls below, and a second complete that loads
-	// the session then must see a completion in flight — not a ready
-	// session it would place a second time.
-	s.Status = StatusCompleteInProgress
-	if err := f.st.Save(ctx, s); err != nil {
-		s.Status = StatusReadyForComplete
-		return nil, err
-	}
+// place creates the order for a session stored in progress, links it,
+// and starts its payment when the pay way is settled online. It leaves
+// the session as the result made it; Complete stores it.
+func (f *Flow) place(
+	ctx context.Context, t *tenant.Tenant, s *Session, payWay *django.PayWay,
+) (Placement, error) {
 	order, err := f.dj.CreateOrder(ctx, t.Domain, t.DefaultLocale, s.CartID,
 		django.OrderCreate{
 			PayWayID:             s.PayWayID,
@@ -171,10 +247,11 @@ func (f *Flow) Complete(
 		})
 	if err != nil {
 		if !refused(err) {
-			return nil, fmt.Errorf("%w: %w", ErrOrderOutcomeUnknown, err)
+			return OrderMayExist,
+				fmt.Errorf("%w: %w", ErrOrderOutcomeUnknown, err)
 		}
 		s.Status = StatusReadyForComplete
-		return nil, err
+		return NothingPlaced, err
 	}
 	s.OrderID = order.ID
 	s.OrderUUID = order.UUID
@@ -187,20 +264,20 @@ func (f *Flow) Complete(
 
 	if !payWay.IsOnlineSettlement() {
 		s.Status = StatusCompleted
-		return &Outcome{Completed: true}, nil
+		return OrderMayExist, nil
 	}
-	return f.startPayment(ctx, t, s)
+	return OrderMayExist, f.startPayment(ctx, t, s)
 }
 
 // ResumePayment mints a fresh hosted payment link for an escalated order
 // whose first link could not be created. A session that already has a
-// link, or no order, is returned as is.
+// link, or no order, is left as is.
 func (f *Flow) ResumePayment(
 	ctx context.Context, t *tenant.Tenant, s *Session,
-) (*Outcome, error) {
+) error {
 	if s.Status != StatusRequiresEscalation || s.OrderID == 0 ||
 		s.PaymentURL != "" {
-		return &Outcome{Escalated: true, PaymentURL: s.PaymentURL}, nil
+		return nil
 	}
 	return f.startPayment(ctx, t, s)
 }
@@ -208,10 +285,11 @@ func (f *Flow) ResumePayment(
 // startPayment creates the Viva hosted checkout for a placed order: the
 // buyer authorizes there and portal-configured success URLs land back on
 // the storefront. The API requires the URL fields even though Viva's are
-// static in the merchant portal.
+// static in the merchant portal. The session stays escalated until the
+// payment event lands.
 func (f *Flow) startPayment(
 	ctx context.Context, t *tenant.Tenant, s *Session,
-) (*Outcome, error) {
+) error {
 	s.Status = StatusRequiresEscalation
 	lang := django.Language(ctx, t.TenantConfig)
 	links := f.site.Links(t.Domain, lang)
@@ -220,10 +298,10 @@ func (f *Flow) startPayment(
 		links.OrderSuccess(s.OrderUUID), links.Cart())
 	if err != nil {
 		s.PaymentURL = ""
-		return nil, fmt.Errorf("%w: %w", ErrPaymentSessionFailed, err)
+		return fmt.Errorf("%w: %w", ErrPaymentSessionFailed, err)
 	}
 	s.PaymentURL = cs.CheckoutURL
-	return &Outcome{Escalated: true, PaymentURL: cs.CheckoutURL}, nil
+	return nil
 }
 
 // ApplyOrderEvent folds a Django order/payment event into the checkout

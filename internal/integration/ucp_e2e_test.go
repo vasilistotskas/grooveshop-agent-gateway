@@ -178,11 +178,22 @@ type checkoutFaults struct {
 	// gateway cannot know.
 	orderCreate  atomic.Bool
 	orderCreates atomic.Int32
+	// orderRefuse makes order creation answer 400: nothing is created.
+	orderRefuse atomic.Bool
+	// orderHold runs inside an accepted order creation, before it
+	// answers.
+	orderHold atomic.Pointer[func(*http.Request)]
+	// lastOrder is the body of the last order creation that was accepted.
+	lastOrder atomic.Pointer[map[string]any]
+	// stockShort makes the stock reservation answer a 409 shortfall.
+	stockShort atomic.Bool
 	// cartDeletedOnOrder makes the cart go with the first order, as it
 	// does in Django: asked for it, Django answers a new guest cart.
 	cartDeletedOnOrder atomic.Bool
 	// regionLookup makes the country's region list answer 502.
 	regionLookup atomic.Bool
+	// payWayLookup makes the pay-way list answer 502.
+	payWayLookup atomic.Bool
 	// orderRead makes reading a placed order answer 502.
 	orderRead atomic.Bool
 	// cartWrites counts the line writes the cart received.
@@ -224,6 +235,14 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			}
 			inner.ServeHTTP(w, r)
 		})
+	outer.HandleFunc("GET /api/v1/pay_way",
+		func(w http.ResponseWriter, r *http.Request) {
+			if faults.payWayLookup.Load() {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			inner.ServeHTTP(w, r)
+		})
 	outer.HandleFunc("POST /api/v1/cart/item",
 		func(w http.ResponseWriter, r *http.Request) {
 			faults.cartWrites.Add(1)
@@ -232,6 +251,13 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	outer.HandleFunc("POST /api/v1/cart/reserve-stock",
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
+			if faults.stockShort.Load() {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"detail": "Not enough stock.",
+					"failedItems": [{"productId": 1, "productName":
+					"Ζυμαρικά", "available": 1, "requested": 2}]}`))
+				return
+			}
 			_, _ = w.Write([]byte(
 				`{"reservationIds": [77], "message": "reserved"}`))
 		})
@@ -240,6 +266,13 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			faults.orderCreates.Add(1)
 			if faults.orderCreate.Load() {
 				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			if faults.orderRefuse.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(
+					`{"detail": "The cart can no longer be ordered."}`))
 				return
 			}
 			// The cart rides the header, never the body.
@@ -256,6 +289,10 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			assert.Equal(t, true, body["termsAccepted"])
 			if attribution, ok := body["attribution"].(map[string]any); ok {
 				faults.agentProtocol.Store(attribution["agentProtocol"])
+			}
+			faults.lastOrder.Store(&body)
+			if hold := faults.orderHold.Load(); hold != nil {
+				(*hold)(r)
 			}
 			serveFixture(t, w, "order_by_uuid.json")
 		})
@@ -281,6 +318,9 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	return outer
 }
 
+// ucpUpstreamTimeout is how long the stack's gateway waits for Django.
+const ucpUpstreamTimeout = 5 * time.Second
+
 // ucpStack is the full gateway over a fake Django and real Redis.
 type ucpStack struct {
 	gw  *httptest.Server
@@ -288,20 +328,59 @@ type ucpStack struct {
 	rdb *redis.Client
 	// faults toggles upstream failures.
 	faults *checkoutFaults
+	// logs is what the gateway logged, from info up.
+	logs *logLines
+}
+
+// logLines collects a gateway's log output for a test to read.
+type logLines struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *logLines) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+// with returns the first line that contains every part, or "".
+func (l *logLines) with(parts ...string) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+lines:
+	for line := range strings.SplitSeq(l.buf.String(), "\n") {
+		for _, part := range parts {
+			if !strings.Contains(line, part) {
+				continue lines
+			}
+		}
+		return line
+	}
+	return ""
 }
 
 // startUCPGateway boots the full stack with real Redis, the webhook
 // dispatcher running, and the internal events route armed.
 func startUCPGateway(t *testing.T) ucpStack {
 	t.Helper()
+	return startUCPGatewayBehind(t,
+		func(h http.Handler) http.Handler { return h })
+}
+
+// startUCPGatewayBehind is startUCPGateway with the gateway's handler
+// wrapped in front, for a test that watches the requests it serves.
+func startUCPGatewayBehind(
+	t *testing.T, front func(http.Handler) http.Handler,
+) ucpStack {
+	t.Helper()
 	faults := new(checkoutFaults)
 	djangoSrv := httptest.NewServer(fakeCheckoutDjango(t, faults))
 	t.Cleanup(djangoSrv.Close)
 	rdb := startRedis(t)
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelError + 1,
-	}))
+	logs := new(logLines)
+	log := slog.New(slog.NewTextHandler(logs, nil))
 	metrics := obs.NewMetrics()
 	cfg := config.Config{
 		Env: config.EnvTest,
@@ -317,7 +396,7 @@ func startUCPGateway(t *testing.T) ucpStack {
 			"/800/800/contain/entropy/transparent/5/80.webp",
 		TenantCacheTTL:   time.Minute,
 		NegativeCacheTTL: time.Minute,
-		UpstreamTimeout:  5 * time.Second,
+		UpstreamTimeout:  ucpUpstreamTimeout,
 		RateLimitPerMin:  6000,
 		RateLimitBurst:   1000,
 	}
@@ -340,10 +419,10 @@ func startUCPGateway(t *testing.T) ucpStack {
 		Django: dj, Resolver: resolver, Version: "test",
 		Keys: keys, Dispatcher: dispatcher, Profiles: newProfiles(t),
 	})
-	srv := httptest.NewServer(handler)
+	srv := httptest.NewServer(front(handler))
 	t.Cleanup(srv.Close)
 	return ucpStack{
-		gw: srv, key: key, rdb: rdb, faults: faults,
+		gw: srv, key: key, rdb: rdb, faults: faults, logs: logs,
 	}
 }
 

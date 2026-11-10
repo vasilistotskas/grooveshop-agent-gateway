@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -201,8 +202,7 @@ func (h *handlers) updateCheckout(
 	}
 	defer release()
 
-	if s.Terminal() || s.Status == checkout.StatusRequiresEscalation ||
-		s.Status == checkout.StatusCompleteInProgress {
+	if !s.Open() {
 		return nil, zero, fmt.Errorf(
 			"checkout %s is %s and can no longer be updated",
 			s.ID, s.Status)
@@ -288,7 +288,7 @@ func (h *handlers) completeCheckout(
 		// The escalation resolves through the order event, never through
 		// a second complete — except to retry a payment link that could
 		// not be created, for an order that already exists.
-		if _, err := h.deps.Flow.ResumePayment(ctx, t, s); err != nil {
+		if err := h.deps.Flow.ResumePayment(ctx, t, s); err != nil {
 			return nil, zero, paymentLinkErr(s)
 		}
 		if err := h.deps.Checkout.Save(ctx, s); err != nil {
@@ -303,6 +303,7 @@ func (h *handlers) completeCheckout(
 	// makes the payment object authoritative, and it rejects an
 	// instrument the store cannot honour instead of placing an order the
 	// buyer has no way to pay for.
+	payWay, status := s.PayWayID, s.Status
 	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
 		return nil, zero, err
 	}
@@ -328,59 +329,104 @@ func (h *handlers) completeCheckout(
 		return h.checkoutResult(ctx, t, s, neg)
 	}
 
-	_, err = h.deps.Flow.Complete(ctx, t, s)
-	if errors.Is(err, checkout.ErrOrderOutcomeUnknown) {
-		// The order may exist: the key stays spent and the session stays
-		// in progress, so nothing — this key or another — can place it
-		// a second time.
-		_ = h.deps.Checkout.MarkCompleted(ctx, t.SchemaName, s.ID, idemKey)
+	// What this call submitted is the buyer's latest choice whether or
+	// not the call places the order. It is stored now, because a refused
+	// completion stores nothing: a later complete that omits the payment
+	// would otherwise place the order with the choice before this one.
+	//
+	// Only under the claim: the payment lookup above can outlast the
+	// session lock, and a retry of this key may have placed the order
+	// meanwhile. This snapshot must not be written over that session.
+	if s.Open() && (s.PayWayID != payWay || s.Status != status) {
+		if err := h.deps.Checkout.Save(ctx, s); err != nil {
+			h.settleCompletion(ctx, t, s, idemKey, checkout.NothingPlaced)
+			return nil, zero, errors.New(
+				"checkout is temporarily unavailable; retry shortly")
+		}
+	}
+
+	placement, err := h.deps.Flow.Complete(ctx, t, s)
+	h.settleCompletion(ctx, t, s, idemKey, placement)
+	switch {
+	case err == nil:
+		if ctx.Err() != nil {
+			// The call's context has ended: the caller hung up, or the
+			// server is shutting down. Reading the order back on it
+			// would only fail, so the call is answered as for any
+			// placed checkout that could not be rendered.
+			h.deps.Log.InfoContext(ctx,
+				"ucp: order placed, checkout not rendered",
+				slog.String("session", s.ID),
+				slog.String("order", s.OrderUUID),
+				slog.String("cause", context.Cause(ctx).Error()))
+			return nil, zero, unrenderedErr(s)
+		}
+		return h.checkoutResult(ctx, t, s, neg)
+	case errors.Is(err, checkout.ErrOrderOutcomeUnknown):
 		return nil, zero, errors.New(
 			"the store did not confirm whether the order was placed; do " +
 				"not retry or start a new checkout — the buyer receives " +
 				"a confirmation email if it was, and track_order finds it")
-	}
-	if err != nil && s.OrderUUID != "" {
-		// The order exists whatever failed after it: spend the key so a
-		// retry re-renders instead of placing a second order.
-		_ = h.deps.Checkout.MarkCompleted(ctx, t.SchemaName, s.ID, idemKey)
-		_ = h.deps.Checkout.Save(ctx, s)
+	case errors.Is(err, checkout.ErrPaymentSessionFailed):
 		return nil, zero, paymentLinkErr(s)
-	}
-	if err != nil {
-		h.deps.Checkout.ReleaseCompletion(ctx, t.SchemaName, s.ID, idemKey)
-		_ = h.deps.Checkout.Save(ctx, s)
-		switch {
-		case errors.As(err, new(*django.StockShortfall)):
-			return nil, zero, stockShortfallErr(err)
-		case errors.Is(err, checkout.ErrNotReady),
-			errors.Is(err, checkout.ErrCompletionInProgress):
-			return nil, zero, err
-		case errors.Is(err, checkout.ErrPayWayUnavailable):
-			return nil, zero, errors.New(
-				"the selected payment method is not offered for this " +
-					"delivery; submit another advertised instrument")
-		case errors.Is(err, checkout.ErrPaymentMethodUnsupported):
-			return nil, zero, errors.New(
-				"this payment method needs the buyer to pay on the " +
-					"store's checkout; use an offline method (e.g. cash " +
-					"on delivery), Viva card payment, or hand over " +
-					"get_checkout_link instead")
-		default:
-			return nil, zero, upstreamErr(err,
-				"order placement failed; the cart is unchanged")
-		}
-	}
-
-	// The order exists now, whatever the save or render below does: the
-	// key is spent first so a retry re-renders, never places a second
-	// order.
-	_ = h.deps.Checkout.MarkCompleted(ctx, t.SchemaName, s.ID, idemKey)
-	if err := h.deps.Checkout.Save(ctx, s); err != nil {
+	case errors.Is(err, checkout.ErrSessionNotSaved):
 		return nil, zero, errors.New(
 			"the order was placed but checkout state could not be saved; " +
 				"track it with track_order using orderUuid " + s.OrderUUID)
+	case errors.As(err, new(*django.StockShortfall)):
+		return nil, zero, stockShortfallErr(err)
+	case errors.Is(err, checkout.ErrNotReady),
+		errors.Is(err, checkout.ErrCompletionInProgress):
+		return nil, zero, err
+	case errors.Is(err, checkout.ErrPayWayUnavailable):
+		return nil, zero, errors.New(
+			"the selected payment method is not offered for this " +
+				"delivery; submit another advertised instrument")
+	case errors.Is(err, checkout.ErrPaymentMethodUnsupported):
+		return nil, zero, errors.New(
+			"this payment method needs the buyer to pay on the " +
+				"store's checkout; use an offline method (e.g. cash " +
+				"on delivery), Viva card payment, or hand over " +
+				"get_checkout_link instead")
+	default:
+		return nil, zero, upstreamErr(err,
+			"order placement failed; the cart is unchanged")
 	}
-	return h.checkoutResult(ctx, t, s, neg)
+}
+
+// settleCompletion spends or releases a completion claim by what the
+// attempt did about the order. It runs even when the call's context has
+// ended (a platform that hung up, a shutdown): a retry must find what
+// this attempt did, not a claim left in flight. The Django client's
+// timeout bounds the one Redis write, which go-redis alone would retry
+// against a silent Redis for several times that.
+func (h *handlers) settleCompletion(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	idemKey string, placement checkout.Placement,
+) {
+	settle := h.deps.Checkout.MarkCompleted
+	if placement == checkout.NothingPlaced {
+		settle = h.deps.Checkout.ReleaseCompletion
+	}
+	settleCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), h.deps.Django.Timeout())
+	defer cancel()
+	if err := settle(settleCtx, t.SchemaName, s.ID, idemKey); err != nil {
+		h.deps.Log.ErrorContext(ctx, "ucp: completion key not settled",
+			slog.String("session", s.ID),
+			slog.Bool("spent", placement != checkout.NothingPlaced),
+			slog.String("error", err.Error()))
+	}
+}
+
+// unrenderedErr is the answer for an order that exists while its
+// checkout is not rendered: the agent must read it again, not order
+// again.
+func unrenderedErr(s *checkout.Session) error {
+	return fmt.Errorf(
+		"order %s is placed, but the checkout could not be rendered; "+
+			"read it again with get_checkout, and do not start a "+
+			"new checkout", s.OrderUUID)
 }
 
 // paymentLinkErr is the truthful answer when the order exists but its
@@ -445,10 +491,7 @@ func (h *handlers) checkoutResult(
 		neg.Declaration(ucp.CapabilityCheckout))
 	if err != nil {
 		if s.OrderUUID != "" {
-			return nil, zero, fmt.Errorf(
-				"order %s is placed, but the checkout could not be rendered; "+
-					"read it again with get_checkout, and do not start a "+
-					"new checkout", s.OrderUUID)
+			return nil, zero, unrenderedErr(s)
 		}
 		return nil, zero, upstreamErr(err,
 			"checkout state could not be rendered; retry")

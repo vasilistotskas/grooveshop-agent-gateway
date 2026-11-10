@@ -192,6 +192,36 @@ passes.
   profile that cannot be fetched, validated or version-matched is the
   spec's transport error `-32001`, and a spent discovery budget is its
   retryable `-32000` (`mcpsrv.negotiate`).
+- **A completion finishes without its caller.** `checkout.Flow.Complete`
+  runs on the caller's context only until the order is about to be
+  created. From the in-progress save on it is detached
+  (`context.WithoutCancel`) and bounded by three of the Django
+  client's timeouts (`completionSteps`), because Django has the order
+  whether or not the caller's context is still live. That context ends
+  when the platform disconnects (an ACP request's always; an MCP
+  tool's for a client on protocol 2026-07-28 or later,
+  `PropagateRequestCancellation`) and when the server cancels its
+  requests at the end of the shutdown drain (`serve.go`): the same
+  three checks cover both. A call whose context has ended before the
+  detach places no order; after a placed order it is answered "order
+  placed, read it again" without the upstream read, with an info log
+  line. The process exiting still cuts a completion: the drain is
+  shorter than the budget (issue #117). `Flow.Complete` alone stores
+  the session and the order link from the in-progress save on, and
+  returns a `checkout.Placement`: `OrderMayExist` (the zero value)
+  spends the caller's idempotency key, `NothingPlaced` releases it. A
+  completion refused before the in-progress save stores nothing. So
+  the ACP handler and the UCP tool store what the call itself
+  submitted (ACP's buyer, UCP's payment) before they call it, so that
+  a refused call keeps the buyer's latest choice, and only for a
+  session that is still open (`Session.Open`). ACP stores it under the
+  session lock and its idempotency key, before any Django call. UCP
+  stores it under its completion claim: its payment lookup can
+  outlast the lock, which may have lapsed by then (#84). After the
+  flow they only settle their own key by the placement (ACP's
+  body-hash record, UCP's completion claim), on a context the caller
+  cannot cancel, bounded by the Django client's timeout, and map the
+  error; neither saves the session again.
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before
