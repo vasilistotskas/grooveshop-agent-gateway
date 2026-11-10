@@ -103,5 +103,5 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	return serve(ctx, ln, handler, podShutdown, log)
+	return serve(ctx, ln, handler, podTiming, log)
 }

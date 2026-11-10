@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -36,40 +37,51 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
-// startServe runs serve on a loopback port and returns its address, the
-// stop signal and serve's result.
+// startServe runs serve on a loopback port with ctx and returns its
+// address, its logs and serve's result.
 func startServe(
-	t *testing.T, handler http.Handler, window shutdownWindow,
-	logs io.Writer,
-) (string, context.CancelFunc, <-chan error) {
+	t *testing.T, ctx context.Context, handler http.Handler, tm timing,
+) (string, *lockedBuffer, <-chan error) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	ctx, stop := context.WithCancel(context.Background())
-	t.Cleanup(stop)
+	logs := &lockedBuffer{}
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, ln, handler, window,
+		done <- serve(ctx, ln, handler, tm,
 			slog.New(slog.NewTextHandler(logs, nil)))
 	}()
-	return "http://" + ln.Addr().String(), stop, done
+	return "http://" + ln.Addr().String(), logs, done
 }
 
-// openStream starts a request and returns its body once the handler has
-// flushed the first line.
-func openStream(t *testing.T, url string) *bufio.Reader {
+func stoppable(t *testing.T) (context.Context, context.CancelFunc) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(
-		context.Background(), http.MethodGet, url, nil)
+	ctx, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	return ctx, stop
+}
+
+// openStream sends a request with body and returns the response body
+// once the handler has flushed the first line.
+func openStream(t *testing.T, url, body string) *bufio.Reader {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(),
+		http.MethodPost, url, strings.NewReader(body))
 	require.NoError(t, err)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
-	body := bufio.NewReader(resp.Body)
-	line, err := body.ReadString('\n')
+	reader := bufio.NewReader(resp.Body)
+	line, err := reader.ReadString('\n')
 	require.NoError(t, err)
 	require.Equal(t, "open\n", line)
-	return body
+	return reader
+}
+
+// opened writes and flushes the line openStream waits for.
+func opened(w http.ResponseWriter) {
+	_, _ = io.WriteString(w, "open\n")
+	_ = http.NewResponseController(w).Flush()
 }
 
 func waitServe(t *testing.T, done <-chan error, within time.Duration) error {
@@ -87,48 +99,50 @@ func waitServe(t *testing.T, done <-chan error, within time.Duration) error {
 // as a shutdown, writes its final event, and the server stops cleanly
 // inside the window.
 func TestServeEndsAStreamWithAFinalEvent(t *testing.T) {
-	window := shutdownWindow{
-		drain: 100 * time.Millisecond, final: 5 * time.Second,
+	tm := timing{
+		read: time.Minute, drain: 100 * time.Millisecond,
+		final: 5 * time.Second,
 	}
 	causes := make(chan error, 1)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, "open\n")
-		_ = http.NewResponseController(w).Flush()
+		opened(w)
 		<-r.Context().Done()
 		causes <- context.Cause(r.Context())
 		_, _ = io.WriteString(w, "final\n")
 	})
-	url, stop, done := startServe(t, handler, window, io.Discard)
-	body := openStream(t, url)
+	ctx, stop := stoppable(t)
+	url, logs, done := startServe(t, ctx, handler, tm)
+	body := openStream(t, url, "")
 
 	began := time.Now()
 	stop()
 
-	require.NoError(t, waitServe(t, done, window.drain+window.final))
-	assert.GreaterOrEqual(t, time.Since(began), window.drain,
+	require.NoError(t, waitServe(t, done, tm.drain+tm.final))
+	assert.GreaterOrEqual(t, time.Since(began), tm.drain,
 		"the request kept a live context through the drain")
 	assert.ErrorIs(t, <-causes, httpmw.ErrShuttingDown)
 	rest, err := io.ReadAll(body)
 	require.NoError(t, err)
 	assert.Equal(t, "final\n", string(rest))
+	assert.NotContains(t, logs.String(), "level=WARN")
 }
 
 // A handler that ignores the cancellation is cut when the window ends,
 // and that is a warning, not a failed exit.
 func TestServeCutsWhatOutlivesTheWindow(t *testing.T) {
-	window := shutdownWindow{
-		drain: 50 * time.Millisecond, final: 50 * time.Millisecond,
+	tm := timing{
+		read: time.Minute, drain: 50 * time.Millisecond,
+		final: 50 * time.Millisecond,
 	}
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, "open\n")
-		_ = http.NewResponseController(w).Flush()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		opened(w)
 		<-release
 	})
-	logs := &lockedBuffer{}
-	url, stop, done := startServe(t, handler, window, logs)
-	body := openStream(t, url)
+	ctx, stop := stoppable(t)
+	url, logs, done := startServe(t, ctx, handler, tm)
+	body := openStream(t, url, "")
 
 	stop()
 
@@ -138,6 +152,58 @@ func TestServeCutsWhatOutlivesTheWindow(t *testing.T) {
 	assert.Contains(t, logs.String(), "level=WARN")
 }
 
+// With nothing in flight the server stops at once, without waiting for
+// the drain.
+func TestServeStopsAtOnceWithNothingInFlight(t *testing.T) {
+	tm := timing{read: time.Minute, drain: time.Minute, final: time.Minute}
+	ctx, stop := stoppable(t)
+	_, logs, done := startServe(t, ctx, http.NotFoundHandler(), tm)
+
+	stop()
+
+	require.NoError(t, waitServe(t, done, 5*time.Second))
+	assert.NotContains(t, logs.String(), "level=WARN")
+}
+
+// A signal that arrived before serve started is a clean stop.
+func TestServeWithAContextAlreadyDone(t *testing.T) {
+	ctx, stop := context.WithCancel(context.Background())
+	stop()
+
+	_, logs, done := startServe(t, ctx, http.NotFoundHandler(), podTiming)
+
+	require.NoError(t, waitServe(t, done, 5*time.Second))
+	assert.NotContains(t, logs.String(), "level=WARN")
+}
+
+// The read timeout bounds reading the request, not the response: a
+// stream whose body was read outlives it with its context live.
+func TestServeStreamOutlivesTheReadTimeout(t *testing.T) {
+	tm := timing{
+		read: 100 * time.Millisecond, drain: time.Second, final: time.Second,
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		opened(w)
+		select {
+		case <-time.After(4 * tm.read):
+			_, _ = io.WriteString(w, "still here\n")
+		case <-r.Context().Done():
+			_, _ = io.WriteString(w, "cancelled\n")
+		}
+	})
+	ctx, stop := stoppable(t)
+	url, _, done := startServe(t, ctx, handler, tm)
+	body := openStream(t, url, `{"message": "hello"}`)
+
+	rest, err := io.ReadAll(body)
+
+	require.NoError(t, err)
+	assert.Equal(t, "still here\n", string(rest))
+	stop()
+	require.NoError(t, waitServe(t, done, 5*time.Second))
+}
+
 // A listener that fails is still an error.
 func TestServeReturnsAListenerFailure(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -145,7 +211,7 @@ func TestServeReturnsAListenerFailure(t *testing.T) {
 	require.NoError(t, ln.Close())
 
 	err = serve(context.Background(), ln, http.NotFoundHandler(),
-		podShutdown, slog.New(slog.DiscardHandler))
+		podTiming, slog.New(slog.DiscardHandler))
 
 	assert.Error(t, err)
 }
