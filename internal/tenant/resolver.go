@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -96,13 +98,21 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (*Tenant, error) {
 // detached from the leader's cancellation — the first agent hanging up
 // must not fail the resolve for every healthy request waiting on it —
 // and stays bounded by the Django client's per-attempt timeout. Each
-// caller still stops waiting when its own context ends.
+// caller still stops waiting when its own context ends. A panic in fn
+// is returned as an error: singleflight re-raises it on a goroutine of
+// its own, where no recover can reach it and it ends the process.
 func (r *Resolver) shared(
 	ctx context.Context, key string, fn func(context.Context) (any, error),
 ) (any, error) {
 	detached := context.WithoutCancel(ctx)
 	select {
-	case res := <-r.sf.DoChan(key, func() (any, error) {
+	case res := <-r.sf.DoChan(key, func() (_ any, err error) {
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("tenant: resolve panicked: %v\n%s",
+					p, debug.Stack())
+			}
+		}()
 		return fn(detached)
 	}):
 		return res.Val, res.Err

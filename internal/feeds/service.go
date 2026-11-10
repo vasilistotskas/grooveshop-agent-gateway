@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -150,9 +151,18 @@ func (s *Service) Get(
 // crawler's timeout, and tying it to the first caller would cancel it
 // for every waiter and restart it from zero on the next request — a
 // feed that never lands. An abandoned sweep still fills the cache the
-// next crawler reads, and singleflight keeps it to one per tenant.
+// next crawler reads, and singleflight keeps it to one per tenant. A
+// panic in the sweep is returned as an error: singleflight re-raises it
+// on a goroutine of its own, where no recover can reach it and it ends
+// the process.
 func (s *Service) refresh(t *tenant.Tenant) <-chan singleflight.Result {
-	return s.sf.DoChan(t.SchemaName, func() (any, error) {
+	return s.sf.DoChan(t.SchemaName, func() (_ any, err error) {
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("feeds: generation panicked: %v\n%s",
+					p, debug.Stack())
+			}
+		}()
 		ctx, cancel := context.WithTimeout(
 			context.Background(), generationTimeout)
 		defer cancel()

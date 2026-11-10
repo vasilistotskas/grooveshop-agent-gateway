@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,15 +20,21 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
-// pagedCatalog serves totalPages pages of one product each and counts
-// the page requests it answered.
-func pagedCatalog(t *testing.T, totalPages int) (*django.Client, *atomic.Int32) {
+// pagedCatalog serves totalPages pages of one product each, answers 404
+// for failPage (0: none), and counts the page requests it answered.
+func pagedCatalog(
+	t *testing.T, totalPages, failPage int,
+) (*django.Client, *atomic.Int32) {
 	t.Helper()
 	var pages atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			pages.Add(1)
 			page := r.URL.Query().Get("page")
+			if page == strconv.Itoa(failPage) {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprintf(w, `{"links":{"next":null,"previous":null},
 				"count":%d,"totalPages":%d,"pageSize":1,"page":%s,
@@ -45,7 +52,7 @@ func pagedCatalog(t *testing.T, totalPages int) (*django.Client, *atomic.Int32) 
 }
 
 func TestFetchAllProductsStreamsEveryPageInOrder(t *testing.T) {
-	dj, pages := pagedCatalog(t, 5)
+	dj, pages := pagedCatalog(t, 5, 0)
 	var ids []int64
 	count, truncated, err := fetchAllProducts(context.Background(), dj,
 		"shop.example.test", "el", func(p django.ProductFeed) error {
@@ -63,7 +70,7 @@ func TestFetchAllProductsStreamsEveryPageInOrder(t *testing.T) {
 // fetching: only the pages already in flight when the consumer gave up
 // reach Django, never the whole catalog.
 func TestFetchAllProductsEmitErrorStopsTheSweep(t *testing.T) {
-	dj, pages := pagedCatalog(t, 40)
+	dj, pages := pagedCatalog(t, 40, 0)
 	boom := errors.New("boom")
 	done := make(chan error, 1)
 	go func() {
@@ -84,4 +91,17 @@ func TestFetchAllProductsEmitErrorStopsTheSweep(t *testing.T) {
 	}
 	// Bounded by the fetch window plus the workers that were mid-flight.
 	assert.LessOrEqual(t, int(pages.Load()), 1+emitWindow+fetchWorkers)
+}
+
+// A page failing mid-sweep fails the sweep with its error. The producer
+// used to start the next fetch while the consumer waited on the group,
+// which panicked its WaitGroup; the race is narrow, hence the repeats.
+func TestFetchAllProductsFailedPageFailsTheSweep(t *testing.T) {
+	dj, _ := pagedCatalog(t, 60, 7)
+	for range 20 {
+		_, _, err := fetchAllProducts(context.Background(), dj,
+			"shop.example.test", "el",
+			func(django.ProductFeed) error { return nil })
+		require.ErrorIs(t, err, django.ErrNotFound)
+	}
 }
