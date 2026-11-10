@@ -55,7 +55,7 @@ const (
 // http allowed, everything else per the spec's fetch rules.
 func newProfiles(t *testing.T) *ucp.ProfileResolver {
 	t.Helper()
-	p, err := ucp.NewProfileResolver(true)
+	p, err := ucp.NewProfileResolver(true, slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	return p
 }

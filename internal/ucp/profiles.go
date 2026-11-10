@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,6 +17,8 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"golang.org/x/sync/singleflight"
 	"golang.org/x/time/rate"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
 // Discovery error codes (overview, Negotiation Errors).
@@ -78,6 +81,7 @@ type ProfileResolver struct {
 	allowLocal bool
 	schema     *jsonschema.Schema
 	limiter    *rate.Limiter
+	log        *slog.Logger
 	sf         singleflight.Group
 
 	mu    sync.Mutex
@@ -95,7 +99,9 @@ type profileEntry struct {
 // NewProfileResolver compiles the spec's platform profile schema.
 // allowLocal is AllowLocalWebhooks: development and tests serve profiles
 // from loopback http.
-func NewProfileResolver(allowLocal bool) (*ProfileResolver, error) {
+func NewProfileResolver(
+	allowLocal bool, log *slog.Logger,
+) (*ProfileResolver, error) {
 	schema, err := CompileSpec("profile.json#/$defs/platform_schema")
 	if err != nil {
 		return nil, fmt.Errorf("ucp: platform profile schema: %w", err)
@@ -105,6 +111,7 @@ func NewProfileResolver(allowLocal bool) (*ProfileResolver, error) {
 		allowLocal: allowLocal,
 		schema:     schema,
 		limiter:    rate.NewLimiter(fetchRate, fetchBurst),
+		log:        log,
 		cache:      map[string]profileEntry{},
 	}, nil
 }
@@ -123,11 +130,13 @@ func (r *ProfileResolver) Resolve(
 	}
 	// One fetch per URL however many requests wait on it, detached from
 	// the first caller so its disconnect cannot fail the others; each
-	// caller still stops waiting on its own context.
-	ch := r.sf.DoChan(raw, func() (any, error) {
+	// caller still stops waiting on its own context. A panic is logged
+	// and returned as an error (obs.Recover).
+	ch := r.sf.DoChan(raw, func() (_ any, err error) {
 		fetchCtx, cancel := context.WithTimeout(
 			context.WithoutCancel(ctx), fetchTimeout)
 		defer cancel()
+		defer obs.Recover(fetchCtx, r.log, "ucp: profile fetch", &err)
 		p, ttl, derr := r.fetch(fetchCtx, raw)
 		if derr != nil {
 			// Only the origin's own failures are backed off: a spent

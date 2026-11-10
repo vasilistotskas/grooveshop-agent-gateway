@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -99,20 +97,14 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (*Tenant, error) {
 // must not fail the resolve for every healthy request waiting on it —
 // and stays bounded by the Django client's per-attempt timeout. Each
 // caller still stops waiting when its own context ends. A panic in fn
-// is returned as an error: singleflight re-raises it on a goroutine of
-// its own, where no recover can reach it and it ends the process.
+// is logged and returned as an error (obs.Recover).
 func (r *Resolver) shared(
 	ctx context.Context, key string, fn func(context.Context) (any, error),
 ) (any, error) {
 	detached := context.WithoutCancel(ctx)
 	select {
 	case res := <-r.sf.DoChan(key, func() (_ any, err error) {
-		defer func() {
-			if p := recover(); p != nil {
-				err = fmt.Errorf("tenant: resolve panicked: %v\n%s",
-					p, debug.Stack())
-			}
-		}()
+		defer obs.Recover(detached, r.log, "tenant: resolve", &err)
 		return fn(detached)
 	}):
 		return res.Val, res.Err

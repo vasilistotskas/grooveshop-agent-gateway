@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -69,7 +70,7 @@ func serveProfile(
 
 func newTestResolver(t *testing.T) *ProfileResolver {
 	t.Helper()
-	r, err := NewProfileResolver(true)
+	r, err := NewProfileResolver(true, slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	return r
 }
@@ -146,7 +147,7 @@ func TestResolveRejectsWhatTheSpecRejects(t *testing.T) {
 
 // Production resolves https public profiles only.
 func TestResolveRefusesUnsafeProfileURLs(t *testing.T) {
-	r, err := NewProfileResolver(false)
+	r, err := NewProfileResolver(false, slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	for _, raw := range []string{
 		"http://platform.example/profile.json",
@@ -197,10 +198,21 @@ func TestResolveBudgetExhaustionIsNotCached(t *testing.T) {
 	assert.NoError(t, err, "the busy answer was not remembered")
 }
 
+// A panic in a fetch comes back as an error, without the panic text or
+// stack, since a tool result carries it to the agent, instead of ending
+// the process from singleflight's own goroutine.
+func TestResolveReturnsPanicAsError(t *testing.T) {
+	r := newTestResolver(t)
+	r.limiter = nil // taking a token panics
+	_, err := r.Resolve(context.Background(),
+		"http://127.0.0.1:1/profile.json")
+	require.EqualError(t, err, "ucp: profile fetch: panicked")
+}
+
 // Error content reaches anonymous callers: a transport failure must not
 // echo the dialled address.
 func TestResolveHidesTransportErrorDetail(t *testing.T) {
-	r, err := NewProfileResolver(false)
+	r, err := NewProfileResolver(false, slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	r.hc = platformClient(false, time.Second)
 	// A public-looking name that resolves nowhere public in tests.

@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"runtime/debug"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/media"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -152,20 +152,15 @@ func (s *Service) Get(
 // for every waiter and restart it from zero on the next request — a
 // feed that never lands. An abandoned sweep still fills the cache the
 // next crawler reads, and singleflight keeps it to one per tenant. A
-// panic in the sweep is returned as an error: singleflight re-raises it
-// on a goroutine of its own, where no recover can reach it and it ends
-// the process.
+// panic in the sweep is logged and returned as an error (obs.Recover).
 func (s *Service) refresh(t *tenant.Tenant) <-chan singleflight.Result {
 	return s.sf.DoChan(t.SchemaName, func() (_ any, err error) {
-		defer func() {
-			if p := recover(); p != nil {
-				err = fmt.Errorf("feeds: generation panicked: %v\n%s",
-					p, debug.Stack())
-			}
-		}()
 		ctx, cancel := context.WithTimeout(
 			context.Background(), generationTimeout)
 		defer cancel()
+		defer obs.Recover(ctx,
+			s.log.With(slog.String("tenant", t.SchemaName)),
+			"feeds: generation", &err)
 		return nil, s.generate(ctx, t)
 	})
 }

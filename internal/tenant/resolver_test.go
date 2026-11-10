@@ -223,13 +223,14 @@ func TestResolveLeaderCancellationDoesNotFailFollowers(t *testing.T) {
 	assert.NoError(t, <-follower)
 }
 
-// A panic while resolving comes back as an error instead of ending the
-// process from singleflight's own goroutine.
+// A panic while resolving comes back as an error, without the panic
+// text or stack, instead of ending the process from singleflight's own
+// goroutine.
 func TestSharedReturnsPanicAsError(t *testing.T) {
 	r := NewResolver(nil, nil, time.Minute, time.Minute, testLogger(), nil)
 	_, err := r.shared(context.Background(), "shop.example.test",
 		func(context.Context) (any, error) { panic("boom") })
-	require.ErrorContains(t, err, "boom")
+	require.EqualError(t, err, "tenant: resolve: panicked")
 }
 
 func TestResolveErrorsWithoutStaleEntry(t *testing.T) {
