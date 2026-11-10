@@ -45,12 +45,14 @@ func TestCartOutDiscountFields(t *testing.T) {
 			TotalPrice:            json.Number("929.36"),
 			PromotionDiscount:     json.Number("92.94"),
 			TotalDiscountValue:    json.Number("10.00"),
+			FreeThresholdValue:    json.Number("836.42"),
 			PromotionFreeShipping: true,
 			AppliedCoupons: []django.AppliedCoupon{
 				{Code: "SAVE10", Amount: json.Number("92.94")},
 			},
 		})
 		assert.Equal(t, "92.94", out.PromotionDiscount)
+		assert.Equal(t, "836.42", out.FreeThresholdValue)
 		assert.Equal(t, "10.00", out.TotalDiscountValue)
 		assert.Equal(t, []string{"SAVE10"}, out.AppliedCouponCodes)
 		assert.True(t, out.FreeShipping)

@@ -13,7 +13,7 @@ import (
 
 type ShippingOptionsIn struct {
 	CountryCode string `json:"countryCode" jsonschema:"ISO 3166-1 alpha-2 destination, e.g. GR"`
-	OrderValue  string `json:"orderValue,omitempty" jsonschema:"cart total as decimal string, used for free-shipping checks"`
+	OrderValue  string `json:"orderValue,omitempty" jsonschema:"the cart's freeThresholdValue from get_cart as a decimal string: the items after discounts, excluding shipping, which free-shipping thresholds are judged on; ignored when the call names a cart, whose own value is used"`
 	WeightGrams int    `json:"weightGrams,omitempty" jsonschema:"the cart's totalWeightGrams from get_cart; without it no option is left out for its weight cap"`
 	CartID      string `json:"cartId,omitempty" jsonschema:"cart id from create_cart or add_to_cart; without it no option is left out for being too large for the cart"`
 }
@@ -57,7 +57,16 @@ func (h *handlers) getShippingOptions(
 		q.WeightGrams = strconv.Itoa(in.WeightGrams)
 	}
 	// The cart is the chat shopper's (their cart token) or cartId; with
-	// neither, Django flags no option for size.
+	// neither, Django flags no option for size. A named cart's own value
+	// is the one its order is charged on, whatever the model passed.
+	if in.CartID != "" || django.HasCartToken(ctx) {
+		c, err := h.deps.Django.GetCart(ctx, t.Domain, lang, in.CartID)
+		if err != nil {
+			return nil, out, upstreamErr(err, "that cart no longer "+
+				"exists; create a new one with create_cart")
+		}
+		q.OrderValueAmount = c.FreeThresholdValue.String()
+	}
 	opts, err := h.deps.Django.ShippingOptions(
 		ctx, t.Domain, lang, in.CartID, q)
 	if err != nil {
@@ -336,8 +345,9 @@ func (h *handlers) getPaymentMethods(
 		})
 	}
 	return textResult(
-		"%d payment methods available. Method costs are waived above "+
-			"each freeThreshold.",
+		"%d payment methods available. A method's cost is waived once "+
+			"the cart's freeThresholdValue (get_cart) reaches its "+
+			"freeThreshold.",
 		len(out.Methods),
 	), out, nil
 }

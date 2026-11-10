@@ -115,6 +115,7 @@ func TestDecodeCartWithItems(t *testing.T) {
 	require.Len(t, c.Items, 1)
 	assert.Equal(t, "929.36", c.TotalPrice.String())
 	assert.Equal(t, "0.0", c.PromotionDiscount.String())
+	assert.Equal(t, "929.36", c.FreeThresholdValue.String())
 	assert.False(t, c.PromotionFreeShipping)
 	assert.Empty(t, c.AppliedPromotions)
 	assert.Empty(t, c.AppliedCoupons)
@@ -127,6 +128,8 @@ func TestDecodeCartWithCoupon(t *testing.T) {
 	assert.Equal(t, "92.94", c.PromotionDiscount.String())
 	assert.False(t, c.PromotionFreeShipping)
 	assert.Equal(t, "929.36", c.TotalPrice.String())
+	// The items after the coupon: what "free above X" is judged on.
+	assert.Equal(t, "836.42", c.FreeThresholdValue.String())
 	assert.Equal(t, []AppliedPromotion{{
 		PromotionID: 7, Name: "Save 10%", Code: "SAVE10",
 		Amount: json.Number("92.94"),
