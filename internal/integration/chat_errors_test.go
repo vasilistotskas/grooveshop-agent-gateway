@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -261,8 +262,9 @@ func TestChatTurnCutByShutdownEndsWithAnErrorEvent(t *testing.T) {
 		once.Do(func() { close(asked) })
 		<-r.Context().Done()
 	})
+	logs := &lockedBuffer{}
 	handler := chatGatewayHandler(t, startRedis(t), model,
-		fakeDjangoMux(t), quietLogger())
+		fakeDjangoMux(t), slog.New(slog.NewJSONHandler(logs, nil)))
 	base, shutdown := context.WithCancelCause(context.Background())
 	t.Cleanup(func() { shutdown(nil) })
 	gw := httptest.NewUnstartedServer(handler)
@@ -281,4 +283,8 @@ func TestChatTurnCutByShutdownEndsWithAnErrorEvent(t *testing.T) {
 		failure["message"])
 	assert.NotContains(t, failure, "code")
 	assert.Equal(t, "error", events[len(events)-1].name)
+	// The model call runs under the turn's deadline, which the shutdown
+	// cancels too: it is still reported as a shutdown, not a failure.
+	assert.Contains(t, logs.String(), "chat turn cut by shutdown")
+	assert.NotContains(t, logs.String(), `"msg":"chat turn failed"`)
 }

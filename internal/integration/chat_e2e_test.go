@@ -5,6 +5,7 @@ package integration
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -77,12 +78,17 @@ func toolUseTurnSSE(toolName, argsJSON string) string {
 type fakeChatAPI struct {
 	calls   atomic.Int32
 	scripts []string
+	// answer, when set, answers every call instead of the scripts.
+	answer http.HandlerFunc
 	// lastBody captures the final request for assertions.
 	lastBody atomic.Pointer[[]byte]
 
 	mu sync.Mutex
 	// bodies holds every request the model was sent, in order.
 	bodies [][]byte
+	// peers holds the client address of every connection the gateway
+	// opened to the model: one per connection.
+	peers map[string]bool
 }
 
 func (f *fakeChatAPI) handler() http.Handler {
@@ -93,9 +99,17 @@ func (f *fakeChatAPI) handler() http.Handler {
 		f.lastBody.Store(&body)
 		f.mu.Lock()
 		f.bodies = append(f.bodies, body)
+		if f.peers == nil {
+			f.peers = map[string]bool{}
+		}
+		f.peers[r.RemoteAddr] = true
 		f.mu.Unlock()
 
 		n := int(f.calls.Add(1)) - 1
+		if f.answer != nil {
+			f.answer(w, r)
+			return
+		}
 		if n >= len(f.scripts) {
 			http.Error(w, "unscripted call", http.StatusInternalServerError)
 			return
@@ -103,6 +117,13 @@ func (f *fakeChatAPI) handler() http.Handler {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(f.scripts[n]))
 	})
+}
+
+// conns is how many connections the gateway opened to the model.
+func (f *fakeChatAPI) conns() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.peers)
 }
 
 func startChatGateway(
@@ -171,6 +192,7 @@ func chatGatewayHandler(
 		ChatMaxTokens:           1024,
 		ChatMaxTurns:            10,
 		ChatMaxIterations:       4,
+		ChatTurnTimeout:         30 * time.Second,
 		ChatRatePerMin:          600,
 		ChatRateBurst:           100,
 		ChatMaxMessageLen:       2000,
@@ -212,10 +234,19 @@ func postChatAs(
 	t *testing.T, gwURL string, edge http.Header, body map[string]any,
 ) []sseEvent {
 	t.Helper()
+	return postChatWithin(t.Context(), t, gwURL, edge, body)
+}
+
+// postChatWithin posts a turn that must finish before ctx ends.
+func postChatWithin(
+	ctx context.Context, t *testing.T, gwURL string, edge http.Header,
+	body map[string]any,
+) []sseEvent {
+	t.Helper()
 	raw, err := json.Marshal(body)
 	require.NoError(t, err)
-	req, err := http.NewRequest(http.MethodPost, gwURL+"/chat",
-		bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		gwURL+"/chat", bytes.NewReader(raw))
 	require.NoError(t, err)
 	req.Header = edge.Clone()
 	req.Header.Set("Content-Type", "application/json")
