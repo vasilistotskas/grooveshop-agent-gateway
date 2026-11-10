@@ -71,7 +71,8 @@ func serve(
 
 	served := make(chan error, 1)
 	go func() {
-		log.Info("listening", slog.String("addr", ln.Addr().String()))
+		log.InfoContext(ctx, "listening",
+			slog.String("addr", ln.Addr().String()))
 		served <- srv.Serve(ln)
 	}()
 	select {
@@ -80,7 +81,7 @@ func serve(
 	case <-ctx.Done():
 	}
 
-	log.Info("shutting down")
+	log.InfoContext(ctx, "shutting down")
 	shutdownCtx, cancel := context.WithTimeout(
 		context.Background(), t.drain+t.final,
 	)
@@ -93,7 +94,8 @@ func serve(
 	if !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	log.Warn("closing requests still open after the shutdown window",
+	log.WarnContext(ctx,
+		"closing requests still open after the shutdown window",
 		slog.Duration("window", t.drain+t.final))
 	return srv.Close()
 }

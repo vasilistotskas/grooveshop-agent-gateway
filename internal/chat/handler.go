@@ -278,7 +278,6 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		// The pod is stopping: the widget offers the retry, which
 		// another pod serves.
 		s.log.InfoContext(r.Context(), "chat turn cut by shutdown",
-			slog.String("tenant", t.SchemaName),
 			slog.String("conversation", conv.ID))
 		sse.event("error", errorEvent{
 			Message: messageFor(lang, msgTurnFailed),

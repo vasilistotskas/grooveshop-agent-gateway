@@ -161,7 +161,7 @@ func (s *Service) refresh(t *tenant.Tenant) <-chan singleflight.Result {
 			context.Background(), generationTimeout)
 		defer cancel()
 		defer obs.Recover(ctx,
-			s.log.With(slog.String("tenant", t.SchemaName)),
+			s.log.With(slog.String(obs.KeyTenant, t.SchemaName)),
 			"feeds: generation", &err)
 		return nil, s.generate(ctx, t)
 	})
@@ -266,7 +266,7 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 
 	var skipped int
 	count, truncated, err := fetchAllProducts(
-		ctx, s.dj, s.log.With(slog.String("tenant", t.SchemaName)),
+		ctx, s.dj, s.log.With(slog.String(obs.KeyTenant, t.SchemaName)),
 		t.Domain, t.DefaultLocale,
 		func(p django.ProductFeed) error {
 			if !p.Active {

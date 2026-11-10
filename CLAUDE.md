@@ -158,7 +158,9 @@ passes.
   The logger's context handler adds `request_id` and `tenant` to every
   line logged with a request's context (`obs.WithRequestID`; the tenant
   slot the access log installs and the tenant middleware fills with
-  `obs.SetTenant`, as do the `/internal/*` routes from their body). Log
+  `obs.SetTenant`, as do the `/internal/*` routes from their body). A
+  context detached with `context.WithoutCancel` keeps both, so work
+  that outlives its caller and `obs.Recover` still name the request. Log
   with the context whenever one is in scope (sloglint enforces it); a
   line naming a store uses the key `tenant` (`obs.KeyTenant`), never
   `schema`, and only where no request context carries it.

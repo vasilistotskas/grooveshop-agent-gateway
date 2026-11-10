@@ -63,6 +63,31 @@ func TestContextHandlerAddsRequestIDAndTenant(t *testing.T) {
 		strings.Split(buf.String(), "\n")[5], `"tenant"`))
 }
 
+// Work a request detaches from its cancellation (a completion that
+// outlives its caller, a singleflight fetch) still logs under the
+// request's id and tenant, a recovered panic included.
+func TestContextHandlerFollowsADetachedContext(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(NewContextHandler(slog.NewJSONHandler(&buf, nil)))
+	reqCtx, cancel := context.WithCancel(
+		WithTenantSlot(WithRequestID(context.Background(), "req-1")))
+	detached := context.WithoutCancel(reqCtx)
+	cancel()
+	SetTenant(reqCtx, "demostore")
+
+	err := func() (err error) {
+		defer Recover(detached, log, "op", &err)
+		panic("boom")
+	}()
+
+	require.Error(t, err)
+	got := lines(t, &buf)
+	require.Len(t, got, 1)
+	assert.Equal(t, "panic recovered", got[0]["msg"])
+	assert.Equal(t, "req-1", got[0][KeyRequestID])
+	assert.Equal(t, "demostore", got[0][KeyTenant])
+}
+
 func TestContextHandlerKeepsTheLevel(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(NewContextHandler(slog.NewJSONHandler(&buf,
