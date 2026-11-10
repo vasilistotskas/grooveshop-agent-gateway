@@ -131,9 +131,22 @@ func newChatGatewayOn(
 	djangoH http.Handler, log *slog.Logger, tune ...func(*config.Config),
 ) *httptest.Server {
 	t.Helper()
+	srv := httptest.NewServer(
+		chatGatewayHandler(t, rdb, fake.handler(), djangoH, log, tune...))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// chatGatewayHandler is one gateway pod's handler, its model API served
+// by model.
+func chatGatewayHandler(
+	t *testing.T, rdb *redis.Client, model http.Handler,
+	djangoH http.Handler, log *slog.Logger, tune ...func(*config.Config),
+) http.Handler {
+	t.Helper()
 	djangoSrv := httptest.NewServer(djangoH)
 	t.Cleanup(djangoSrv.Close)
-	modelSrv := httptest.NewServer(fake.handler())
+	modelSrv := httptest.NewServer(model)
 	t.Cleanup(modelSrv.Close)
 
 	metrics := obs.NewMetrics()
@@ -174,7 +187,7 @@ func newChatGatewayOn(
 	resolver := tenant.NewResolver(dj, rdb,
 		cfg.TenantCacheTTL, cfg.NegativeCacheTTL, log, metrics)
 
-	handler := server.New(server.Deps{
+	return server.New(server.Deps{
 		Cfg: cfg, Log: log, Metrics: metrics, Redis: rdb,
 		Django: dj, Resolver: resolver, Version: "test",
 		Profiles: newProfiles(t),
@@ -182,9 +195,6 @@ func newChatGatewayOn(
 			option.WithBaseURL(modelSrv.URL),
 		},
 	})
-	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
-	return srv
 }
 
 type sseEvent struct {

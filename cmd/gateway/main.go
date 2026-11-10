@@ -2,13 +2,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
-	"net/http"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -81,14 +79,6 @@ func run() error {
 		Profiles:   profiles,
 	})
 
-	srv := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		// No WriteTimeout: SSE (chat) and streamable MCP responses are
-		// long-lived; per-handler deadlines bound the rest.
-	}
-
 	ctx, stop := signal.NotifyContext(
 		context.Background(), os.Interrupt, syscall.SIGTERM,
 	)
@@ -109,26 +99,9 @@ func run() error {
 		<-dispatched
 	}()
 
-	errCh := make(chan error, 1)
-	go func() {
-		log.Info("listening", slog.String("addr", cfg.ListenAddr))
-		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-		}
-	}()
-
-	select {
-	case err := <-errCh:
+	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", cfg.ListenAddr)
+	if err != nil {
 		return err
-	case <-ctx.Done():
 	}
-
-	// The preStop sleep in the Deployment keeps Traefik draining; this
-	// timeout bounds in-flight requests after that.
-	shutdownCtx, cancel := context.WithTimeout(
-		context.Background(), 15*time.Second,
-	)
-	defer cancel()
-	log.Info("shutting down")
-	return srv.Shutdown(shutdownCtx)
+	return serve(ctx, ln, handler, podTiming, log)
 }
