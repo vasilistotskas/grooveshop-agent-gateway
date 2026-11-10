@@ -36,6 +36,7 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, 10*time.Second, cfg.UpstreamTimeout)
 	assert.Equal(t, 120, cfg.RateLimitPerMin)
 	assert.Equal(t, 40, cfg.RateLimitBurst)
+	assert.Equal(t, time.Minute, cfg.ChatTurnTimeout)
 }
 
 func TestLoadMissingRequired(t *testing.T) {
@@ -53,11 +54,13 @@ func TestLoadOverridesAndParsing(t *testing.T) {
 	setRequired(t)
 	t.Setenv("TENANT_CACHE_TTL", "30s")
 	t.Setenv("RATE_LIMIT_PER_MIN", "600")
+	t.Setenv("CHAT_TURN_TIMEOUT", "45s")
 
 	cfg, err := Load()
 	require.NoError(t, err)
 	assert.Equal(t, 30*time.Second, cfg.TenantCacheTTL)
 	assert.Equal(t, 600, cfg.RateLimitPerMin)
+	assert.Equal(t, 45*time.Second, cfg.ChatTurnTimeout)
 }
 
 func TestLoadInvalidDuration(t *testing.T) {
@@ -87,6 +90,7 @@ func TestLoadRejectsNonPositiveValues(t *testing.T) {
 		"UPSTREAM_TIMEOUT":          "0",
 		"RATE_LIMIT_PER_MIN":        "0",
 		"CHAT_MAX_ITERATIONS":       "-3",
+		"CHAT_TURN_TIMEOUT":         "0s",
 		"FEED_STALE_TTL":            "0h",
 	} {
 		t.Run(key, func(t *testing.T) {

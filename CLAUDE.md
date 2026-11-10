@@ -317,6 +317,11 @@ not serve. The rule and how to split a change are in
     - `CHAT_VISITOR_TURNS_PER_DAY` per client IP per store per UTC day.
   
   A refused turn spends from neither budget and gets the store's localized `rate_limited` message with a 429 and a `Retry-After` until the full window resets.
+
+  Inside a turn (`chat.runTurn`):
+  - At most `CHAT_MAX_ITERATIONS` model calls. The last one is sent `tool_choice: none`, and tool calls a provider returns there anyway are not run.
+  - The model client is built once (`chat.New`) with no SDK retries. A provider throttle, answered as a 429 or sent as an error inside the stream (`chat.modelRefusalOf`), ends the turn after one call with SSE `error {code: rate_limited, retryAfter}`.
+  - `CHAT_TURN_TIMEOUT`, counted from the turn's start, bounds the model calls and never a tool call, so a cart change Django accepted is never cut off midway. A stalled provider ends the turn with the generic, retryable `error {message}`. A shutdown cancels the deadline's context too, and `handle` checks for it (`httpmw.ErrShuttingDown`) before anything else, so a turn cut by shutdown is reported as one.
 - Infra repo: manifests under `manifests/app-constructs/grooveshop/base/`,
   path rules on the storefront ingress.
 - B2B/wholesale pricing (Django `b2b/` app) is RETAIL-ONLY here by

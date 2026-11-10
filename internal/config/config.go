@@ -126,8 +126,11 @@ type Config struct {
 	ChatMaxTokens     int
 	ChatMaxTurns      int
 	ChatMaxIterations int
-	ChatRatePerMin    int
-	ChatRateBurst     int
+	// ChatTurnTimeout bounds a turn's model calls, counted from the
+	// turn's start; tool calls are never cut by it.
+	ChatTurnTimeout time.Duration
+	ChatRatePerMin  int
+	ChatRateBurst   int
 	// Cost ceilings shared by every gateway pod (Redis): turns per store
 	// per clock hour, and per visitor IP per store per day. The per-minute
 	// limiter above stops bursts; these bound what a patient or
@@ -206,6 +209,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.ChatMaxIterations, err = positiveOr("CHAT_MAX_ITERATIONS", 6, strconv.Atoi); err != nil {
+		return Config{}, err
+	}
+	if cfg.ChatTurnTimeout, err = positiveOr("CHAT_TURN_TIMEOUT", time.Minute, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
 	if cfg.ChatRatePerMin, err = positiveOr("CHAT_RATE_LIMIT_PER_MIN", 20, strconv.Atoi); err != nil {

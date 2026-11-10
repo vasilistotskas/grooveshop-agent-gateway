@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/ssestream"
 	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -34,10 +34,11 @@ type Service struct {
 	server *mcp.Server
 	store  *Store
 	quota  *Quota
-	// clientOpts hold everything but the credential — the API key is
-	// per-tenant (from tenant/resolve) and attached per turn.
-	clientOpts []option.RequestOption
-	log        *slog.Logger
+	// model holds everything but the credential, so every turn shares
+	// its connections: the API key is per-tenant (from tenant/resolve)
+	// and attached to each request.
+	model openai.Client
+	log   *slog.Logger
 }
 
 // New builds the chat service. The model is reached over the
@@ -50,16 +51,18 @@ func New(
 	log *slog.Logger,
 	opts ...option.RequestOption,
 ) *Service {
-	clientOpts := append([]option.RequestOption{
-		option.WithBaseURL(cfg.ChatBaseURL),
-	}, opts...)
 	return &Service{
-		cfg:        cfg,
-		server:     server,
-		store:      store,
-		quota:      quota,
-		clientOpts: clientOpts,
-		log:        log,
+		cfg:    cfg,
+		server: server,
+		store:  store,
+		quota:  quota,
+		// No retries: a throttled turn reaches the shopper at once with
+		// the provider's wait, and the widget's retry button resends it.
+		model: openai.NewClient(append([]option.RequestOption{
+			option.WithBaseURL(cfg.ChatBaseURL),
+			option.WithMaxRetries(0),
+		}, opts...)...),
+		log: log,
 	}
 }
 
@@ -303,14 +306,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 			Message: messageFor(lang, msgTurnFailed),
 		}
 		if apierr, ok := errors.AsType[*openai.Error](err); ok {
-			upstream := string(apierr.DumpResponse(true))
 			attrs = append(attrs,
-				slog.Int("upstream_status", apierr.StatusCode),
-				// RawJSON misses non-object error bodies (Gemini wraps
-				// errors in an ARRAY) — the response dump is the source
-				// of truth.
-				slog.String("upstream_response",
-					text.Ellipsize(upstream, 2048)),
 				// Method, URL and headers only: the body is the whole
 				// conversation, with whatever personal data the shopper
 				// typed, and does not belong in an ERROR log.
@@ -321,18 +317,25 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 				slog.String("conversation", conv.ID),
 				slog.String("upstream_request", text.Ellipsize(
 					redactAuth(string(apierr.DumpRequest(true))), 8192)))
+		}
+		if refusal, ok := modelRefusalOf(err); ok {
+			attrs = append(attrs,
+				slog.Int("upstream_status", refusal.status),
+				slog.String("upstream_response",
+					text.Ellipsize(refusal.body, 2048)),
+			)
 			// Rate limits are the one upstream failure the shopper can
 			// act on (wait) — don't present them as a generic outage.
-			// Lift which quota died out of the body dump so triage
-			// reads one field instead of a 2KB blob.
-			if apierr.StatusCode == http.StatusTooManyRequests {
+			// Lift which quota died out of the body so triage reads one
+			// field instead of a 2KB blob.
+			if refusal.status == http.StatusTooManyRequests {
 				failure = errorEvent{
 					Message:    messageFor(lang, msgRateLimited),
 					Code:       codeRateLimited,
-					RetryAfter: modelRetryAfter(apierr, upstream),
+					RetryAfter: refusal.retryAfter(),
 				}
 				for field, re := range quotaFields {
-					if m := re.FindStringSubmatch(upstream); m != nil {
+					if m := re.FindStringSubmatch(refusal.body); m != nil {
 						attrs = append(attrs, slog.String(field, m[1]))
 					}
 				}
@@ -412,13 +415,18 @@ func (s *Service) runTurn(
 	}
 	messages = append(messages, openai.UserMessage(userMessage))
 
-	// The credential is the tenant's own — attach it last so it can
-	// never be overridden by the shared base options.
-	client := openai.NewClient(append(
-		slices.Clone(s.clientOpts), option.WithAPIKey(t.ChatAPIKey))...)
+	// The credential is the tenant's own: a request's options apply after
+	// the client's, so the shared ones can never override it.
+	apiKey := option.WithAPIKey(t.ChatAPIKey)
+	// The deadline bounds the model calls only. A tool call is never cut
+	// by it: Django may have accepted a cart change the turn would then
+	// not know of. Each Django call has its own timeout.
+	modelCtx, cancel := context.WithTimeout(ctx, s.cfg.ChatTurnTimeout)
+	defer cancel()
 
 	var text strings.Builder
 	for iteration := range s.cfg.ChatMaxIterations {
+		last := iteration == s.cfg.ChatMaxIterations-1
 		params := openai.ChatCompletionNewParams{
 			Model:               s.cfg.ChatModel,
 			Messages:            messages,
@@ -427,8 +435,9 @@ func (s *Service) runTurn(
 		}
 		// The last iteration must answer in prose: tool calls requested
 		// there would run (a cart change included) with their results
-		// never shown to the model or the shopper.
-		if iteration == s.cfg.ChatMaxIterations-1 {
+		// never shown to the model or the shopper. A provider that
+		// returns some anyway is not obeyed (below).
+		if last {
 			params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
 				OfAuto: openai.String(string(
 					openai.ChatCompletionToolChoiceOptionAutoNone)),
@@ -438,7 +447,8 @@ func (s *Service) runTurn(
 			params.ReasoningEffort = shared.ReasoningEffort(s.cfg.ChatEffort)
 		}
 
-		stream := client.Chat.Completions.NewStreaming(ctx, params)
+		stream := s.model.Chat.Completions.NewStreaming(
+			modelCtx, params, apiKey)
 		acc := openai.ChatCompletionAccumulator{}
 		// Gemini 3 models attach a per-tool-call
 		// ``extra_content.google.thought_signature`` that MUST be echoed
@@ -452,6 +462,7 @@ func (s *Service) runTurn(
 			// dropped by the accumulator, tool calls included — the turn
 			// would act on a partial request.
 			if !acc.AddChunk(chunk) {
+				_ = stream.Close()
 				return "", "", false, errors.New(
 					"chat: model stream sent a chunk that cannot be " +
 						"accumulated")
@@ -483,7 +494,7 @@ func (s *Service) runTurn(
 			text.WriteString(refusal)
 			break
 		}
-		if len(msg.ToolCalls) == 0 {
+		if len(msg.ToolCalls) == 0 || last {
 			break
 		}
 
@@ -583,18 +594,56 @@ var quotaFields = map[string]*regexp.Regexp{
 	"retry_hint":   regexp.MustCompile(`retry in ([0-9.]+s)`),
 }
 
-// modelRetryAfter is how long the model provider asked to wait, in whole
+// modelRefusal is the model provider's error a turn ended on, whether it
+// answered the request with one or sent one inside the stream.
+type modelRefusal struct {
+	// status is the HTTP status; inside the stream, the error's code,
+	// which carries it in OpenRouter's and Google's error shapes.
+	status int
+	// body is the response dump, or the stream event's data.
+	body string
+	// header is the response's; nil inside the stream.
+	header http.Header
+}
+
+func modelRefusalOf(err error) (modelRefusal, bool) {
+	if apierr, ok := errors.AsType[*openai.Error](err); ok {
+		var header http.Header
+		if apierr.Response != nil {
+			header = apierr.Response.Header
+		}
+		// RawJSON misses non-object error bodies (Gemini wraps errors in
+		// an ARRAY) — the response dump is the source of truth.
+		return modelRefusal{
+			status: apierr.StatusCode,
+			body:   string(apierr.DumpResponse(true)),
+			header: header,
+		}, true
+	}
+	if serr, ok := errors.AsType[*ssestream.StreamError](err); ok {
+		var event struct {
+			Error struct {
+				Code json.RawMessage `json:"code"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(serr.Event.Data, &event)
+		status, _ := strconv.Atoi(string(event.Error.Code))
+		return modelRefusal{status: status, body: string(serr.Event.Data)},
+			true
+	}
+	return modelRefusal{}, false
+}
+
+// retryAfter is how long the model provider asked to wait, in whole
 // seconds rounded up: its Retry-After header, else the hint in its body
 // (Gemini's "retry in 12.3s"); 0 when it said neither.
-func modelRetryAfter(apierr *openai.Error, dump string) int {
-	if apierr.Response != nil {
-		if s, err := strconv.Atoi(
-			apierr.Response.Header.Get("Retry-After")); err == nil && s > 0 {
-			return s
-		}
+func (m modelRefusal) retryAfter() int {
+	if s, err := strconv.Atoi(m.header.Get("Retry-After")); err == nil &&
+		s > 0 {
+		return s
 	}
-	if m := quotaFields["retry_hint"].FindStringSubmatch(dump); m != nil {
-		if d, err := time.ParseDuration(m[1]); err == nil && d > 0 {
+	if hint := quotaFields["retry_hint"].FindStringSubmatch(m.body); hint != nil {
+		if d, err := time.ParseDuration(hint[1]); err == nil && d > 0 {
 			return seconds(d)
 		}
 	}
