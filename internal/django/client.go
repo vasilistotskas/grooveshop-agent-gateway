@@ -190,6 +190,7 @@ func (c *Client) do(ctx context.Context, r request) error {
 		c.metrics.UpstreamDuration.WithLabelValues(r.path).Observe(elapsed.Seconds())
 	}
 	if err != nil {
+		err = withoutQuery(err)
 		c.log.WarnContext(ctx, "django request failed",
 			slog.String("upstream", r.path),
 			slog.String("error", err.Error()),
@@ -282,4 +283,22 @@ func retryable(err error) bool {
 		return true
 	}
 	return errors.Is(err, ErrUpstreamDown)
+}
+
+// withoutQuery drops the query string from a transport error's URL. A
+// *url.Error prints the whole URL, and a query can carry what a person
+// typed: a shopper's search, or a customer's email a store's staff looked
+// up. Neither belongs in a log line or an error a caller may log.
+func withoutQuery(err error) error {
+	var ue *url.Error
+	if !errors.As(err, &ue) {
+		return err
+	}
+	u, parseErr := url.Parse(ue.URL)
+	if parseErr != nil {
+		return &url.Error{Op: ue.Op, URL: "(unparsable URL)", Err: ue.Err}
+	}
+	u.RawQuery = ""
+	u.ForceQuery = false
+	return &url.Error{Op: ue.Op, URL: u.String(), Err: ue.Err}
 }

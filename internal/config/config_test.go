@@ -14,6 +14,7 @@ func setRequired(t *testing.T) {
 	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 	t.Setenv("INTERNAL_EVENTS_SECRET", "s3cret")
 	t.Setenv("ASSETS_HOST", "assets.platform.test")
+	t.Setenv("STAFF_CONNECT_HOST", "connect.platform.test")
 	t.Setenv("STOREFRONT_DEFAULT_LOCALE", "el")
 }
 
@@ -111,8 +112,43 @@ func TestLoadRequiresAssetsHost(t *testing.T) {
 	assert.Contains(t, err.Error(), "ASSETS_HOST")
 }
 
+// STAFF_CONNECT_HOST is required: /mcp/admin's protected-resource
+// metadata names it as the authorization server, and a guessed host would
+// send a store's staff to sign in somewhere that is not the platform's.
+func TestLoadRequiresStaffConnectHost(t *testing.T) {
+	setRequired(t)
+	t.Setenv("STAFF_CONNECT_HOST", "")
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "STAFF_CONNECT_HOST")
+}
+
 // The storefront's build default decides which links carry a language
 // prefix, so it is required and must be a bare language code.
+// A host is put behind https:// or sent as a Host header as it is: a
+// scheme, path or space is refused at start, and host:port is a host.
+func TestLoadRefusesAHostThatIsNotBare(t *testing.T) {
+	for _, name := range []string{
+		"DJANGO_PUBLIC_HOST", "ASSETS_HOST", "STAFF_CONNECT_HOST",
+	} {
+		for _, value := range []string{
+			"https://connect.platform.test", "connect.platform.test/",
+			"connect.platform.test ", "user@connect.platform.test",
+		} {
+			setRequired(t)
+			t.Setenv(name, value)
+			_, err := Load()
+			require.Error(t, err, "%s=%q", name, value)
+			assert.Contains(t, err.Error(), name)
+		}
+		setRequired(t)
+		t.Setenv(name, "connect.localhost:8000")
+		_, err := Load()
+		require.NoError(t, err, "%s with a port", name)
+	}
+}
+
 func TestLoadValidatesStorefrontDefaultLocale(t *testing.T) {
 	for value, wantErr := range map[string]bool{
 		"": true, "EL": true, "el-GR": true, "/el": true,

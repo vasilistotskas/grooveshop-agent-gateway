@@ -297,7 +297,7 @@ func (r *Resolver) count(result string) {
 // feature off; v3: its cart, catalogue and product alerts; v4:
 // AvailableLocales, which would read as the default language alone).
 func redisKey(domain string) string {
-	return "ag:tenant:v4:" + domain
+	return "ag:tenant:v5:" + domain
 }
 
 // NormalizeHost lowercases and strips any port from an inbound Host header.

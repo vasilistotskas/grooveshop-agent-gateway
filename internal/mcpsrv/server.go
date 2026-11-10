@@ -100,6 +100,8 @@ var EveryFeature = django.StoreFeatures{
 	Favourites:     true,
 	Loyalty:        true,
 	Promotions:     true,
+	// No shopper tool reads it: the staff tools are /mcp/admin's alone.
+	StaffAIAccess: true,
 }
 
 // tool is one entry of the toolset: its definition, and the typed

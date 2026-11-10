@@ -4,6 +4,7 @@ response-property-one-of-added INFO
 request-property-type-changed ERR
 request-parameter-type-changed INFO
 request-property-became-enum INFO
+request-parameter-became-enum INFO
 request-property-max-length-set INFO
 request-property-min-length-set INFO
 request-property-max-set INFO

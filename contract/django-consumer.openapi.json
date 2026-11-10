@@ -2227,6 +2227,572 @@
         ],
         "type": "object"
       },
+      "StaffCustomer": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "joinedAt": {
+            "type": "string"
+          },
+          "lastOrderAt": {
+            "nullable": true,
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "orders": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "email",
+          "id",
+          "isActive",
+          "joinedAt",
+          "name",
+          "orders"
+        ],
+        "type": "object"
+      },
+      "StaffMe": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "roleDisplay": {
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "$ref": "#/components/schemas/StaffScope"
+            },
+            "type": "array"
+          },
+          "storeDomain": {
+            "type": "string"
+          },
+          "storeName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "role",
+          "roleDisplay",
+          "scopes",
+          "storeDomain",
+          "storeName"
+        ],
+        "type": "object"
+      },
+      "StaffMessage": {
+        "properties": {
+          "createdAt": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "createdAt",
+          "email",
+          "id",
+          "message",
+          "name",
+          "subject"
+        ],
+        "type": "object"
+      },
+      "StaffOrder": {
+        "properties": {
+          "currency": {
+            "type": "string"
+          },
+          "customerEmail": {
+            "type": "string"
+          },
+          "customerName": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "paymentMethod": {
+            "type": "string"
+          },
+          "paymentStatus": {
+            "type": "string"
+          },
+          "placedAt": {
+            "type": "string"
+          },
+          "shippedAt": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "statusDisplay": {
+            "type": "string"
+          },
+          "total": {
+            "type": "number"
+          },
+          "uuid": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "currency",
+          "customerEmail",
+          "customerName",
+          "id",
+          "paymentMethod",
+          "paymentStatus",
+          "placedAt",
+          "status",
+          "statusDisplay",
+          "total",
+          "uuid"
+        ],
+        "type": "object"
+      },
+      "StaffOrderDetail": {
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "country": {
+            "nullable": true,
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "customerEmail": {
+            "type": "string"
+          },
+          "customerName": {
+            "type": "string"
+          },
+          "customerNotes": {
+            "type": "string"
+          },
+          "discount": {
+            "type": "number"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "itemsTotal": {
+            "type": "number"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/StaffOrderLine"
+            },
+            "type": "array"
+          },
+          "paymentFee": {
+            "type": "number"
+          },
+          "paymentMethod": {
+            "type": "string"
+          },
+          "paymentStatus": {
+            "type": "string"
+          },
+          "placedAt": {
+            "type": "string"
+          },
+          "shippedAt": {
+            "nullable": true,
+            "type": "string"
+          },
+          "shipping": {
+            "type": "number"
+          },
+          "shippingCarrier": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "statusDisplay": {
+            "type": "string"
+          },
+          "total": {
+            "type": "number"
+          },
+          "trackingNumber": {
+            "type": "string"
+          },
+          "uuid": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city",
+          "currency",
+          "customerEmail",
+          "customerName",
+          "customerNotes",
+          "discount",
+          "id",
+          "itemsTotal",
+          "lines",
+          "paymentFee",
+          "paymentMethod",
+          "paymentStatus",
+          "placedAt",
+          "shipping",
+          "shippingCarrier",
+          "status",
+          "statusDisplay",
+          "total",
+          "trackingNumber",
+          "uuid"
+        ],
+        "type": "object"
+      },
+      "StaffOrderLine": {
+        "properties": {
+          "lineTotal": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "productId": {
+            "nullable": true,
+            "type": "integer"
+          },
+          "quantity": {
+            "type": "integer"
+          },
+          "sku": {
+            "type": "string"
+          },
+          "unitPrice": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "lineTotal",
+          "name",
+          "quantity",
+          "sku",
+          "unitPrice"
+        ],
+        "type": "object"
+      },
+      "StaffProduct": {
+        "properties": {
+          "currency": {
+            "type": "string"
+          },
+          "finalPrice": {
+            "type": "number"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "lowStock": {
+            "type": "boolean"
+          },
+          "lowStockThreshold": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "price": {
+            "type": "number"
+          },
+          "published": {
+            "type": "boolean"
+          },
+          "sku": {
+            "type": "string"
+          },
+          "stock": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "currency",
+          "finalPrice",
+          "id",
+          "lowStock",
+          "lowStockThreshold",
+          "name",
+          "price",
+          "published",
+          "sku",
+          "stock"
+        ],
+        "type": "object"
+      },
+      "StaffProfitReport": {
+        "properties": {
+          "bucket": {
+            "nullable": true,
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "end": {
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/StaffProfitRow"
+            },
+            "type": "array"
+          },
+          "start": {
+            "type": "string"
+          },
+          "total": {
+            "$ref": "#/components/schemas/StaffProfitRow"
+          }
+        },
+        "required": [
+          "currency",
+          "end",
+          "rows",
+          "start",
+          "total"
+        ],
+        "type": "object"
+      },
+      "StaffProfitRow": {
+        "properties": {
+          "cogs": {
+            "type": "number"
+          },
+          "costCoverage": {
+            "nullable": true,
+            "type": "number"
+          },
+          "deliveryCosts": {
+            "type": "number"
+          },
+          "feeCoverage": {
+            "nullable": true,
+            "type": "number"
+          },
+          "grossMargin": {
+            "nullable": true,
+            "type": "number"
+          },
+          "grossProfit": {
+            "type": "number"
+          },
+          "operatingProfit": {
+            "type": "number"
+          },
+          "otherExpenses": {
+            "type": "number"
+          },
+          "paymentFees": {
+            "type": "number"
+          },
+          "period": {
+            "nullable": true,
+            "type": "string"
+          },
+          "revenue": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "cogs",
+          "costCoverage",
+          "deliveryCosts",
+          "feeCoverage",
+          "grossMargin",
+          "grossProfit",
+          "operatingProfit",
+          "otherExpenses",
+          "paymentFees",
+          "revenue"
+        ],
+        "type": "object"
+      },
+      "StaffReview": {
+        "properties": {
+          "comment": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "productId": {
+            "type": "integer"
+          },
+          "productName": {
+            "type": "string"
+          },
+          "published": {
+            "type": "boolean"
+          },
+          "rating": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "statusDisplay": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "comment",
+          "createdAt",
+          "id",
+          "productId",
+          "productName",
+          "published",
+          "rating",
+          "status",
+          "statusDisplay"
+        ],
+        "type": "object"
+      },
+      "StaffSalesReport": {
+        "properties": {
+          "bucket": {
+            "nullable": true,
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "end": {
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/StaffSalesRow"
+            },
+            "type": "array"
+          },
+          "start": {
+            "type": "string"
+          },
+          "total": {
+            "$ref": "#/components/schemas/StaffSalesRow"
+          }
+        },
+        "required": [
+          "currency",
+          "end",
+          "rows",
+          "start",
+          "total"
+        ],
+        "type": "object"
+      },
+      "StaffSalesRow": {
+        "properties": {
+          "averageOrderValue": {
+            "type": "number"
+          },
+          "awaitingCollection": {
+            "type": "number"
+          },
+          "orders": {
+            "type": "integer"
+          },
+          "period": {
+            "nullable": true,
+            "type": "string"
+          },
+          "returnsNet": {
+            "type": "number"
+          },
+          "salesGross": {
+            "type": "number"
+          },
+          "salesNet": {
+            "type": "number"
+          },
+          "turnover": {
+            "type": "number"
+          },
+          "units": {
+            "type": "integer"
+          },
+          "vat": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "averageOrderValue",
+          "awaitingCollection",
+          "orders",
+          "returnsNet",
+          "salesGross",
+          "salesNet",
+          "turnover",
+          "units",
+          "vat"
+        ],
+        "type": "object"
+      },
+      "StaffScope": {
+        "properties": {
+          "allowed": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": "string"
+          },
+          "granted": {
+            "type": "boolean"
+          },
+          "scope": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "allowed",
+          "description",
+          "granted",
+          "scope"
+        ],
+        "type": "object"
+      },
       "StoreFeatures": {
         "properties": {
           "cart": {
@@ -2249,6 +2815,9 @@
           },
           "promotions": {
             "type": "boolean"
+          },
+          "staffAiAccess": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -2258,7 +2827,8 @@
           "loyalty",
           "productAlerts",
           "productReviews",
-          "promotions"
+          "promotions",
+          "staffAiAccess"
         ],
         "type": "object"
       },
@@ -2488,6 +3058,358 @@
           }
         },
         "summary": "django.Client.AgentOrders"
+      }
+    },
+    "/api/v1/agent/staff/customers": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/StaffCustomer"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.StaffCustomers"
+      }
+    },
+    "/api/v1/agent/staff/me": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffMe"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.StaffMe"
+      }
+    },
+    "/api/v1/agent/staff/messages": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/StaffMessage"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.StaffMessages"
+      }
+    },
+    "/api/v1/agent/staff/orders": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "paymentStatus",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "placedFrom",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "placedTo",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/StaffOrder"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.StaffOrders"
+      }
+    },
+    "/api/v1/agent/staff/orders/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffOrderDetail"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.StaffOrder"
+      }
+    },
+    "/api/v1/agent/staff/products": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lowStock",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/StaffProduct"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.StaffProducts"
+      }
+    },
+    "/api/v1/agent/staff/profit": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bucket",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffProfitReport"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.StaffProfit"
+      }
+    },
+    "/api/v1/agent/staff/reviews": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/StaffReview"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.StaffReviews"
+      }
+    },
+    "/api/v1/agent/staff/sales": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bucket",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffSalesReport"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.StaffSales"
       }
     },
     "/api/v1/cart": {

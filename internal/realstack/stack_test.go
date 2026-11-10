@@ -42,6 +42,10 @@ const (
 
 	// platformHost resolves to the public schema; a domain needs two labels.
 	platformHost = "platform.localhost"
+
+	// connectHost is where a store's staff connect an AI app: Django's
+	// staff issuer, on the public schema.
+	connectHost = "connect.localhost"
 )
 
 const (
@@ -238,6 +242,7 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 		"AGENT_GATEWAY_INTERNAL_SECRET": secret,
 		"AGENT_GATEWAY_INTERNAL_URL":    "http://gateway:8080",
 		"IDP_OIDC_PRIVATE_KEY":          key,
+		"STAFF_CONNECT_HOST":            connectHost,
 	}
 	// A one-off management command, in a container of its own.
 	manage := func(
@@ -294,6 +299,19 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 	// `pages` validates against a storefront, which this stack does not run.
 	if _, err := manage(nil, "seed_demo_store", "--schema", "demostore",
 		"--skip", "pages"); err != nil {
+		return nil, cleanup, err
+	}
+	// The demo store lets its team connect an AI app to /mcp/admin (off
+	// by default). Set before the gateway first resolves the store, which
+	// it then keeps for minutes.
+	if _, err := manage(nil, "shell", "-c", `
+from django_tenants.utils import schema_context
+from extra_settings.models import Setting
+with schema_context("demostore"):
+    Setting.objects.update_or_create(
+        name="STAFF_AI_ACCESS_ENABLED",
+        defaults={"value_type": "bool", "value_bool": True})
+`); err != nil {
 		return nil, cleanup, err
 	}
 	if _, err := manage(nil, "meilisearch_sync_all_indexes",
@@ -363,6 +381,7 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 			"REDIS_URL":                 "redis://redis:6379/1",
 			"INTERNAL_EVENTS_SECRET":    secret,
 			"ASSETS_HOST":               "assets.localhost",
+			"STAFF_CONNECT_HOST":        connectHost,
 			"STOREFRONT_DEFAULT_LOCALE": "el",
 		}),
 		testcontainers.WithExposedPorts("8080/tcp"),

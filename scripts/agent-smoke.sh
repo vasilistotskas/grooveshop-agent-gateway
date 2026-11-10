@@ -11,11 +11,13 @@ case "${1:-production}" in
     SHOPS='webside.gr demo.grooveshop.space'
     AS_OF='api.webside.gr api-demo.grooveshop.space'
     OFF='fyteia.grooveshop.space'
+    CONNECT='connect.grooveshop.space'
     ;;
   staging)
     SHOPS='demo-staging.grooveshop.space staging.webside.gr'
     AS_OF='api-demo-staging.grooveshop.space'
     OFF='fyteia-staging.grooveshop.space'
+    CONNECT='connect-staging.grooveshop.space'
     ;;
   *) echo "usage: $0 production|staging"; exit 2 ;;
 esac
@@ -83,6 +85,37 @@ for a in $AS_OF; do
   keys=$(curl -s -m 25 "https://$a/.well-known/jwks.json" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const k=JSON.parse(s).keys;console.log(Array.isArray(k)?k.length:"unreadable")}catch{console.log("unreadable")}})')
   if [ "$keys" = 0 ] || [ "$keys" = unreadable ]; then bad "JWKS serves no signing key ($keys)"; else ok "JWKS keys: $keys"; fi
 done
+
+# The store-admin connector (/mcp/admin). A store switches it on for its
+# team (off by default): off, the endpoint and its metadata both answer 404;
+# on, an anonymous call and a bogus token are both challenged and the
+# metadata names the staff issuer on the connect host. Nothing is signed in
+# to and no token is minted, so it is safe on production.
+for h in $SHOPS; do
+  echo "== $h/mcp/admin"
+  prm=$(code "https://$h/.well-known/oauth-protected-resource/mcp/admin")
+  if [ "$prm" = 404 ]; then
+    want 'staff AI access off: /mcp/admin' 404 "$(code -X POST "https://$h/mcp/admin" -H 'content-type: application/json' -d '{}')"
+    continue
+  fi
+  want 'metadata' 200 "$prm"
+  headers=$(curl -s -m 25 -o /dev/null -D - -X POST "https://$h/mcp/admin" \
+    -H 'content-type: application/json' -d '{}')
+  want 'anonymous call' 401 "$(code -X POST "https://$h/mcp/admin" -H 'content-type: application/json' -d '{}')"
+  case "$headers" in
+    *"resource_metadata=\"https://$h/.well-known/oauth-protected-resource/mcp/admin\""*) ok 'challenge names the metadata' ;;
+    *) bad 'challenge does not name the /mcp/admin metadata' ;;
+  esac
+  want 'a bogus token' 401 "$(code -X POST "https://$h/mcp/admin" -H 'authorization: Bearer not-a-token' -H 'content-type: application/json' -d '{}')"
+  as=$(curl -s -m 25 "https://$h/.well-known/oauth-protected-resource/mcp/admin" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const d=JSON.parse(s);console.log(d.resource+" "+d.authorization_servers[0])}catch{console.log("unreadable")}})')
+  want 'metadata names the staff issuer' "https://$h/mcp/admin https://$CONNECT" "$as"
+done
+echo "== $CONNECT"
+issuer=$(curl -s -m 25 "https://$CONNECT/.well-known/oauth-authorization-server" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const d=JSON.parse(s);console.log(d.issuer+" "+d.scopes_supported.includes("admin:orders:read")+" "+("device_authorization_endpoint" in d))}catch{console.log("unreadable")}})')
+want 'staff issuer metadata' "https://$CONNECT true false" "$issuer"
+if [ "${1:-production}" = production ]; then
+  want 'no admin on the connect host' 404 "$(code "https://$CONNECT/admin/")"
+fi
 
 # A store with the catalogue and cart off serves only the order tools: names,
 # not a count, so a catalogue tool in place of one of them still fails.

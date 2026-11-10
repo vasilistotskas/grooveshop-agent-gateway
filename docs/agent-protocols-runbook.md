@@ -28,6 +28,8 @@ Last run: the smoke check on 2026-11-07, gateway v1.37.2, on production (Django 
 | A1 ACP cash on delivery | Staging | PASS | **Not run:** needs the tenant's token |
 | A2 ACP cancel | Staging | PASS | **Not run:** needs the tenant's token |
 | Failure flows | Local | PASS | n/a |
+| S1 Store-admin smoke | Smoke | n/a | **Not run yet:** ships with gateway `/mcp/admin` |
+| S2 Staff connects an AI app | Staging | Real-stack test | **Not run yet:** ships with gateway `/mcp/admin` |
 
 The staging run logged no ERROR or CRITICAL, checked in VictoriaLogs. The same filter finds 2 over the last 7 days, so the check does match real errors.
 
@@ -102,7 +104,8 @@ docker run -d --name agent-redis-local --network $NET redis:8-alpine
 docker run -d --name agent-gateway-local --network $NET -p 127.0.0.1:18080:8080 \
   -e ENV=development -e DJANGO_BASE_URL=http://backend:8000/api/v1 -e DJANGO_PUBLIC_HOST=localhost \
   -e REDIS_URL=redis://agent-redis-local:6379/0 -e INTERNAL_EVENTS_SECRET="$SECRET" \
-  -e ASSETS_HOST=assets.localhost -e STOREFRONT_DEFAULT_LOCALE=el \
+  -e ASSETS_HOST=assets.localhost -e STAFF_CONNECT_HOST=connect.localhost \
+  -e STOREFRONT_DEFAULT_LOCALE=el \
   "gro0ve/grooveshop-agent-gateway:$(git describe --tags --abbrev=0)"
 ```
 
@@ -396,7 +399,56 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | Update a cancelled checkout | Refused |
 | Cancel an ACP session twice | 405 |
 
-## 7. Behaviour to know
+## 7. Store-admin connector (`/mcp/admin`)
+
+A store's owner and staff connect their own AI app to `https://<store>/mcp/admin` and read the store by their role. Every tool only reads. **A store switches it on** (`STAFF_AI_ACCESS_ENABLED`, off by default, served as `features.staffAiAccess`). While it is off, `/mcp/admin` and its metadata answer 404. Turning it off cuts connected apps at once: Django answers 404, and a tool call answers `access_off` (the gateway asks Django again before calling it missing data). Turning it on reaches the gateway within its 5-minute tenant cache. Their tokens come from Django's staff issuer on the platform's connect host (`connect.grooveshop.space`, staging `connect-staging.grooveshop.space`), never from the store's own issuer, which signs in customers. Design and the proposed write tools: `grooveshop-docs/src/dev/flows/staff-mcp.md`.
+
+### S1. Smoke
+
+**Label:** Smoke. It is part of `scripts/agent-smoke.sh`. A store with the switch off must answer 404 on both `/mcp/admin` and its metadata. For each store that has it on:
+- an anonymous call and a bogus token both get 401;
+- the challenge names `/.well-known/oauth-protected-resource/mcp/admin`;
+- that document names the store's `/mcp/admin` as the resource and the connect host as the authorization server;
+- the connect host serves the staff issuer's metadata (the staff scopes, no device flow), and on production, nothing else (`/admin/` is 404).
+
+No one signs in and no token is minted.
+
+### S2. A staff member connects an AI app
+
+**Label:** Staging. **Purpose:** a real client with no token connects as a store's staff member and reads the store.
+
+The chain:
+1. The anonymous call gets 401 with a challenge, and the client reads the store's `/mcp/admin` metadata.
+2. It registers with the staff issuer (DCR) and sends the person to the connect host.
+3. The person signs in with their store-admin account (a superuser also gives their authenticator code) and approves only what their role opens.
+4. The client redeems the code with PKCE and calls the tools.
+
+**To repeat it in Claude Code:**
+
+```bash
+claude mcp add --transport http grooveshop-demo-admin https://demo-staging.grooveshop.space/mcp/admin
+```
+
+The demo store must have **Store Settings → `STAFF_AI_ACCESS_ENABLED`** on. Ask for the store's latest orders, then use `/mcp` to authenticate. Your browser opens on `connect-staging.grooveshop.space`: answer the staging basic-auth prompt, sign in with a staff account of the demo store, and approve. Ask again. Remove it afterwards with `claude mcp remove grooveshop-demo-admin`.
+
+**Expected:**
+- `whoami` names the store and the role.
+- A STAFF role is never offered sales or profit; an ADMIN is never offered profit.
+- `list_orders`, `get_order`, `list_products`, `find_customers`, `list_reviews` and `list_messages` answer.
+- Review comments and messages come back as `{"untrusted": true, …}`.
+
+**Real-stack test** (`internal/realstack/staff_test.go`), against a real Django:
+- **End to end:** discovery, DCR, staff sign-in, a consent cut to a STAFF role, PKCE, then reads. `sales_report` is `not_allowed` and an area not approved is `not_granted`.
+- **Refused:** an anonymous call is challenged with every read scope. A customer's token from the store's own issuer gets `invalid_token`. Someone off the store's team gets 403 at consent.
+
+**Refusals Django proves** (`tests_mt/test_staff_agent_schema_binding.py`, real schemas):
+- a customer token bound to the staff resource;
+- a token connected to another store;
+- staff of another store;
+- leaving the team, which ends access at the next call;
+- a staff token on the shopper surface.
+
+## 8. Behaviour to know
 
 These were checked and left as they are:
 
@@ -413,7 +465,7 @@ These were checked and left as they are:
 - **Tool schemas use `type: ["null","array"]` and similar.** Inspector `--strict` warns about them, 124 times across 21 tools on 2026-11-06. It is legal JSON Schema and no client has failed on it, so nothing changed. Look again if a client fails.
 - **If an order's outcome is unknown, the checkout cannot render.** When Django's answer to `POST /order` is lost, the session stays `complete_in_progress` with no order id, so a read goes to a cart that may be gone and fails. It is safe: it cannot place a second order. Not exercised here.
 
-## 8. Bugs these flows found
+## 9. Bugs these flows found
 
 Each is fixed at its root in its own PR, and all are live on production unless the table says otherwise. Fake-Django tests could not have found them, so the e2e fake now deletes the cart with the order and requires a region, as Django does, and the real-stack test runs the flows against Django itself.
 
