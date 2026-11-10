@@ -192,6 +192,20 @@ passes.
   profile that cannot be fetched, validated or version-matched is the
   spec's transport error `-32001`, and a spent discovery budget is its
   retryable `-32000` (`mcpsrv.negotiate`).
+- **A completion finishes without its caller.** `checkout.Flow.Complete`
+  runs on the caller's context only until the order is about to be
+  created. From the in-progress save on it is detached
+  (`context.WithoutCancel`) and bounded by three upstream timeouts
+  (`completionSteps`), because Django has the order whether or not the
+  platform is still connected. It alone stores the session and the
+  order link (a completion refused before that stores nothing), and
+  returns a `checkout.Placement`: `OrderMayExist` spends the caller's
+  idempotency key, `NothingPlaced` releases it. The
+  ACP handler and the UCP tool only settle their own key by it (ACP's
+  body-hash record, UCP's completion claim) and map the error; neither
+  saves the session after a completion. An ACP request's context ends
+  when the platform disconnects, and so does an MCP tool's for a client
+  on protocol 2026-07-28 or later (`PropagateRequestCancellation`).
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before

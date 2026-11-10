@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -718,31 +719,17 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	record := idemRecord{
 		SessionID: s.ID, BodyHash: bodyHash(raw), Status: http.StatusOK,
 	}
-	if _, err := h.flow.Complete(r.Context(), t, s); err != nil {
-		switch {
-		case errors.Is(err, checkout.ErrCompletionInProgress):
-			// Another attempt owns the session; this snapshot is stale
-			// and must not overwrite it.
-			h.releaseIdem(r, t.SchemaName, scope, key)
-		case s.OrderUUID != "",
-			errors.Is(err, checkout.ErrOrderOutcomeUnknown):
-			// The order exists, or may: the key is spent so a retry
-			// re-renders, never places a second order.
-			h.storeIdem(r, t.SchemaName, scope, key, record)
-			_ = h.store.Save(r.Context(), s)
-		default:
-			h.releaseIdem(r, t.SchemaName, scope, key)
-			_ = h.store.Save(r.Context(), s)
-		}
-		h.completeError(w, err)
-		return
+	placement, err := h.flow.Complete(r.Context(), t, s)
+	// The key is settled even for a platform that has gone: its retry
+	// must find what this attempt did.
+	settled := r.WithContext(context.WithoutCancel(r.Context()))
+	if placement == checkout.OrderMayExist {
+		h.storeIdem(settled, t.SchemaName, scope, key, record)
+	} else {
+		h.releaseIdem(settled, t.SchemaName, scope, key)
 	}
-	// Recorded before the save: the order exists now, and a failed save
-	// must not leave the key retryable against a ready session.
-	h.storeIdem(r, t.SchemaName, scope, key, record)
-	if err := h.store.Save(r.Context(), s); err != nil {
-		writeUnavailable(w, "The order was placed but the session could not be "+
-			"saved; retrieve it again shortly.")
+	if err != nil {
+		h.completeError(w, err)
 		return
 	}
 	h.render(w, r, t, s, http.StatusOK)
@@ -862,6 +849,9 @@ func (h *Handler) completeError(w http.ResponseWriter, err error) {
 			Message: "The store did not confirm whether the order was " +
 				"placed; do not retry — retrieve the session later.",
 		})
+	case errors.Is(err, checkout.ErrSessionNotSaved):
+		writeUnavailable(w, "The order was placed but the session could not be "+
+			"saved; retrieve it again shortly.")
 	case errors.Is(err, checkout.ErrPayWayUnavailable):
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "unsupported",

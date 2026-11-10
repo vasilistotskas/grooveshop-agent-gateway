@@ -178,6 +178,11 @@ type checkoutFaults struct {
 	// gateway cannot know.
 	orderCreate  atomic.Bool
 	orderCreates atomic.Int32
+	// orderRefuse makes order creation answer 400: nothing is created.
+	orderRefuse atomic.Bool
+	// orderHold runs inside an accepted order creation, before it
+	// answers.
+	orderHold atomic.Pointer[func(*http.Request)]
 	// cartDeletedOnOrder makes the cart go with the first order, as it
 	// does in Django: asked for it, Django answers a new guest cart.
 	cartDeletedOnOrder atomic.Bool
@@ -242,6 +247,13 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
+			if faults.orderRefuse.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(
+					`{"detail": "The cart can no longer be ordered."}`))
+				return
+			}
 			// The cart rides the header, never the body.
 			assert.Equal(t, fixtureCartID, r.Header.Get("X-Cart-Id"))
 			var body map[string]any
@@ -256,6 +268,9 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			assert.Equal(t, true, body["termsAccepted"])
 			if attribution, ok := body["attribution"].(map[string]any); ok {
 				faults.agentProtocol.Store(attribution["agentProtocol"])
+			}
+			if hold := faults.orderHold.Load(); hold != nil {
+				(*hold)(r)
 			}
 			serveFixture(t, w, "order_by_uuid.json")
 		})
@@ -293,6 +308,16 @@ type ucpStack struct {
 // startUCPGateway boots the full stack with real Redis, the webhook
 // dispatcher running, and the internal events route armed.
 func startUCPGateway(t *testing.T) ucpStack {
+	t.Helper()
+	return startUCPGatewayBehind(t,
+		func(h http.Handler) http.Handler { return h })
+}
+
+// startUCPGatewayBehind is startUCPGateway with the gateway's handler
+// wrapped in front, for a test that watches the requests it serves.
+func startUCPGatewayBehind(
+	t *testing.T, front func(http.Handler) http.Handler,
+) ucpStack {
 	t.Helper()
 	faults := new(checkoutFaults)
 	djangoSrv := httptest.NewServer(fakeCheckoutDjango(t, faults))
@@ -340,7 +365,7 @@ func startUCPGateway(t *testing.T) ucpStack {
 		Django: dj, Resolver: resolver, Version: "test",
 		Keys: keys, Dispatcher: dispatcher, Profiles: newProfiles(t),
 	})
-	srv := httptest.NewServer(handler)
+	srv := httptest.NewServer(front(handler))
 	t.Cleanup(srv.Close)
 	return ucpStack{
 		gw: srv, key: key, rdb: rdb, faults: faults,

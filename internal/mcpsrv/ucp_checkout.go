@@ -288,7 +288,7 @@ func (h *handlers) completeCheckout(
 		// The escalation resolves through the order event, never through
 		// a second complete — except to retry a payment link that could
 		// not be created, for an order that already exists.
-		if _, err := h.deps.Flow.ResumePayment(ctx, t, s); err != nil {
+		if err := h.deps.Flow.ResumePayment(ctx, t, s); err != nil {
 			return nil, zero, paymentLinkErr(s)
 		}
 		if err := h.deps.Checkout.Save(ctx, s); err != nil {
@@ -328,59 +328,50 @@ func (h *handlers) completeCheckout(
 		return h.checkoutResult(ctx, t, s, neg)
 	}
 
-	_, err = h.deps.Flow.Complete(ctx, t, s)
-	if errors.Is(err, checkout.ErrOrderOutcomeUnknown) {
-		// The order may exist: the key stays spent and the session stays
-		// in progress, so nothing — this key or another — can place it
-		// a second time.
-		_ = h.deps.Checkout.MarkCompleted(ctx, t.SchemaName, s.ID, idemKey)
+	placement, err := h.deps.Flow.Complete(ctx, t, s)
+	// The key is settled even for a platform that has gone: its retry
+	// must find what this attempt did.
+	settled := context.WithoutCancel(ctx)
+	if placement == checkout.OrderMayExist {
+		_ = h.deps.Checkout.MarkCompleted(
+			settled, t.SchemaName, s.ID, idemKey)
+	} else {
+		h.deps.Checkout.ReleaseCompletion(
+			settled, t.SchemaName, s.ID, idemKey)
+	}
+	switch {
+	case err == nil:
+		return h.checkoutResult(ctx, t, s, neg)
+	case errors.Is(err, checkout.ErrOrderOutcomeUnknown):
 		return nil, zero, errors.New(
 			"the store did not confirm whether the order was placed; do " +
 				"not retry or start a new checkout — the buyer receives " +
 				"a confirmation email if it was, and track_order finds it")
-	}
-	if err != nil && s.OrderUUID != "" {
-		// The order exists whatever failed after it: spend the key so a
-		// retry re-renders instead of placing a second order.
-		_ = h.deps.Checkout.MarkCompleted(ctx, t.SchemaName, s.ID, idemKey)
-		_ = h.deps.Checkout.Save(ctx, s)
+	case errors.Is(err, checkout.ErrPaymentSessionFailed):
 		return nil, zero, paymentLinkErr(s)
-	}
-	if err != nil {
-		h.deps.Checkout.ReleaseCompletion(ctx, t.SchemaName, s.ID, idemKey)
-		_ = h.deps.Checkout.Save(ctx, s)
-		switch {
-		case errors.As(err, new(*django.StockShortfall)):
-			return nil, zero, stockShortfallErr(err)
-		case errors.Is(err, checkout.ErrNotReady),
-			errors.Is(err, checkout.ErrCompletionInProgress):
-			return nil, zero, err
-		case errors.Is(err, checkout.ErrPayWayUnavailable):
-			return nil, zero, errors.New(
-				"the selected payment method is not offered for this " +
-					"delivery; submit another advertised instrument")
-		case errors.Is(err, checkout.ErrPaymentMethodUnsupported):
-			return nil, zero, errors.New(
-				"this payment method needs the buyer to pay on the " +
-					"store's checkout; use an offline method (e.g. cash " +
-					"on delivery), Viva card payment, or hand over " +
-					"get_checkout_link instead")
-		default:
-			return nil, zero, upstreamErr(err,
-				"order placement failed; the cart is unchanged")
-		}
-	}
-
-	// The order exists now, whatever the save or render below does: the
-	// key is spent first so a retry re-renders, never places a second
-	// order.
-	_ = h.deps.Checkout.MarkCompleted(ctx, t.SchemaName, s.ID, idemKey)
-	if err := h.deps.Checkout.Save(ctx, s); err != nil {
+	case errors.Is(err, checkout.ErrSessionNotSaved):
 		return nil, zero, errors.New(
 			"the order was placed but checkout state could not be saved; " +
 				"track it with track_order using orderUuid " + s.OrderUUID)
+	case errors.As(err, new(*django.StockShortfall)):
+		return nil, zero, stockShortfallErr(err)
+	case errors.Is(err, checkout.ErrNotReady),
+		errors.Is(err, checkout.ErrCompletionInProgress):
+		return nil, zero, err
+	case errors.Is(err, checkout.ErrPayWayUnavailable):
+		return nil, zero, errors.New(
+			"the selected payment method is not offered for this " +
+				"delivery; submit another advertised instrument")
+	case errors.Is(err, checkout.ErrPaymentMethodUnsupported):
+		return nil, zero, errors.New(
+			"this payment method needs the buyer to pay on the " +
+				"store's checkout; use an offline method (e.g. cash " +
+				"on delivery), Viva card payment, or hand over " +
+				"get_checkout_link instead")
+	default:
+		return nil, zero, upstreamErr(err,
+			"order placement failed; the cart is unchanged")
 	}
-	return h.checkoutResult(ctx, t, s, neg)
 }
 
 // paymentLinkErr is the truthful answer when the order exists but its

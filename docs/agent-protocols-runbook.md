@@ -463,7 +463,7 @@ These were checked and left as they are:
 - **An update can leave the cart half-changed.** `SyncCartLines` writes line by line, so if Django refuses a later line, earlier ones stay. The update answers an error and the session is not saved. Line lists are full-state, so the next update corrects it, and a render always shows the real cart.
 - **A checkout create fills its cart before the region lookup.** If the lookup fails, the lines stay in the cart and no session is saved. An update looks the region up first, so a failure there changes nothing.
 - **Tool schemas use `type: ["null","array"]` and similar.** Inspector `--strict` warns about them, 124 times across 21 tools on 2026-11-06. It is legal JSON Schema and no client has failed on it, so nothing changed. Look again if a client fails.
-- **If an order's outcome is unknown, the checkout cannot render.** When Django's answer to `POST /order` is lost, the session stays `complete_in_progress` with no order id, so a read goes to a cart that may be gone and fails. It is safe: it cannot place a second order. Not exercised here.
+- **If an order's outcome is unknown, the checkout cannot render.** When Django's answer to `POST /order` is lost, the session stays `complete_in_progress` with no order id, so a read goes to a cart that may be gone and fails. It is safe: it cannot place a second order. A platform that hangs up during `complete` does not cause it: the gateway waits for Django's answer without the platform, saves the checkout as placed and links the order, so the platform's retry with the same key answers the order. Not exercised here.
 
 ## 9. Bugs these flows found
 

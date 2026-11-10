@@ -75,7 +75,8 @@ func New(d Deps) http.Handler {
 
 	site := storefront.NewSite(d.Cfg.StorefrontDefaultLocale)
 	checkoutStore := checkout.NewStore(d.Redis)
-	checkoutFlow := checkout.NewFlow(d.Django, checkoutStore, site, d.Log)
+	checkoutFlow := checkout.NewFlow(d.Django, checkoutStore, site,
+		d.Cfg.UpstreamTimeout, d.Log)
 	ucpBuilder := ucp.NewBuilder(
 		d.Django, d.Cfg.MediaURLTemplate, d.Cfg.AssetsHost,
 		d.Cfg.PaymentHandlerEnv, site,
