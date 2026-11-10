@@ -260,6 +260,34 @@ func TestCompleteStoresNothingForASessionItDoesNotAdmit(t *testing.T) {
 	}
 }
 
+// The in-progress save is what guards the order. When Redis refuses it
+// no order is sent, and the session is not written again: that write
+// would be a ready snapshot saved over whatever the store holds by then.
+func TestCompleteSendsNoOrderWithoutTheInProgressSave(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	s := f.readySession(t)
+	redisDown := errors.New("redis is down")
+	writes := 0
+	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+		args := cmd.Args()
+		if cmd.Name() == "get" || len(args) < 2 ||
+			!strings.HasSuffix(fmt.Sprint(args[1]), ":cs:"+s.ID) {
+			return nil
+		}
+		writes++
+		return redisDown
+	}))
+
+	placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+
+	require.ErrorIs(t, err, redisDown)
+	assert.Equal(t, checkout.NothingPlaced, placement)
+	assert.Equal(t, 1, writes, "refused once, and not written again")
+	assert.Zero(t, f.faults.orderCreates.Load())
+	assert.Equal(t, checkout.StatusReadyForComplete, s.Status)
+	assert.Equal(t, checkout.StatusReadyForComplete, f.stored(t, s).Status)
+}
+
 // The order exists once Django has answered, whatever happens to the
 // session after: a save that fails is reported as that, with the key
 // spent, and the stored session stays in progress, so no retry can find

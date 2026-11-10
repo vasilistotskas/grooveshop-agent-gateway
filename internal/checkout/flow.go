@@ -32,6 +32,18 @@ var ErrOrderOutcomeUnknown = errors.New(
 
 // ErrPaymentSessionFailed marks an order that exists but whose hosted
 // payment link could not be created. The session stays escalated and
+// ResumePayment mints a fresh link; callers must never report it as a
+// failed order — the buyer would check out again and order twice.
+var ErrPaymentSessionFailed = errors.New(
+	"checkout: the order is placed but its payment link could not be " +
+		"created")
+
+// ErrSessionNotSaved marks an order that is placed while its session
+// could not be stored: the stored session still reads
+// complete_in_progress.
+var ErrSessionNotSaved = errors.New(
+	"checkout: the order is placed but its session could not be saved")
+
 // refused reports whether Django definitively rejected a request (a 4xx),
 // so nothing was created and it is safe to try again.
 func refused(err error) bool {
@@ -45,18 +57,6 @@ func refused(err error) bool {
 	}
 	return false
 }
-
-// ResumePayment mints a fresh link; callers must never report it as a
-// failed order — the buyer would check out again and order twice.
-var ErrPaymentSessionFailed = errors.New(
-	"checkout: the order is placed but its payment link could not be " +
-		"created")
-
-// ErrSessionNotSaved marks an order that is placed while its session
-// could not be stored: the stored session still reads
-// complete_in_progress.
-var ErrSessionNotSaved = errors.New(
-	"checkout: the order is placed but its session could not be saved")
 
 // Placement is what a completion did about the order. It decides the
 // caller's idempotency key, whatever error came with it.
@@ -121,12 +121,24 @@ func (f *Flow) Complete(
 	// From here on the caller's cancellation no longer applies.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), f.budget)
 	defer cancel()
+
+	// Persisted BEFORE the order exists. The session lock can lapse
+	// during the upstream calls below, and a second complete that loads
+	// the session then must see a completion in flight — not a ready
+	// session it would place a second time.
+	s.Status = StatusCompleteInProgress
+	if err := f.st.Save(ctx, s); err != nil {
+		// The write that guards the order was refused: no order is
+		// sent, and the session is not written again.
+		s.Status = StatusReadyForComplete
+		return NothingPlaced, err
+	}
 	placement, err := f.place(ctx, t, s, payWay)
 	if errors.Is(err, ErrOrderOutcomeUnknown) {
-		// Already stored in progress, and it stays so.
+		// Stored in progress, and it stays so.
 		return placement, err
 	}
-	// Placed, or ready again after a refusal.
+	// Placed, or ready again after Django refused the order.
 	if saveErr := f.st.Save(ctx, s); saveErr != nil {
 		f.log.ErrorContext(ctx, "checkout: session save failed",
 			slog.String("session", s.ID),
@@ -196,21 +208,12 @@ func (f *Flow) admit(
 	return payWay, nil
 }
 
-// place creates the order for an admitted session, links it, and starts
-// its payment when the pay way is settled online. It leaves the session
-// as the result made it; Complete stores it.
+// place creates the order for a session stored in progress, links it,
+// and starts its payment when the pay way is settled online. It leaves
+// the session as the result made it; Complete stores it.
 func (f *Flow) place(
 	ctx context.Context, t *tenant.Tenant, s *Session, payWay *django.PayWay,
 ) (Placement, error) {
-	// Persisted BEFORE the order exists. The session lock can lapse
-	// during the upstream calls below, and a second complete that loads
-	// the session then must see a completion in flight — not a ready
-	// session it would place a second time.
-	s.Status = StatusCompleteInProgress
-	if err := f.st.Save(ctx, s); err != nil {
-		s.Status = StatusReadyForComplete
-		return NothingPlaced, err
-	}
 	order, err := f.dj.CreateOrder(ctx, t.Domain, t.DefaultLocale, s.CartID,
 		django.OrderCreate{
 			PayWayID:             s.PayWayID,
