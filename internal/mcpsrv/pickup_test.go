@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 )
 
 const (
@@ -283,7 +284,7 @@ func TestPickupPointsTellNoneFoundFromAFailure(t *testing.T) {
 				assert.NotContains(t, err.Error(), "HTTPSConnectionPool")
 				assert.NotContains(t, err.Error(), "P423")
 			default:
-				var got *ToolError
+				var got *mcptool.ToolError
 				require.ErrorAs(t, err, &got)
 				assert.Equal(t, tc.want, got.Code)
 				assert.Contains(t, got.Hint, tc.hint)

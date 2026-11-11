@@ -55,24 +55,25 @@ func testTenant() *tenant.Tenant {
 	}
 }
 
-func newHarness(t *testing.T) (*Verifier, *atomic.Int64, func()) {
+func newHarness(
+	t *testing.T,
+) (*Verifier[*django.AgentProfile], *atomic.Int64, func()) {
 	t.Helper()
 	var hits atomic.Int64
 	srv := fakeDjango(t, &hits)
 	dj := django.New(srv.URL+"/api/v1", "api.example.test", "s",
 		2*time.Second, testLogger(), nil)
-	return NewVerifier(dj, testLogger()), &hits, srv.Close
+	return NewShopperVerifier(dj, testLogger()), &hits, srv.Close
 }
 
 func TestVerifyValidTokenReturnsProfile(t *testing.T) {
 	v, _, done := newHarness(t)
 	defer done()
 
-	linked, err := v.Verify(t.Context(), testTenant(), "good")
+	profile, err := v.Verify(t.Context(), testTenant(), "good")
 	require.NoError(t, err)
-	require.NotNil(t, linked.Profile)
-	assert.Equal(t, int64(7), linked.Profile.ID)
-	assert.Equal(t, "good", linked.Bearer)
+	require.NotNil(t, profile)
+	assert.Equal(t, int64(7), profile.ID)
 }
 
 func TestVerifyInvalidToken(t *testing.T) {
@@ -87,10 +88,32 @@ func TestVerifyScopelessTokenPassesWithoutProfile(t *testing.T) {
 	v, _, done := newHarness(t)
 	defer done()
 
-	linked, err := v.Verify(t.Context(), testTenant(), "scopeless")
+	profile, err := v.Verify(t.Context(), testTenant(), "scopeless")
 	require.NoError(t, err)
-	assert.Nil(t, linked.Profile)
-	assert.Equal(t, "scopeless", linked.Bearer)
+	assert.Nil(t, profile)
+}
+
+// A scopeless token is linked all the same: the bearer goes on, without
+// a profile.
+func TestMiddlewareScopelessBearerIsLinkedWithoutProfile(t *testing.T) {
+	v, _, done := newHarness(t)
+	defer done()
+	var got *Linked
+	h := Middleware(v, testLogger())(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			got, _ = FromContext(r.Context())
+			w.WriteHeader(http.StatusOK)
+		}))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer scopeless")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req.WithContext(
+		tenant.NewContext(req.Context(), testTenant())))
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, got)
+	assert.Equal(t, &Linked{Bearer: "scopeless"}, got)
 }
 
 func TestVerifyCachesPositiveAndNegative(t *testing.T) {
@@ -138,6 +161,20 @@ func TestMiddlewareAnonymousPassesThrough(t *testing.T) {
 	assert.Equal(t, int64(0), hits.Load())
 }
 
+// A Bearer header with no token is anonymous too: nothing is verified.
+func TestMiddlewareEmptyBearerIsAnonymous(t *testing.T) {
+	h, hits, done := middlewareHarness(t)
+	defer done()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer ")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, rec.Header().Get("X-Linked-Email"))
+	assert.Equal(t, int64(0), hits.Load())
+}
+
 func TestMiddlewareValidBearerAttachesIdentity(t *testing.T) {
 	h, _, done := middlewareHarness(t)
 	defer done()
@@ -160,9 +197,12 @@ func TestMiddlewareInvalidBearerGets401WithChallenge(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.Contains(t, rec.Header().Get("WWW-Authenticate"),
+	// The whole header: the client must be sent to the store's own
+	// issuer, through /mcp's metadata.
+	assert.Equal(t, `Bearer error="invalid_token", `+
 		`resource_metadata="https://shop.example.test`+
-			`/.well-known/oauth-protected-resource/mcp"`)
+		`/.well-known/oauth-protected-resource/mcp"`,
+		rec.Header().Get("WWW-Authenticate"))
 }
 
 // otherTenant is a second store served by the same gateway pod pool —
@@ -197,6 +237,37 @@ func TestVerifyDoesNotReuseVerdictAcrossTenants(t *testing.T) {
 	_, err = v.Verify(t.Context(), testTenant(), "good")
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), hits.Load(), "same-tenant repeat should hit cache")
+}
+
+// One token at two stores is two verdicts: Django binds a shopper's
+// token to the store that issued it, and answers 401 at any other.
+func TestVerifyKeepsEachStoresVerdict(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			if r.Header.Get("X-Forwarded-Host") != testTenant().Domain {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="agent"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"detail":"Invalid target resource."}`))
+				return
+			}
+			_, _ = w.Write([]byte(profileJSON))
+		}))
+	defer srv.Close()
+	v := NewShopperVerifier(django.New(srv.URL+"/api/v1",
+		"api.example.test", "s", 2*time.Second, testLogger(), nil),
+		testLogger())
+
+	for range 2 {
+		profile, err := v.Verify(t.Context(), testTenant(), "good")
+		require.NoError(t, err)
+		assert.Equal(t, int64(7), profile.ID)
+		_, err = v.Verify(t.Context(), otherTenant(), "good")
+		require.ErrorIs(t, err, ErrInvalidToken)
+	}
+	assert.Equal(t, int64(2), hits.Load(), "one probe per store")
 }
 
 // The negative direction: a token rejected at one store must not mark

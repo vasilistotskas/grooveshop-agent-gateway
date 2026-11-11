@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -117,7 +118,7 @@ func TestUpstreamErrReportsAnUnreachableCartAsNotFound(t *testing.T) {
 	err := upstreamErr(fmt.Errorf("get: %w", django.ErrCartUnreachable),
 		"that cart no longer exists")
 
-	assert.Equal(t, &ToolError{
+	assert.Equal(t, &mcptool.ToolError{
 		Code: "not_found", Hint: "that cart no longer exists",
 	}, err)
 }

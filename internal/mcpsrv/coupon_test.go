@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -77,7 +78,7 @@ func TestApplyCouponPassesTheRefusalThrough(t *testing.T) {
 
 	_, _, err := h.applyCoupon(ctx, nil, ApplyCouponIn{Code: "OLD5"})
 
-	var got *ToolError
+	var got *mcptool.ToolError
 	require.ErrorAs(t, err, &got)
 	assert.Equal(t, "discount_code_expired", got.Code)
 	assert.Equal(t, "The promotion has ended", got.Detail)

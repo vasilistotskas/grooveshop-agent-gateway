@@ -101,7 +101,7 @@ func New(d Deps) http.Handler {
 	// stays open; a present-but-invalid bearer gets the RFC 9728
 	// challenge so MCP clients can (re-)run their OAuth flow.
 	identityMW := identity.Middleware(
-		identity.NewVerifier(d.Django, d.Log), d.Log)
+		identity.NewShopperVerifier(d.Django, d.Log), d.Log)
 	mux.Handle("/mcp",
 		tenantMW(tenant.RequireAgentCommerce(
 			identityMW(mcpsrv.RequireLinkedAccount(
@@ -112,7 +112,7 @@ func New(d Deps) http.Handler {
 	// needs a staff bearer bound to this store (internal/adminmcp).
 	mux.Handle(adminmcp.Path,
 		tenantMW(adminmcp.RequireStaff(
-			adminmcp.NewVerifier(d.Django), d.Log)(
+			adminmcp.NewVerifier(d.Django, d.Log), d.Log)(
 			adminmcp.Handler(adminmcp.Deps{
 				Django:  d.Django,
 				Log:     d.Log,

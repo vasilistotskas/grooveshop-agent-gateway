@@ -1,6 +1,7 @@
 package tenant
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -57,7 +58,8 @@ func middleware(
 
 // writeResolveError answers a failed resolve or top-up: 404 for a store
 // Django does not know, 503 for anything else, logged as msg unless the
-// resolver logged its cause already (errNoCredentials).
+// caller hung up or the resolver logged the cause already
+// (errNoCredentials).
 func writeResolveError(
 	w http.ResponseWriter, req *http.Request, log *slog.Logger,
 	msg string, err error,
@@ -66,7 +68,7 @@ func writeResolveError(
 		httpmw.WriteJSONError(w, http.StatusNotFound, "unknown store")
 		return
 	}
-	if !errors.Is(err, errNoCredentials) {
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, errNoCredentials) {
 		log.ErrorContext(req.Context(), msg,
 			slog.String("host", req.Host),
 			slog.String("error", err.Error()),
