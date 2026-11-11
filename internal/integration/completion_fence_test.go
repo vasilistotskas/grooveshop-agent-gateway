@@ -113,6 +113,18 @@ func assertLost(t *testing.T, surface string, a surfaceAnswer) {
 	assert.Positive(t, after)
 }
 
+// assertLostUpdate is assertLost for an update, whose cart writes were
+// made before its save was refused: the agent is told that the rest of
+// the update was not stored, and that its lines may be in the cart.
+func assertLostUpdate(t *testing.T, surface string, a surfaceAnswer) {
+	t.Helper()
+	assertLost(t, surface, a)
+	if surface == "ucp" {
+		assert.Contains(t, a.refusal, "The checkout was not updated")
+		assert.Contains(t, a.refusal, "may already be in the cart")
+	}
+}
+
 // A completion looks the store's pay ways up and reserves stock before
 // it places the order, and a slow store can hold it there past its
 // session lock, and past its key's claim. A second complete then finds
@@ -249,7 +261,7 @@ func TestAStaleUpdateDoesNotOverwriteACompletion(t *testing.T) {
 					stack.storedSession(t, id).Status)
 
 				held.open()
-				assertLost(t, surface.name, <-updated)
+				assertLostUpdate(t, surface.name, <-updated)
 				assert.Equal(t, checkout.StatusCompleteInProgress,
 					stack.storedSession(t, id).Status,
 					"the update wrote over a session being placed")
@@ -279,7 +291,7 @@ func TestAStaleUpdateDoesNotOverwriteACompletion(t *testing.T) {
 				placed := stack.storedBytes(t, id)
 
 				held.open()
-				assertLost(t, surface.name, <-updated)
+				assertLostUpdate(t, surface.name, <-updated)
 				assert.Equal(t, placed, stack.storedBytes(t, id),
 					"the update wrote over a placed session")
 				// A ready session here would be ordered a second time.

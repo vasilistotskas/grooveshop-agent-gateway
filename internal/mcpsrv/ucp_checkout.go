@@ -205,10 +205,8 @@ func (h *handlers) updateCheckout(
 	}
 	defer release()
 
-	if !s.Open() {
-		return nil, zero, fmt.Errorf(
-			"checkout %s is %s and can no longer be updated",
-			s.ID, s.Status)
+	if err := closedTo(s, "updated"); err != nil {
+		return nil, zero, err
 	}
 	// line_items is full-state on update: the submitted list replaces
 	// the cart's lines. Ignoring it would complete the old order.
@@ -235,8 +233,7 @@ func (h *handlers) updateCheckout(
 		if err := checkout.SyncCartLines(
 			ctx, h.deps.Django, t, s.Protocol, s.CartID, lines,
 		); err != nil {
-			return nil, zero, withHint(upstreamErr(err, cartGone),
-				checkoutNotUpdated)
+			return nil, zero, h.cartFailed(ctx, t, s, err)
 		}
 	}
 	codes, hasCodes := in.Checkout.discountCodes()
@@ -244,16 +241,16 @@ func (h *handlers) updateCheckout(
 		if err := checkout.ApplyDiscountCodes(
 			ctx, h.deps.Django, t, s, codes,
 		); err != nil {
-			return nil, zero, withHint(upstreamErr(err, cartGone),
-				checkoutNotUpdated)
+			return nil, zero, h.cartFailed(ctx, t, s, err)
 		}
 	}
 	s.Recompute()
 	// The lookups above can outlast the lock, and another call may have
 	// stored the checkout meanwhile, a completion included: this
-	// snapshot is then not written over it.
+	// snapshot is then not written over it. The cart writes above are
+	// already made.
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
-		return nil, zero, saveFailed(err)
+		return nil, zero, withHint(saveFailed(err), checkoutNotUpdated)
 	}
 	res, out, err := h.checkoutResult(ctx, t, s, neg)
 	return h.discountAnnotated(res, out, err, s, hasCodes)
@@ -375,9 +372,10 @@ func (h *handlers) completeCheckout(
 				"track it with track_order using orderUuid " + s.OrderUUID)
 	case errors.As(err, new(*django.StockShortfall)):
 		return nil, zero, stockShortfallErr(err)
+	case errors.Is(err, checkout.ErrSessionChanged):
+		return nil, zero, saveFailed(err)
 	case errors.Is(err, checkout.ErrNotReady),
-		errors.Is(err, checkout.ErrCompletionInProgress),
-		errors.Is(err, checkout.ErrSessionChanged):
+		errors.Is(err, checkout.ErrCompletionInProgress):
 		return nil, zero, err
 	case errors.Is(err, checkout.ErrPayWayUnavailable):
 		return nil, zero, errors.New(
@@ -432,14 +430,73 @@ func (h *handlers) settleCompletion(
 	}
 }
 
+// errCheckoutChanged answers a checkout another call stored while this
+// one ran: nothing of this call was stored in it.
+var errCheckoutChanged = &ToolError{Code: codeConflict,
+	Hint: "this checkout was changed by another request while this one " +
+		"ran, so nothing of this call was stored in it; read it with " +
+		"get_checkout before trying again"}
+
 // saveFailed answers a checkout that could not be stored: one another
 // call stored meanwhile is to be read again, anything else is the store
 // being unavailable.
 func saveFailed(err error) error {
 	if errors.Is(err, checkout.ErrSessionChanged) {
-		return err
+		return errCheckoutChanged
 	}
 	return errCheckoutUnavailable
+}
+
+// errCheckoutGone answers an id no checkout is held for. Why cannot be
+// told from the id: it expired unplaced, it was placed and its record is
+// gone (expired, or evicted), or it never existed. So the answer never
+// says to start another without saying to look for an order first.
+var errCheckoutGone = errors.New(
+	"that checkout no longer exists here, and its id does not say " +
+		"whether it placed an order. If complete_checkout was ever " +
+		"called for it, an order may exist: look it up with get_order " +
+		"or track_order (or ask the shopper for the store's " +
+		"confirmation email) before starting another checkout. If it " +
+		"was never completed, start a new one with create_checkout")
+
+// closedTo answers an update or a cancel (action: "updated", "canceled")
+// of a checkout that takes neither, and is nil for one that is open: an
+// order that is being placed, a canceled checkout, and one that placed
+// an order, which canceling or changing the checkout would not touch.
+func closedTo(s *checkout.Session, action string) error {
+	switch {
+	case s.Open():
+		return nil
+	case s.Status == checkout.StatusCompleteInProgress:
+		return checkout.ErrCompletionInProgress
+	case s.Status == checkout.StatusCanceled:
+		return fmt.Errorf("checkout %s is canceled and cannot be %s",
+			s.ID, action)
+	}
+	return fmt.Errorf(
+		"checkout %s already placed order %s and cannot be %s here; "+
+			"the order is managed by the store, and get_order or "+
+			"track_order reads it", s.ID, s.OrderUUID, action)
+}
+
+// cartFailed answers an update whose cart call failed. An update can
+// outlast its lock, and a completion may have placed the order
+// meanwhile, which takes the cart with it. So for a cart that cannot be
+// reached the checkout is read again, and one that is no longer open is
+// answered as any update of it is, never as a cart to replace with a new
+// checkout.
+func (h *handlers) cartFailed(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session, err error,
+) error {
+	if errors.Is(err, django.ErrCartUnreachable) {
+		now, loadErr := h.deps.Checkout.Load(ctx, t.SchemaName, s.ID)
+		if loadErr == nil {
+			if closed := closedTo(now, "updated"); closed != nil {
+				return closed
+			}
+		}
+	}
+	return withHint(upstreamErr(err, cartGone), checkoutNotUpdated)
 }
 
 // errCheckoutUnavailable answers a checkout store (Redis) that could not
@@ -517,9 +574,7 @@ func (h *handlers) lockedSession(
 	if err != nil {
 		release()
 		if errors.Is(err, checkout.ErrNotFound) {
-			return nil, nil, errors.New(
-				"that checkout no longer exists; start a new one with " +
-					"create_checkout")
+			return nil, nil, errCheckoutGone
 		}
 		return nil, nil, errCheckoutUnavailable
 	}
@@ -618,9 +673,7 @@ func (h *handlers) getCheckout(
 	s, err := h.deps.Checkout.Load(ctx, t.SchemaName, in.ID)
 	if err != nil {
 		if errors.Is(err, checkout.ErrNotFound) {
-			return nil, zero, errors.New(
-				"that checkout no longer exists; start a new one with " +
-					"create_checkout")
+			return nil, zero, errCheckoutGone
 		}
 		return nil, zero, errCheckoutUnavailable
 	}
@@ -659,17 +712,12 @@ func (h *handlers) cancelCheckout(
 	if s.Status == checkout.StatusCanceled {
 		return h.checkoutResult(ctx, t, s, neg)
 	}
-	// Once an order exists — completed, or escalated awaiting payment —
-	// canceling the checkout would not cancel the order: the buyer could
-	// still pay it, and the session would read canceled over a paid order.
-	if s.Status == checkout.StatusCompleteInProgress {
-		return nil, zero, checkout.ErrCompletionInProgress
-	}
-	if s.OrderUUID != "" {
-		return nil, zero, fmt.Errorf(
-			"checkout %s already placed order %s and cannot be canceled "+
-				"here; the order is managed by the store",
-			s.ID, s.OrderUUID)
+	// Once an order exists, or may (being placed, awaiting payment,
+	// completed), canceling the checkout would not cancel the order: the
+	// buyer could still pay it, and the session would read canceled over
+	// a paid order.
+	if err := closedTo(s, "canceled"); err != nil {
+		return nil, zero, err
 	}
 	s.Status = checkout.StatusCanceled
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {

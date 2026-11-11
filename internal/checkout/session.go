@@ -157,13 +157,29 @@ func (s *Session) Open() bool {
 		s.Status == StatusReadyForComplete
 }
 
-// ttl is how long the session may still live. Calls keep an open session alive,
-// but not a placed one: it reads its order with the gateway's secret, past the
-// limit on a guest's order uuid, so it must end long before that limit however
-// often a caller holding its id touches it.
+// MayHaveOrder reports whether an order exists for the session, or may:
+// one is being placed (and stays "may" for good when Django never
+// confirmed it), awaits its payment, or is completed. Such a session
+// takes no update and no cancel: canceling the checkout would not
+// cancel the order. Every session is open, canceled, or this.
+func (s *Session) MayHaveOrder() bool {
+	return s.Status == StatusCompleteInProgress ||
+		s.Status == StatusRequiresEscalation ||
+		s.Status == StatusCompleted
+}
+
+// ttl is how long the session may still live. Calls keep an open session
+// alive for activeTTL at a time. One that may have an order, or is
+// canceled, is kept terminalTTL: while it is held, a caller is told
+// what became of the checkout (do not order again, the order, its
+// payment page), and a payment event finds it; once it is gone the id
+// is only "not found". A placed one still ends terminalTTL after it was
+// placed, however often a caller holding its id touches it: it reads
+// its order with the gateway's secret, past the limit on a guest's
+// order uuid.
 func (s *Session) ttl(now time.Time) time.Duration {
 	ttl := activeTTL
-	if s.Terminal() {
+	if s.Terminal() || s.MayHaveOrder() {
 		ttl = terminalTTL
 	}
 	if s.PlacedAt.IsZero() {

@@ -155,9 +155,21 @@ func TestPlacedSessionLifeCountsFromPlacement(t *testing.T) {
 		return &Session{Status: status, PlacedAt: now.Add(-age)}
 	}
 
-	assert.Equal(t, activeTTL, (&Session{Status: StatusIncomplete}).ttl(now))
-	assert.Equal(t, terminalTTL, (&Session{Status: StatusCompleted}).ttl(now))
-	assert.Equal(t, activeTTL,
+	// Open sessions live activeTTL from each save. Every other one is
+	// kept terminalTTL: while it is held a caller is told what became of
+	// the checkout, and once it is gone its id is only "not found".
+	for status, want := range map[Status]time.Duration{
+		StatusIncomplete:       activeTTL,
+		StatusReadyForComplete: activeTTL,
+		// An order that may exist though Django never confirmed it.
+		StatusCompleteInProgress: terminalTTL,
+		StatusCompleted:          terminalTTL,
+		StatusCanceled:           terminalTTL,
+	} {
+		assert.Equal(t, want, (&Session{Status: status}).ttl(now), status)
+	}
+	// A placed session ends terminalTTL after it was placed.
+	assert.Equal(t, terminalTTL-time.Hour,
 		placed(time.Hour, StatusRequiresEscalation).ttl(now))
 	assert.Equal(t, 10*time.Minute,
 		placed(terminalTTL-10*time.Minute, StatusRequiresEscalation).ttl(now))
@@ -180,6 +192,33 @@ func TestOpen(t *testing.T) {
 	}
 	for status, want := range open {
 		assert.Equal(t, want, (&Session{Status: status}).Open(), status)
+	}
+}
+
+// Every session is open, canceled, or may have an order: the three
+// never overlap, so a decision made on one of them covers each status
+// once.
+func TestMayHaveOrder(t *testing.T) {
+	may := map[Status]bool{
+		StatusIncomplete:         false,
+		StatusReadyForComplete:   false,
+		StatusCompleteInProgress: true,
+		StatusRequiresEscalation: true,
+		StatusCompleted:          true,
+		StatusCanceled:           false,
+	}
+	for status, want := range may {
+		s := &Session{Status: status}
+		assert.Equal(t, want, s.MayHaveOrder(), status)
+		states := 0
+		for _, in := range []bool{
+			s.Open(), s.MayHaveOrder(), status == StatusCanceled,
+		} {
+			if in {
+				states++
+			}
+		}
+		assert.Equal(t, 1, states, status)
 	}
 }
 

@@ -338,8 +338,14 @@ func (f *Flow) startPayment(
 // It takes the session lock like every other mutation. A busy session
 // returns ErrLocked, and one another request stored meanwhile
 // ErrSessionChanged, for the caller to retry.
+//
+// orderUUID is the event's order, which the order link tied to this
+// checkout. A session that does not name it never learned of its order:
+// the completion that placed it could not save. The event is then what
+// records the order, read from Django for its id, so the session is
+// never completed without one.
 func (f *Flow) ApplyOrderEvent(
-	ctx context.Context, schema, checkoutID, paymentStatus string,
+	ctx context.Context, schema, checkoutID, orderUUID, paymentStatus string,
 ) error {
 	if paymentStatus != django.PaymentStatusCompleted {
 		return nil
@@ -358,6 +364,15 @@ func (f *Flow) ApplyOrderEvent(
 	}
 	if s.Terminal() {
 		return nil
+	}
+	if s.OrderUUID == "" {
+		// An event names no language, and only the order's id is read.
+		order, err := f.dj.PlacedOrder(ctx, s.Domain, "", orderUUID)
+		if err != nil {
+			return err
+		}
+		s.OrderID, s.OrderUUID = order.ID, order.UUID
+		s.PlacedAt = time.Now().UTC()
 	}
 	s.Status = StatusCompleted
 	return f.st.Save(ctx, s)

@@ -737,16 +737,8 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		h.renderReplay(w, r, t, s)
 		return
 	}
-	if s.Status == checkout.StatusCompleteInProgress {
+	if h.refuseChange(w, s, updateAllow, "change") {
 		fail()
-		h.writeCompletionPending(w, s)
-		return
-	}
-	if s.Terminal() {
-		fail()
-		// The GET route serves HEAD too.
-		writeClosed(w, http.MethodGet+", "+http.MethodHead,
-			fmt.Sprintf("Session is %s and cannot change.", s.Status))
 		return
 	}
 
@@ -763,7 +755,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	if req.LineItems != nil {
 		if err := h.syncCart(r, t, s.CartID, req.LineItems); err != nil {
 			fail()
-			upstreamError(w, err)
+			h.cartFailed(w, r, t, s, err)
 			return
 		}
 	}
@@ -772,7 +764,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 			r.Context(), h.dj, t, s, req.Discounts.Codes,
 		); err != nil {
 			fail()
-			upstreamError(w, err)
+			h.cartFailed(w, r, t, s, err)
 			return
 		}
 	}
@@ -954,14 +946,11 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		h.renderReplay(w, r, t, s)
 		return
 	}
-	if s.Status == checkout.StatusCompleteInProgress {
+	// Once an order exists, or may, canceling the session would not
+	// cancel the order: the buyer could still pay it, and the session
+	// would read canceled over a paid order.
+	if h.refuseChange(w, s, "", "be canceled") {
 		h.releaseIdem(r, claim, scope)
-		h.writeCompletionPending(w, s)
-		return
-	}
-	if s.Terminal() {
-		h.releaseIdem(r, claim, scope)
-		writeClosed(w, "", fmt.Sprintf("Session is already %s.", s.Status))
 		return
 	}
 	s.Status = checkout.StatusCanceled
@@ -999,15 +988,68 @@ func (h *Handler) lockSession(
 	return s, release, true
 }
 
+// msgSessionGone answers an id no session is held for. Why cannot be
+// told from the id: it expired unplaced, it was placed and its record is
+// gone (expired, or evicted), or it never existed. So the answer never
+// reads as "nothing happened, create another".
+const msgSessionGone = "No checkout session is held for this id. It " +
+	"may have expired, and it may have placed an order: if complete " +
+	"was ever called for it, check for that order before creating " +
+	"another session."
+
 func (h *Handler) sessionError(w http.ResponseWriter, err error) {
 	if errors.Is(err, checkout.ErrNotFound) {
 		writeError(w, http.StatusNotFound, Error{
 			Type: "invalid_request", Code: "not_found",
-			Message: "No such checkout session.",
+			Message: msgSessionGone,
 		})
 		return
 	}
 	writeUnavailable(w, "Checkout is temporarily unavailable.")
+}
+
+// updateAllow is what a session that takes no change still serves: the
+// GET route, which serves HEAD too.
+const updateAllow = http.MethodGet + ", " + http.MethodHead
+
+// refuseChange answers an update or a cancel (what names it: "change",
+// "be canceled") of a session that takes neither, and reports whether it
+// did: one whose order is being placed, and one that is canceled or may
+// have an order (405, with what the target still serves).
+func (h *Handler) refuseChange(
+	w http.ResponseWriter, s *checkout.Session, allow, what string,
+) bool {
+	switch {
+	case s.Open():
+		return false
+	case s.Status == checkout.StatusCompleteInProgress:
+		h.writeCompletionPending(w, s)
+	case s.Status == checkout.StatusRequiresEscalation:
+		writeClosed(w, allow, "Session has placed an order that awaits "+
+			"its payment and cannot "+what+".")
+	default:
+		writeClosed(w, allow,
+			fmt.Sprintf("Session is %s and cannot %s.", s.Status, what))
+	}
+	return true
+}
+
+// cartFailed answers an update whose cart call failed. An update can
+// outlast its lock, and a completion may have placed the order
+// meanwhile, which takes the cart with it. So for a cart that cannot be
+// reached the session is read again, and one that is no longer open is
+// answered as any update of it is, not as a resource that went missing.
+func (h *Handler) cartFailed(
+	w http.ResponseWriter, r *http.Request, t *tenant.Tenant,
+	s *checkout.Session, err error,
+) {
+	if errors.Is(err, django.ErrCartUnreachable) {
+		now, loadErr := h.store.Load(r.Context(), t.SchemaName, s.ID)
+		if loadErr == nil && h.refuseChange(w, now, updateAllow, "change") {
+			return
+		}
+	}
+	upstreamError(w, err)
 }
 
 // completeError answers a refused or failed completion of s. Every

@@ -356,6 +356,49 @@ func TestCompletesAtOncePlaceOneOrder(t *testing.T) {
 	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
 }
 
+// A completion that placed its order and could not save leaves a session
+// in progress that does not name the order. The payment event finds it
+// through the order link, and is then what records the order: completed
+// without one, the checkout would read as placed and name nothing, and a
+// cancel that looks for an order would have canceled it over a paid one.
+func TestOrderEventRecordsTheOrderItsSessionNeverSaved(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	ctx := context.Background()
+	s := f.readySession(t)
+	redisDown := errors.New("redis is down")
+	var linked, down bool
+	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+		switch {
+		case setsKey(cmd, ":orderlink:"):
+			linked, down = true, true
+		case linked && down && setsKey(cmd, sessionRedisKey(s.ID)):
+			return redisDown
+		}
+		return nil
+	}))
+	_, err := f.flow.Complete(ctx, f.tenant, s)
+	require.ErrorIs(t, err, checkout.ErrSessionNotSaved)
+	down = false
+	unsaved := f.stored(t, s)
+	require.Equal(t, checkout.StatusCompleteInProgress, unsaved.Status)
+	require.Empty(t, unsaved.OrderUUID)
+
+	// An event that is not the payment changes nothing.
+	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
+		fixtureOrderUUID, "PENDING"))
+	assert.Equal(t, unsaved, f.stored(t, s))
+
+	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
+		fixtureOrderUUID, django.PaymentStatusCompleted))
+
+	stored := f.stored(t, s)
+	assert.Equal(t, checkout.StatusCompleted, stored.Status)
+	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
+	assert.EqualValues(t, 684, stored.OrderID, "the fixture order's id")
+	assert.WithinDuration(t, time.Now(), stored.PlacedAt, time.Minute)
+	assert.EqualValues(t, 1, f.faults.orderCreates.Load())
+}
+
 // A session in progress can still be stored by something else before the
 // completion's last save: an order event, for an order that is paid at
 // once. That save then loses, with the order placed. It is reported as a

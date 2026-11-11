@@ -5,10 +5,12 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -182,6 +184,90 @@ func TestSaveWritesOnlyOverTheSessionItRead(t *testing.T) {
 		_, err := store.Load(ctx, s.Schema, s.ID)
 		assert.ErrorIs(t, err, checkout.ErrNotFound)
 	})
+}
+
+// A save recognises its own earlier run by the revision that run stored,
+// and by nothing else. Another request that read the same state and
+// saves the same content in the same instant writes the same bytes but
+// for its revision: finding those stored is not finding one's own write.
+func TestSaveDoesNotTakeAnotherWritersTwinForItsOwn(t *testing.T) {
+	ctx := context.Background()
+	store, rdb := startStore(t)
+	s := newSession()
+	require.NoError(t, store.Create(ctx, s))
+	key := sessionRedisKey(s.ID)
+	twinned := false
+	rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+		if twinned || !savesKey(cmd, key) {
+			return nil
+		}
+		twinned = true
+		// The script's arguments after its key: the revision read, the
+		// new one, the session, its lifetime.
+		args := cmd.Args()
+		mine, session := args[5].(string), string(args[6].([]byte))
+		twin := strings.Replace(session, mine, uuid.NewString(), 1)
+		require.NotEqual(t, session, twin)
+		return rdb.Set(ctx, key, twin, redis.KeepTTL).Err()
+	}))
+
+	s.Status = checkout.StatusCompleteInProgress
+	require.ErrorIs(t, store.Save(ctx, s), checkout.ErrSessionChanged)
+	require.True(t, twinned)
+}
+
+// How long a stored session lives, by what it is. An open one lives half
+// an hour from each save. One that may have an order, or is canceled, is
+// kept a day: while it is held a caller is told what became of the
+// checkout and a payment event finds it, and once it is gone its id is
+// only "not found". A placed one ends a day after it was placed.
+func TestSessionLifetimeByStatus(t *testing.T) {
+	ctx := context.Background()
+	store, rdb := startStore(t)
+	const day, halfHour = 24 * time.Hour, 30 * time.Minute
+	for status, want := range map[checkout.Status]time.Duration{
+		checkout.StatusIncomplete:         halfHour,
+		checkout.StatusReadyForComplete:   halfHour,
+		checkout.StatusCompleteInProgress: day,
+		checkout.StatusRequiresEscalation: day - time.Hour,
+		checkout.StatusCompleted:          day - time.Hour,
+		checkout.StatusCanceled:           day,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			s := newSession()
+			require.NoError(t, store.Create(ctx, s))
+			s.Status = status
+			if status == checkout.StatusRequiresEscalation ||
+				status == checkout.StatusCompleted {
+				s.PlacedAt = time.Now().Add(-time.Hour)
+			}
+			require.NoError(t, store.Save(ctx, s))
+			ttl, err := rdb.PTTL(ctx, sessionRedisKey(s.ID)).Result()
+			require.NoError(t, err)
+			assert.InDelta(t, want.Seconds(), ttl.Seconds(), 5)
+		})
+	}
+}
+
+// A session an older release stored lives under that release's key.
+// This one neither reads it nor writes it: the two never share a
+// session.
+func TestSessionUnderTheOldKeyIsNotThisStores(t *testing.T) {
+	ctx := context.Background()
+	store, rdb := startStore(t)
+	s := newSession()
+	require.NoError(t, store.Create(ctx, s))
+	raw, err := rdb.Get(ctx, sessionRedisKey(s.ID)).Result()
+	require.NoError(t, err)
+	oldKey := "ag:demostore:cs:" + s.ID
+	require.NoError(t, rdb.Rename(ctx, sessionRedisKey(s.ID), oldKey).Err())
+
+	_, err = store.Load(ctx, s.Schema, s.ID)
+	require.ErrorIs(t, err, checkout.ErrNotFound)
+	require.ErrorIs(t, store.Save(ctx, s), checkout.ErrSessionChanged)
+	kept, err := rdb.Get(ctx, oldKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, raw, kept)
 }
 
 // go-redis sends a command again when its reply was lost. The first run

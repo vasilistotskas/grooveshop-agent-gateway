@@ -51,6 +51,10 @@ type completionSurface struct {
 	// update changes the buyer's email, after reading the store's pay
 	// ways, and reports the whole answer. It asserts nothing either.
 	update func(ctx context.Context, id string) surfaceAnswer
+	// updateLines replaces the checkout's lines, which writes its cart.
+	updateLines func(ctx context.Context, id string) surfaceAnswer
+	// abandon is cancel with the whole answer. It asserts nothing.
+	abandon func(ctx context.Context, id string) surfaceAnswer
 	// keyName is where the surface keeps that key's state in Redis.
 	keyName func(id, key string) string
 	// cancel abandons the checkout.
@@ -176,6 +180,16 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			return acpAnswer(ctx, base+"/"+id, uuid.NewString(),
 				otherBuyer())
 		},
+		updateLines: func(ctx context.Context, id string) surfaceAnswer {
+			return acpAnswer(ctx, base+"/"+id, uuid.NewString(),
+				map[string]any{"line_items": []map[string]any{
+					{"id": "1", "quantity": 3},
+				}})
+		},
+		abandon: func(ctx context.Context, id string) surfaceAnswer {
+			return acpAnswer(ctx, base+"/"+id+"/cancel", uuid.NewString(),
+				nil)
+		},
 		keyName: func(id, key string) string {
 			return "ag:demostore:acp:idem:complete:" + id + ":" + key
 		},
@@ -248,6 +262,21 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 						"payment": codPayment(),
 					},
 				})
+		},
+		updateLines: func(ctx context.Context, id string) surfaceAnswer {
+			return mcpAnswer(ctx, session, "update_checkout",
+				map[string]any{
+					"meta": meta(""), "id": id,
+					"checkout": map[string]any{"line_items": []any{
+						map[string]any{
+							"item": map[string]any{"id": "1"}, "quantity": 3,
+						},
+					}},
+				})
+		},
+		abandon: func(ctx context.Context, id string) surfaceAnswer {
+			return mcpAnswer(ctx, session, "cancel_checkout",
+				map[string]any{"meta": meta(uuid.NewString()), "id": id})
 		},
 		keyName: func(id, key string) string {
 			return "ag:demostore:idem:" + id + ":" + key
