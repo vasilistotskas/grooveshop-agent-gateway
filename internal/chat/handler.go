@@ -98,7 +98,7 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	// Counted only once the request and its conversation are valid, so
 	// rejected calls spend nothing; refused before any model call.
 	retryAfter, err := s.quota.Allow(r.Context(), t.SchemaName,
-		httpmw.ClientIP(r), time.Now())
+		httpmw.ClientBucket(r), time.Now())
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "chat quota check failed",
 			slog.String("error", err.Error()))
