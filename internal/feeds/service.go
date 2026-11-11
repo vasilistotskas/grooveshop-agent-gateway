@@ -97,6 +97,9 @@ type Meta struct {
 	// that ran out. During a rollout the old and the new pods may each
 	// regenerate once; after it, one build writes and reads.
 	Generator string `json:"generator"`
+	// record is the stored metadata as read, which names the generation
+	// that wrote the blob read with it (see dropBlob).
+	record string
 }
 
 type Service struct {
@@ -225,7 +228,7 @@ func (s *Service) whole(
 ) bool {
 	err := intact(gz, meta.Size)
 	if err != nil {
-		s.dropBlob(ctx, schema, format, err)
+		s.dropBlob(ctx, schema, format, meta, err)
 	}
 	return err == nil
 }
@@ -252,63 +255,79 @@ var errBroken = errors.New("feeds: cached blob is broken")
 
 // dropBlob logs a broken blob once and removes it, so the next request,
 // a revalidation included, finds a miss and regenerates under the
-// failure backoff. The removal outlives a caller that has left.
+// failure backoff. Only the blob judged goes: it is unlinked while the
+// stored metadata is still the record read with it (one MGET), never
+// one a generation wrote since. Every generation's record differs, by
+// GeneratedAt to the nanosecond; two that are equal (overtaken sweeps
+// stamped zero, of an unchanged catalogue) come with the same blob,
+// rendered and gzipped by the same build. The removal outlives a caller
+// that has left.
 func (s *Service) dropBlob(
-	ctx context.Context, schema, format string, cause error,
+	ctx context.Context, schema, format string, meta Meta, cause error,
 ) {
 	s.log.ErrorContext(ctx, "cached feed blob is broken",
 		slog.String("error", cause.Error()))
-	err := s.rdb.Unlink(context.WithoutCancel(ctx),
-		dataKey(schema, format)).Err()
+	err := dropJudged.Run(context.WithoutCancel(ctx), s.rdb,
+		[]string{dataKey(schema, format), metaKey(schema, format)},
+		meta.record).Err()
 	if err != nil {
 		s.log.WarnContext(ctx, "broken feed blob not dropped",
 			slog.String("error", err.Error()))
 	}
 }
 
-// decode streams the feed gz holds to w, never more than size bytes. A
-// blob that does not decode to exactly size bytes (gzip checks its CRC-32
-// once read to the end) is an errBroken; a write that fails is returned
-// as it is.
+// dropJudged unlinks KEYS[1], the blob, while KEYS[2], its metadata,
+// still holds ARGV[1].
+var dropJudged = redis.NewScript(`
+if redis.call('GET', KEYS[2]) == ARGV[1] then
+  return redis.call('UNLINK', KEYS[1])
+end
+return 0
+`)
+
+// holdBack is how much of a decoded body decode keeps back until gzip
+// has read the whole member: compress/gzip says to treat what Read
+// returns "as tentative until they receive the io.EOF marking the end of
+// the data", which comes only once the CRC-32 and the length check out.
+const holdBack = 32 << 10
+
+// decode streams the feed gz holds to w. The last holdBack bytes (all of
+// a shorter body) are written only once gzip has verified the member and
+// it came to exactly size bytes, so a broken blob never reaches its
+// declared length. A broken blob is an errBroken; a write that fails is
+// returned as it is.
 func decode(gz []byte, size int, w io.Writer) error {
 	zr, err := gzip.NewReader(bytes.NewReader(gz))
 	if err != nil {
 		return fmt.Errorf("%w: %w", errBroken, err)
 	}
 	defer func() { _ = zr.Close() }()
-	sink := &errWriter{w: w}
-	n, err := io.Copy(sink, io.LimitReader(zr, int64(size)))
-	switch {
-	case sink.err != nil:
-		return sink.err
-	case err != nil:
-		return fmt.Errorf("%w: %w", errBroken, err)
-	case n < int64(size):
-		return fmt.Errorf("%w: %d bytes, not %d", errBroken, n, size)
+	// One byte past size, so a longer body shows.
+	src := io.LimitReader(zr, int64(size)+1)
+	held := make([]byte, 0, 2*holdBack)
+	var n int64
+	for {
+		m, err := src.Read(held[len(held):cap(held)])
+		held = held[:len(held)+m]
+		n += int64(m)
+		if out := len(held) - holdBack; out > 0 {
+			if _, err := w.Write(held[:out]); err != nil {
+				return err
+			}
+			held = held[:copy(held, held[out:])]
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("%w: %w", errBroken, err)
+		}
 	}
-	past, err := io.Copy(io.Discard, io.LimitReader(zr, 1))
-	switch {
-	case err != nil:
-		return fmt.Errorf("%w: %w", errBroken, err)
-	case past > 0:
-		return fmt.Errorf("%w: longer than %d bytes", errBroken, size)
+	if n != int64(size) {
+		return fmt.Errorf("%w: decoded %d bytes, not %d", errBroken, n, size)
 	}
-	return nil
-}
-
-// errWriter keeps the error of its writer's last failed Write, so decode
-// can tell the client's connection from the blob.
-type errWriter struct {
-	w   io.Writer
-	err error
-}
-
-func (e *errWriter) Write(p []byte) (int, error) {
-	n, err := e.w.Write(p)
-	if err != nil {
-		e.err = err
-	}
-	return n, err
+	_, err = w.Write(held)
+	return err
 }
 
 var errGenerationNotCached = errors.New("feeds: generation produced no cache")
@@ -503,6 +522,7 @@ func (s *Service) decodeMeta(v any) (Meta, bool) {
 	if meta.Generator != s.generator {
 		return Meta{}, false
 	}
+	meta.record = raw
 	return meta, true
 }
 

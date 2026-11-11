@@ -97,6 +97,12 @@ func (m *memRedis) do(cmd redis.Cmder) error {
 			}
 		}
 		c.SetVal(n)
+	case *redis.Cmd:
+		// dropJudged: EVALSHA sha 2 blob meta record.
+		if c.Name() == "evalsha" && m.vals[fmt.Sprint(args[4])] == args[5] {
+			delete(m.vals, fmt.Sprint(args[3]))
+		}
+		c.SetVal(int64(0))
 	case *redis.StringCmd:
 		v, ok := m.vals[fmt.Sprint(args[1])]
 		if !ok {
@@ -403,42 +409,58 @@ func brokenMiddle(raw string) []byte {
 
 // longerThanItsSize is the gzip of raw with more after it, whose ISIZE
 // is raw's length: whole to look at, longer once decoded.
-func longerThanItsSize(t *testing.T, raw string) []byte {
+func longerThanItsSize(t *testing.T, raw, more string) []byte {
 	t.Helper()
-	gz := gzipped(t, raw+"<!-- more -->")
+	gz := gzipped(t, raw+more)
 	return binary.LittleEndian.AppendUint32(gz[:len(gz)-4:len(gz)-4],
 		uint32(len(raw)))
 }
 
 // A blob whose header and trailer are whole but that does not decode to
-// its size is found only while the identity body is streamed, and never
-// sends more than its declared length. One whose middle fails ends short
-// of that length, which net/http answers by closing the connection, so
-// the client sees an error, never a complete 200. Either way the cause
-// is logged once and the blob dropped, so the next request regenerates
-// it.
+// exactly its size, CRC included, is found only while the identity body
+// is streamed. The end of the body is held back until gzip has verified
+// it, so the response always ends short of its declared length, which
+// net/http answers by closing the connection: the client sees an error,
+// never a complete 200. The cause is logged once and the blob dropped,
+// so the next request regenerates it.
 func TestFeedHandlerCutsAnIdentityBodyThatFailsToDecode(t *testing.T) {
-	for name, tc := range map[string]struct {
-		blob    []byte
-		body    string
-		readErr error
-	}{
-		"broken middle": {
-			brokenMiddle(testFeed), testFeed[:len(testFeed)/2],
-			io.ErrUnexpectedEOF,
-		},
-		"longer than its size": {longerThanItsSize(t, testFeed), testFeed, nil},
-	} {
-		t.Run(name, func(t *testing.T) {
-			cutsAnIdentityBody(t, tc.blob, tc.body, tc.readErr)
-		})
+	for _, raw := range []string{testFeed, bigFeed(3*holdBack + 7)} {
+		for name, blob := range map[string][]byte{
+			"broken middle":        brokenMiddle(raw),
+			"longer than its size": longerThanItsSize(t, raw, "<!-- -->"),
+			// More than the hold-back past it: decoding stops at the
+			// declared length, never writing past it.
+			"far longer than its size": longerThanItsSize(t, raw,
+				bigFeed(3*holdBack)),
+			// Same length, CRC-32 flipped: only gzip's check at the
+			// end finds it, after the whole body has been decoded.
+			"bad CRC": badCRC(t, raw),
+		} {
+			t.Run(fmt.Sprintf("%s/%d bytes", name, len(raw)),
+				func(t *testing.T) { cutsAnIdentityBody(t, raw, blob) })
+		}
 	}
 }
 
-func cutsAnIdentityBody(
-	t *testing.T, blob []byte, wantBody string, wantErr error,
-) {
-	m, rdb := newMemRedis(cachedRSS(t, blob, len(testFeed)))
+// bigFeed is n bytes of feed-like text.
+func bigFeed(n int) string {
+	var b strings.Builder
+	for i := 0; b.Len() < n; i++ {
+		fmt.Fprintf(&b, "<item><g:id>%d</g:id></item>", i)
+	}
+	return b.String()[:n]
+}
+
+// badCRC is the gzip of raw with its CRC-32 flipped.
+func badCRC(t *testing.T, raw string) []byte {
+	t.Helper()
+	gz := gzipped(t, raw)
+	gz[len(gz)-8] ^= 0xff
+	return gz
+}
+
+func cutsAnIdentityBody(t *testing.T, raw string, blob []byte) {
+	m, rdb := newMemRedis(cachedRSS(t, blob, len(raw)))
 	var logs bytes.Buffer
 	s := feedService(oneProductCatalog(t), rdb, &logs)
 	srv := httptest.NewServer(http.HandlerFunc(
@@ -461,14 +483,11 @@ func cutsAnIdentityBody(
 
 	resp, body, err := get()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, strconv.Itoa(len(testFeed)),
+	assert.Equal(t, strconv.Itoa(len(raw)),
 		resp.Header.Get("Content-Length"))
-	if wantErr != nil {
-		require.ErrorIs(t, err, wantErr)
-	} else {
-		require.NoError(t, err)
-	}
-	assert.Equal(t, wantBody, string(body))
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	assert.Less(t, len(body), len(raw), "never the declared length")
+	assert.True(t, strings.HasPrefix(raw, string(body)))
 	lines := logLines(t, &logs, brokenLine)
 	require.Len(t, lines, 1)
 	assert.Equal(t, "req-131", lines[0][obs.KeyRequestID])
@@ -481,6 +500,26 @@ func cutsAnIdentityBody(
 	assert.Equal(t, strconv.Itoa(len(body)),
 		resp.Header.Get("Content-Length"))
 	assert.True(t, strings.HasPrefix(string(body), "<?xml"))
+}
+
+// A healthy feed goes out byte for byte whether it is shorter than the
+// hold-back, as long, or longer.
+func TestFeedHandlerStreamsAWholeIdentityBody(t *testing.T) {
+	for _, n := range []int{
+		0, 1, holdBack - 1, holdBack, holdBack + 1, 2 * holdBack,
+		3*holdBack + 7,
+	} {
+		raw := bigFeed(n)
+		_, rdb := newMemRedis(cachedRSS(t, gzipped(t, raw), n))
+		var logs bytes.Buffer
+		resp := serveFeed(t, feedService(nil, rdb, &logs), http.MethodGet,
+			map[string]string{"Accept-Encoding": "identity"})
+		body := readAll(t, resp)
+		require.Equal(t, http.StatusOK, resp.StatusCode, n)
+		assert.Equal(t, strconv.Itoa(n), resp.Header.Get("Content-Length"), n)
+		assert.Equal(t, raw, string(body), n)
+		assert.Empty(t, logs.String(), n)
+	}
 }
 
 // The gzip coding writes the blob as stored and decodes nothing, and a
@@ -508,4 +547,35 @@ func TestFeedHandlerDecodesOnlyAnIdentityGET(t *testing.T) {
 		_, kept := m.get(dataKey("demostore", formatRSS))
 		assert.True(t, kept, name)
 	}
+}
+
+// dropBlob removes the blob only while the stored record is the one it
+// was judged with (memRedis stands in for the script; the integration
+// suite runs it on Redis).
+func TestDropBlobSparesAReplacement(t *testing.T) {
+	judged := cachedRSS(t, []byte("not gzip"), len(testFeed))
+	var meta Meta
+	raw := judged[metaKey("demostore", formatRSS)]
+	require.NoError(t, json.Unmarshal([]byte(raw), &meta))
+	meta.record = raw
+	// The generation that replaced it, a second later.
+	newer := meta
+	newer.GeneratedAt = newer.GeneratedAt.Add(time.Second)
+	newerRaw, err := json.Marshal(newer)
+	require.NoError(t, err)
+
+	m, rdb := newMemRedis(map[string]string{
+		dataKey("demostore", formatRSS): string(gzipped(t, testFeed)),
+		metaKey("demostore", formatRSS): string(newerRaw),
+	})
+	feedService(nil, rdb, io.Discard).dropBlob(context.Background(),
+		"demostore", formatRSS, meta, errBroken)
+	_, kept := m.get(dataKey("demostore", formatRSS))
+	assert.True(t, kept, "a blob written since the judgement stays")
+
+	m, rdb = newMemRedis(judged)
+	feedService(nil, rdb, io.Discard).dropBlob(context.Background(),
+		"demostore", formatRSS, meta, errBroken)
+	_, kept = m.get(dataKey("demostore", formatRSS))
+	assert.False(t, kept, "the blob judged goes")
 }

@@ -68,8 +68,9 @@ func (s *Service) Handler(kind string) http.Handler {
 			size = len(gz)
 		}
 		// A body that ends short of this length (the client left, or the
-		// blob failed to decode midway) makes net/http close the
-		// connection, so the cut is visible, never a complete-looking 200.
+		// blob failed to decode: decode holds its end back until gzip has
+		// verified it) makes net/http close the connection, so the cut is
+		// visible, never a complete-looking 200.
 		h.Set("Content-Length", strconv.Itoa(size))
 		w.WriteHeader(http.StatusOK)
 		switch {
@@ -79,7 +80,8 @@ func (s *Service) Handler(kind string) http.Handler {
 		default:
 			err := decode(gz, meta.Size, w)
 			if errors.Is(err, errBroken) {
-				s.dropBlob(r.Context(), t.SchemaName, formatOf(kind), err)
+				s.dropBlob(r.Context(), t.SchemaName, formatOf(kind), meta,
+					err)
 			}
 		}
 	})

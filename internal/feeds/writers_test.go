@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -461,6 +462,35 @@ func TestRawTextTagsMatchTheTokenizer(t *testing.T) {
 		"tr", "u", "ul", "template", "svg", "math", "object", "noindex",
 	} {
 		assert.False(t, raw(name), name)
+	}
+}
+
+// Every element x/net/html renders as void (it refuses to render one
+// with a child) is in voidTags, and nothing else, among every name the
+// atom table holds. A hidden void element hides nothing after it.
+func TestVoidTagsCoverTheRenderer(t *testing.T) {
+	rendersVoid := func(name string) bool {
+		n := &html.Node{Type: html.ElementNode, Data: name}
+		n.AppendChild(&html.Node{Type: html.TextNode, Data: "x"})
+		return html.Render(io.Discard, n) != nil
+	}
+	var names int
+	for off := atom.Atom(0); (off<<8 | 1).String() != ""; off++ {
+		for n := atom.Atom(1); n < 0x100; n++ {
+			a := off<<8 | n
+			name := a.String()
+			if name == "" || atom.Lookup([]byte(name)) != a {
+				continue
+			}
+			names++
+			assert.Equal(t, rendersVoid(name), voidTags[a], name)
+		}
+	}
+	require.Greater(t, names, 100, "the atom table was walked")
+	for tag := range voidTags {
+		name := tag.String()
+		assert.Equal(t, "ab", plainText("a<"+name+" hidden>b"), name)
+		assert.Equal(t, "ab", plainText("a<"+name+" hidden/>b"), name)
 	}
 }
 

@@ -417,12 +417,15 @@ var rawTextTags = map[atom.Atom]bool{
 	atom.Style: true, atom.Textarea: true, atom.Title: true, atom.Xmp: true,
 }
 
-// voidTags have no content and no end tag (HTML's void elements).
+// voidTags have no content and no end tag: the HTML standard's void
+// elements (13.1.2 Elements) and what x/net/html renders as void
+// (voidElements in render.go), which adds keygen and param.
+// TestVoidTagsCoverTheRenderer pins the set to the renderer.
 var voidTags = map[atom.Atom]bool{
 	atom.Area: true, atom.Base: true, atom.Br: true, atom.Col: true,
 	atom.Embed: true, atom.Hr: true, atom.Img: true, atom.Input: true,
-	atom.Link: true, atom.Meta: true, atom.Source: true, atom.Track: true,
-	atom.Wbr: true,
+	atom.Keygen: true, atom.Link: true, atom.Meta: true, atom.Param: true,
+	atom.Source: true, atom.Track: true, atom.Wbr: true,
 }
 
 // plainText turns a rich-text description into one line of plain text:
