@@ -9,7 +9,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -209,6 +211,7 @@ func TestTimeoutIsNotRetried(t *testing.T) {
 }
 
 func TestGetRetriesDroppedConnection(t *testing.T) {
+	resolved := fixture(t, "tenant_resolve_demostore.json")
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, _ *http.Request) {
@@ -220,7 +223,7 @@ func TestGetRetriesDroppedConnection(t *testing.T) {
 				_ = conn.Close()
 				return
 			}
-			_, _ = w.Write(fixture(t, "tenant_resolve_demostore.json"))
+			_, _ = w.Write(resolved)
 		}))
 	defer srv.Close()
 
@@ -301,6 +304,9 @@ func TestCallerHangingUpDuringTheBody(t *testing.T) {
 			require.ErrorIs(t, err, context.Canceled)
 			assert.NotErrorIs(t, err, ErrUpstreamDown)
 			assert.Empty(t, p.logs.String())
+			assert.Equal(t, map[string]float64{
+				"/cart " + method + " canceled": 1,
+			}, p.counts(t))
 		})
 	}
 }
@@ -334,24 +340,24 @@ func TestCallerDeadlineIsAnUpstreamFailure(t *testing.T) {
 	}
 }
 
-// A budget spent while waiting to retry answers with the failure that
-// made the retry, not with the bare deadline.
-func TestDeadlineInTheBackoffKeepsTheFailure(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}))
-	defer srv.Close()
-	p := newProbe(t, srv, 5*time.Second)
-	// Shorter than the first backoff (at least 100ms): the deadline
-	// passes during the wait, or during the first call.
-	ctx, cancel := context.WithTimeout(context.Background(),
-		50*time.Millisecond)
+// A context that ends while get waits to retry ends the call: a spent
+// budget with the failure the retry was for, a hang-up as callerGone.
+func TestWaitToRetry(t *testing.T) {
+	req := request{method: http.MethodGet, path: "/cart"}
+	failure := &APIError{Status: http.StatusServiceUnavailable}
+
+	expired, cancel := context.WithDeadline(context.Background(),
+		time.Now().Add(-time.Second))
 	defer cancel()
+	assert.Same(t, failure, waitToRetry(expired, time.Hour, req, failure))
 
-	err := p.call(ctx, http.MethodGet)
+	hungUp, hangUp := context.WithCancel(context.Background())
+	hangUp()
+	err := waitToRetry(hungUp, time.Hour, req, failure)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, "django: GET /cart: context canceled", err.Error())
 
-	require.ErrorIs(t, err, ErrUpstreamDown)
+	assert.NoError(t, waitToRetry(context.Background(), 0, req, failure))
 }
 
 func TestNoRetryOnceTheCallerHungUp(t *testing.T) {
@@ -375,59 +381,50 @@ func TestNoRetryOnceTheCallerHungUp(t *testing.T) {
 	assert.Equal(t, int32(1), hits.Load())
 }
 
-// A body cut short is the same failure as a connection lost before the
-// headers: ErrUpstreamDown, logged, a GET retried unless it timed out.
-func TestBodyCutShort(t *testing.T) {
-	cuts := []struct {
-		name string
-		rst  bool
-		want error
-	}{
-		{"fin", false, io.ErrUnexpectedEOF},
-		{"rst", true, nil},
-	}
-	for _, cut := range cuts {
-		for _, method := range bothMethods {
-			t.Run(cut.name+"/"+method, func(t *testing.T) {
-				var hits atomic.Int32
-				gotHeaders := make(chan struct{}, 1)
-				srv := httptest.NewServer(http.HandlerFunc(
-					func(w http.ResponseWriter, _ *http.Request) {
-						if hits.Add(1) > 2 {
-							_, _ = w.Write([]byte(`{}`))
-							return
-						}
-						cutBody(t, w, cut.rst, gotHeaders)
-					}))
-				defer srv.Close()
-				p := newProbe(t, srv, 5*time.Second)
-				p.afterHeaders(func(*http.Response) { signal(gotHeaders) })
-
-				err := p.call(context.Background(), method)
-
-				assert.Contains(t, p.logs.String(), "django request failed")
-				if method == http.MethodGet {
-					require.NoError(t, err)
-					assert.Equal(t, int32(3), hits.Load(), "retried")
-					return
-				}
-				require.ErrorIs(t, err, ErrUpstreamDown)
-				if cut.want != nil {
-					assert.ErrorIs(t, err, cut.want)
-				} else {
-					netErr, ok := errors.AsType[net.Error](err)
-					assert.True(t, ok && !netErr.Timeout(), "a reset: %v", err)
-				}
-				assert.Equal(t, int32(1), hits.Load())
-			})
-		}
-	}
+// cutServer answers its first cuts requests with the headers and a body
+// cut short, sent once the client has the headers (afterHeaders), and
+// every later one with ok. wait returns once every cut handler is done.
+type cutServer struct {
+	srv        *httptest.Server
+	hits       atomic.Int32
+	handlers   sync.WaitGroup
+	gotHeaders chan struct{}
 }
 
-// cutBody sends the headers and part of the body, waits until the client
-// has the headers, then closes the connection: with a FIN, or with an RST
-// when rst is set.
-func cutBody(t *testing.T, w http.ResponseWriter, rst bool,
+func newCutServer(
+	t *testing.T, cuts int32, rst bool, part string, ok []byte,
+) *cutServer {
+	t.Helper()
+	s := &cutServer{gotHeaders: make(chan struct{}, 1)}
+	s.srv = httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			if s.hits.Add(1) > cuts {
+				_, _ = w.Write(ok)
+				return
+			}
+			s.handlers.Add(1)
+			defer s.handlers.Done()
+			cutBody(t, w, rst, part, s.gotHeaders)
+		}))
+	return s
+}
+
+// probe is a client for the server that tells it when it has headers.
+func (s *cutServer) probe(t *testing.T) probe {
+	p := newProbe(t, s.srv, 5*time.Second)
+	p.afterHeaders(func(*http.Response) { signal(s.gotHeaders) })
+	return p
+}
+
+func (s *cutServer) close() {
+	s.handlers.Wait()
+	s.srv.Close()
+}
+
+// cutBody sends the headers and part, a body declared longer, waits
+// until the client has the headers, then closes the connection: with a
+// FIN, or with an RST when rst is set.
+func cutBody(t *testing.T, w http.ResponseWriter, rst bool, part string,
 	gotHeaders <-chan struct{}) {
 	conn, _, err := http.NewResponseController(w).Hijack()
 	if !assert.NoError(t, err) {
@@ -436,7 +433,7 @@ func cutBody(t *testing.T, w http.ResponseWriter, rst bool,
 	defer func() { _ = conn.Close() }()
 	_, err = io.WriteString(conn, "HTTP/1.1 200 OK\r\n"+
 		"Content-Type: application/json\r\nContent-Length: 100\r\n\r\n"+
-		`{"cart":`)
+		part)
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -449,6 +446,52 @@ func cutBody(t *testing.T, w http.ResponseWriter, rst bool,
 		tcp, ok := conn.(*net.TCPConn)
 		if assert.True(t, ok) {
 			assert.NoError(t, tcp.SetLinger(0))
+		}
+	}
+}
+
+// A body cut short is the same failure as a connection lost before the
+// headers: ErrUpstreamDown, logged, counted as error, a GET retried.
+func TestBodyCutShort(t *testing.T) {
+	cuts := []struct {
+		name string
+		rst  bool
+		want error
+	}{
+		{"fin", false, io.ErrUnexpectedEOF},
+		{"rst", true, nil},
+	}
+	for _, cut := range cuts {
+		for _, method := range bothMethods {
+			t.Run(cut.name+"/"+method, func(t *testing.T) {
+				s := newCutServer(t, 2, cut.rst, `{"cart":`, []byte(`{}`))
+				defer s.close()
+				p := s.probe(t)
+
+				err := p.call(context.Background(), method)
+				s.handlers.Wait()
+
+				assert.Contains(t, p.logs.String(), "django request failed")
+				if method == http.MethodGet {
+					require.NoError(t, err)
+					assert.Equal(t, int32(3), s.hits.Load(), "retried")
+					assert.Equal(t, map[string]float64{
+						"/cart GET error": 2, "/cart GET 200": 1,
+					}, p.counts(t))
+					return
+				}
+				require.ErrorIs(t, err, ErrUpstreamDown)
+				if cut.want != nil {
+					assert.ErrorIs(t, err, cut.want)
+				} else {
+					netErr, ok := errors.AsType[net.Error](err)
+					assert.True(t, ok && !netErr.Timeout(), "a reset: %v", err)
+				}
+				assert.Equal(t, int32(1), s.hits.Load())
+				assert.Equal(t, map[string]float64{
+					"/cart " + method + " error": 1,
+				}, p.counts(t))
+			})
 		}
 	}
 }
@@ -466,20 +509,50 @@ func TestBodyCutByTheClientTimeout(t *testing.T) {
 				}))
 			defer srv.Close()
 			defer close(release)
-			p := newProbe(t, srv, 300*time.Millisecond)
+			p := newProbe(t, srv, time.Second)
+			var gotHeaders atomic.Bool
+			p.afterHeaders(func(*http.Response) { gotHeaders.Store(true) })
 
 			err := p.call(context.Background(), method)
 
+			assert.True(t, gotHeaders.Load(), "timed out in the body")
 			require.ErrorIs(t, err, ErrUpstreamDown)
 			assert.ErrorIs(t, err, context.DeadlineExceeded)
 			assert.Contains(t, p.logs.String(), "django request failed")
-			total := 0.0
-			for _, n := range p.counts(t) {
-				total += n
-			}
-			assert.InDelta(t, 1, total, 0, "one attempt")
+			assert.Equal(t, map[string]float64{
+				"/cart " + method + " error": 1,
+			}, p.counts(t), "one attempt")
 		})
 	}
+}
+
+// The status is the whole answer of a call that reads no body.
+func TestCutBodyWithoutOutputIsTheStatus(t *testing.T) {
+	s := newCutServer(t, 1, false, `{"cart":`, nil)
+	defer s.close()
+	p := s.probe(t)
+
+	err := p.c.send(context.Background(), http.MethodDelete,
+		request{path: "/cart", host: "shop.example.test"})
+
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), s.hits.Load())
+	assert.Empty(t, p.logs.String())
+	assert.Equal(t, map[string]float64{"/cart DELETE 200": 1}, p.counts(t))
+}
+
+// A whole document is the answer, whatever happens to the connection
+// after it.
+func TestDocumentThenCutIsTheAnswer(t *testing.T) {
+	s := newCutServer(t, 1, false, `{"cart":1}`, nil)
+	defer s.close()
+	p := s.probe(t)
+
+	err := p.call(context.Background(), http.MethodGet)
+
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), s.hits.Load())
+	assert.Equal(t, map[string]float64{"/cart GET 200": 1}, p.counts(t))
 }
 
 // A complete body that is not the JSON expected is not an outage.
@@ -499,6 +572,67 @@ func TestInvalidBodyIsNotAnOutage(t *testing.T) {
 	assert.NotErrorIs(t, err, ErrUpstreamDown)
 	assert.True(t, strings.HasPrefix(err.Error(), "django: decode /cart"))
 	assert.Equal(t, int32(1), hits.Load())
+	assert.Equal(t, map[string]float64{"/cart GET 200": 1}, p.counts(t))
+}
+
+// A transport error names the route's template, like the metric label.
+func TestTransportErrorNamesTheRoute(t *testing.T) {
+	logs := &bytes.Buffer{}
+	c := New("http://127.0.0.1:1/api/v1", "api.example.test", "s",
+		time.Second, slog.New(slog.NewTextHandler(logs, nil)), nil)
+
+	err := c.send(context.Background(), http.MethodGet, request{
+		path:    "/order/uuid/{uuid}",
+		rawPath: "/order/uuid/0b1c2d3e",
+		query:   url.Values{"q": {"typed"}},
+		host:    "shop.example.test",
+	})
+
+	require.ErrorIs(t, err, ErrUpstreamDown)
+	route := "http://127.0.0.1:1/api/v1/order/uuid/{uuid}"
+	assert.Contains(t, err.Error(), route)
+	assert.Contains(t, logs.String(), route)
+	for _, s := range []string{err.Error(), logs.String()} {
+		assert.NotContains(t, s, "0b1c2d3e")
+		assert.NotContains(t, s, "typed")
+	}
+}
+
+// GET /cart naming no cart creates one in Django: a retry would create
+// another, so it is sent once. A named cart, by id or by the shopper's
+// token, is only read: retried.
+func TestGetCartNamingNoCartIsSentOnce(t *testing.T) {
+	cart := fixture(t, "cart_with_items.json")
+	tok, err := ParseCartToken(testCartToken)
+	require.NoError(t, err)
+	cases := []struct {
+		name   string
+		cartID string
+		ctx    context.Context
+		hits   int32
+	}{
+		{"new", "", context.Background(), 1},
+		{"named", fixtureCartID, context.Background(), 3},
+		{"token", "", WithCartToken(context.Background(), tok), 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newCutServer(t, 2, false, `{"id":`, cart)
+			defer s.close()
+			p := s.probe(t)
+
+			_, err := p.c.GetCart(tc.ctx,
+				"shop.example.test", "el", tc.cartID)
+			s.handlers.Wait()
+
+			if tc.hits == 1 {
+				require.ErrorIs(t, err, ErrUpstreamDown)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.hits, s.hits.Load())
+		})
+	}
 }
 
 func TestPingIsOneAttempt(t *testing.T) {

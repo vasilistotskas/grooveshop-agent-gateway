@@ -81,6 +81,9 @@ type request struct {
 	body     any
 	headers  map[string]string
 	out      any
+	// once: a GET Django may write on (a guest cart it creates), so
+	// get sends it a single time.
+	once bool
 }
 
 // Ping reports Django reachability for /readyz's informational field.
@@ -120,18 +123,17 @@ func (c *Client) ResolveTenant(ctx context.Context, domain string) (*TenantConfi
 func (c *Client) get(ctx context.Context, req request) error {
 	req.method = http.MethodGet
 
+	attempts := 3
+	if req.once {
+		attempts = 1
+	}
 	var lastErr error
-	for attempt := range 3 {
+	for attempt := range attempts {
 		if attempt > 0 {
 			delay := time.Duration(100*(1<<(attempt-1)))*time.Millisecond +
 				time.Duration(rand.IntN(100))*time.Millisecond
-			select {
-			case <-ctx.Done():
-				if hungUp(ctx.Err()) {
-					return callerGone(req)
-				}
-				return lastErr
-			case <-time.After(delay):
+			if err := waitToRetry(ctx, delay, req, lastErr); err != nil {
+				return err
 			}
 		}
 
@@ -147,7 +149,31 @@ func (c *Client) get(ctx context.Context, req request) error {
 	return lastErr
 }
 
-// send performs a call exactly once: every mutation, and Ping.
+// waitToRetry waits delay, or returns how the call ends if ctx ends
+// first: callerGone for a caller that hung up, else the failure the
+// retry was for.
+func waitToRetry(
+	ctx context.Context, delay time.Duration, req request, lastErr error,
+) error {
+	select {
+	case <-ctx.Done():
+		if hungUp(ctx.Err()) {
+			return callerGone(req)
+		}
+		return lastErr
+	case <-time.After(delay):
+		return nil
+	}
+}
+
+// send performs a call exactly once: every mutation, and Ping. Once is
+// the client's own loop: net/http re-sends a request by itself when a
+// reused keep-alive connection dies before the first response byte, if
+// the request is a GET or carries Idempotency-Key (request.go
+// isReplayable). So the key goes only on a call Django deduplicates by
+// it (core/middleware/idempotency.py): today the chat's add_to_cart.
+// POST /order carries none until Django deduplicates order creation
+// (#83).
 func (c *Client) send(ctx context.Context, method string, req request) error {
 	req.method = method
 	if key := idempotencyKeyFrom(ctx); key != "" {
@@ -202,29 +228,29 @@ func (c *Client) do(ctx context.Context, r request) error {
 		req.Header.Set(k, v)
 	}
 
+	// Each attempt is counted once, by its outcome, when it is over: a
+	// body that fails after a 200 is an error, not a 200.
 	start := time.Now()
-	resp, err := c.hc.Do(req)
-	elapsed := time.Since(start)
-
-	gone := err != nil && hungUp(ctx.Err())
 	code := "error"
-	switch {
-	case resp != nil:
-		code = strconv.Itoa(resp.StatusCode)
-	case gone:
-		code = "canceled"
-	}
-	if c.metrics != nil {
-		c.metrics.UpstreamRequests.WithLabelValues(r.path, r.method, code).Inc()
-		c.metrics.UpstreamDuration.WithLabelValues(r.path).Observe(elapsed.Seconds())
-	}
-	if gone {
-		return callerGone(r)
-	}
+	defer func() {
+		if c.metrics != nil {
+			c.metrics.UpstreamRequests.WithLabelValues(
+				r.path, r.method, code).Inc()
+			c.metrics.UpstreamDuration.WithLabelValues(r.path).Observe(
+				time.Since(start).Seconds())
+		}
+	}()
+
+	resp, err := c.hc.Do(req)
 	if err != nil {
-		return c.unavailable(ctx, r, withoutQuery(err), start)
+		if hungUp(ctx.Err()) {
+			code = "canceled"
+			return callerGone(r)
+		}
+		return c.unavailable(ctx, r, atRoute(err, c.baseURL+r.path), start)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	code = strconv.Itoa(resp.StatusCode)
 
 	if resp.StatusCode >= 400 {
 		return c.apiError(resp)
@@ -244,13 +270,15 @@ func (c *Client) do(ctx context.Context, r request) error {
 	dec := json.NewDecoder(rb)
 	dec.UseNumber()
 	if err := dec.Decode(r.out); err != nil {
-		switch {
-		case rb.err != nil && hungUp(ctx.Err()):
-			return callerGone(r)
-		case rb.err != nil:
-			return c.unavailable(ctx, r, rb.err, start)
+		if rb.err == nil {
+			return fmt.Errorf("django: decode %s: %w", r.path, err)
 		}
-		return fmt.Errorf("django: decode %s: %w", r.path, err)
+		if hungUp(ctx.Err()) {
+			code = "canceled"
+			return callerGone(r)
+		}
+		code = "error"
+		return c.unavailable(ctx, r, rb.err, start)
 	}
 	return nil
 }
@@ -381,11 +409,14 @@ func fieldMessages(path string, v any) []string {
 	return out
 }
 
-// retryable: a 5xx, or a connection that failed (refused, reset,
-// closed), before the headers or in the body. Not a call cut by the
-// client's timeout: a Django that hangs would get the same call twice
+// retryable: a 5xx, or an ErrUpstreamDown that is a net.Error but not a
+// timeout (every transport failure before the headers: refused, reset,
+// DNS, TLS; and a reset in the body) or io.ErrUnexpectedEOF (a
+// connection closed in the body). Not a timeout, the client's own or a
+// context deadline: a Django that hangs would get the same call twice
 // more while it hangs, and the caller would wait three timeouts instead
-// of one. Not a redirect, and not a body that is not valid JSON.
+// of one. Not a redirect, a body-phase error of any other kind, a body
+// that is not the JSON expected, or a caller that hung up.
 func retryable(err error) bool {
 	if apiErr, ok := errors.AsType[*APIError](err); ok {
 		return apiErr.Status >= 500
@@ -400,20 +431,12 @@ func retryable(err error) bool {
 	return ok && !netErr.Timeout()
 }
 
-// withoutQuery drops the query string from a transport error's URL. A
-// *url.Error prints the whole URL, and a query can carry what a person
-// typed: a shopper's search, or a customer's email a store's staff looked
-// up. Neither belongs in a log line or an error a caller may log.
-func withoutQuery(err error) error {
-	var ue *url.Error
-	if !errors.As(err, &ue) {
-		return err
+// atRoute names the route's template in a transport error, like the
+// metric label: a *url.Error prints the URL it was given, and only the
+// template belongs in a log line or an error a caller may log.
+func atRoute(err error, route string) error {
+	if ue, ok := errors.AsType[*url.Error](err); ok {
+		return &url.Error{Op: ue.Op, URL: route, Err: ue.Err}
 	}
-	u, parseErr := url.Parse(ue.URL)
-	if parseErr != nil {
-		return &url.Error{Op: ue.Op, URL: "(unparsable URL)", Err: ue.Err}
-	}
-	u.RawQuery = ""
-	u.ForceQuery = false
-	return &url.Error{Op: ue.Op, URL: u.String(), Err: ue.Err}
+	return err
 }

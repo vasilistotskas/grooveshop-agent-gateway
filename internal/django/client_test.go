@@ -27,7 +27,8 @@ func fixture(t *testing.T, name string) []byte {
 	b, err := os.ReadFile(filepath.Join(
 		"..", "..", "testdata", "fixtures", "django", name,
 	))
-	require.NoError(t, err)
+	// assert, not require: handlers call it on the server's goroutine.
+	assert.NoError(t, err)
 	return b
 }
 
