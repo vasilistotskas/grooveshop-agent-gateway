@@ -83,16 +83,30 @@ func (h *handlers) cartErr(err error, notFound string) error {
 	return upstreamErr(err, notFound)
 }
 
-// cartGoneErr is cartErr for a call on the cart itself, whose 404 (and
-// 403, which upstreamErr reads as one) is the cart gone:
+// featureOff is the hint for a bare 404 on a cart route: Django's feature
+// gates refuse with one, so the store switched the feature off while
+// this pod's copy of the store still offers the tool.
+const featureOff = "the store does not offer this right now; tell the " +
+	"shopper it is not available in this store, and do not retry"
+
+// cartGoneErr is upstreamErr for a call on the cart itself. The cart is
+// gone when Django served another (ErrCartUnreachable), answered
+// cart_not_found, or refused it (403, which upstreamErr reads as a 404):
 // shopperCartUnreachable in the chat, which serves no create_cart, and
-// mcpCartGone on /mcp.
+// mcpCartGone on /mcp. Any other 404 is a feature gate's (featureOff).
 func (h *handlers) cartGoneErr(err error) error {
-	if h.surface == chatSurface && (errors.Is(err, django.ErrNotFound) ||
-		errors.Is(err, django.ErrForbidden)) {
+	apiErr, _ := errors.AsType[*django.APIError](err)
+	gone := errors.Is(err, django.ErrCartUnreachable) ||
+		errors.Is(err, django.ErrForbidden) ||
+		(apiErr != nil && errors.Is(err, django.ErrNotFound) &&
+			apiErr.Code == django.CodeCartNotFound)
+	switch {
+	case gone && h.surface == chatSurface:
 		return shopperCartErr()
+	case gone:
+		return upstreamErr(err, mcpCartGone)
 	}
-	return h.cartErr(err, mcpCartGone)
+	return upstreamErr(err, featureOff)
 }
 
 // shopperCartErr is the chat's answer for the shopper's cart the store
