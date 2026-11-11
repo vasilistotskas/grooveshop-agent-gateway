@@ -593,7 +593,9 @@ passes.
     session only marked in progress keeps an open one's half hour. The
     mark is written before Django is asked, and the save after the
     answer can fail: a session Django refused the order of must not
-    read "an order may exist" for a day because Redis failed twice. The
+    read "an order may exist" for a day because Redis failed twice
+    (the second attempt sends the same revision, so a first that was
+    stored and lost only its reply counts as this save's). The
     price is the other outcomes of that same failure, and a pod that
     dies in between: an order placed or unanswered is answered from
     its session for half an hour, and as a missing session after. The

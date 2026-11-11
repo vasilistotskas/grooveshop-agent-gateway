@@ -169,7 +169,19 @@ return 1
 
 // Create stores a session that was never stored.
 func (st *Store) Create(ctx context.Context, s *Session) error {
-	return st.put(ctx, s, "")
+	return st.put(ctx, s, "", newWrite())
+}
+
+// write names one stored state of a session: its revision and the time
+// it was stored. Sending one write twice is one write: a second run
+// finds its revision stored and reports it done (saveScript).
+type write struct {
+	revision string
+	at       time.Time
+}
+
+func newWrite() write {
+	return write{revision: uuid.NewString(), at: time.Now().UTC()}
 }
 
 // Save stores s over the stored session it was loaded as, and only over
@@ -178,15 +190,16 @@ func (st *Store) Create(ctx context.Context, s *Session) error {
 // ErrSessionChanged. Whether the caller still holds the session lock
 // plays no part.
 func (st *Store) Save(ctx context.Context, s *Session) error {
-	return st.put(ctx, s, s.Revision)
+	return st.put(ctx, s, s.Revision, newWrite())
 }
 
-// put stores s under a new revision, while stored is the revision Redis
-// holds.
-func (st *Store) put(ctx context.Context, s *Session, stored string) error {
+// put stores s as w, while stored is the revision Redis holds.
+func (st *Store) put(
+	ctx context.Context, s *Session, stored string, w write,
+) error {
 	next := *s
-	next.Revision = uuid.NewString()
-	next.UpdatedAt = time.Now().UTC()
+	next.Revision = w.revision
+	next.UpdatedAt = w.at
 	key := sessionKey(s.Schema, s.ID)
 	// Zero or less ends a placed session whose day has passed: the
 	// script deletes it, under the same check as a write.

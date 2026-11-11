@@ -150,20 +150,23 @@ func (f *Flow) Complete(
 	// Stored as the order call left it: unconfirmed (still in progress,
 	// and kept as long as a placed one, since an order may exist),
 	// placed, or ready again after Django refused the order.
-	saveErr := f.st.Save(ctx, s)
-	switch {
-	case saveErr == nil:
-	case !errors.Is(saveErr, ErrSessionChanged):
+	outcome := newWrite()
+	saveErr := f.st.put(ctx, s, s.Revision, outcome)
+	if saveErr != nil && !errors.Is(saveErr, ErrSessionChanged) {
 		// Redis failed, and the session still reads as only marked in
 		// progress, which says neither what happened nor how long to
-		// keep it: one more attempt. If it fails too, the session ends
-		// with an open one's lifetime (Session.ttl). That is right for
-		// an order Django refused, which must not read "an order may
-		// exist" for a day, and it is the price for the other two: an
-		// order placed or unanswered is then answered from the stored
-		// session for that long only, and as a missing one after.
-		saveErr = f.st.Save(ctx, s)
-	case placement == OrderMayExist:
+		// keep it: one more attempt. It sends the same write, so a
+		// first one that was stored and only lost its reply is
+		// recognised, not taken for another writer's. If it fails too,
+		// the session ends with an open one's lifetime (Session.ttl).
+		// That is right for an order Django refused, which must not read
+		// "an order may exist" for a day, and it is the price for the
+		// other two: an order placed or unanswered is then answered from
+		// the stored session for that long only, and as a missing one
+		// after.
+		saveErr = f.st.put(ctx, s, s.Revision, outcome)
+	}
+	if errors.Is(saveErr, ErrSessionChanged) && placement == OrderMayExist {
 		saveErr = f.saveOverEvent(ctx, s)
 	}
 	if saveErr != nil {

@@ -342,17 +342,18 @@ func TestAnOrderItsSessionNeverSavedIsStillKnown(t *testing.T) {
 	surfaces := surfacesByName(t, stack)
 	redisDown := errors.New("redis is down")
 	// placedUnsaved returns a checkout whose order is placed and whose
-	// last save failed.
+	// last save failed, both attempts of it.
 	placedUnsaved := func(t *testing.T) string {
 		t.Helper()
 		id := surfaces["ucp"].ready(t)
-		var linked, failed atomic.Bool
+		var linked atomic.Bool
+		var failures atomic.Int32
 		stack.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
 			switch {
 			case setsKey(cmd, ":orderlink:"):
 				linked.Store(true)
 			case linked.Load() && savesKey(cmd, sessionRedisKey(id)) &&
-				failed.CompareAndSwap(false, true):
+				failures.Add(1) <= 2:
 				return redisDown
 			}
 			return nil

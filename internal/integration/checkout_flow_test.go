@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -408,6 +409,64 @@ func TestARefusedOrderDoesNotLeaveASessionClaimingOne(t *testing.T) {
 			assert.EqualValues(t, 1, f.faults.orderCreates.Load())
 		})
 	}
+}
+
+// replyLost lets a command reach Redis and then fails it when lose says
+// so: a connection that drops after the write and before its reply.
+type replyLost func(redis.Cmder) bool
+
+func (replyLost) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (lose replyLost) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		err := next(ctx, cmd)
+		if err == nil && lose(cmd) {
+			return errors.New("connection reset after the write")
+		}
+		return err
+	}
+}
+
+func (replyLost) ProcessPipelineHook(
+	next redis.ProcessPipelineHook,
+) redis.ProcessPipelineHook {
+	return next
+}
+
+// The save after the order call can be stored and lose only its reply.
+// Its second attempt sends the same write, so it finds its own: the
+// order is placed and its session saved, not a session another writer
+// stored. Paid online, the session awaits its payment, which an order
+// event never leaves, so only recognising its own write can save it.
+func TestAPlacedOrdersSaveWhoseReplyWasLostIsItsOwn(t *testing.T) {
+	ctx := context.Background()
+	f := startFlow(t, 5*time.Second)
+	f.tenant.AgentCommerceEnabled = true
+	f.tenant.AgentHostedPaymentEnabled = true
+	s := f.readySession(t)
+	s.PayWayID = 2
+	require.NoError(t, f.store.Save(ctx, s))
+	var linked, lost atomic.Bool
+	f.rdb.AddHook(replyLost(func(cmd redis.Cmder) bool {
+		if setsKey(cmd, ":orderlink:") {
+			linked.Store(true)
+			return false
+		}
+		return linked.Load() && savesKey(cmd, sessionRedisKey(s.ID)) &&
+			lost.CompareAndSwap(false, true)
+	}))
+
+	placement, err := f.flow.Complete(ctx, f.tenant, s)
+
+	require.True(t, lost.Load(), "the first save's reply was lost")
+	require.NoError(t, err)
+	assert.Equal(t, checkout.OrderMayExist, placement)
+	stored := f.stored(t, s)
+	assert.Equal(t, checkout.StatusRequiresEscalation, stored.Status)
+	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
+	assert.Equal(t, s.Revision, stored.Revision)
 }
 
 // An order call that went unanswered leaves an order that may exist.
