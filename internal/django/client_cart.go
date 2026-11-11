@@ -101,7 +101,8 @@ type productAlertCreate struct {
 }
 
 // GetCart fetches the cart identified by cartID; with an empty id Django
-// auto-creates a fresh guest cart and returns its UUID.
+// auto-creates a fresh guest cart and returns its UUID. That call is
+// sent once: a retry would create another.
 func (c *Client) GetCart(
 	ctx context.Context, host, lang, cartID string,
 ) (*Cart, error) {
@@ -109,6 +110,7 @@ func (c *Client) GetCart(
 	if err != nil {
 		return nil, err
 	}
+	_, byToken := headers["X-Cart-Token"]
 	var out Cart
 	err = c.get(ctx, request{
 		path:     "/cart",
@@ -116,6 +118,7 @@ func (c *Client) GetCart(
 		language: lang,
 		headers:  headers,
 		out:      &out,
+		once:     cartID == "" && !byToken,
 	})
 	if err != nil {
 		return nil, cartRefusal(ctx, err)

@@ -132,10 +132,33 @@ passes.
   deliberately ignored; spoofing it must never switch tenants).
 - `internal/django` — typed API client. Every tenant-scoped call sends
   `X-Forwarded-Host: <tenant domain>` + `X-Forwarded-Proto: https` (+
-  `X-Language`). GETs retry twice on 5xx/network; mutations never retry at
-  transport level. Errors unwrap to sentinels (`ErrNotFound`, `ErrConflict`,
-  `ErrThrottled`, `ErrValidation`, `ErrUpstreamDown`) — branch with
-  `errors.Is`, never on status literals. Django never refuses a cart an
+  `X-Language`). A GET is retried twice on a 5xx or a lost connection
+  (refused, reset, closed, before the headers or in the body); never on a
+  call cut by `UPSTREAM_TIMEOUT` (a hung Django would get it three
+  times), never once its context has ended. Mutations, the `/readyz`
+  ping and `GetCart` naming no cart (Django creates a guest cart for it)
+  are sent once. "Once" is the client's loop: net/http itself re-sends a
+  GET, or a request carrying `Idempotency-Key`, when a reused keep-alive
+  connection dies before the first response byte. So `Idempotency-Key`
+  goes only on a call Django deduplicates by it
+  (`core/middleware/idempotency.py`): today the chat's `add_to_cart`;
+  `POST /order` carries none until Django deduplicates order creation
+  (#83). A redirect is never followed: it is `ErrUpstreamDown`, not
+  retried, as in `internal/ucp/fetch.go`. Errors unwrap to sentinels
+  (`ErrNotFound`, `ErrConflict`, `ErrThrottled`, `ErrValidation`,
+  `ErrUpstreamDown`) — branch with `errors.Is`, never on status literals.
+  A failure while reading a body (a document, an error body) is
+  `ErrUpstreamDown` like one before the headers, or `context.Canceled`
+  for a caller that hung up; a redirect whose body is cut stays the
+  redirect. A complete body that is not the JSON expected is a decode
+  error. A context deadline is one of the gateway's own budgets, so a
+  call it cuts is `ErrUpstreamDown`, logged. A caller that hung up (a
+  cancelled context, shutdown included) gets an error wrapping
+  `context.Canceled` only, not logged. A transport error names the
+  route's template, like the metric label. Each attempt is counted once
+  when it is over, by its outcome: `canceled` for a hang-up and `error`
+  for an outage, before or after the headers, else the status; its
+  duration covers the headers and the body read. Django never refuses a cart an
   anonymous caller cannot reach (a signed-in shopper's, or a guest cart
   since deleted): it answers 200/201 with a new guest cart and acts on
   that one. Every cart call that names a cart therefore checks the cart

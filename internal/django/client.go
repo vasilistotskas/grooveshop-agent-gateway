@@ -46,7 +46,16 @@ func New(
 		IdleConnTimeout:     90 * time.Second,
 	}
 	return &Client{
-		hc:             &http.Client{Transport: transport, Timeout: timeout},
+		hc: &http.Client{
+			Transport: transport,
+			Timeout:   timeout,
+			// A redirect is an error (redirected), as in
+			// internal/ucp/fetch.go: no Django path the client calls
+			// redirects, and following one would replay the call.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		baseURL:        baseURL,
 		publicHost:     publicHost,
 		internalSecret: internalSecret,
@@ -72,11 +81,15 @@ type request struct {
 	body     any
 	headers  map[string]string
 	out      any
+	// once: a GET Django may write on (a guest cart it creates), so
+	// get sends it a single time.
+	once bool
 }
 
 // Ping reports Django reachability for /readyz's informational field.
+// One attempt: the probe repeats on its own period.
 func (c *Client) Ping(ctx context.Context) error {
-	return c.get(ctx, request{
+	return c.send(ctx, http.MethodGet, request{
 		path: "/health/live",
 		host: c.publicHost,
 	})
@@ -102,21 +115,25 @@ func (c *Client) ResolveTenant(ctx context.Context, domain string) (*TenantConfi
 	return &out, nil
 }
 
-// get performs a GET with bounded retries. Only GETs are retried —
-// mutations are not idempotent at the transport level; checkout idempotency
-// lives in the checkout package.
+// get performs a GET with bounded retries (retryable). Only GETs are
+// retried — mutations are not idempotent at the transport level; checkout
+// idempotency lives in the checkout package. Nothing is retried once the
+// context has ended: a caller that hung up gets callerGone, a spent
+// budget the last failure.
 func (c *Client) get(ctx context.Context, req request) error {
 	req.method = http.MethodGet
 
+	attempts := 3
+	if req.once {
+		attempts = 1
+	}
 	var lastErr error
-	for attempt := range 3 {
+	for attempt := range attempts {
 		if attempt > 0 {
 			delay := time.Duration(100*(1<<(attempt-1)))*time.Millisecond +
 				time.Duration(rand.IntN(100))*time.Millisecond
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(delay):
+			if err := waitToRetry(ctx, delay, req, lastErr); err != nil {
+				return err
 			}
 		}
 
@@ -125,14 +142,38 @@ func (c *Client) get(ctx context.Context, req request) error {
 			return nil
 		}
 		lastErr = err
-		if !retryable(err) {
+		if ctx.Err() != nil || !retryable(err) {
 			return err
 		}
 	}
 	return lastErr
 }
 
-// send performs a non-GET call exactly once.
+// waitToRetry waits delay, or returns how the call ends if ctx ends
+// first: callerGone for a caller that hung up, else the failure the
+// retry was for.
+func waitToRetry(
+	ctx context.Context, delay time.Duration, req request, lastErr error,
+) error {
+	select {
+	case <-ctx.Done():
+		if hungUp(ctx.Err()) {
+			return callerGone(req)
+		}
+		return lastErr
+	case <-time.After(delay):
+		return nil
+	}
+}
+
+// send performs a call exactly once: every mutation, and Ping. Once is
+// the client's own loop: net/http re-sends a request by itself when a
+// reused keep-alive connection dies before the first response byte, if
+// the request is a GET or carries Idempotency-Key (request.go
+// isReplayable). So the key goes only on a call Django deduplicates by
+// it (core/middleware/idempotency.py): today the chat's add_to_cart.
+// POST /order carries none until Django deduplicates order creation
+// (#83).
 func (c *Client) send(ctx context.Context, method string, req request) error {
 	req.method = method
 	if key := idempotencyKeyFrom(ctx); key != "" {
@@ -187,50 +228,166 @@ func (c *Client) do(ctx context.Context, r request) error {
 		req.Header.Set(k, v)
 	}
 
+	// Each attempt is counted once, by its outcome, when it is over: a
+	// body that fails after a 200 is an error, not a 200.
 	start := time.Now()
-	resp, err := c.hc.Do(req)
-	elapsed := time.Since(start)
-
 	code := "error"
-	if resp != nil {
-		code = strconv.Itoa(resp.StatusCode)
-	}
-	if c.metrics != nil {
-		c.metrics.UpstreamRequests.WithLabelValues(r.path, r.method, code).Inc()
-		c.metrics.UpstreamDuration.WithLabelValues(r.path).Observe(elapsed.Seconds())
-	}
+	defer func() {
+		if c.metrics != nil {
+			c.metrics.UpstreamRequests.WithLabelValues(
+				r.path, r.method, code).Inc()
+			c.metrics.UpstreamDuration.WithLabelValues(r.path).Observe(
+				time.Since(start).Seconds())
+		}
+	}()
+
+	resp, err := c.hc.Do(req)
 	if err != nil {
-		err = withoutQuery(err)
-		c.log.WarnContext(ctx, "django request failed",
-			slog.String("upstream", r.path),
-			slog.String("error", err.Error()),
-			slog.Int64("upstream_ms", elapsed.Milliseconds()),
-		)
-		return fmt.Errorf("%w: %w", ErrUpstreamDown, err)
+		if hungUp(ctx.Err()) {
+			code = "canceled"
+			return callerGone(r)
+		}
+		return c.unavailable(ctx, r, atRoute(err, c.baseURL+r.path), start)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	code = strconv.Itoa(resp.StatusCode)
 
-	if resp.StatusCode >= 400 {
-		return c.apiError(resp)
-	}
-	if r.out == nil {
-		_, _ = io.Copy(io.Discard, resp.Body)
+	var errBody []byte
+	err = c.readBody(ctx, r, resp, &code, start, func(body io.Reader) error {
+		var err error
+		switch {
+		case resp.StatusCode >= 400:
+			errBody, err = io.ReadAll(io.LimitReader(body, maxErrorBody))
+			return err
+		case resp.StatusCode >= 300:
+			_, err = io.Copy(io.Discard, io.LimitReader(body, maxErrorBody))
+			return err
+		case r.out == nil:
+			// The status is the whole answer (Ping, a deleted cart
+			// line): a body cut after it changes nothing the caller
+			// reads. Read to its end so the connection is reused.
+			_, _ = io.Copy(io.Discard, body)
+			return nil
+		}
+		dec := json.NewDecoder(body)
+		dec.UseNumber()
+		if err := dec.Decode(r.out); err != nil {
+			return fmt.Errorf("django: decode %s: %w", r.path, err)
+		}
 		return nil
-	}
-	dec := json.NewDecoder(resp.Body)
-	dec.UseNumber()
-	if err := dec.Decode(r.out); err != nil {
-		return fmt.Errorf("django: decode %s: %w", r.path, err)
+	})
+	switch {
+	case err != nil:
+		return err
+	case resp.StatusCode >= 400:
+		return c.apiError(resp, errBody)
+	case resp.StatusCode >= 300:
+		return c.redirected(ctx, r, resp)
 	}
 	return nil
+}
+
+// readBody runs consume over the response body; every body do reads is
+// read here. When consume fails because the read did (the read error
+// is kept apart from consume's: json reports a cut body as
+// io.ErrUnexpectedEOF, as it does a short document), whatever the
+// status:
+//   - a caller that hung up: callerGone, counted canceled;
+//   - a redirect: the redirect stands, it was received (nil);
+//   - otherwise: an outage like one before the headers, counted error.
+//
+// Any other consume error is returned as it is.
+func (c *Client) readBody(
+	ctx context.Context, r request, resp *http.Response, code *string,
+	start time.Time, consume func(io.Reader) error,
+) error {
+	rb := &bodyReader{r: resp.Body}
+	err := consume(rb)
+	switch {
+	case err == nil || rb.err == nil:
+		return err
+	case hungUp(ctx.Err()):
+		*code = "canceled"
+		return callerGone(r)
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		return nil
+	}
+	*code = "error"
+	return c.unavailable(ctx, r, rb.err, start)
+}
+
+// bodyReader keeps the error that ended a response body early.
+type bodyReader struct {
+	r   io.Reader
+	err error
+}
+
+func (b *bodyReader) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err != nil && err != io.EOF {
+		b.err = err
+	}
+	return n, err
+}
+
+// unavailable is a call Django gave no usable answer to: the connection
+// failed or timed out before the headers or while the body was read.
+// The chain is kept, so retryable judges both the same way.
+func (c *Client) unavailable(
+	ctx context.Context, r request, err error, start time.Time,
+) error {
+	c.log.WarnContext(ctx, "django request failed",
+		slog.String("upstream", r.path),
+		slog.String("error", err.Error()),
+		slog.Int64("upstream_ms", time.Since(start).Milliseconds()),
+	)
+	return fmt.Errorf("%w: %w", ErrUpstreamDown, err)
+}
+
+// hungUp reports whether a context's end is its caller hanging up (a
+// cancel, a shutdown included). A deadline is one of the gateway's own
+// budgets running out while Django had not answered: an upstream
+// failure.
+func hungUp(ctxErr error) bool {
+	return errors.Is(ctxErr, context.Canceled)
+}
+
+// callerGone is the error of a call whose caller hung up: it wraps
+// context.Canceled and is never ErrUpstreamDown, since Django did not
+// fail. It is neither logged nor retried.
+func callerGone(r request) error {
+	return fmt.Errorf("django: %s %s: %w", r.method, r.path, context.Canceled)
+}
+
+// redirected turns a 3xx into ErrUpstreamDown, never retried: Django
+// did not answer the call it was sent, and a mutation it redirected
+// may have run. Location is logged without its query. Its body was
+// read (readBody), so the connection is back in the pool.
+func (c *Client) redirected(
+	ctx context.Context, r request, resp *http.Response,
+) error {
+	location := resp.Header.Get("Location")
+	if u, err := url.Parse(location); err == nil {
+		u.User, u.RawQuery, u.ForceQuery, u.Fragment = nil, "", false, ""
+		location = u.String()
+	} else {
+		location = "(unparsable)"
+	}
+	c.log.WarnContext(ctx, "django redirected a call",
+		slog.String("upstream", r.path),
+		slog.Int("status", resp.StatusCode),
+		slog.String("location", location),
+	)
+	return fmt.Errorf("%w: %s %s redirected with status %d",
+		ErrUpstreamDown, r.method, r.path, resp.StatusCode)
 }
 
 // maxErrorBody bounds how much of an upstream error body is retained; the
 // largest structured failure is a stock shortfall listing cart lines.
 const maxErrorBody = 64 << 10
 
-func (c *Client) apiError(resp *http.Response) error {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+// apiError is a 4xx/5xx with its body as read (readBody).
+func (c *Client) apiError(resp *http.Response, body []byte) error {
 	apiErr := &APIError{Status: resp.StatusCode, Body: body}
 	if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil &&
 		s > 0 {
@@ -285,30 +442,34 @@ func fieldMessages(path string, v any) []string {
 	return out
 }
 
+// retryable: a 5xx, or an ErrUpstreamDown that is a net.Error but not a
+// timeout (every transport failure before the headers: refused, reset,
+// DNS, TLS; and a reset in the body) or io.ErrUnexpectedEOF (a
+// connection closed in the body). Not a timeout, the client's own or a
+// context deadline: a Django that hangs would get the same call twice
+// more while it hangs, and the caller would wait three timeouts instead
+// of one. Not a redirect, a body-phase error of any other kind, a body
+// that is not the JSON expected, or a caller that hung up.
 func retryable(err error) bool {
 	if apiErr, ok := errors.AsType[*APIError](err); ok {
 		return apiErr.Status >= 500
 	}
-	if _, ok := errors.AsType[net.Error](err); ok {
+	if !errors.Is(err, ErrUpstreamDown) {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
-	return errors.Is(err, ErrUpstreamDown)
+	netErr, ok := errors.AsType[net.Error](err)
+	return ok && !netErr.Timeout()
 }
 
-// withoutQuery drops the query string from a transport error's URL. A
-// *url.Error prints the whole URL, and a query can carry what a person
-// typed: a shopper's search, or a customer's email a store's staff looked
-// up. Neither belongs in a log line or an error a caller may log.
-func withoutQuery(err error) error {
-	var ue *url.Error
-	if !errors.As(err, &ue) {
-		return err
+// atRoute names the route's template in a transport error, like the
+// metric label: a *url.Error prints the URL it was given, and only the
+// template belongs in a log line or an error a caller may log.
+func atRoute(err error, route string) error {
+	if ue, ok := errors.AsType[*url.Error](err); ok {
+		return &url.Error{Op: ue.Op, URL: route, Err: ue.Err}
 	}
-	u, parseErr := url.Parse(ue.URL)
-	if parseErr != nil {
-		return &url.Error{Op: ue.Op, URL: "(unparsable URL)", Err: ue.Err}
-	}
-	u.RawQuery = ""
-	u.ForceQuery = false
-	return &url.Error{Op: ue.Op, URL: u.String(), Err: ue.Err}
+	return err
 }
