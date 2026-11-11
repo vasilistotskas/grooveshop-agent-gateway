@@ -40,7 +40,7 @@ func startFlow(t *testing.T, upstreamTimeout time.Duration) flowStack {
 	rdb := startRedis(t)
 	dj := django.New(djangoSrv.URL+"/api/v1", "api.example.test",
 		internalSecret, upstreamTimeout, quietLogger(), nil)
-	store := checkout.NewStore(rdb)
+	store := checkout.NewStore(rdb, upstreamTimeout)
 	return flowStack{
 		flow: checkout.NewFlow(dj, store, storefront.NewSite("el"),
 			quietLogger()),
@@ -73,7 +73,7 @@ func (f flowStack) readySession(t *testing.T) *checkout.Session {
 	s.PayWayID = 1
 	s.Recompute()
 	require.Equal(t, checkout.StatusReadyForComplete, s.Status)
-	require.NoError(t, f.store.Save(context.Background(), s))
+	require.NoError(t, f.store.Create(context.Background(), s))
 	return s
 }
 
@@ -108,11 +108,13 @@ func (redisStep) ProcessPipelineHook(
 	return next
 }
 
-// setsKey reports whether cmd writes a key that contains part.
+// setsKey reports whether cmd writes a key that contains part: a SET, or
+// a script, which names its key after its hash and its key count.
 func setsKey(cmd redis.Cmder, part string) bool {
+	at := map[string]int{"set": 1, "evalsha": 3, "eval": 3}[cmd.Name()]
 	args := cmd.Args()
-	return cmd.Name() == "set" && len(args) > 1 &&
-		strings.Contains(fmt.Sprint(args[1]), part)
+	return at > 0 && len(args) > at &&
+		strings.Contains(fmt.Sprint(args[at]), part)
 }
 
 // The order link is the first thing written once Django has answered. A
@@ -260,6 +262,98 @@ func TestCompleteStoresNothingForASessionItDoesNotAdmit(t *testing.T) {
 	}
 }
 
+// A completion marks the session in progress only over the session it
+// loaded. One that another request has stored since (it placed the
+// order, changed the buyer, canceled) is not this completion's to place:
+// it sends nothing to the store, writes nothing and frees its key.
+func TestCompleteLosesToASessionStoredSinceItLoadedIt(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	ctx := context.Background()
+	save := func(edit func(*checkout.Session)) func(*testing.T, *checkout.Session) {
+		return func(t *testing.T, other *checkout.Session) {
+			t.Helper()
+			edit(other)
+			require.NoError(t, f.store.Save(ctx, other))
+		}
+	}
+	for name, meanwhile := range map[string]func(*testing.T, *checkout.Session){
+		"a completion that placed the order": func(
+			t *testing.T, other *checkout.Session,
+		) {
+			t.Helper()
+			placement, err := f.flow.Complete(ctx, f.tenant, other)
+			require.NoError(t, err)
+			require.Equal(t, checkout.OrderMayExist, placement)
+		},
+		"an update": save(func(other *checkout.Session) {
+			other.Buyer.Email = "other@example.test"
+		}),
+		"a cancel": save(func(other *checkout.Session) {
+			other.Status = checkout.StatusCanceled
+		}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := f.readySession(t)
+			meanwhile(t, f.stored(t, s))
+			creates := f.faults.orderCreates.Load()
+			before, err := f.rdb.Get(ctx, sessionRedisKey(s.ID)).Result()
+			require.NoError(t, err)
+
+			placement, err := f.flow.Complete(ctx, f.tenant, s)
+
+			require.ErrorIs(t, err, checkout.ErrSessionChanged)
+			assert.Equal(t, checkout.NothingPlaced, placement)
+			assert.Equal(t, creates, f.faults.orderCreates.Load(),
+				"an order was sent for a session that had moved on")
+			after, err := f.rdb.Get(ctx, sessionRedisKey(s.ID)).Result()
+			require.NoError(t, err)
+			assert.Equal(t, before, after, "the stored session was written")
+		})
+	}
+}
+
+// However many completions run at once on one session, with no lock and
+// no key between them, one order is sent: Redis lets one of them mark
+// the session in progress, and every other one has placed nothing.
+func TestCompletesAtOncePlaceOneOrder(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	ctx := context.Background()
+	s := f.readySession(t)
+	type outcome struct {
+		placement checkout.Placement
+		err       error
+	}
+	const racers = 8
+	start := make(chan struct{})
+	outcomes := make(chan outcome, racers)
+	for range racers {
+		own := f.stored(t, s)
+		go func() {
+			<-start
+			placement, err := f.flow.Complete(ctx, f.tenant, own)
+			outcomes <- outcome{placement, err}
+		}()
+	}
+	close(start)
+
+	placed := 0
+	for range racers {
+		o := <-outcomes
+		if o.err == nil {
+			placed++
+			assert.Equal(t, checkout.OrderMayExist, o.placement)
+			continue
+		}
+		assert.ErrorIs(t, o.err, checkout.ErrSessionChanged)
+		assert.Equal(t, checkout.NothingPlaced, o.placement)
+	}
+	assert.Equal(t, 1, placed)
+	assert.EqualValues(t, 1, f.faults.orderCreates.Load())
+	stored := f.stored(t, s)
+	assert.Equal(t, checkout.StatusCompleted, stored.Status)
+	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
+}
+
 // The in-progress save is what guards the order. When Redis refuses it
 // no order is sent, and the session is not written again: that write
 // would be a ready snapshot saved over whatever the store holds by then.
@@ -269,9 +363,7 @@ func TestCompleteSendsNoOrderWithoutTheInProgressSave(t *testing.T) {
 	redisDown := errors.New("redis is down")
 	writes := 0
 	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
-		args := cmd.Args()
-		if cmd.Name() == "get" || len(args) < 2 ||
-			!strings.HasSuffix(fmt.Sprint(args[1]), ":cs:"+s.ID) {
+		if !setsKey(cmd, sessionRedisKey(s.ID)) {
 			return nil
 		}
 		writes++
@@ -301,7 +393,7 @@ func TestCompleteReportsAPlacedOrderItCouldNotSave(t *testing.T) {
 		switch {
 		case setsKey(cmd, ":orderlink:"):
 			linked = true
-		case linked && setsKey(cmd, ":cs:"+s.ID):
+		case linked && setsKey(cmd, sessionRedisKey(s.ID)):
 			return redisDown
 		}
 		return nil

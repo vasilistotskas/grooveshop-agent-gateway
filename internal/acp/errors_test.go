@@ -62,9 +62,9 @@ func quietLog() *slog.Logger {
 func testHandler(t *testing.T, rdb *redis.Client) *Handler {
 	t.Helper()
 	dj := fixtureDjango(t)
-	store := checkout.NewStore(rdb)
+	store := checkout.NewStore(rdb, dj.Timeout())
 	return NewHandler(dj, store,
-		checkout.NewFlow(dj, store, testSite, quietLog()), rdb, testSite,
+		checkout.NewFlow(dj, store, testSite, quietLog()), testSite,
 		quietLog())
 }
 
@@ -255,6 +255,9 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 			checkout.ErrNotFound, http.StatusNotFound, "not_found"},
 		"checkout.ErrLocked": {
 			checkout.ErrLocked, http.StatusConflict, "idempotency_in_flight"},
+		"checkout.ErrSessionChanged": {
+			checkout.ErrSessionChanged, http.StatusConflict,
+			"idempotency_in_flight"},
 		"checkout.ErrCompletionInProgress": {
 			checkout.ErrCompletionInProgress, http.StatusConflict,
 			"idempotency_in_flight"},

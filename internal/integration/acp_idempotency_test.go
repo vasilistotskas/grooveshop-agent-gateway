@@ -21,7 +21,7 @@ import (
 func (stack ucpStack) sessionCount(t *testing.T) int {
 	t.Helper()
 	keys, err := stack.rdb.Keys(context.Background(),
-		"ag:demostore:cs:*").Result()
+		sessionRedisKey("*")).Result()
 	require.NoError(t, err)
 	n := 0
 	for _, key := range keys {
@@ -119,8 +119,7 @@ func TestACPIdempotencyKeys(t *testing.T) {
 		assertReplay(resp, body)
 
 		// Its session gone, the key still answers what it answered.
-		require.NoError(t, stack.rdb.Del(ctx,
-			"ag:demostore:cs:"+created["id"].(string)).Err())
+		stack.lapse(t, sessionRedisKey(created["id"].(string)))
 		sessions := stack.sessionCount(t)
 		resp, body = create(t, key, createBody)
 		assertReplay(resp, body)
@@ -221,7 +220,10 @@ func TestACPIdempotencyKeys(t *testing.T) {
 		assertFresh(t, resp, body)
 	})
 
-	t.Run("a settled key is kept 24 hours, a claim a minute",
+	// A claim lasts what its request can take when the store answers
+	// every call just inside the upstream timeout: the lock's six, and
+	// one more for the write that settles the key.
+	t.Run("a settled key is kept 24 hours, a claim seven upstream timeouts",
 		func(t *testing.T) {
 			key := uuid.NewString()
 			resp, body := create(t, key, createBody)
@@ -263,7 +265,12 @@ func TestACPIdempotencyKeys(t *testing.T) {
 				"ag:demostore:acp:idem:complete:"+id+":"+completeKey).Result()
 			require.NoError(t, err)
 			assert.Positive(t, ttl, "a claim must expire")
-			assert.LessOrEqual(t, ttl, time.Minute)
+			assert.InDelta(t, (7 * ucpUpstreamTimeout).Seconds(),
+				ttl.Seconds(), 2)
+			lock, err := stack.rdb.TTL(ctx, lockRedisKey(id)).Result()
+			require.NoError(t, err)
+			assert.InDelta(t, (6 * ucpUpstreamTimeout).Seconds(),
+				lock.Seconds(), 2)
 			release()
 			assert.Equal(t, http.StatusOK, <-done)
 		})

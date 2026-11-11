@@ -99,8 +99,15 @@ func NewFlow(
 }
 
 // Complete places the order for a ready session and stores the session
-// as that left it. The caller holds the session lock and its idempotency
-// key, and settles the key by the returned Placement.
+// as that left it. The caller settles its idempotency key by the
+// returned Placement.
+//
+// One completion places a session's order, whatever became of the
+// caller's lock and key meanwhile (both expire while a slow Django is
+// still being asked): the save that marks the session in progress is
+// refused unless the stored session is still the one s was loaded as,
+// and nothing is sent to Django before it is stored. A completion that
+// loses it gets ErrSessionChanged and has placed nothing.
 //
 // Once the order is about to be created, the end of the caller's context
 // (a platform that hangs up, or the server cancelling its requests at
@@ -127,14 +134,15 @@ func (f *Flow) Complete(
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), f.budget)
 	defer cancel()
 
-	// Persisted BEFORE the order exists. The session lock can lapse
-	// during the upstream calls below, and a second complete that loads
-	// the session then must see a completion in flight — not a ready
-	// session it would place a second time.
+	// Persisted BEFORE the order exists, and only over the session this
+	// call loaded: of the completions that read one ready session, Redis
+	// lets a single one through here. A later complete then loads a
+	// completion in flight, not a ready session to place a second time.
 	s.Status = StatusCompleteInProgress
 	if err := f.st.Save(ctx, s); err != nil {
-		// The write that guards the order was refused: no order is
-		// sent, and the session is not written again.
+		// The write that guards the order was refused, by Redis failing
+		// or by a session that has moved on (ErrSessionChanged): no
+		// order is sent, and the session is not written again.
 		s.Status = StatusReadyForComplete
 		return NothingPlaced, err
 	}
@@ -323,9 +331,9 @@ func (f *Flow) startPayment(
 // ApplyOrderEvent folds a Django order/payment event into the checkout
 // that placed the order, if that session still exists — sessions expire
 // long before orders stop changing, and a missing one is not an error.
-// It takes the session lock like every other mutation: an unlocked write
-// raced a concurrent cancel or complete, and the last writer won. A busy
-// session returns ErrLocked for the caller to retry.
+// It takes the session lock like every other mutation. A busy session
+// returns ErrLocked, and one another request stored meanwhile
+// ErrSessionChanged, for the caller to retry.
 func (f *Flow) ApplyOrderEvent(
 	ctx context.Context, schema, checkoutID, paymentStatus string,
 ) error {

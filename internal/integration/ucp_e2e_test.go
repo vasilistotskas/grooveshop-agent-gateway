@@ -964,8 +964,7 @@ func TestUCPEndToEnd(t *testing.T) {
 		// The session expires within a day; the store reports shipment
 		// for weeks after. Events route through the order link, so the
 		// platform still hears about them.
-		require.NoError(t, stack.rdb.Del(context.Background(),
-			"ag:demostore:cs:"+checkoutID).Err())
+		stack.lapse(t, sessionRedisKey(checkoutID))
 		shipped, err := json.Marshal(map[string]any{
 			"schemaName": "demostore", "orderUuid": fixtureOrderUUID,
 			"status": "SHIPPED", "paymentStatus": "COMPLETED",

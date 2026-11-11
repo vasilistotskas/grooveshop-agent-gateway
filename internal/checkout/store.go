@@ -16,6 +16,13 @@ var (
 	ErrNotFound = errors.New("checkout: session not found")
 	// ErrLocked marks a session busy with a concurrent mutation.
 	ErrLocked = errors.New("checkout: session is busy, retry shortly")
+	// ErrSessionChanged marks a save that Redis refused: the stored
+	// session is no longer the one this request read (another request
+	// stored it since, or it expired). Nothing was written, and what the
+	// request holds is stale.
+	ErrSessionChanged = errors.New(
+		"checkout: this checkout was changed by another request while " +
+			"this one ran; read it again before retrying")
 	// ErrCompletionInProgress marks a duplicate complete while the first
 	// is still running.
 	ErrCompletionInProgress = errors.New(
@@ -34,29 +41,52 @@ const (
 	// as long as an agent might reasonably ask about an order. It is a
 	// few short strings per order, so retention costs almost nothing.
 	orderLinkTTL = 365 * 24 * time.Hour
-	lockTTL      = 10 * time.Second
 
-	// Completion-claim markers. A claim is held while the first attempt
-	// runs and, once it succeeds, kept for the session's terminal
-	// lifetime so a retried key re-renders the final state instead of
-	// placing a second order.
-	claimInflight = "inflight"
-	claimDone     = "done"
-	claimTTL      = time.Minute
+	// lockSteps sizes the session lock, in upstream timeouts: the calls
+	// a completion makes under it before its last write of the session.
+	// The handler looks the payment up, Flow.admit reads the pay ways
+	// and reserves the stock, and then the completion's own budget runs.
+	// Django cuts each call at one timeout, so a request that holds the
+	// lock longer has had a call retried (a GET, after a 5xx or a
+	// dropped connection) or writes many cart lines. Its lock lapses
+	// then, which costs nothing but the queueing: Save is what keeps a
+	// session from being written by two requests.
+	lockSteps = 3 + completionSteps
+
+	// claimDone is the value of a completion key whose order was placed,
+	// kept for the session's terminal lifetime so a retried key renders
+	// the final state instead of placing a second order.
+	claimDone = "done"
 )
 
 // Store persists sessions in Redis. Checkout fails closed without Redis:
 // correctness beats availability on the money path.
 type Store struct {
 	rdb *redis.Client
+	// timeout is the Django client's, which sizes the lock and the
+	// claims and bounds a lock's release.
+	timeout  time.Duration
+	lockTTL  time.Duration
+	claimTTL time.Duration
 }
 
-func NewStore(rdb *redis.Client) *Store {
-	return &Store{rdb: rdb}
+// NewStore sizes the lock and the idempotency claims from the Django
+// client's timeout: a claim covers what the lock covers and the write
+// that settles it afterwards.
+func NewStore(rdb *redis.Client, upstreamTimeout time.Duration) *Store {
+	lockTTL := lockSteps * upstreamTimeout
+	return &Store{
+		rdb: rdb, timeout: upstreamTimeout,
+		lockTTL: lockTTL, claimTTL: lockTTL + upstreamTimeout,
+	}
 }
 
+// sessionKey is versioned with how sessions are written. v2 sessions
+// carry a version and are stored only by compare-and-set; a pod that
+// writes them unconditionally (v1) must never share one with a pod that
+// does not, so neither reads the other's.
 func sessionKey(schema, id string) string {
-	return "ag:" + schema + ":cs:" + id
+	return "ag:" + schema + ":cs:v2:" + id
 }
 
 func lockKey(schema, id string) string {
@@ -103,86 +133,126 @@ func (st *Store) Load(ctx context.Context, schema, id string) (*Session, error) 
 	return &s, nil
 }
 
+// saveScript stores the session ARGV[2] in KEYS[1] for ARGV[3] ms while
+// the stored session's version is still ARGV[1], and returns 1. No
+// stored session counts as version 0, which only a session never stored
+// has. Otherwise it writes nothing and returns 0. go-redis sends a
+// command again when its reply was lost: the second run finds exactly
+// what the first stored, and reports it stored.
+var saveScript = redis.NewScript(`
+local stored = redis.call('GET', KEYS[1])
+if stored == ARGV[2] then
+  return 1
+end
+local version = 0
+if stored then
+  version = cjson.decode(stored).version
+end
+if version ~= tonumber(ARGV[1]) then
+  return 0
+end
+redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])
+return 1
+`)
+
+// Create stores a session that was never stored.
+func (st *Store) Create(ctx context.Context, s *Session) error {
+	return st.put(ctx, s, 0)
+}
+
+// Save stores s over the stored session it was loaded as, and only over
+// that one: if another request has stored the session since, or it is
+// gone, nothing is written, s is left as it was and the error is
+// ErrSessionChanged. Whether the caller still holds the session lock
+// plays no part.
 func (st *Store) Save(ctx context.Context, s *Session) error {
-	s.UpdatedAt = time.Now().UTC()
-	ttl := s.ttl(s.UpdatedAt)
+	return st.put(ctx, s, s.Version)
+}
+
+// put stores s as the version after stored, while stored is the version
+// Redis holds.
+func (st *Store) put(ctx context.Context, s *Session, stored int64) error {
+	next := *s
+	next.Version = stored + 1
+	next.UpdatedAt = time.Now().UTC()
+	key := sessionKey(s.Schema, s.ID)
+	ttl := next.ttl(next.UpdatedAt).Milliseconds()
 	if ttl <= 0 {
-		if err := st.rdb.Del(ctx, sessionKey(s.Schema, s.ID)).Err(); err != nil {
+		// A placed session ends when its lifetime does, whoever wrote it
+		// last.
+		if err := st.rdb.Del(ctx, key).Err(); err != nil {
 			return fmt.Errorf("checkout: save: %w", err)
 		}
 		return nil
 	}
-	raw, err := json.Marshal(s)
+	raw, err := json.Marshal(&next)
 	if err != nil {
 		return fmt.Errorf("checkout: encode: %w", err)
 	}
-	if err := st.rdb.Set(ctx, sessionKey(s.Schema, s.ID), raw, ttl).Err(); err != nil {
+	written, err := saveScript.Run(ctx, st.rdb, []string{key},
+		stored, raw, ttl).Int()
+	if err != nil {
 		return fmt.Errorf("checkout: save: %w", err)
+	}
+	if written != 1 {
+		return ErrSessionChanged
+	}
+	s.Version, s.UpdatedAt = next.Version, next.UpdatedAt
+	return nil
+}
+
+// Discard deletes a session that was created and never answered.
+func (st *Store) Discard(ctx context.Context, s *Session) error {
+	if err := st.rdb.Del(ctx, sessionKey(s.Schema, s.ID)).Err(); err != nil {
+		return fmt.Errorf("checkout: discard: %w", err)
 	}
 	return nil
 }
 
-// Lock serializes mutations on one session. The returned release func is
-// safe to call once; expiry covers crashed holders.
+// Lock makes the requests on one session take turns: while one holds
+// it, another gets ErrLocked. It orders them and protects nothing: the
+// lock expires while its holder may still be working, and Save alone
+// decides whether a session may be written. release frees the lock only
+// while this call still holds it.
 func (st *Store) Lock(ctx context.Context, schema, id string) (func(), error) {
-	token := uuid.NewString()
-	ok, err := st.rdb.SetNX(ctx, lockKey(schema, id), token, lockTTL).Result()
+	held, _, err := st.claim(ctx, lockKey(schema, id), st.lockTTL)
 	if err != nil {
 		return nil, fmt.Errorf("checkout: lock: %w", err)
 	}
-	if !ok {
+	if held == nil {
 		return nil, ErrLocked
 	}
 	return func() {
-		// Best-effort compare-and-delete so an expired lock taken over
-		// by another holder is not released from here.
-		const script = `if redis.call("get", KEYS[1]) == ARGV[1] then
-			return redis.call("del", KEYS[1]) else return 0 end`
-		_ = st.rdb.Eval(context.Background(), script,
-			[]string{lockKey(schema, id)}, token).Err()
+		// Best effort, on a context the request cannot end: expiry
+		// covers a release that fails.
+		ctx, cancel := context.WithTimeout(context.Background(), st.timeout)
+		defer cancel()
+		_ = held.Release(ctx)
 	}, nil
 }
 
 // ClaimCompletion makes complete idempotent: the first caller for a key
-// claims it and places the order; a caller whose key was already
-// claimed gets claimed=false and re-renders the session's current state,
-// or ErrCompletionInProgress while the first attempt is still running.
+// gets its claim and places the order; a caller whose key has placed an
+// order gets no claim and renders the session's current state; a caller
+// whose key another attempt still holds gets ErrCompletionInProgress.
 func (st *Store) ClaimCompletion(
 	ctx context.Context, schema, id, idempotencyKey string,
-) (claimed bool, err error) {
-	key := idemKey(schema, id, idempotencyKey)
-	ok, err := st.rdb.SetNX(ctx, key, claimInflight, claimTTL).Result()
-	if err != nil {
-		return false, fmt.Errorf("checkout: idempotency: %w", err)
+) (*Claim, error) {
+	claim, settled, err := st.Claim(ctx,
+		idemKey(schema, id, idempotencyKey))
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("checkout: idempotency: %w", err)
+	case claim == nil && settled != claimDone:
+		return nil, ErrCompletionInProgress
 	}
-	if ok {
-		return true, nil
-	}
-	state, err := st.rdb.Get(ctx, key).Result()
-	if err != nil && !errors.Is(err, redis.Nil) {
-		return false, fmt.Errorf("checkout: idempotency read: %w", err)
-	}
-	if state != claimDone {
-		return false, ErrCompletionInProgress
-	}
-	return false, nil
+	return claim, nil
 }
 
-// MarkCompleted turns an inflight claim into a durable one after the
-// order was placed.
-func (st *Store) MarkCompleted(
-	ctx context.Context, schema, id, idempotencyKey string,
-) error {
-	return st.rdb.Set(ctx, idemKey(schema, id, idempotencyKey),
-		claimDone, terminalTTL).Err()
-}
-
-// ReleaseCompletion clears an inflight claim after a failed attempt so the
-// caller can retry.
-func (st *Store) ReleaseCompletion(
-	ctx context.Context, schema, id, idempotencyKey string,
-) error {
-	return st.rdb.Del(ctx, idemKey(schema, id, idempotencyKey)).Err()
+// MarkCompleted spends a completion claim after its order was placed,
+// and reports whether the key is spent.
+func (st *Store) MarkCompleted(ctx context.Context, c *Claim) (bool, error) {
+	return c.Settle(ctx, claimDone, terminalTTL)
 }
 
 // OrderLink ties an order placed through a checkout to what outlives

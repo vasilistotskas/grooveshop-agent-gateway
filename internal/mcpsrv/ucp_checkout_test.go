@@ -93,7 +93,7 @@ func ucpHandlers(t *testing.T, dj *django.Client) *handlers {
 	})
 	t.Cleanup(func() { _ = rdb.Close() })
 	return &handlers{deps: Deps{Site: testSite, Django: dj,
-		Profiles: profiles, Checkout: checkout.NewStore(rdb),
+		Profiles: profiles, Checkout: checkout.NewStore(rdb, dj.Timeout()),
 		AllowLocalWebhooks: true, Log: slog.New(slog.DiscardHandler)}}
 }
 

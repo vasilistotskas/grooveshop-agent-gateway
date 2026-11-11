@@ -368,6 +368,9 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | ACP same key, different body | 422 `idempotency_conflict`, except a complete of an already completed session, which answers 200 with the session whatever the body (#128) |
 | ACP create replayed after its session expired, same key and body | 201 with the original body and `Idempotent-Replayed: true` |
 | ACP call while another holds the session (lock busy) | 409 `idempotency_in_flight` with `Retry-After` |
+| ACP or UCP call whose session another call stored while it ran (a slow store can hold a call past its lock) | Nothing is written and no order is sent. ACP: 409 `idempotency_in_flight` with `Retry-After: 2`. UCP: an error saying the checkout was changed by another request. Sent again, the call reads the session as it is. Not exercised here: the integration suite holds the store's answer to produce it (`completion_fence_test.go`) |
+| Two completes of one ready session at once, with one key or two | One order. The other complete answers as the row above, then, sent again, the placed session |
+| ACP create that ran past its key's claim while another create took the key | 409 `idempotency_in_flight`; its own session is discarded, and the retry answers the other create's response |
 
 ### Invalid input
 

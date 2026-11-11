@@ -311,9 +311,10 @@ passes.
     `missing_api_version` or `unsupported_api_version` with
     `supported_versions`.
   - 409 is only `idempotency_in_flight`, with `Retry-After`: a key or
-    the session lock in use, or an order being placed until
-    `Flow.CompletionDeadline`. Past it the outcome was never recorded
-    and stays so until the session expires: 502
+    the session lock in use, a session another request stored while
+    this one ran (`checkout.ErrSessionChanged`), or an order being
+    placed until `Flow.CompletionDeadline`. Past it the outcome was
+    never recorded and stays so until the session expires: 502
     `order_outcome_unknown`, no `Retry-After`.
   - A completed or canceled session refuses update and cancel with
     405 and an `Allow` header, and so does a canceled one complete. A
@@ -330,7 +331,10 @@ passes.
     lives 30 minutes: the spec requires a key's response to be kept at
     least 24 hours (§6.6). Nothing else reads it.
   - A create is rendered before it is saved, and a 4xx or 5xx releases
-    its key: a create that failed leaves no session and no record.
+    its key: a create that failed leaves no session and no record. A
+    create that ran past its key's claim, with another create holding
+    the key by then, discards its session and answers 409: one key
+    answers one session.
   - `completeError` answers every `checkout` and `django` sentinel
     deliberately (`TestCompleteErrorMapsEverySentinel` walks them): a
     refusal is a 4xx, and an order that exists or may is never
@@ -357,14 +361,50 @@ passes.
   the ACP handler and the UCP tool store what the call itself
   submitted (ACP's buyer, UCP's payment) before they call it, so that
   a refused call keeps the buyer's latest choice, and only for a
-  session that is still open (`Session.Open`). ACP stores it under the
-  session lock and its idempotency key, before any Django call. UCP
-  stores it under its completion claim: its payment lookup can
-  outlast the lock, which may have lapsed by then (#84). After the
-  flow they only settle their own key by the placement (ACP's
-  body-hash record, UCP's completion claim), on a context the caller
-  cannot cancel, bounded by the Django client's timeout, and map the
-  error; neither saves the session again.
+  session that is still open (`Session.Open`). After the flow they
+  only settle their own key by the placement (ACP's body-hash record,
+  UCP's completion claim), on a context the caller cannot cancel,
+  bounded by the Django client's timeout, and map the error; neither
+  saves the session again.
+- **One completion places a session's order, and no guard that expires
+  decides which** (#84). Every guard on a checkout expires while its
+  holder may still be working, because Django can take longer than any
+  of them lasts. So nothing rests on one:
+  - **A session is stored by compare-and-set** (`checkout.Store`,
+    `saveScript`). `Session.Version` counts its saves; `Store.Save`
+    writes only over the version the request loaded, and answers
+    `ErrSessionChanged`, having written nothing, when another request
+    stored the session since or it is gone. `Store.Create` writes only
+    where no session is. There is no unconditional write of a session
+    (a placed one past its lifetime is deleted).
+  - **The in-progress save is the fence.** `Flow.Complete` sends
+    `POST /order` only after its save of `complete_in_progress` was
+    accepted, so of all the completions that loaded one ready session,
+    under any lock or key, one reaches Django. The others return
+    `ErrSessionChanged` with `NothingPlaced`. The same check keeps a
+    stale snapshot (an update or a cancel that ran past its lock, a
+    refused order's reset) from being written over a session that is
+    being placed or is placed.
+  - **A lost save is answered like a busy session**: ACP 409
+    `idempotency_in_flight` with `Retry-After: 2`, UCP the error's
+    text, the order-event push 503. The request is sent again and
+    reads the session as it is then.
+  - **The lock only orders requests** (`Store.Lock`, `ErrLocked`). It
+    lasts `lockSteps` upstream timeouts: what a completion does under
+    it when Django answers every call just inside its timeout. A
+    request that runs longer loses the lock, never the fence.
+  - **A lock and an idempotency key are both a `checkout.Claim`**: a
+    key holding `inflight:<the request's token>` until it expires.
+    `Settle` and `Release` act only on a key that still holds that
+    token (`Settle` also on one nobody holds), so a request that
+    outlived its claim never writes or deletes the next holder's. A
+    claim lasts one upstream timeout more than the lock. A request
+    that lost its claim answers by what it did (the order it placed,
+    the session it saved): the session, not the key, tells the next
+    holder.
+  - go-redis sends a command again when its reply was lost, so each
+    script reports its own earlier run as done: a claim finds its own
+    token, a save or a settle finds exactly what it wrote.
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before
@@ -415,6 +455,14 @@ passes.
   gateway's authenticated call, and none of those is written to the shared
   Redis entry: `publicConfig` clears each, and
   `TestPublicConfigClearsEveryUndocumentedField` finds them by reflection.
+  A checkout session is `ag:{schema}:cs:v2:{id}`, its lock that plus
+  `:lock`. The version is of how sessions are written, not only of their
+  shape: bump it whenever an older pod writing the key its own way could
+  undo what a newer one relies on (v1 pods wrote sessions unconditionally),
+  so the two never share a session; a session under an older key is not
+  found. `TestSessionKeyIsVersioned` pins it. A Redis write that depends
+  on what the key holds is a script (`redis.NewScript`), never a read
+  followed by a write.
 - No tenant label on Prometheus metrics (unbounded cardinality) — tenant
   goes in logs.
 - **No fallback/legacy/backward-compat code paths.** Environment differences

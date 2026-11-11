@@ -1,7 +1,8 @@
 // Package checkout implements the protocol-neutral checkout session shared
 // by the UCP MCP binding and the ACP REST surface: a pure state machine, a
-// Redis store with per-session locking and completion idempotency, and the
-// order-creation flow over the existing Django endpoints.
+// Redis store whose saves are compare-and-set, with per-session locking
+// and idempotency claims, and the order-creation flow over the existing
+// Django endpoints.
 package checkout
 
 import (
@@ -103,6 +104,12 @@ type Session struct {
 	// Domain is the tenant storefront host at creation time, kept so
 	// webhook payload permalinks render without a tenant lookup.
 	Domain string `json:"domain"`
+
+	// Version counts the times the session was stored. Store.Save
+	// writes only over the version it read, so a request holding an
+	// older one cannot write. A counter and not UpdatedAt: two pods'
+	// clocks can stamp two saves alike.
+	Version int64 `json:"version"`
 
 	Status Status `json:"status"`
 	CartID string `json:"cartId"`

@@ -134,7 +134,7 @@ func (h *handlers) createCheckout(
 		}
 	}
 	s.Recompute()
-	if err := h.deps.Checkout.Save(ctx, s); err != nil {
+	if err := h.deps.Checkout.Create(ctx, s); err != nil {
 		return nil, zero, errCheckoutUnavailable
 	}
 	res, out, err := h.checkoutResult(ctx, t, s, neg)
@@ -249,8 +249,11 @@ func (h *handlers) updateCheckout(
 		}
 	}
 	s.Recompute()
+	// The lookups above can outlast the lock, and another call may have
+	// stored the checkout meanwhile, a completion included: this
+	// snapshot is then not written over it.
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
-		return nil, zero, errCheckoutUnavailable
+		return nil, zero, saveFailed(err)
 	}
 	res, out, err := h.checkoutResult(ctx, t, s, neg)
 	return h.discountAnnotated(res, out, err, s, hasCodes)
@@ -293,7 +296,7 @@ func (h *handlers) completeCheckout(
 			return nil, zero, paymentLinkErr(s)
 		}
 		if err := h.deps.Checkout.Save(ctx, s); err != nil {
-			return nil, zero, errCheckoutUnavailable
+			return nil, zero, saveFailed(err)
 		}
 		return h.checkoutResult(ctx, t, s, neg)
 	}
@@ -314,16 +317,15 @@ func (h *handlers) completeCheckout(
 	}
 	s.Recompute()
 
-	idemKey := in.Meta.IdempotencyKey
-	claimed, err := h.deps.Checkout.ClaimCompletion(
-		ctx, t.SchemaName, s.ID, idemKey)
+	claim, err := h.deps.Checkout.ClaimCompletion(
+		ctx, t.SchemaName, s.ID, in.Meta.IdempotencyKey)
 	if err != nil {
 		if errors.Is(err, checkout.ErrCompletionInProgress) {
 			return nil, zero, err
 		}
 		return nil, zero, errCheckoutUnavailable
 	}
-	if !claimed {
+	if claim == nil {
 		// A prior attempt finished; render the session's current state.
 		return h.checkoutResult(ctx, t, s, neg)
 	}
@@ -333,18 +335,18 @@ func (h *handlers) completeCheckout(
 	// completion stores nothing: a later complete that omits the payment
 	// would otherwise place the order with the choice before this one.
 	//
-	// Only under the claim: the payment lookup above can outlast the
-	// session lock, and a retry of this key may have placed the order
-	// meanwhile. This snapshot must not be written over that session.
+	// The payment lookup above can outlast the session lock, and another
+	// call may have placed the order meanwhile: the save is refused
+	// then, and a call whose key already placed one never gets here.
 	if s.Open() && (s.PayWayID != payWay || s.Status != status) {
 		if err := h.deps.Checkout.Save(ctx, s); err != nil {
-			h.settleCompletion(ctx, t, s, idemKey, checkout.NothingPlaced)
-			return nil, zero, errCheckoutUnavailable
+			h.settleCompletion(ctx, s, claim, checkout.NothingPlaced)
+			return nil, zero, saveFailed(err)
 		}
 	}
 
 	placement, err := h.deps.Flow.Complete(ctx, t, s)
-	h.settleCompletion(ctx, t, s, idemKey, placement)
+	h.settleCompletion(ctx, s, claim, placement)
 	switch {
 	case err == nil:
 		if ctx.Err() != nil {
@@ -374,7 +376,8 @@ func (h *handlers) completeCheckout(
 	case errors.As(err, new(*django.StockShortfall)):
 		return nil, zero, stockShortfallErr(err)
 	case errors.Is(err, checkout.ErrNotReady),
-		errors.Is(err, checkout.ErrCompletionInProgress):
+		errors.Is(err, checkout.ErrCompletionInProgress),
+		errors.Is(err, checkout.ErrSessionChanged):
 		return nil, zero, err
 	case errors.Is(err, checkout.ErrPayWayUnavailable):
 		return nil, zero, errors.New(
@@ -398,23 +401,45 @@ func (h *handlers) completeCheckout(
 // this attempt did, not a claim left in flight. The Django client's
 // timeout bounds the one Redis write, which go-redis alone would retry
 // against a silent Redis for several times that.
+//
+// A claim that lapsed while the attempt ran may be another call's by
+// now, and is left to it. The answer does not depend on it: what this
+// attempt did about the order stands, and the session says so to
+// whoever holds the key.
 func (h *handlers) settleCompletion(
-	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
-	idemKey string, placement checkout.Placement,
+	ctx context.Context, s *checkout.Session, claim *checkout.Claim,
+	placement checkout.Placement,
 ) {
-	settle := h.deps.Checkout.MarkCompleted
-	if placement == checkout.NothingPlaced {
-		settle = h.deps.Checkout.ReleaseCompletion
-	}
 	settleCtx, cancel := context.WithTimeout(
 		context.WithoutCancel(ctx), h.deps.Django.Timeout())
 	defer cancel()
-	if err := settle(settleCtx, t.SchemaName, s.ID, idemKey); err != nil {
+	var err error
+	if placement == checkout.NothingPlaced {
+		err = claim.Release(settleCtx)
+	} else {
+		var spent bool
+		spent, err = h.deps.Checkout.MarkCompleted(settleCtx, claim)
+		if err == nil && !spent {
+			err = errors.New(
+				"the claim lapsed and another call has the key")
+		}
+	}
+	if err != nil {
 		h.deps.Log.ErrorContext(ctx, "ucp: completion key not settled",
 			slog.String("session", s.ID),
 			slog.Bool("spent", placement != checkout.NothingPlaced),
 			slog.String("error", err.Error()))
 	}
+}
+
+// saveFailed answers a checkout that could not be stored: one another
+// call stored meanwhile is to be read again, anything else is the store
+// being unavailable.
+func saveFailed(err error) error {
+	if errors.Is(err, checkout.ErrSessionChanged) {
+		return err
+	}
+	return errCheckoutUnavailable
 }
 
 // errCheckoutUnavailable answers a checkout store (Redis) that could not
@@ -648,7 +673,7 @@ func (h *handlers) cancelCheckout(
 	}
 	s.Status = checkout.StatusCanceled
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
-		return nil, zero, errCheckoutUnavailable
+		return nil, zero, saveFailed(err)
 	}
 	return h.checkoutResult(ctx, t, s, neg)
 }

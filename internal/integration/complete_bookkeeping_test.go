@@ -294,7 +294,7 @@ func (stack ucpStack) bookkeeping(
 ) bookkeeping {
 	t.Helper()
 	ctx := context.Background()
-	store := checkout.NewStore(stack.rdb)
+	store := checkout.NewStore(stack.rdb, ucpUpstreamTimeout)
 	s, err := store.Load(ctx, "demostore", id)
 	require.NoError(t, err)
 	out := bookkeeping{Session: s.Status, Key: keySpent}
@@ -310,7 +310,7 @@ func (stack ucpStack) bookkeeping(
 		out.Key = keyReleased
 	case err != nil:
 		require.NoError(t, err)
-	case state == keyInFlight:
+	case strings.HasPrefix(state, keyInFlight+":"):
 		out.Key = keyInFlight
 	}
 	return out
@@ -357,9 +357,7 @@ func TestCompleteBookkeepingIsTheSameOnBothSurfaces(t *testing.T) {
 					outcome.fault.Store(true)
 					t.Cleanup(func() { outcome.fault.Store(false) })
 				}
-				before, err := stack.rdb.Get(ctx, "ag:demostore:cs:"+id).
-					Result()
-				require.NoError(t, err)
+				before := stack.storedBytes(t, id)
 				creates := stack.faults.orderCreates.Load()
 				key := uuid.NewString()
 				surface.complete(ctx, id, key, nil)
@@ -367,10 +365,7 @@ func TestCompleteBookkeepingIsTheSameOnBothSurfaces(t *testing.T) {
 				assert.Equal(t, outcome.want,
 					stack.bookkeeping(t, id, surface.keyName(id, key)))
 				if outcome.untouched {
-					after, err := stack.rdb.Get(ctx, "ag:demostore:cs:"+id).
-						Result()
-					require.NoError(t, err)
-					assert.Equal(t, before, after,
+					assert.Equal(t, before, stack.storedBytes(t, id),
 						"the stored session, its updatedAt included")
 					assert.Equal(t, creates,
 						stack.faults.orderCreates.Load())
@@ -472,7 +467,7 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 			// returns, and a retry meanwhile is told the session is busy.
 			require.Eventually(t, func() bool {
 				held, err := stack.rdb.Exists(context.Background(),
-					"ag:demostore:cs:"+id+":lock").Result()
+					lockRedisKey(id)).Result()
 				return err == nil && held == 0
 			}, 10*time.Second, 20*time.Millisecond)
 			// The order was not read back for a caller that had gone,
@@ -582,7 +577,7 @@ func (stack ucpStack) storedSession(
 	t *testing.T, id string,
 ) *checkout.Session {
 	t.Helper()
-	s, err := checkout.NewStore(stack.rdb).
+	s, err := checkout.NewStore(stack.rdb, ucpUpstreamTimeout).
 		Load(context.Background(), "demostore", id)
 	require.NoError(t, err)
 	return s
@@ -593,7 +588,7 @@ func (stack ucpStack) storedSession(
 func (stack ucpStack) storedBytes(t *testing.T, id string) string {
 	t.Helper()
 	raw, err := stack.rdb.Get(context.Background(),
-		"ag:demostore:cs:"+id).Result()
+		sessionRedisKey(id)).Result()
 	require.NoError(t, err)
 	return raw
 }
@@ -751,8 +746,10 @@ func TestCompleteWithoutItsClaimWritesNothing(t *testing.T) {
 			ucpSurface = surface
 		}
 	}
-	for _, claim := range []string{"inflight", "done"} {
-		t.Run("a key that is "+claim, func(t *testing.T) {
+	for name, claim := range map[string]string{
+		"another attempt's": "inflight:" + uuid.NewString(), "done": "done",
+	} {
+		t.Run("a key that is "+name, func(t *testing.T) {
 			ctx := context.Background()
 			id := ucpSurface.ready(t)
 			key := uuid.NewString()

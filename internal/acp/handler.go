@@ -16,8 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/redis/go-redis/v9"
-
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
@@ -32,18 +30,15 @@ type Handler struct {
 	dj    *django.Client
 	store *checkout.Store
 	flow  *checkout.Flow
-	rdb   *redis.Client
 	site  storefront.Site
 	log   *slog.Logger
 }
 
 func NewHandler(
 	dj *django.Client, store *checkout.Store, flow *checkout.Flow,
-	rdb *redis.Client, site storefront.Site, log *slog.Logger,
+	site storefront.Site, log *slog.Logger,
 ) *Handler {
-	return &Handler{
-		dj: dj, store: store, flow: flow, rdb: rdb, site: site, log: log,
-	}
+	return &Handler{dj: dj, store: store, flow: flow, site: site, log: log}
 }
 
 // Register mounts the ACP routes. The tenant middleware wraps each route
@@ -226,10 +221,6 @@ type idemRecord struct {
 }
 
 const (
-	// idemInflight is a claimed key's value until its request settles it.
-	idemInflight = "inflight"
-	// idemClaimTTL bounds a claim whose request never settled it.
-	idemClaimTTL = time.Minute
 	// idemRecordTTL is the spec's minimum retention of a settled key.
 	idemRecordTTL = 24 * time.Hour
 	// createScope is the create endpoint's scope, versioned with the
@@ -262,6 +253,8 @@ const (
 	msgKeyInFlight = "A request with this Idempotency-Key is in flight."
 	msgSessionBusy = "Another request on this checkout session is in " +
 		"flight."
+	msgSessionChanged = "Another request changed this checkout session " +
+		"while this one ran. Send the request again."
 )
 
 // writeInFlight is the spec's 409: the platform retries the same request
@@ -291,17 +284,19 @@ func (h *Handler) writeCompletionPending(
 
 // claimIdem implements POST idempotency: the first caller claims the key,
 // replays return the stored record, concurrent attempts get 409, and a
-// different body under the same key gets 422.
+// different body under the same key gets 422. It returns the claim when
+// this request holds the key, and the record when an earlier one settled
+// it; with handled, the request is answered.
 func (h *Handler) claimIdem(
 	w http.ResponseWriter, r *http.Request, schema, scope string, raw []byte,
-) (key string, claimed bool, prior *idemRecord, handled bool) {
-	key = r.Header.Get("Idempotency-Key")
+) (claim *checkout.Claim, prior *idemRecord, handled bool) {
+	key := r.Header.Get("Idempotency-Key")
 	if key == "" {
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "idempotency_key_required",
 			Message: "The Idempotency-Key header is required.",
 		})
-		return "", false, nil, true
+		return nil, nil, true
 	}
 	if len(key) > maxIdempotencyKeyLen {
 		writeError(w, http.StatusBadRequest, Error{
@@ -309,38 +304,34 @@ func (h *Handler) claimIdem(
 			Param:   "Idempotency-Key",
 			Message: "The Idempotency-Key header exceeds 255 characters.",
 		})
-		return "", false, nil, true
+		return nil, nil, true
 	}
-	redisKey := idemRedisKey(schema, scope, key)
-	ok, err := h.rdb.SetNX(r.Context(), redisKey, idemInflight,
-		idemClaimTTL).Result()
+	claim, settled, err := h.store.Claim(r.Context(),
+		idemRedisKey(schema, scope, key))
 	if err != nil {
 		writeUnavailable(w, "Checkout is temporarily unavailable.")
-		return "", false, nil, true
+		return nil, nil, true
 	}
-	if ok {
+	if claim != nil {
 		w.Header().Set("Idempotency-Key", key)
-		return key, true, nil, false
+		return claim, nil, false
 	}
-	stored, err := h.rdb.Get(r.Context(), redisKey).Result()
-	if err != nil || stored == idemInflight {
-		writeInFlight(w, idemRetryAfter, msgKeyInFlight)
-		return "", false, nil, true
-	}
+	// Held by another request, or settled with something that is not a
+	// record: in flight either way.
 	var rec idemRecord
-	if json.Unmarshal([]byte(stored), &rec) != nil {
+	if settled == "" || json.Unmarshal([]byte(settled), &rec) != nil {
 		writeInFlight(w, idemRetryAfter, msgKeyInFlight)
-		return "", false, nil, true
+		return nil, nil, true
 	}
 	if rec.BodyHash != bodyHash(raw) {
 		writeError(w, http.StatusUnprocessableEntity, Error{
 			Type: "invalid_request", Code: "idempotency_conflict",
 			Message: "This Idempotency-Key was used with a different body.",
 		})
-		return "", false, nil, true
+		return nil, nil, true
 	}
 	w.Header().Set("Idempotency-Key", key)
-	return key, false, &rec, false
+	return nil, &rec, false
 }
 
 // writeReplay answers a replayed key with what the spec asks of it.
@@ -351,9 +342,9 @@ func writeReplay(w http.ResponseWriter, status int, body []byte) {
 
 // settling is the context a claimed key is recorded or released on. It
 // outlives the request's own (a platform that hung up, a shutdown): a
-// key left in flight answers the retry 409 for a minute. The Django
-// client's timeout bounds the one Redis write, which go-redis alone
-// would retry against a silent Redis for several times that.
+// key left in flight answers the retry 409 until its claim lapses. The
+// Django client's timeout bounds the one Redis write, which go-redis
+// alone would retry against a silent Redis for several times that.
 func (h *Handler) settling(r *http.Request) (
 	context.Context, context.CancelFunc,
 ) {
@@ -361,40 +352,65 @@ func (h *Handler) settling(r *http.Request) (
 		context.WithoutCancel(r.Context()), h.dj.Timeout())
 }
 
-// storeIdem records what a claimed key did.
+// errClaimLapsed is logged for a key its request could not record: the
+// request ran past its claim, and another request holds the key or has
+// settled it.
+var errClaimLapsed = errors.New(
+	"the claim lapsed and another request has the key")
+
+// storeIdem records what a claimed key did, and reports whether the key
+// is this request's to answer for. It is not when the claim lapsed and
+// another request took the key: nothing is written then.
 func (h *Handler) storeIdem(
-	r *http.Request, schema, scope, key string, rec idemRecord,
-) {
+	r *http.Request, claim *checkout.Claim, scope string, rec idemRecord,
+) bool {
 	raw, err := json.Marshal(rec)
 	if err != nil {
-		return
+		return true
 	}
 	ctx, cancel := h.settling(r)
 	defer cancel()
-	if err := h.rdb.Set(ctx, idemRedisKey(schema, scope, key), raw,
-		idemRecordTTL).Err(); err != nil {
+	recorded, err := claim.Settle(ctx, string(raw), idemRecordTTL)
+	if err != nil {
 		h.logUnsettled(r, scope, "record", err)
+		return true
 	}
+	if !recorded {
+		h.logUnsettled(r, scope, "record", errClaimLapsed)
+	}
+	return recorded
 }
 
-// releaseIdem clears an inflight claim after a failed attempt.
-func (h *Handler) releaseIdem(r *http.Request, schema, scope, key string) {
+// releaseIdem frees a claimed key after a failed attempt.
+func (h *Handler) releaseIdem(
+	r *http.Request, claim *checkout.Claim, scope string,
+) {
 	ctx, cancel := h.settling(r)
 	defer cancel()
-	if err := h.rdb.Del(ctx, idemRedisKey(schema, scope, key)).
-		Err(); err != nil {
+	if err := claim.Release(ctx); err != nil {
 		h.logUnsettled(r, scope, "release", err)
 	}
 }
 
-// logUnsettled reports a key left as its claim wrote it: "inflight" for
-// a minute, which answers the platform's retry 409 until it lapses.
+// logUnsettled reports a key left as its claim wrote it, in flight until
+// the claim lapses, which answers the platform's retry 409 until then;
+// or a key that became another request's.
 func (h *Handler) logUnsettled(
 	r *http.Request, scope, action string, err error,
 ) {
 	h.log.ErrorContext(r.Context(), "acp: idempotency key not settled",
 		slog.String("scope", scope), slog.String("action", action),
 		slog.String("error", err.Error()))
+}
+
+// saveFailed answers a session that could not be stored: one that
+// another request stored meanwhile is to be sent again, like a busy one.
+func saveFailed(w http.ResponseWriter, err error) {
+	if errors.Is(err, checkout.ErrSessionChanged) {
+		writeInFlight(w, idemRetryAfter, msgSessionChanged)
+		return
+	}
+	writeUnavailable(w, "Checkout is temporarily unavailable.")
 }
 
 // --- Input mapping ---------------------------------------------------------
@@ -576,12 +592,12 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, _ := json.Marshal(req)
 
-	key, claimed, prior, handled := h.claimIdem(w, r, t.SchemaName,
+	claim, prior, handled := h.claimIdem(w, r, t.SchemaName,
 		createScope, raw)
 	if handled {
 		return
 	}
-	if !claimed {
+	if claim == nil {
 		// The response that was sent, whether or not its session lives:
 		// a replay re-executes nothing.
 		writeReplay(w, prior.Status, []byte(prior.Body))
@@ -589,7 +605,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(req.LineItems) == 0 {
-		h.releaseIdem(r, t.SchemaName, createScope, key)
+		h.releaseIdem(r, claim, createScope)
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "missing",
 			Param: "$.line_items", Message: "line_items must not be empty.",
@@ -599,7 +615,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	// Refused, not converted: amounts the platform reads as its own
 	// currency would be the store's.
 	if !strings.EqualFold(req.Currency, t.DefaultCurrency) {
-		h.releaseIdem(r, t.SchemaName, createScope, key)
+		h.releaseIdem(r, claim, createScope)
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "invalid", Param: "$.currency",
 			Message: "This store sells in " + t.DefaultCurrency + ".",
@@ -609,12 +625,12 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 
 	cart, err := h.dj.GetCart(r.Context(), t.Domain, t.DefaultLocale, "")
 	if err != nil {
-		h.releaseIdem(r, t.SchemaName, createScope, key)
+		h.releaseIdem(r, claim, createScope)
 		upstreamError(w, err)
 		return
 	}
 	if err := h.syncCart(r, t, cart.UUID, req.LineItems); err != nil {
-		h.releaseIdem(r, t.SchemaName, createScope, key)
+		h.releaseIdem(r, claim, createScope)
 		upstreamError(w, err)
 		return
 	}
@@ -627,7 +643,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		if err := checkout.ApplyDiscountCodes(
 			r.Context(), h.dj, t, s, req.Discounts.Codes,
 		); err != nil {
-			h.releaseIdem(r, t.SchemaName, createScope, key)
+			h.releaseIdem(r, claim, createScope)
 			upstreamError(w, err)
 			return
 		}
@@ -635,12 +651,12 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
 	applyFulfillment(s, req.FulfillmentDetails, nil)
 	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
-		h.releaseIdem(r, t.SchemaName, createScope, key)
+		h.releaseIdem(r, claim, createScope)
 		upstreamError(w, err)
 		return
 	}
 	if err := h.selectPayWay(r, t, s); err != nil {
-		h.releaseIdem(r, t.SchemaName, createScope, key)
+		h.releaseIdem(r, claim, createScope)
 		upstreamError(w, err)
 		return
 	}
@@ -650,18 +666,31 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	// the key, so a retry is a new create that leaves nothing behind.
 	body, ok := h.renderBody(w, r, t, s)
 	if !ok {
-		h.releaseIdem(r, t.SchemaName, createScope, key)
+		h.releaseIdem(r, claim, createScope)
 		return
 	}
-	if err := h.store.Save(r.Context(), s); err != nil {
-		h.releaseIdem(r, t.SchemaName, createScope, key)
+	if err := h.store.Create(r.Context(), s); err != nil {
+		h.releaseIdem(r, claim, createScope)
 		writeUnavailable(w, "Checkout is temporarily unavailable.")
 		return
 	}
-	h.storeIdem(r, t.SchemaName, createScope, key, idemRecord{
+	if !h.storeIdem(r, claim, createScope, idemRecord{
 		BodyHash: bodyHash(raw), Status: http.StatusCreated,
 		Body: string(body),
-	})
+	}) {
+		// The key is another create's by now, and one key answers one
+		// session: this one was never handed out, and is not kept.
+		ctx, cancel := h.settling(r)
+		defer cancel()
+		if err := h.store.Discard(ctx, s); err != nil {
+			h.log.ErrorContext(r.Context(),
+				"acp: unanswered session not discarded",
+				slog.String("session", s.ID),
+				slog.String("error", err.Error()))
+		}
+		writeInFlight(w, idemRetryAfter, msgKeyInFlight)
+		return
+	}
 	writeBody(w, http.StatusCreated, body)
 }
 
@@ -689,13 +718,13 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, _ := json.Marshal(req)
 	scope := "update:" + r.PathValue("id")
-	key, claimed, _, handled := h.claimIdem(w, r, t.SchemaName, scope, raw)
+	claim, _, handled := h.claimIdem(w, r, t.SchemaName, scope, raw)
 	if handled {
 		return
 	}
 	fail := func() {
-		if claimed {
-			h.releaseIdem(r, t.SchemaName, scope, key)
+		if claim != nil {
+			h.releaseIdem(r, claim, scope)
 		}
 	}
 	s, release, ok := h.lockSession(w, r, t, r.PathValue("id"))
@@ -704,7 +733,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	if !claimed {
+	if claim == nil {
 		h.renderReplay(w, r, t, s)
 		return
 	}
@@ -753,13 +782,15 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Recompute()
+	// The lookups above can outlast the lock, and another request may
+	// have stored the session meanwhile, a completion included: this
+	// snapshot is then not written over it.
 	if err := h.store.Save(r.Context(), s); err != nil {
 		fail()
-		writeUnavailable(w, "Checkout is temporarily unavailable.")
+		saveFailed(w, err)
 		return
 	}
-	h.storeIdem(r, t.SchemaName, scope, key,
-		idemRecord{BodyHash: bodyHash(raw)})
+	h.storeIdem(r, claim, scope, idemRecord{BodyHash: bodyHash(raw)})
 	h.render(w, r, t, s)
 }
 
@@ -793,18 +824,18 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	scope := "complete:" + s.ID
-	key, claimed, _, handled := h.claimIdem(w, r, t.SchemaName, scope, raw)
+	claim, _, handled := h.claimIdem(w, r, t.SchemaName, scope, raw)
 	if handled {
 		return
 	}
-	if !claimed {
+	if claim == nil {
 		// A replayed key re-renders whatever the first attempt produced.
 		h.renderReplay(w, r, t, s)
 		return
 	}
 
 	if req.PaymentData == nil {
-		h.releaseIdem(r, t.SchemaName, scope, key)
+		h.releaseIdem(r, claim, scope)
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "missing",
 			Param: "$.payment_data", Message: "payment_data is required.",
@@ -818,7 +849,7 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	// works here.
 	if req.PaymentData.HandlerID != "" ||
 		len(req.PaymentData.Instrument) > 0 {
-		h.releaseIdem(r, t.SchemaName, scope, key)
+		h.releaseIdem(r, claim, scope)
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "unsupported",
 			Message: "Delegated card payment is not supported. To pay " +
@@ -837,30 +868,29 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	// The buyer this call submitted is the latest word whether or not
 	// the call places the order. It is stored now, because a refused
 	// completion stores nothing: a later complete that omits the buyer
-	// would otherwise place the order for the one before. No Django call
-	// sits between the load and this save, so the lock still holds. The
-	// pay way is not part of it: it is looked up again on every call.
+	// would otherwise place the order for the one before. The pay way is
+	// not part of it: it is looked up again on every call.
 	if s.Open() && (s.Buyer != buyer || s.Status != status) {
 		if err := h.store.Save(r.Context(), s); err != nil {
-			h.releaseIdem(r, t.SchemaName, scope, key)
-			writeUnavailable(w, "Checkout is temporarily unavailable.")
+			h.releaseIdem(r, claim, scope)
+			saveFailed(w, err)
 			return
 		}
 	}
 	// Readiness first, and it needs no pay way on ACP. Without a delivery no
 	// pay way can be chosen, which says nothing about what the store offers.
 	if s.Status == checkout.StatusIncomplete {
-		h.releaseIdem(r, t.SchemaName, scope, key)
+		h.releaseIdem(r, claim, scope)
 		h.completeError(w, s, checkout.ErrNotReady)
 		return
 	}
 	if err := h.selectPayWay(r, t, s); err != nil {
-		h.releaseIdem(r, t.SchemaName, scope, key)
+		h.releaseIdem(r, claim, scope)
 		upstreamError(w, err)
 		return
 	}
 	if s.PayWayID == 0 {
-		h.releaseIdem(r, t.SchemaName, scope, key)
+		h.releaseIdem(r, claim, scope)
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "unsupported",
 			Message: "This store has no agent-completable payment " +
@@ -872,9 +902,12 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	record := idemRecord{BodyHash: bodyHash(raw)}
 	placement, err := h.flow.Complete(r.Context(), t, s)
 	if placement == checkout.NothingPlaced {
-		h.releaseIdem(r, t.SchemaName, scope, key)
+		h.releaseIdem(r, claim, scope)
 	} else {
-		h.storeIdem(r, t.SchemaName, scope, key, record)
+		// A claim that lapsed changes nothing in the answer: what this
+		// call did about the order stands, and the session says so to
+		// whoever holds the key now.
+		h.storeIdem(r, claim, scope, record)
 	}
 	if err != nil {
 		h.completeError(w, s, err)
@@ -903,41 +936,41 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scope := "cancel:" + r.PathValue("id")
-	key, claimed, _, handled := h.claimIdem(w, r, t.SchemaName, scope,
+	claim, _, handled := h.claimIdem(w, r, t.SchemaName, scope,
 		[]byte(r.PathValue("id")))
 	if handled {
 		return
 	}
 	s, release, ok := h.lockSession(w, r, t, r.PathValue("id"))
 	if !ok {
-		if claimed {
-			h.releaseIdem(r, t.SchemaName, scope, key)
+		if claim != nil {
+			h.releaseIdem(r, claim, scope)
 		}
 		return
 	}
 	defer release()
 
-	if !claimed {
+	if claim == nil {
 		h.renderReplay(w, r, t, s)
 		return
 	}
 	if s.Status == checkout.StatusCompleteInProgress {
-		h.releaseIdem(r, t.SchemaName, scope, key)
+		h.releaseIdem(r, claim, scope)
 		h.writeCompletionPending(w, s)
 		return
 	}
 	if s.Terminal() {
-		h.releaseIdem(r, t.SchemaName, scope, key)
+		h.releaseIdem(r, claim, scope)
 		writeClosed(w, "", fmt.Sprintf("Session is already %s.", s.Status))
 		return
 	}
 	s.Status = checkout.StatusCanceled
 	if err := h.store.Save(r.Context(), s); err != nil {
-		h.releaseIdem(r, t.SchemaName, scope, key)
-		writeUnavailable(w, "Checkout is temporarily unavailable.")
+		h.releaseIdem(r, claim, scope)
+		saveFailed(w, err)
 		return
 	}
-	h.storeIdem(r, t.SchemaName, scope, key, idemRecord{
+	h.storeIdem(r, claim, scope, idemRecord{
 		BodyHash: bodyHash([]byte(r.PathValue("id"))),
 	})
 	h.render(w, r, t, s)
@@ -1001,6 +1034,8 @@ func (h *Handler) completeError(
 		h.sessionError(w, err)
 	case errors.Is(err, checkout.ErrLocked):
 		writeInFlight(w, idemRetryAfter, msgSessionBusy)
+	case errors.Is(err, checkout.ErrSessionChanged):
+		saveFailed(w, err)
 	case errors.Is(err, checkout.ErrNotReady):
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "missing",
