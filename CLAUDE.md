@@ -214,8 +214,10 @@ passes.
       never by a plain resolve: a Django failure on a route that needs
       no credential logs only the stale config's warning. The
       middleware does not log a remembered failure again. The result is
-      one Django call and at most one error line per host per pod per
-      negative TTL.
+      one Django call and at most one error line per decision. A resolve
+      and a top-up each decide at most once per host per pod per negative
+      TTL, and a resolve that meets the outage while a top-up's answer
+      is remembered decides again.
     - It never replaces the entry's tenant, which stays the freshest
       config Django, Redis or the stale-if-error path gave. The other
       routes serve that config, without credentials. The held answer
