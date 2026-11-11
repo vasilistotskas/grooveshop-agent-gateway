@@ -1129,7 +1129,7 @@ func TestUCPEndToEnd(t *testing.T) {
 			})
 			require.True(t, res.IsError)
 			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
-				"did not confirm whether the order was placed")
+				"never confirmed whether this checkout's order was placed")
 
 			// Upstream recovers; a retry under a NEW key must still not
 			// place the order a second time.
