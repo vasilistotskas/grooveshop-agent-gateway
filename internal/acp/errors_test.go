@@ -393,3 +393,16 @@ func TestWriteClosedNamesTheAllowedMethods(t *testing.T) {
 		assert.Equal(t, []string{allow}, values)
 	}
 }
+
+// A session no record is stored for may have placed an order: the 404
+// says so, and what to check before another session is created.
+func TestAMissingSessionMayHavePlacedAnOrder(t *testing.T) {
+	h := testHandler(t, unreachableRedis(t))
+	rec := httptest.NewRecorder()
+
+	h.sessionError(rec, fmt.Errorf("load: %w", checkout.ErrNotFound))
+
+	body := specError(t, rec, http.StatusNotFound, "not_found")
+	assert.Contains(t, body["message"], "an order may exist")
+	assert.Contains(t, body["message"], "before creating another session")
+}

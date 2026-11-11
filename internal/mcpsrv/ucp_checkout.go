@@ -417,6 +417,21 @@ func (h *handlers) settleCompletion(
 	}
 }
 
+// errCheckoutGone answers a checkout id no session is stored for. The id
+// does not say why: the checkout was never completed and expired, it
+// placed an order and its session is no longer kept, or the id is wrong.
+// So the answer never says only to start another: an agent that did
+// would order a second time in the second case.
+var errCheckoutGone = errors.New(
+	"that checkout no longer exists here. It may never have been " +
+		"completed, it may have placed an order whose checkout is no " +
+		"longer kept, or the id may be wrong, so an order may exist: " +
+		"do not start another checkout before checking. If you hold " +
+		"its order id, read the order with get_order or track_order; " +
+		"if not, ask the shopper for the store's order confirmation. " +
+		"Only if it was never completed, start a new one with " +
+		"create_checkout")
+
 // errCheckoutUnavailable answers a checkout store (Redis) that could not
 // be read or written: the sessions, their locks and completion claims,
 // and the order links.
@@ -492,9 +507,7 @@ func (h *handlers) lockedSession(
 	if err != nil {
 		release()
 		if errors.Is(err, checkout.ErrNotFound) {
-			return nil, nil, errors.New(
-				"that checkout no longer exists; start a new one with " +
-					"create_checkout")
+			return nil, nil, errCheckoutGone
 		}
 		return nil, nil, errCheckoutUnavailable
 	}
@@ -593,9 +606,7 @@ func (h *handlers) getCheckout(
 	s, err := h.deps.Checkout.Load(ctx, t.SchemaName, in.ID)
 	if err != nil {
 		if errors.Is(err, checkout.ErrNotFound) {
-			return nil, zero, errors.New(
-				"that checkout no longer exists; start a new one with " +
-					"create_checkout")
+			return nil, zero, errCheckoutGone
 		}
 		return nil, zero, errCheckoutUnavailable
 	}
