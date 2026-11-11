@@ -1,6 +1,10 @@
 package django
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+)
 
 // DTOs are hand-written and hold only the fields the gateway consumes —
 // unknown upstream fields are ignored by encoding/json, and a missing one
@@ -518,6 +522,38 @@ type TenantConfig struct {
 	// on /acp/*. Like ChatAPIKey it arrives only on internally
 	// authenticated resolves; empty means no platform is enrolled.
 	ACPBearerToken string `json:"acpBearerToken" contract:"undocumented"`
+}
+
+// tenantResolve is the tenant/resolve body: the config, and whether Django
+// recognised the caller's X-Internal-Token. Django adds chatApiKey and
+// acpBearerToken, possibly empty, only then (grooveshop-django-api
+// tenant/views.py, tenant_resolve), so their presence is the answer. The
+// flag is unexported and lives beside TenantConfig, never in it: the
+// cached shape and the contract stay what they are.
+type tenantResolve struct {
+	TenantConfig
+	recognised bool
+}
+
+func (r *tenantResolve) UnmarshalJSON(b []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	if err := dec.Decode(&r.TenantConfig); err != nil {
+		return err
+	}
+	var keys struct {
+		Chat *json.RawMessage `json:"chatApiKey"`
+		ACP  *json.RawMessage `json:"acpBearerToken"`
+	}
+	if err := json.Unmarshal(b, &keys); err != nil {
+		return err
+	}
+	if (keys.Chat == nil) != (keys.ACP == nil) {
+		return errors.New("tenant/resolve sent one credential key " +
+			"without the other")
+	}
+	r.recognised = keys.Chat != nil
+	return nil
 }
 
 // StoreFeatures is the part of TenantConfig.features the gateway reads:

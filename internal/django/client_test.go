@@ -52,7 +52,7 @@ func TestResolveTenantDecodesFixture(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	cfg, err := c.ResolveTenant(context.Background(), "shop.example.test")
+	cfg, _, err := c.ResolveTenant(context.Background(), "shop.example.test")
 	require.NoError(t, err)
 
 	assert.Equal(t, "https", gotProto)
@@ -72,6 +72,58 @@ func TestResolveTenantDecodesFixture(t *testing.T) {
 	assert.Equal(t, "acp-bearer-demostore-fixture", cfg.ACPBearerToken)
 }
 
+// Django adds both credential keys, possibly empty, only for a caller whose
+// X-Internal-Token it recognises (tenant/views.py); their presence is what
+// tells the gateway it was recognised.
+func TestResolveTenantReportsWhetherDjangoRecognisedTheGateway(t *testing.T) {
+	cases := []struct {
+		name, body string
+		recognised bool
+	}{
+		{"keys with values", `{"schemaName": "demostore",
+			"chatApiKey": "sk", "acpBearerToken": "acp"}`, true},
+		{"keys present, empty", `{"schemaName": "demostore",
+			"chatApiKey": "", "acpBearerToken": ""}`, true},
+		{"no keys", `{"schemaName": "demostore"}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(
+				func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(tc.body))
+				}))
+			defer srv.Close()
+
+			cfg, recognised, err := newTestClient(t, srv.URL).
+				ResolveTenant(t.Context(), "shop.example.test")
+			require.NoError(t, err)
+			assert.Equal(t, tc.recognised, recognised)
+			assert.Equal(t, "demostore", cfg.SchemaName)
+		})
+	}
+}
+
+// Django always adds the two keys together: one without the other is a
+// body the gateway cannot read, not a half-recognised caller.
+func TestResolveTenantRefusesOneCredentialKeyAlone(t *testing.T) {
+	for _, body := range []string{
+		`{"schemaName": "demostore", "chatApiKey": "sk"}`,
+		`{"schemaName": "demostore", "acpBearerToken": ""}`,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(
+			func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+		_, _, err := newTestClient(t, srv.URL).
+			ResolveTenant(t.Context(), "shop.example.test")
+		srv.Close()
+		require.Error(t, err, body)
+		assert.Contains(t, err.Error(), "one credential key", body)
+	}
+}
+
 func TestResolveTenantNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, _ *http.Request) {
@@ -82,7 +134,7 @@ func TestResolveTenantNotFound(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, err := c.ResolveTenant(context.Background(), "nope.example.test")
+	_, _, err := c.ResolveTenant(context.Background(), "nope.example.test")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrNotFound)
 
@@ -105,7 +157,7 @@ func TestGetRetriesServerErrors(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	cfg, err := c.ResolveTenant(context.Background(), "shop.example.test")
+	cfg, _, err := c.ResolveTenant(context.Background(), "shop.example.test")
 	require.NoError(t, err)
 	assert.Equal(t, int32(3), calls.Load())
 	assert.Equal(t, "demostore", cfg.SchemaName)
@@ -121,7 +173,7 @@ func TestGetDoesNotRetryClientErrors(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, err := c.ResolveTenant(context.Background(), "shop.example.test")
+	_, _, err := c.ResolveTenant(context.Background(), "shop.example.test")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrValidation)
 	assert.Equal(t, int32(1), calls.Load())
@@ -135,7 +187,7 @@ func TestGetPersistentServerErrorWrapsUpstreamDown(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, err := c.ResolveTenant(context.Background(), "shop.example.test")
+	_, _, err := c.ResolveTenant(context.Background(), "shop.example.test")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUpstreamDown)
 }
@@ -143,7 +195,7 @@ func TestGetPersistentServerErrorWrapsUpstreamDown(t *testing.T) {
 func TestConnectionRefusedWrapsUpstreamDown(t *testing.T) {
 	c := New("http://127.0.0.1:1/api/v1", "api.example.test", "test-secret",
 		200*time.Millisecond, testLogger(), nil)
-	_, err := c.ResolveTenant(context.Background(), "shop.example.test")
+	_, _, err := c.ResolveTenant(context.Background(), "shop.example.test")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUpstreamDown)
 }

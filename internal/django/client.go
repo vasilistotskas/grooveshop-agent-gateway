@@ -99,10 +99,15 @@ func (c *Client) Ping(ctx context.Context) error {
 // the only host-unscoped call: the platform API host satisfies Django's
 // ALLOWED_HOSTS check while the domain being resolved rides the query.
 // The internal secret authenticates the gateway so Django includes the
-// tenant's secret fields (chatApiKey) that public callers never see.
-func (c *Client) ResolveTenant(ctx context.Context, domain string) (*TenantConfig, error) {
-	var out TenantConfig
-	err := c.get(ctx, request{
+// tenant's credential fields (chatApiKey, acpBearerToken) that public
+// callers never see. recognised reports whether it did: a secret Django
+// does not hold gets the public body, whose empty credentials are not the
+// store's.
+func (c *Client) ResolveTenant(
+	ctx context.Context, domain string,
+) (cfg *TenantConfig, recognised bool, err error) {
+	var out tenantResolve
+	err = c.get(ctx, request{
 		path:    "/tenant/resolve",
 		host:    c.publicHost,
 		query:   url.Values{"domain": {domain}},
@@ -110,9 +115,9 @@ func (c *Client) ResolveTenant(ctx context.Context, domain string) (*TenantConfi
 		out:     &out,
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return &out, nil
+	return &out.TenantConfig, out.recognised, nil
 }
 
 // get performs a GET with bounded retries (retryable). Only GETs are
