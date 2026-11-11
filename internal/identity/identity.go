@@ -49,7 +49,7 @@ func FromContext(ctx context.Context) (*Linked, bool) {
 
 // NewShopperVerifier verifies shoppers' bearers against /agent/me.
 func NewShopperVerifier(
-	dj *django.Client,
+	dj *django.Client, log *slog.Logger,
 ) *Verifier[*django.AgentProfile] {
 	return NewVerifier(func(
 		ctx context.Context, t *tenant.Tenant, token string,
@@ -62,7 +62,7 @@ func NewShopperVerifier(
 			return nil, nil
 		}
 		return profile, err
-	})
+	}, log)
 }
 
 // Middleware validates an optional Authorization: Bearer header. Runs

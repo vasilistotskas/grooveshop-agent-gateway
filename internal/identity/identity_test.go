@@ -63,7 +63,7 @@ func newHarness(
 	srv := fakeDjango(t, &hits)
 	dj := django.New(srv.URL+"/api/v1", "api.example.test", "s",
 		2*time.Second, testLogger(), nil)
-	return NewShopperVerifier(dj), &hits, srv.Close
+	return NewShopperVerifier(dj, testLogger()), &hits, srv.Close
 }
 
 func TestVerifyValidTokenReturnsProfile(t *testing.T) {
@@ -220,6 +220,37 @@ func TestVerifyDoesNotReuseVerdictAcrossTenants(t *testing.T) {
 	_, err = v.Verify(t.Context(), testTenant(), "good")
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), hits.Load(), "same-tenant repeat should hit cache")
+}
+
+// One token at two stores is two verdicts: Django binds a shopper's
+// token to the store that issued it, and answers 401 at any other.
+func TestVerifyKeepsEachStoresVerdict(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			if r.Header.Get("X-Forwarded-Host") != testTenant().Domain {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="agent"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"detail":"Invalid target resource."}`))
+				return
+			}
+			_, _ = w.Write([]byte(profileJSON))
+		}))
+	defer srv.Close()
+	v := NewShopperVerifier(django.New(srv.URL+"/api/v1",
+		"api.example.test", "s", 2*time.Second, testLogger(), nil),
+		testLogger())
+
+	for range 2 {
+		profile, err := v.Verify(t.Context(), testTenant(), "good")
+		require.NoError(t, err)
+		assert.Equal(t, int64(7), profile.ID)
+		_, err = v.Verify(t.Context(), otherTenant(), "good")
+		require.ErrorIs(t, err, ErrInvalidToken)
+	}
+	assert.Equal(t, int64(2), hits.Load(), "one probe per store")
 }
 
 // The negative direction: a token rejected at one store must not mark

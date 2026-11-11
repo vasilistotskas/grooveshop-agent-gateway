@@ -5,12 +5,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -46,14 +50,18 @@ type cacheEntry[P any] struct {
 // the verdicts. Both MCP servers use one: the shoppers' /mcp with
 // /agent/me, the store team's /mcp/admin with /agent/staff/me.
 type Verifier[P any] struct {
-	probe Probe[P]
+	probe  Probe[P]
+	log    *slog.Logger
+	flight singleflight.Group
 
 	mu    sync.Mutex
 	cache map[string]cacheEntry[P]
 }
 
-func NewVerifier[P any](probe Probe[P]) *Verifier[P] {
-	return &Verifier[P]{probe: probe, cache: map[string]cacheEntry[P]{}}
+func NewVerifier[P any](probe Probe[P], log *slog.Logger) *Verifier[P] {
+	return &Verifier[P]{
+		probe: probe, log: log, cache: map[string]cacheEntry[P]{},
+	}
 }
 
 // Verify returns what the probe said about token at t: the profile, or
@@ -75,33 +83,69 @@ func (v *Verifier[P]) Verify(
 	)
 	key := hex.EncodeToString(sum[:])
 
-	v.mu.Lock()
-	entry, hit := v.cache[key]
-	v.mu.Unlock()
-	if !hit || !time.Now().Before(entry.expires) {
-		profile, err := v.probe(ctx, t, token)
-		entry = cacheEntry[P]{expires: time.Now().Add(cacheTTL)}
-		switch {
-		case err == nil:
-			entry.profile = profile
-		case errors.Is(err, django.ErrUnauthorized):
-			entry.invalid = true
-		default:
-			var zero P
-			return zero, err
-		}
-		v.mu.Lock()
-		if len(v.cache) >= cacheMax {
-			v.cache = map[string]cacheEntry[P]{}
-		}
-		v.cache[key] = entry
-		v.mu.Unlock()
-	}
-	if entry.invalid {
-		var zero P
+	var zero P
+	entry, err := v.entry(ctx, key, t, token)
+	switch {
+	case err != nil:
+		return zero, err
+	case entry.invalid:
 		return zero, ErrInvalidToken
 	}
 	return entry.profile, nil
+}
+
+// entry is the cached verdict for key, probed when it has none or it has
+// expired. Concurrent callers for one key share one probe. The probe is
+// detached from the caller who started it, so that caller hanging up
+// fails none of the others, and stays bounded by the Django client's
+// timeout; each caller still stops waiting when its own context ends. A
+// panic in the probe is logged and returned as an error (obs.Recover).
+func (v *Verifier[P]) entry(
+	ctx context.Context, key string, t *tenant.Tenant, token string,
+) (cacheEntry[P], error) {
+	v.mu.Lock()
+	entry, hit := v.cache[key]
+	v.mu.Unlock()
+	if hit && time.Now().Before(entry.expires) {
+		return entry, nil
+	}
+	detached := context.WithoutCancel(ctx)
+	select {
+	case res := <-v.flight.DoChan(key, func() (_ any, err error) {
+		defer obs.Recover(detached, v.log, "identity: verify", &err)
+		return v.fetch(detached, key, t, token)
+	}):
+		if res.Err != nil {
+			return cacheEntry[P]{}, res.Err
+		}
+		return res.Val.(cacheEntry[P]), nil
+	case <-ctx.Done():
+		return cacheEntry[P]{}, ctx.Err()
+	}
+}
+
+// fetch probes token at t and caches the verdict: a profile, or invalid
+// for Django's 401. Any other failure is returned and not cached.
+func (v *Verifier[P]) fetch(
+	ctx context.Context, key string, t *tenant.Tenant, token string,
+) (cacheEntry[P], error) {
+	profile, err := v.probe(ctx, t, token)
+	entry := cacheEntry[P]{expires: time.Now().Add(cacheTTL)}
+	switch {
+	case err == nil:
+		entry.profile = profile
+	case errors.Is(err, django.ErrUnauthorized):
+		entry.invalid = true
+	default:
+		return cacheEntry[P]{}, err
+	}
+	v.mu.Lock()
+	if len(v.cache) >= cacheMax {
+		v.cache = map[string]cacheEntry[P]{}
+	}
+	v.cache[key] = entry
+	v.mu.Unlock()
+	return entry, nil
 }
 
 // WriteChallenge answers 401 with the RFC 9728 challenge, which sends an

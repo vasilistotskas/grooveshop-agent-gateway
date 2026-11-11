@@ -82,12 +82,14 @@ func staffFrom(ctx context.Context) (*Staff, bool) {
 // NewVerifier verifies staff bearers against /agent/staff/me. A 404 (the
 // store switched access off) or an outage is not cached: the next call
 // asks afresh.
-func NewVerifier(dj *django.Client) *identity.Verifier[*django.StaffProfile] {
+func NewVerifier(
+	dj *django.Client, log *slog.Logger,
+) *identity.Verifier[*django.StaffProfile] {
 	return identity.NewVerifier(func(
 		ctx context.Context, t *tenant.Tenant, token string,
 	) (*django.StaffProfile, error) {
 		return dj.StaffMe(ctx, t.Domain, t.DefaultLocale, token)
-	})
+	}, log)
 }
 
 // RequireStaff refuses /mcp/admin to anyone without a valid staff bearer.

@@ -139,7 +139,7 @@ func (f *fakeDjango) serve(t *testing.T) *django.Client {
 // stack is /mcp/admin as routes.go mounts it, with the tenant already
 // resolved.
 func stack(dj *django.Client, tn *tenant.Tenant) http.Handler {
-	inner := RequireStaff(NewVerifier(dj), quietLog())(
+	inner := RequireStaff(NewVerifier(dj, quietLog()), quietLog())(
 		Handler(Deps{Django: dj, Log: quietLog(), Version: "test"}))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		inner.ServeHTTP(w, r.WithContext(tenant.NewContext(r.Context(), tn)))
@@ -187,7 +187,7 @@ func TestAnAnonymousCallIsChallengedWithEveryReadScope(t *testing.T) {
 func TestAnInvalidTokenIsChallengedAndTheVerdictCachedPerStore(t *testing.T) {
 	f := &fakeDjango{}
 	dj := f.serve(t)
-	v := NewVerifier(dj)
+	v := NewVerifier(dj, quietLog())
 	ctx := context.Background()
 
 	for range 2 {
@@ -212,6 +212,44 @@ func TestAnInvalidTokenIsChallengedAndTheVerdictCachedPerStore(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.Contains(t, rec.Header().Get("WWW-Authenticate"),
 		`error="invalid_token"`)
+}
+
+// One token at two stores is two verdicts: Django binds a staff token to
+// one store, and answers 401 for it at any other.
+func TestAStaffVerdictForOneStoreIsNotAnothersVerdict(t *testing.T) {
+	var acmeCalls, alphaCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("X-Forwarded-Host") != "shop.acme.test" {
+				alphaCalls.Add(1)
+				// The token was bound to acme: the other store refuses it.
+				w.Header().Set("WWW-Authenticate",
+					`Bearer realm="agent-staff"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"detail":"Invalid target resource."}`))
+				return
+			}
+			acmeCalls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"email":"owner@acme.test",` +
+				`"role":"owner","roleDisplay":"Owner","storeName":"Acme",` +
+				`"storeDomain":"shop.acme.test","scopes":[]}`))
+		}))
+	t.Cleanup(srv.Close)
+	v := NewVerifier(django.New(srv.URL+"/api/v1", "api.acme.test",
+		"secret", 5*time.Second, quietLog(), obs.NewMetrics()), quietLog())
+	alpha := acme()
+	alpha.SchemaName, alpha.Domain = "alpha", "shop.alpha.test"
+
+	for range 2 {
+		profile, err := v.Verify(t.Context(), acme(), goodToken)
+		require.NoError(t, err)
+		assert.Equal(t, "owner@acme.test", profile.Email)
+		_, err = v.Verify(t.Context(), alpha, goodToken)
+		require.ErrorIs(t, err, identity.ErrInvalidToken)
+	}
+	assert.EqualValues(t, 1, acmeCalls.Load(), "acme's verdict is cached")
+	assert.EqualValues(t, 1, alphaCalls.Load(), "alpha's verdict is cached")
 }
 
 func TestEveryToolOnlyReads(t *testing.T) {
