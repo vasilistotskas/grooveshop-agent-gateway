@@ -24,9 +24,9 @@ return redis.call('GET', KEYS[1])
 
 // settleScript puts ARGV[2] in KEYS[1] for ARGV[3] ms while the key
 // holds the marker ARGV[1], or nothing: a claim that lapsed with no one
-// after it. It returns 1 when the key holds ARGV[2], from this run or
-// from one whose reply was lost, and 0 when the key is another
-// request's.
+// after it. It returns 1 when the key holds ARGV[2] (from this run, from
+// one whose reply was lost, or settled alike by another request), and 0
+// when the key is another request's and holds something else.
 var settleScript = redis.NewScript(`
 local held = redis.call('GET', KEYS[1])
 if held == ARGV[2] then

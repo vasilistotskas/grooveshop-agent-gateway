@@ -371,12 +371,16 @@ passes.
   holder may still be working, because Django can take longer than any
   of them lasts. So nothing rests on one:
   - **A session is stored by compare-and-set** (`checkout.Store`,
-    `saveScript`). `Session.Version` counts its saves; `Store.Save`
-    writes only over the version the request loaded, and answers
-    `ErrSessionChanged`, having written nothing, when another request
-    stored the session since or it is gone. `Store.Create` writes only
-    where no session is. There is no unconditional write of a session
-    (a placed one past its lifetime is deleted).
+    `saveScript`). Every save gives the session a new random
+    `Session.Revision`; `Store.Save` writes only over the revision the
+    request loaded, and answers `ErrSessionChanged`, having written
+    nothing, when another request stored the session since or it is
+    gone. `Store.Create` writes only where no session is. There is no
+    unconditional write of a session (a placed one past its lifetime
+    is deleted). The revision is random, not a counter or a time: two
+    requests that read one state and save in the same clock tick would
+    otherwise write the same bytes, and neither could tell its own
+    write from the other's.
   - **The in-progress save is the fence.** `Flow.Complete` sends
     `POST /order` only after its save of `complete_in_progress` was
     accepted, so of all the completions that loaded one ready session,
@@ -404,7 +408,7 @@ passes.
     holder.
   - go-redis sends a command again when its reply was lost, so each
     script reports its own earlier run as done: a claim finds its own
-    token, a save or a settle finds exactly what it wrote.
+    token, a save its own revision, a settle the value it wrote.
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before

@@ -82,7 +82,7 @@ func NewStore(rdb *redis.Client, upstreamTimeout time.Duration) *Store {
 }
 
 // sessionKey is versioned with how sessions are written. v2 sessions
-// carry a version and are stored only by compare-and-set; a pod that
+// carry a revision and are stored only by compare-and-set; a pod that
 // writes them unconditionally (v1) must never share one with a pod that
 // does not, so neither reads the other's.
 func sessionKey(schema, id string) string {
@@ -133,31 +133,32 @@ func (st *Store) Load(ctx context.Context, schema, id string) (*Session, error) 
 	return &s, nil
 }
 
-// saveScript stores the session ARGV[2] in KEYS[1] for ARGV[3] ms while
-// the stored session's version is still ARGV[1], and returns 1. No
-// stored session counts as version 0, which only a session never stored
-// has. Otherwise it writes nothing and returns 0. go-redis sends a
-// command again when its reply was lost: the second run finds exactly
-// what the first stored, and reports it stored.
+// saveScript stores the session ARGV[3], whose revision is ARGV[2], in
+// KEYS[1] for ARGV[4] ms while the stored session's revision is still
+// ARGV[1], and returns 1. No stored session counts as revision "",
+// which only a session never stored has. Otherwise it writes nothing
+// and returns 0. go-redis sends a command again when its reply was
+// lost: the second run finds the revision the first one stored, which
+// no other save can have written, and reports it stored.
 var saveScript = redis.NewScript(`
 local stored = redis.call('GET', KEYS[1])
-if stored == ARGV[2] then
+local revision = ''
+if stored then
+  revision = cjson.decode(stored).revision
+end
+if revision == ARGV[2] then
   return 1
 end
-local version = 0
-if stored then
-  version = cjson.decode(stored).version
-end
-if version ~= tonumber(ARGV[1]) then
+if revision ~= ARGV[1] then
   return 0
 end
-redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])
+redis.call('SET', KEYS[1], ARGV[3], 'PX', ARGV[4])
 return 1
 `)
 
 // Create stores a session that was never stored.
 func (st *Store) Create(ctx context.Context, s *Session) error {
-	return st.put(ctx, s, 0)
+	return st.put(ctx, s, "")
 }
 
 // Save stores s over the stored session it was loaded as, and only over
@@ -166,14 +167,14 @@ func (st *Store) Create(ctx context.Context, s *Session) error {
 // ErrSessionChanged. Whether the caller still holds the session lock
 // plays no part.
 func (st *Store) Save(ctx context.Context, s *Session) error {
-	return st.put(ctx, s, s.Version)
+	return st.put(ctx, s, s.Revision)
 }
 
-// put stores s as the version after stored, while stored is the version
-// Redis holds.
-func (st *Store) put(ctx context.Context, s *Session, stored int64) error {
+// put stores s under a new revision, while stored is the revision Redis
+// holds.
+func (st *Store) put(ctx context.Context, s *Session, stored string) error {
 	next := *s
-	next.Version = stored + 1
+	next.Revision = uuid.NewString()
 	next.UpdatedAt = time.Now().UTC()
 	key := sessionKey(s.Schema, s.ID)
 	ttl := next.ttl(next.UpdatedAt).Milliseconds()
@@ -190,14 +191,14 @@ func (st *Store) put(ctx context.Context, s *Session, stored int64) error {
 		return fmt.Errorf("checkout: encode: %w", err)
 	}
 	written, err := saveScript.Run(ctx, st.rdb, []string{key},
-		stored, raw, ttl).Int()
+		stored, next.Revision, raw, ttl).Int()
 	if err != nil {
 		return fmt.Errorf("checkout: save: %w", err)
 	}
 	if written != 1 {
 		return ErrSessionChanged
 	}
-	s.Version, s.UpdatedAt = next.Version, next.UpdatedAt
+	s.Revision, s.UpdatedAt = next.Revision, next.UpdatedAt
 	return nil
 }
 

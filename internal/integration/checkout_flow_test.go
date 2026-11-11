@@ -314,7 +314,9 @@ func TestCompleteLosesToASessionStoredSinceItLoadedIt(t *testing.T) {
 
 // However many completions run at once on one session, with no lock and
 // no key between them, one order is sent: Redis lets one of them mark
-// the session in progress, and every other one has placed nothing.
+// the session in progress, and every other one has placed nothing. They
+// all read the same state and save within the same instant, so their
+// writes differ in nothing but the revision each gives its own.
 func TestCompletesAtOncePlaceOneOrder(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
 	ctx := context.Background()
@@ -323,7 +325,7 @@ func TestCompletesAtOncePlaceOneOrder(t *testing.T) {
 		placement checkout.Placement
 		err       error
 	}
-	const racers = 8
+	const racers = 16
 	start := make(chan struct{})
 	outcomes := make(chan outcome, racers)
 	for range racers {

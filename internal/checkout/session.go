@@ -105,11 +105,13 @@ type Session struct {
 	// webhook payload permalinks render without a tenant lookup.
 	Domain string `json:"domain"`
 
-	// Version counts the times the session was stored. Store.Save
-	// writes only over the version it read, so a request holding an
-	// older one cannot write. A counter and not UpdatedAt: two pods'
-	// clocks can stamp two saves alike.
-	Version int64 `json:"version"`
+	// Revision names one stored state of the session: every save gives
+	// it a new random one. Store.Save writes only over the revision it
+	// read, so a request holding an older state cannot write. Not
+	// UpdatedAt, and not a counter: two requests that read one state
+	// and save in the same clock tick would write the same bytes, and
+	// each would take the other's write for its own.
+	Revision string `json:"revision"`
 
 	Status Status `json:"status"`
 	CartID string `json:"cartId"`

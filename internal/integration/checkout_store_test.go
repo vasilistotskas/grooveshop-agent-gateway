@@ -128,12 +128,12 @@ func TestSaveWritesOnlyOverTheSessionItRead(t *testing.T) {
 		// The winner keeps writing, each save over its own last one.
 		first.Buyer.Phone = "+306900000000"
 		require.NoError(t, store.Save(ctx, first))
-		assert.Equal(t, first.Version, load(t, s).Version)
+		assert.Equal(t, first.Revision, load(t, s).Revision)
 	})
 
 	// Saves in one clock tick, or stamped by two pods' clocks, would look
-	// alike by time. The version tells them apart.
-	t.Run("a session is told apart by its version, not its time",
+	// alike by time. The revision tells them apart.
+	t.Run("a session is told apart by its revision, not its time",
 		func(t *testing.T) {
 			s := newSession()
 			require.NoError(t, store.Create(ctx, s))
@@ -141,7 +141,7 @@ func TestSaveWritesOnlyOverTheSessionItRead(t *testing.T) {
 			require.NoError(t, store.Save(ctx, load(t, s)))
 			// The later save, stamped with the stale one's time.
 			stored := load(t, s)
-			require.NotEqual(t, stale.Version, stored.Version)
+			require.NotEqual(t, stale.Revision, stored.Revision)
 			stored.UpdatedAt = stale.UpdatedAt
 			raw, err := json.Marshal(stored)
 			require.NoError(t, err)
@@ -204,7 +204,7 @@ func TestACommandSentTwiceIsAnsweredAsDone(t *testing.T) {
 		require.NoError(t, err, "save")
 		stored, err := store.Load(ctx, s.Schema, s.ID)
 		require.NoError(t, err)
-		assert.Equal(t, s.Version, stored.Version)
+		assert.Equal(t, s.Revision, stored.Revision)
 		assert.Equal(t, "saved@example.test", stored.Buyer.Email)
 	})
 
