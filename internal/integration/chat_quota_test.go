@@ -90,6 +90,27 @@ func TestChatVisitorDailyCapIsPerVisitorAndRefusalsAreFree(t *testing.T) {
 	assert.EqualValues(t, 2, fake.calls.Load())
 }
 
+// An IPv6 visitor is their /64: another address inside it spends the
+// same daily cap, and the next /64 is another visitor.
+func TestChatVisitorDailyCapCountsAnIPv6VisitorBy64(t *testing.T) {
+	fake := &fakeChatAPI{scripts: []string{
+		textTurnSSE("ένα"), textTurnSSE("δύο"),
+	}}
+	gw := startChatGateway(t, fake, func(c *config.Config) {
+		c.ChatVisitorTurnsPerDay = 1
+		c.ChatStoreTurnsPerHour = 3
+	})
+
+	status, _ := postChatFrom(t, gw.URL, "2001:db8:1:2::1")
+	assert.Equal(t, http.StatusOK, status)
+	status, _ = postChatFrom(t, gw.URL, "2001:db8:1:2:aaaa::2")
+	assert.Equal(t, http.StatusTooManyRequests, status)
+
+	status, _ = postChatFrom(t, gw.URL, "2001:db8:1:3::1")
+	assert.Equal(t, http.StatusOK, status)
+	assert.EqualValues(t, 2, fake.calls.Load())
+}
+
 // A request rejected for its conversation (a forged id) spends nothing,
 // so it cannot be used to lock a visitor or a store out.
 func TestChatRejectedConversationSpendsNoQuota(t *testing.T) {

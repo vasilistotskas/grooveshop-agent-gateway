@@ -3,6 +3,7 @@ package httpmw
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -118,11 +119,34 @@ func limiterKey(r *http.Request) string {
 	if host == "" {
 		host = "-"
 	}
-	return host + "|" + ClientIP(r)
+	return host + "|" + ClientBucket(r)
 }
 
-// ClientIP resolves the caller for rate-limit bucketing from the one
-// header Traefik vouches for: X-Forwarded-For.
+// ipv6BucketBits is the prefix that names one IPv6 caller: a subscriber
+// line is assigned a /64 at least (RFC 6177), and its hosts pick their
+// own addresses inside it (RFC 8981).
+const ipv6BucketBits = 64
+
+// ClientBucket names the caller for the budgets kept per caller: the
+// per-pod rate limiter and the chat's daily visitor quota. An IPv4 caller
+// is its address, and so is one written as IPv4-mapped IPv6; an IPv6
+// caller is its /64, in canonical form ("2001:db8:1:2::/64"). A hop that
+// is not an address, which only a caller skipping Traefik can send, is
+// its own bucket.
+func ClientBucket(r *http.Request) string {
+	ip := clientIP(r)
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	if addr = addr.Unmap(); addr.Is4() {
+		return addr.String()
+	}
+	return netip.PrefixFrom(addr, ipv6BucketBits).Masked().String()
+}
+
+// clientIP resolves the caller's address from the one header Traefik
+// vouches for: X-Forwarded-For.
 //
 // Traefik deletes X-Forwarded-For from every peer outside Cloudflare's
 // published ranges (forwardedHeaders.trustedIPs), then appends its own TCP
@@ -144,7 +168,7 @@ func limiterKey(r *http.Request) string {
 //
 // Without the header (in-cluster callers that skip Traefik) the socket
 // address is the caller.
-func ClientIP(r *http.Request) string {
+func clientIP(r *http.Request) string {
 	var hops []string
 	for _, value := range r.Header.Values("X-Forwarded-For") {
 		for hop := range strings.SplitSeq(value, ",") {
