@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -44,14 +44,22 @@ const (
 	testACPBearer = "acp-test-do-not-cache"
 )
 
-// withSecrets adds the credential fields to a tenant/resolve body.
-func withSecrets(body, chatKey, acpBearer string) string {
+// resolveBody is demostoreJSON with the fields of set replaced and, for a
+// caller Django recognised, the credential fields added.
+func resolveBody(
+	set map[string]any, secrets bool, chatKey, acpBearer string,
+) string {
 	var m map[string]any
-	if err := json.Unmarshal([]byte(body), &m); err != nil {
+	if err := json.Unmarshal([]byte(demostoreJSON), &m); err != nil {
 		panic(err)
 	}
-	m["chatApiKey"] = chatKey
-	m["acpBearerToken"] = acpBearer
+	for k, v := range set {
+		m[k] = v
+	}
+	if secrets {
+		m["chatApiKey"] = chatKey
+		m["acpBearerToken"] = acpBearer
+	}
 	out, err := json.Marshal(m)
 	if err != nil {
 		panic(err)
@@ -94,8 +102,8 @@ type fakeDjango struct {
 	chatKey, acpBearer string
 	// token is the internal secret it holds, until rotateToken.
 	token string
-	// moved, when set, is the store the host now belongs to.
-	moved string
+	// public replaces fields of the public body, until set changes them.
+	public map[string]any
 	// hold, when set, parks every call until it is closed.
 	hold chan struct{}
 	srv  *httptest.Server
@@ -105,7 +113,7 @@ func newFakeDjango(t *testing.T) *fakeDjango {
 	t.Helper()
 	f := &fakeDjango{
 		chatKey: testChatKey, acpBearer: testACPBearer,
-		token: testInternalSecret,
+		token: testInternalSecret, public: map[string]any{},
 	}
 	f.srv = httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
@@ -113,7 +121,7 @@ func newFakeDjango(t *testing.T) *fakeDjango {
 			f.mu.Lock()
 			failing, gone, hold := f.fail, f.gone, f.hold
 			chatKey, acpBearer, token := f.chatKey, f.acpBearer, f.token
-			moved := f.moved
+			public := maps.Clone(f.public)
 			f.mu.Unlock()
 			if hold != nil {
 				<-hold
@@ -124,14 +132,9 @@ func newFakeDjango(t *testing.T) *fakeDjango {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			if !gone && r.URL.Query().Get("domain") == "shop.example.test" {
-				body := demostoreJSON
-				if moved != "" {
-					body = strings.Replace(body, `"demostore"`,
-						`"`+moved+`"`, 1)
-				}
-				if r.Header.Get("X-Internal-Token") == token {
-					body = withSecrets(body, chatKey, acpBearer)
-				}
+				body := resolveBody(public,
+					r.Header.Get("X-Internal-Token") == token,
+					chatKey, acpBearer)
 				_, _ = w.Write([]byte(body))
 				return
 			}
@@ -170,16 +173,16 @@ func (f *fakeDjango) reactivate() {
 	f.mu.Unlock()
 }
 
-// rotateToken changes the internal secret Django holds, as a rotation that
-// reaches Django before the gateway does.
-// moveTo gives the host to another store, as Django answers once a domain
-// moved.
-func (f *fakeDjango) moveTo(schema string) {
+// set changes a field of the store's public config in Django: its name, a
+// feature, or schemaName, which gives the host to another store.
+func (f *fakeDjango) set(field string, value any) {
 	f.mu.Lock()
-	f.moved = schema
+	f.public[field] = value
 	f.mu.Unlock()
 }
 
+// rotateToken changes the internal secret Django holds, as a rotation that
+// reaches Django before the gateway does.
 func (f *fakeDjango) rotateToken(token string) {
 	f.mu.Lock()
 	f.token = token

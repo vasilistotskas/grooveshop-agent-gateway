@@ -144,22 +144,37 @@ passes.
     tenant known for the host has the same `SchemaName`, and drops them
     for a gone store or a host that moved to another store.
   - **When Django cannot give the credentials** (down, or the token not
-    recognised), a credential caller gets the held ones marked `Stale`
-    until two `TENANT_CACHE_TTL`s after the pod fetched them
-    (`secretsUntil`), else 503 (`answerSecrets`). That answer, or the
-    failure, is remembered on the entry (`memEntry.topUp`) for the
-    negative TTL, capped at the bound: one Django call per host per pod
-    per negative TTL. It never replaces the entry's tenant, which stays
-    the freshest config Django, Redis or the stale-if-error path gave,
-    and that is what the other routes serve, without credentials.
+    recognised), the answer for credential callers is decided once, by
+    `rememberLocked`, in the same lock section as the call that found
+    out: the resolve's (`serveStale`, or an unrecognised answer in
+    `fromDjango`) or the top-up's (`answerSecrets`).
+    - The answer is the entry's current config with the held
+      credentials (`withCredentials`), marked `Stale`, until two
+      `TENANT_CACHE_TTL`s after the pod fetched them (`secretsUntil`);
+      otherwise it is the failure, wrapped in `errNoCredentials`, and
+      the route answers 503.
+    - It is remembered on the entry (`memEntry.topUp`) for the negative
+      TTL, capped at the bound, and logged once there (`logTopUp`). The
+      middleware does not log a remembered failure again. The result is
+      one Django call and one error line per host per pod per negative
+      TTL.
+    - It never replaces the entry's tenant, which stays the freshest
+      config Django, Redis or the stale-if-error path gave. The other
+      routes serve that config, without credentials, and its features
+      gate the credential routes too.
+    - A fresh recognised answer ends what was remembered.
+    - `EnsureSecrets` serves credentials only for the store the
+      caller's request resolved (`errAnotherStore`), so a caller that
+      joined a flight decided before the host moved gets nothing of the
+      old store.
   - **Rotation.** An ACP bearer rotated in Django is refused by a pod
     within one TTL while Django answers, and within two while it cannot;
     the chat key the same.
   - **Unrecognised token.** A resolve Django answered without
     recognising the gateway's internal token (a rotation that reached
     one side) is logged once at error with its cause ("Django did not
-    recognise the gateway's internal token"; the middleware does not log
-    it again) and cached as a public config, in memory and Redis, never
+    recognise the gateway's internal token") and cached as a public
+    config, in memory and Redis, never
     as a store without credentials. The plain routes serve it; the
     credential routes take the failed top-up's path above. Once Django
     recognises the token, credentials load within one negative TTL. It

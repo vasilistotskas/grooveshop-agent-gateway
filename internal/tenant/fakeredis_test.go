@@ -227,6 +227,19 @@ func (c *capturedLog) logger() *slog.Logger {
 	}))
 }
 
+// expireEntry ends the TTL of the memory entry for secretsHost and leaves its
+// remembered top-up live, as when the entry's TTL ends first. The entry
+// must exist.
+func expireEntry(t *testing.T, r *Resolver) {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.mem[secretsHost]
+	require.True(t, ok, "no memory entry for %s to expire", secretsHost)
+	e.expires = time.Now().Add(-time.Second)
+	r.mem[secretsHost] = e
+}
+
 // expireMemory ends the TTLs of the memory entry for host, its remembered
 // top-up's included, without waiting for them. The entry must exist.
 func expireMemory(t *testing.T, r *Resolver, host string) {
