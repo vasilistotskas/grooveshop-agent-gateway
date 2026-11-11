@@ -362,7 +362,12 @@ passes.
   default.
 - `internal/feeds` — one catalog sweep renders every feed, cached in
   Redis (`ag:{schema}:feed:{format}` plus `:meta`) between
-  `FEED_FRESH_TTL` and `FEED_STALE_TTL`. A failed generation is logged
+  `FEED_FRESH_TTL` and `FEED_STALE_TTL`. Each document is written an
+  item at a time into its gzip stream (`docStream`), which hashes and
+  counts it for the ETag and `Meta.Size`: no feed is ever whole and
+  uncompressed in memory, so a sweep costs the fetch window plus the
+  gzip output, about a tenth of the documents (`memory_measure_test.go`,
+  build tag `feedmem`, measures it). A failed generation is logged
   once with the request that started it, counted
   (`gateway_feed_generation_failures_total`) and marked
   (`ag:{schema}:feed:failed`, `failureBackoff`): until the mark expires
