@@ -74,7 +74,7 @@ func New(d Deps) http.Handler {
 	tenantSecretsMW := tenant.MiddlewareWithSecrets(d.Resolver, d.Log)
 
 	site := storefront.NewSite(d.Cfg.StorefrontDefaultLocale)
-	checkoutStore := checkout.NewStore(d.Redis)
+	checkoutStore := checkout.NewStore(d.Redis, d.Django.Timeout())
 	checkoutFlow := checkout.NewFlow(d.Django, checkoutStore, site, d.Log)
 	ucpBuilder := ucp.NewBuilder(
 		d.Django, d.Cfg.MediaURLTemplate, d.Cfg.AssetsHost,
@@ -167,8 +167,8 @@ func New(d Deps) http.Handler {
 	acpMW := func(h http.Handler) http.Handler {
 		return tenantSecretsMW(tenant.RequireCheckout(h))
 	}
-	acp.NewHandler(d.Django, checkoutStore, checkoutFlow, d.Redis,
-		site, d.Log).Register(mux, acpMW)
+	acp.NewHandler(d.Django, checkoutStore, checkoutFlow, site, d.Log).
+		Register(mux, acpMW)
 
 	feedSvc := feeds.NewService(d.Django, d.Redis, d.Log, d.Metrics,
 		d.Cfg.FeedImageURLTemplate, d.Cfg.AssetsHost,

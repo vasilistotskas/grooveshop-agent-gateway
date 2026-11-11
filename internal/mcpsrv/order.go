@@ -158,10 +158,16 @@ func (h *handlers) getOrder(
 	link, err := h.deps.Checkout.OrderLinkFor(ctx, t.SchemaName, in.ID)
 	if err != nil {
 		if errors.Is(err, checkout.ErrNotFound) {
+			// No link says only that none is held: the order was placed
+			// elsewhere, or here and its link is gone (expired, or
+			// evicted). The order itself was just read.
 			return nil, zero, fmt.Errorf(
-				"order %s was not placed through this agent surface, so "+
-					"it has no checkout to reconcile against; use "+
-					"track_order for its status", in.ID)
+				"order %s exists, but no checkout is held for it here: "+
+					"it was not placed through this agent surface, or it "+
+					"was and its checkout record is no longer kept. "+
+					"get_order needs that record; use track_order, which "+
+					"reads the order's status from the store by its id",
+				in.ID)
 		}
 		return nil, zero, errCheckoutUnavailable
 	}

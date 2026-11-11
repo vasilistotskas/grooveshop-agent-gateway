@@ -62,9 +62,9 @@ func quietLog() *slog.Logger {
 func testHandler(t *testing.T, rdb *redis.Client) *Handler {
 	t.Helper()
 	dj := fixtureDjango(t)
-	store := checkout.NewStore(rdb)
+	store := checkout.NewStore(rdb, dj.Timeout())
 	return NewHandler(dj, store,
-		checkout.NewFlow(dj, store, testSite, quietLog()), rdb, testSite,
+		checkout.NewFlow(dj, store, testSite, quietLog()), testSite,
 		quietLog())
 }
 
@@ -255,6 +255,12 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 			checkout.ErrNotFound, http.StatusNotFound, "not_found"},
 		"checkout.ErrLocked": {
 			checkout.ErrLocked, http.StatusConflict, "idempotency_in_flight"},
+		"checkout.ErrUnavailable": {
+			checkout.ErrUnavailable, http.StatusServiceUnavailable,
+			"unavailable"},
+		"checkout.ErrSessionChanged": {
+			checkout.ErrSessionChanged, http.StatusConflict,
+			"idempotency_in_flight"},
 		"checkout.ErrCompletionInProgress": {
 			checkout.ErrCompletionInProgress, http.StatusConflict,
 			"idempotency_in_flight"},
@@ -307,11 +313,11 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 		checkout.ProtocolACP, "29eb4495-e018-45e7-b59c-6646302bd4ef")
 	session.Status = checkout.StatusCompleteInProgress
 	session.UpdatedAt = time.Now()
-	session.OrderUUID = "b9be45e5-6062-4976-ae7b-2c31eb2ad689"
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	for name, a := range want {
 		t.Run(name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			h.completeError(rec, session, fmt.Errorf("wrapped: %w", a.err))
+			h.completeError(rec, req, session, fmt.Errorf("wrapped: %w", a.err))
 			specError(t, rec, a.status, a.code)
 			if a.status == http.StatusConflict {
 				after, err := strconv.Atoi(rec.Header().Get("Retry-After"))
@@ -330,7 +336,7 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 			Requested   int    `json:"requested"`
 		}{ProductID: 1, ProductName: "Ζυμαρικά", Available: 1, Requested: 2})
 		rec := httptest.NewRecorder()
-		h.completeError(rec, session, shortfall)
+		h.completeError(rec, req, session, shortfall)
 		body := specError(t, rec, http.StatusBadRequest, "out_of_stock")
 		assert.Contains(t, body["message"], "Ζυμαρικά: requested 2")
 	})
@@ -342,7 +348,7 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 			stuck := *session
 			stuck.UpdatedAt = time.Now().Add(-time.Hour)
 			rec := httptest.NewRecorder()
-			h.completeError(rec, &stuck, checkout.ErrCompletionInProgress)
+			h.completeError(rec, req, &stuck, checkout.ErrCompletionInProgress)
 			specError(t, rec, http.StatusBadGateway, "order_outcome_unknown")
 			assert.Empty(t, rec.Header().Get("Retry-After"))
 		})
@@ -353,7 +359,7 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 		ahead := *session
 		ahead.UpdatedAt = time.Now().Add(time.Hour)
 		rec := httptest.NewRecorder()
-		h.completeError(rec, &ahead, checkout.ErrCompletionInProgress)
+		h.completeError(rec, req, &ahead, checkout.ErrCompletionInProgress)
 		specError(t, rec, http.StatusConflict, "idempotency_in_flight")
 		after, err := strconv.Atoi(rec.Header().Get("Retry-After"))
 		require.NoError(t, err)
@@ -368,10 +374,12 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 	// without ordering again.
 	t.Run("an unsaved session names its order", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.completeError(rec, session, checkout.ErrSessionNotSaved)
+		placed := *session
+		placed.OrderUUID = "b9be45e5-6062-4976-ae7b-2c31eb2ad689"
+		h.completeError(rec, req, &placed, checkout.ErrSessionNotSaved)
 		body := specError(t, rec, http.StatusInternalServerError,
 			"order_placed")
-		assert.Contains(t, body["message"], session.OrderUUID)
+		assert.Contains(t, body["message"], placed.OrderUUID)
 	})
 }
 
