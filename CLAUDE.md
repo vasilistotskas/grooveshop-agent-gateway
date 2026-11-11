@@ -389,6 +389,14 @@ passes.
     deliberately (`TestCompleteErrorMapsEverySentinel` walks them): a
     refusal is a 4xx, and an order that exists or may is never
     answered as a failure.
+- **A checkout no session is stored for is not "nothing happened".**
+  The id does not say whether the checkout was never completed, placed
+  an order and is no longer kept (expiry, eviction, a redeploy), or
+  never existed. Every "no session" answer is `mcpsrv.errCheckoutGone`
+  (UCP) or `acp.msgSessionGone` (ACP's 404): an order may exist, check
+  before starting another checkout, with the order id if the caller
+  holds one and the store's order confirmation if not. Never answer a
+  missing session with only "start a new one".
 - **A completion finishes without its caller.** `checkout.Flow.Complete`
   runs on the caller's context only until the order is about to be
   created. From the in-progress save on it is detached

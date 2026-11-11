@@ -209,3 +209,30 @@ func TestCheckoutStoreOutageIsUnavailable(t *testing.T) {
 		})
 	}
 }
+
+// A checkout no session is stored for may have placed an order: its
+// session can be gone by expiry, by eviction or by a redeploy, and the
+// id does not say. An agent told only to start a new one would order a
+// second time, so it is told to check first, with what it holds.
+func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
+	dj, _ := ucpDjango(t)
+	h := ucpHandlers(t, dj)
+	ctx := tenant.NewContext(context.Background(), cartTenant())
+
+	// An id that is not a session id is known to be missing without the
+	// store being asked.
+	_, _, err := h.getCheckout(ctx, nil, GetCheckoutIn{
+		Meta: ucpMeta(t, ""), ID: "not-a-session-id",
+	})
+
+	require.ErrorIs(t, err, errCheckoutGone)
+	for _, part := range []string{
+		"an order may exist",
+		"do not start another checkout before checking",
+		"get_order or track_order",
+		"ask the shopper for the store's order confirmation",
+		"Only if it was never completed, start a new one",
+	} {
+		assert.Contains(t, err.Error(), part)
+	}
+}
