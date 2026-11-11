@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -130,7 +131,7 @@ func payWayDjango(t *testing.T) *django.Client {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return django.New(srv.URL+"/api/v1", "api.test", "secret",
-		5_000_000_000, obs.NewLogger("error", "test", "test"),
+		5_000_000_000, obs.NewLogger(slog.LevelError, "test", "test"),
 		obs.NewMetrics())
 }
 
@@ -207,7 +208,7 @@ func TestResolvePayWayWithholdsUnreadableSettlements(t *testing.T) {
 			srv := httptest.NewServer(mux)
 			t.Cleanup(srv.Close)
 			dj := django.New(srv.URL+"/api/v1", "api.test", "secret",
-				5_000_000_000, obs.NewLogger("error", "test", "test"),
+				5_000_000_000, obs.NewLogger(slog.LevelError, "test", "test"),
 				obs.NewMetrics())
 
 			_, err := resolvePayWay(context.Background(), dj,
