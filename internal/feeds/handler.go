@@ -78,9 +78,10 @@ func (s *Service) Handler(kind string) http.Handler {
 // it weighs above 0, unless identity is listed with a higher weight;
 // identity not listed is only acceptable by default and weighs nothing
 // against it (RFC 9110 12.5.3). A request that accepts neither still
-// gets identity: 12.5.3 says the server SHOULD send no coding when none
-// listed is acceptable, and 12.1 lets it disregard a preference it
-// cannot meet. An absent field
+// gets identity: 12.5.3 makes refused identity the exception to sending
+// no coding, but 12.1 lets the server decide "that sending a response
+// that doesn't conform to the user agent's preferences is better than
+// sending a 406". An absent field
 // accepts any coding (12.5.3 rule 1); the feed then goes uncompressed,
 // as before, because a client that names no coding may not decode one.
 func servesGzip(acceptEncoding []string) bool {

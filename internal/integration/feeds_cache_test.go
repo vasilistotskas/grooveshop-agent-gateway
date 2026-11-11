@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -269,6 +270,84 @@ func TestFeedWithItsBlobEvictedRegenerates(t *testing.T) {
 	assert.NotEmpty(t, gz)
 	assert.Equal(t, first.ETag, meta.ETag)
 	assert.EqualValues(t, 3, g.sweeps.Load(), "Body regenerated the miss")
+}
+
+// A sweep that succeeds but whose feed is gone again before it is read
+// back (memory pressure) backs off like a failure: without it, every
+// request runs a full sweep and still gets 503.
+func TestFeedNotCachedAfterAGenerationBacksOff(t *testing.T) {
+	g := newGatedDjango(t)
+	g.armed.Store(false)
+	srv := httptest.NewServer(g)
+	t.Cleanup(srv.Close)
+	rdb := startRedis(t)
+	rdb.AddHook(blobAlwaysGone{})
+	svc := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Hour, obs.NewMetrics())
+	ten := feedTenant()
+	ctx := context.Background()
+
+	_, err := svc.Meta(ctx, ten, feeds.KindGoogle)
+	require.Error(t, err)
+	require.EqualValues(t, 1, g.sweeps.Load())
+	assert.EqualValues(t, 1, rdb.Exists(ctx, "ag:demostore:feed:failed").Val())
+
+	_, err = svc.Meta(ctx, ten, feeds.KindACP)
+	require.Error(t, err)
+	_, _, err = svc.Body(ctx, ten, feeds.KindMeta)
+	require.Error(t, err)
+	assert.EqualValues(t, 1, g.sweeps.Load(), "no sweep while it backs off")
+}
+
+// blobAlwaysGone answers every read of a feed blob as if Redis had just
+// evicted it.
+type blobAlwaysGone struct{}
+
+func (blobAlwaysGone) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (blobAlwaysGone) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		err := next(ctx, cmd)
+		evict(cmd)
+		return err
+	}
+}
+
+func (blobAlwaysGone) ProcessPipelineHook(
+	next redis.ProcessPipelineHook,
+) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		err := next(ctx, cmds)
+		for _, cmd := range cmds {
+			evict(cmd)
+		}
+		return err
+	}
+}
+
+func evict(cmd redis.Cmder) {
+	args := cmd.Args()
+	if len(args) < 2 {
+		return
+	}
+	key := fmt.Sprint(args[1])
+	if key != "ag:demostore:feed:rss" && key != "ag:demostore:feed:acp" {
+		return
+	}
+	switch c := cmd.(type) {
+	case *redis.IntCmd:
+		if cmd.Name() == "touch" {
+			c.SetVal(0)
+		}
+	case *redis.SliceCmd:
+		if cmd.Name() == "mget" {
+			vals := c.Val()
+			if len(vals) > 0 {
+				vals[0] = nil
+			}
+		}
+	}
 }
 
 // A sweep an invalidation overtook does not mark its failure: the

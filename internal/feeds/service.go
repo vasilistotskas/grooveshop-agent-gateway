@@ -65,9 +65,12 @@ const storeAttempts = 3
 // most this long, and an invalidation lifts it at once.
 const failureBackoff = time.Minute
 
-// failureMarkTimeout bounds writing the failure mark, so a Redis outage
-// does not hold the store's singleflight key behind the client's
-// retries.
+// failureMarkTimeout bounds the retries of the failure mark's write, so a
+// Redis outage does not hold the store's singleflight key behind the
+// client's retry backoff. It does not bound one command's socket I/O:
+// go-redis applies a context deadline there only with
+// ContextTimeoutEnabled, which the gateway's client does not set, so a
+// hung command still returns after the client's read timeout.
 const failureMarkTimeout = 2 * time.Second
 
 // noEpoch stands for an epoch a generation never read: Incr starts the
@@ -164,12 +167,13 @@ func (s *Service) Meta(
 		}
 		return meta, nil
 	}
-	if err := s.await(ctx, t, failed); err != nil {
+	epoch, err := s.await(ctx, t, failed)
+	if err != nil {
 		return Meta{}, err
 	}
 	meta, ok, _ = s.cachedMeta(ctx, t.SchemaName, format)
 	if !ok {
-		return Meta{}, errGenerationNotCached
+		return Meta{}, s.notCached(ctx, t.SchemaName, epoch)
 	}
 	return meta, nil
 }
@@ -186,12 +190,13 @@ func (s *Service) Body(
 	if ok {
 		return gz, meta, nil
 	}
-	if err := s.await(ctx, t, failed); err != nil {
+	epoch, err := s.await(ctx, t, failed)
+	if err != nil {
 		return nil, Meta{}, err
 	}
 	gz, meta, ok, _ = s.fromCache(ctx, t.SchemaName, format)
 	if !ok {
-		return nil, Meta{}, errGenerationNotCached
+		return nil, Meta{}, s.notCached(ctx, t.SchemaName, epoch)
 	}
 	return gz, meta, nil
 }
@@ -199,19 +204,34 @@ func (s *Service) Body(
 var errGenerationNotCached = errors.New("feeds: generation produced no cache")
 
 // await joins the store's generation for a missing feed, or fails at
-// once while a failed one's backoff runs.
+// once while a failed one's backoff runs. It returns the epoch the
+// generation read.
 func (s *Service) await(
 	ctx context.Context, t *tenant.Tenant, failed bool,
-) error {
+) (int64, error) {
 	if failed {
-		return errRecentlyFailed
+		return noEpoch, errRecentlyFailed
 	}
 	select {
 	case res := <-s.refresh(ctx, t):
-		return res.Err
+		epoch, _ := res.Val.(int64)
+		return epoch, res.Err
 	case <-ctx.Done():
-		return ctx.Err()
+		return noEpoch, ctx.Err()
 	}
+}
+
+// notCached handles a generation that succeeded but whose feed cannot be
+// read back (evicted again at once, under memory pressure): without a
+// mark, every request would run another full sweep and still get 503.
+// An invalidation since the generation's epoch lifts it, as for a
+// failure.
+func (s *Service) notCached(
+	ctx context.Context, schema string, epoch int64,
+) error {
+	s.log.ErrorContext(ctx, "feed generated but gone from the cache")
+	s.mark(ctx, schema, epoch)
+	return errGenerationNotCached
 }
 
 // refresh starts (or joins) the tenant's generation. The sweep is
@@ -253,14 +273,12 @@ func (s *Service) refresh(
 			return nil, fmt.Errorf("feeds: epoch: %w", err)
 		}
 		epoch = read
-		return nil, s.generate(gctx, t, epoch)
+		return epoch, s.generate(gctx, t, epoch)
 	})
 }
 
 // failed records a generation that ended in err, after obs.Recover has
-// turned a panic into one. The mark is written only while the epoch the
-// generation read is current: an invalidation since may be the fix, and
-// it has just emptied the feed.
+// turned a panic into one, and marks it.
 func (s *Service) failed(
 	ctx context.Context, schema string, epoch int64, err error,
 ) {
@@ -270,32 +288,44 @@ func (s *Service) failed(
 	s.metrics.FeedFailures.Inc()
 	s.log.ErrorContext(ctx, "feed generation failed",
 		slog.String("error", err.Error()))
-	if epoch == noEpoch {
-		return
-	}
+	s.mark(ctx, schema, epoch)
+}
+
+// mark sets the store's failure mark. With the epoch the generation read,
+// only while it is current: an invalidation since may be the fix, and it
+// has just emptied the feed. Without one (the generation failed before
+// reading it: no slot, Redis unreadable), nothing can have overtaken it,
+// and the mark is set as it is.
+func (s *Service) mark(ctx context.Context, schema string, epoch int64) {
 	mctx, cancel := context.WithTimeout(ctx, failureMarkTimeout)
 	defer cancel()
-	mark := func(tx *redis.Tx) error {
-		current, err := readEpoch(mctx, tx, schema)
-		if err != nil || current != epoch {
+	var err error
+	if epoch == noEpoch {
+		err = s.rdb.Set(mctx, failedKey(schema), 1, failureBackoff).Err()
+	} else {
+		err = s.rdb.Watch(mctx, func(tx *redis.Tx) error {
+			current, err := readEpoch(mctx, tx, schema)
+			if err != nil || current != epoch {
+				return err
+			}
+			_, err = tx.TxPipelined(mctx, func(p redis.Pipeliner) error {
+				p.Set(mctx, failedKey(schema), 1, failureBackoff)
+				return nil
+			})
 			return err
-		}
-		_, err = tx.TxPipelined(mctx, func(p redis.Pipeliner) error {
-			p.Set(mctx, failedKey(schema), 1, failureBackoff)
-			return nil
-		})
-		return err
+		}, epochKey(schema))
 	}
-	mErr := s.rdb.Watch(mctx, mark, epochKey(schema))
-	if mErr != nil && !errors.Is(mErr, redis.TxFailedErr) {
-		s.log.WarnContext(ctx, "feed generation failure not marked",
-			slog.String("error", mErr.Error()))
+	if err != nil && !errors.Is(err, redis.TxFailedErr) {
+		s.log.WarnContext(ctx, "feed failure not marked",
+			slog.String("error", err.Error()))
 	}
 }
 
 // cachedMeta reads the feed's metadata, whether its blob is there, and
 // whether a generation failed within failureBackoff, in one round trip
-// that reads no blob.
+// that reads no blob. TOUCH, not EXISTS: it refreshes the blob's LRU
+// clock (EXISTS looks it up with LOOKUP_NOTOUCH), so revalidations that
+// keep the meta key warm keep its blob warm too under allkeys-lru.
 func (s *Service) cachedMeta(
 	ctx context.Context, schema, format string,
 ) (meta Meta, ok, failed bool) {
@@ -303,9 +333,9 @@ func (s *Service) cachedMeta(
 	var blob *redis.IntCmd
 	if _, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
 		vals = p.MGet(ctx, metaKey(schema, format), failedKey(schema))
-		blob = p.Exists(ctx, dataKey(schema, format))
+		blob = p.Touch(ctx, dataKey(schema, format))
 		return nil
-	}); err != nil {
+	}); err != nil || len(vals.Val()) != 2 {
 		return Meta{}, false, false
 	}
 	failed = vals.Val()[1] != nil

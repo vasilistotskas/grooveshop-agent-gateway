@@ -90,6 +90,11 @@ func TestEncodingWeight(t *testing.T) {
 		{header: "gzip;q=0x1p-1", gzipListed: true, identity: 1},
 		{header: "gzip;q=0.1234", gzipListed: true, identity: 1},
 		{header: "gzip;q=1.5", gzipListed: true, identity: 1},
+		{header: "gzip;q", gzipListed: true, identity: 1},
+		{header: "gzip; Q ", gzipListed: true, identity: 1},
+		{header: "gzip;q=", gzipListed: true, identity: 1},
+		// A parameter other than q leaves the weight at 1.
+		{header: "gzip;level=9", gzip: 1, gzipListed: true, identity: 1},
 	}
 	for _, tc := range cases {
 		gz, gzListed := EncodingWeight([]string{tc.header}, Gzip)

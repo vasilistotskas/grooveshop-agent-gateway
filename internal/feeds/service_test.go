@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,6 +61,103 @@ func (panicOnGet) ProcessPipelineHook(
 	next redis.ProcessPipelineHook,
 ) redis.ProcessPipelineHook {
 	return next
+}
+
+// scriptedRedis answers every command itself through answer, with no
+// server, and records each command's arguments.
+type scriptedRedis struct {
+	mu     sync.Mutex
+	seen   [][]any
+	answer func(redis.Cmder) error
+}
+
+func (s *scriptedRedis) client() *redis.Client {
+	rdb := unreachableRedis()
+	rdb.AddHook(s)
+	return rdb
+}
+
+func (s *scriptedRedis) run(cmd redis.Cmder) error {
+	s.mu.Lock()
+	s.seen = append(s.seen, cmd.Args())
+	s.mu.Unlock()
+	err := s.answer(cmd)
+	cmd.SetErr(err)
+	return err
+}
+
+func (s *scriptedRedis) sent(name, key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, args := range s.seen {
+		if args[0] == name && len(args) > 1 && args[1] == key {
+			return true
+		}
+	}
+	return false
+}
+
+func (*scriptedRedis) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (s *scriptedRedis) ProcessHook(redis.ProcessHook) redis.ProcessHook {
+	return func(_ context.Context, cmd redis.Cmder) error { return s.run(cmd) }
+}
+
+func (s *scriptedRedis) ProcessPipelineHook(
+	redis.ProcessPipelineHook,
+) redis.ProcessPipelineHook {
+	return func(_ context.Context, cmds []redis.Cmder) error {
+		for _, cmd := range cmds {
+			if err := s.run(cmd); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// A short MGET reply is a miss, never an index out of range on the
+// request's goroutine.
+func TestShortMGetReplyIsAMiss(t *testing.T) {
+	r := &scriptedRedis{answer: func(cmd redis.Cmder) error {
+		switch c := cmd.(type) {
+		case *redis.SliceCmd:
+			c.SetVal([]any{nil})
+		case *redis.IntCmd:
+			c.SetVal(1)
+		}
+		return nil
+	}}
+	s := NewService(nil, r.client(), slog.New(slog.DiscardHandler),
+		obs.NewMetrics(), "", "", time.Hour, 24*time.Hour, "test",
+		storefront.NewSite("el"))
+	require.NotPanics(t, func() {
+		_, ok, failed := s.cachedMeta(context.Background(), "demostore",
+			formatRSS)
+		assert.False(t, ok)
+		assert.False(t, failed)
+	})
+}
+
+// A generation that fails before it reads the epoch (the epoch read
+// itself, or the wait for a slot) is marked all the same: no
+// invalidation can have overtaken it.
+func TestFailureBeforeTheEpochIsMarked(t *testing.T) {
+	r := &scriptedRedis{answer: func(cmd redis.Cmder) error {
+		if cmd.Name() == "get" {
+			return errors.New("epoch unreadable")
+		}
+		return nil
+	}}
+	metrics := obs.NewMetrics()
+	s := NewService(nil, r.client(), slog.New(slog.DiscardHandler),
+		metrics, "", "", time.Hour, 24*time.Hour, "test",
+		storefront.NewSite("el"))
+	res := <-s.refresh(context.Background(), demoTenant())
+	require.ErrorContains(t, res.Err, "epoch unreadable")
+	assert.True(t, r.sent("set", "ag:demostore:feed:failed"))
 }
 
 // unreachableRedis fails every command at once.

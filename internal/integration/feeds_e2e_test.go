@@ -234,8 +234,8 @@ func TestFeedsEndToEnd(t *testing.T) {
 		assert.True(t, strings.HasPrefix(string(body), `<?xml`))
 	})
 
-	// A revalidation reads the metadata and checks the blob is there,
-	// never reads the blob itself; weak, listed and "*" tags match.
+	// A revalidation reads the metadata and touches the blob, never reads
+	// the blob itself; weak, listed and "*" tags match.
 	t.Run("weak and listed etags revalidate without reading the blob",
 		func(t *testing.T) {
 			first := get("/feeds/tiktok.xml",
@@ -256,6 +256,9 @@ func TestFeedsEndToEnd(t *testing.T) {
 				assert.Equal(t, etag, resp.Header.Get("ETag"), inm)
 				assert.Equal(t, "Accept-Encoding", resp.Header.Get("Vary"), inm)
 				assert.Empty(t, rec.readsOf("ag:demostore:feed:rss"), inm)
+				// TOUCH, not EXISTS: the blob's LRU clock moves with the
+				// meta key's, so allkeys-lru does not evict it first.
+				assert.True(t, rec.touched("ag:demostore:feed:rss"), inm)
 			}
 		})
 
@@ -303,13 +306,26 @@ func (c *commandRecorder) start() {
 	c.on, c.cmds = true, nil
 }
 
-// readsOf returns the commands that named key, other than EXISTS.
+// touched reports whether a TOUCH named key.
+func (c *commandRecorder) touched(key string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, args := range c.cmds {
+		if fmt.Sprint(args[0]) == "touch" && fmt.Sprint(args[1]) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// readsOf returns the commands that named key, other than TOUCH, which
+// returns no value.
 func (c *commandRecorder) readsOf(key string) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var reads []string
 	for _, args := range c.cmds {
-		if fmt.Sprint(args[0]) == "exists" {
+		if fmt.Sprint(args[0]) == "touch" {
 			continue
 		}
 		for _, a := range args[1:] {

@@ -108,11 +108,11 @@ func EncodingWeight(values []string, coding string) (float64, bool) {
 var qvalue = regexp.MustCompile(`^(?:0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)$`)
 
 // weightOf reads the q parameter of one Accept-Encoding entry: 1 when
-// absent, 0 when it is not a qvalue.
+// there is none, 0 when its value is not a qvalue, missing included.
 func weightOf(params string) float64 {
 	for p := range strings.SplitSeq(params, ";") {
-		key, val, ok := strings.Cut(strings.TrimSpace(p), "=")
-		if !ok || !strings.EqualFold(strings.TrimSpace(key), "q") {
+		key, val, _ := strings.Cut(strings.TrimSpace(p), "=")
+		if !strings.EqualFold(strings.TrimSpace(key), "q") {
 			continue
 		}
 		val = strings.TrimSpace(val)

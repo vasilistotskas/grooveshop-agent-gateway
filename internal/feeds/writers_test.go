@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
@@ -438,7 +439,19 @@ func TestRawTextTagsMatchTheTokenizer(t *testing.T) {
 		return z.Next() == html.TextToken
 	}
 	for tag := range rawTextTags {
-		assert.True(t, raw(tag.String()), tag.String())
+		name := tag.String()
+		assert.True(t, raw(name), name)
+		// A self-closing start tag enters raw text too, and plainText
+		// skips it the same way.
+		z := html.NewTokenizer(strings.NewReader("<" + name + "/><b>x"))
+		require.Equal(t, html.SelfClosingTagToken, z.Next(), name)
+		assert.Equal(t, html.TextToken, z.Next(), name)
+		want := "ab"
+		if tag == atom.Plaintext {
+			want = "a"
+		}
+		assert.Equal(t, want,
+			plainText("a<"+name+"/><p>x</p></"+name+">b"), name)
 	}
 	for _, name := range []string{
 		"a", "abbr", "b", "blockquote", "br", "caption", "code", "col",

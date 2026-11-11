@@ -208,9 +208,12 @@ passes.
   (`gateway_feed_generation_failures_total`) and marked
   (`ag:{schema}:feed:failed`, `failureBackoff`): until the mark expires
   or an invalidation drops it, a stale feed is served without a refresh
-  and a missing one answers 503 without a sweep; a failure an
-  invalidation overtook is not marked. A revalidation reads the meta key
-  and only checks the blob exists (Redis evicts keys one by one): an
+  and a missing one answers 503 without a sweep. A generation whose feed
+  is gone again before it is read back is marked too; a failure an
+  invalidation overtook (its epoch moved) is not, and one that failed
+  before reading the epoch always is. A revalidation reads the meta key
+  and only TOUCHes the blob (Redis evicts keys one by one, and TOUCH,
+  unlike EXISTS, keeps the blob's LRU clock with the meta key's): an
   entry without its blob is a miss and regenerates. The sweep is
   detached from the request (`context.WithoutCancel`) and names no
   caller to Django (`django.WithoutCaller`): it is the store's work, not

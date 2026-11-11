@@ -439,8 +439,10 @@ func plainText(v string) string {
 		case html.StartTagToken, html.EndTagToken, html.SelfClosingTagToken:
 			name, _ := z.TagName()
 			tag := atom.Lookup(name)
+			// The tokenizer enters raw text on a self-closing start tag
+			// too ("<script/>"), so either form starts the skip.
 			switch {
-			case tt == html.StartTagToken && rawTextTags[tag]:
+			case tt != html.EndTagToken && rawTextTags[tag]:
 				raw = tag
 			case tt == html.EndTagToken && tag == raw:
 				raw = 0
