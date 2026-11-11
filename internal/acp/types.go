@@ -177,13 +177,15 @@ type DiscountsIn struct {
 	Codes []string `json:"codes"`
 }
 
-// Error is the protocol-level 4xx/5xx body. SupportedVersions is set on
-// API-Version errors only.
+// Error is the protocol-level 4xx/5xx body.
 type Error struct {
-	Type              string   `json:"type"`
-	Code              string   `json:"code"`
-	Message           string   `json:"message"`
-	Param             string   `json:"param,omitempty"`
+	Type    string `json:"type"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Param   string `json:"param,omitempty"`
+	// SupportedVersions is set on API-Version errors only. The RFC and
+	// the JSON schema's Error have it; the OpenAPI document's Error
+	// (additionalProperties: false) does not.
 	SupportedVersions []string `json:"supported_versions,omitempty"`
 }
 

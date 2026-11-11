@@ -68,21 +68,29 @@ func acpDo(
 	t *testing.T, req *http.Request,
 ) (*http.Response, map[string]any) {
 	t.Helper()
+	resp, raw := acpRaw(t, req)
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(raw, &decoded), "%s", raw)
+	return resp, decoded
+}
+
+// acpRaw sends req and returns the answer's bytes, which must be a spec
+// Error whenever it is not a success.
+func acpRaw(t *testing.T, req *http.Request) (*http.Response, []byte) {
+	t.Helper()
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	var decoded map[string]any
-	require.NoError(t, json.Unmarshal(raw, &decoded), "%s", raw)
 	if resp.StatusCode >= http.StatusBadRequest {
 		schema, err := acpErrorSchema()
 		require.NoError(t, err)
 		doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
-		require.NoError(t, err)
+		require.NoError(t, err, "%s", raw)
 		require.NoError(t, schema.Validate(doc), "%s", raw)
 	}
-	return resp, decoded
+	return resp, raw
 }
 
 // acpCall hits the ACP REST surface the way an agentic platform does.

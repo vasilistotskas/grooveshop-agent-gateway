@@ -159,7 +159,9 @@ func (f *Flow) Complete(
 // CompletionDeadline is the latest a completion of s can still run, for a
 // session stored in progress: its budget starts just before that save,
 // which set s.UpdatedAt. A session still in progress after it stays so
-// until it expires, because its outcome was never recorded.
+// until it expires, because its outcome was never recorded. The writer's
+// clock sets it and the reader's judges it: a reader ahead says "outcome
+// unknown" early, which is the safe wrong answer.
 func (f *Flow) CompletionDeadline(s *Session) time.Time {
 	return s.UpdatedAt.Add(f.budget)
 }

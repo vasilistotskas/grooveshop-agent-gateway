@@ -234,9 +234,11 @@ passes.
   profile that cannot be fetched, validated or version-matched is the
   spec's transport error `-32001`, and a spent discovery budget is its
   retryable `-32000` (`mcpsrv.negotiate`).
-- **ACP errors are the spec's** (`internal/acp/handler.go`; every
-  writer is checked against the vendored `Error` schema, which requires
-  `type`, `code` and `message`):
+- **ACP errors are the spec's** (`internal/acp/handler.go`): every
+  error written by `internal/acp` is checked against the vendored
+  `Error` schema, which requires `type`, `code` and `message`. Answers
+  the middleware writes before the handler (tenant, rate limit,
+  recover, the mux's own 404/405) are not.
   - A request whose `API-Version` is not `acp.Version` gets 400
     `missing_api_version` or `unsupported_api_version` with
     `supported_versions`.
@@ -245,9 +247,15 @@ passes.
     `Flow.CompletionDeadline`. Past it the outcome was never recorded
     and stays so until the session expires: 502
     `order_outcome_unknown`, no `Retry-After`.
-  - A completed or canceled session refuses update, complete and
-    cancel with 405 and an `Allow` header.
-  - A create key whose session has expired is a new request.
+  - A completed or canceled session refuses update and cancel with
+    405 and an `Allow` header, and so does a canceled one complete. A
+    complete of a completed session answers 200 with the session.
+  - A create stores the response it sent (status and body) with its
+    key (`createScope`, versioned with that record); a replay with the
+    same body answers those bytes for the record's 24 hours, whether
+    or not the session lives. Update, complete and cancel replays
+    render the session as it is now. `Idempotent-Replayed` is set only
+    on a replay's own answer.
   - `completeError` answers every `checkout` and `django` sentinel
     deliberately (`TestCompleteErrorMapsEverySentinel` walks them): a
     refusal is a 4xx, and an order that exists or may is never

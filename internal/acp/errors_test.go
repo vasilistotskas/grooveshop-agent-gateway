@@ -67,20 +67,29 @@ func testHandler(t *testing.T, rdb *redis.Client) *Handler {
 		quietLog())
 }
 
-// Every error the routes answer before they reach Redis, or when Redis
-// is down, is a spec Error, driven through the mounted routes.
+// Every error internal/acp answers before it reaches Redis, or when Redis
+// is down, is a spec Error, driven through the mounted routes. (What the
+// middleware answers before them, such as an unknown store, is not
+// internal/acp's.)
 func TestRoutesAnswerSpecErrors(t *testing.T) {
-	const token = "platform-token"
+	const (
+		token = "platform-token"
+		// offHost is a store with ACP off: no bearer is its token.
+		offHost = "off.example.test"
+	)
 	tn := testTenant()
 	tn.ACPBearerToken = token
+	off := testTenant()
 	mux := http.NewServeMux()
 	testHandler(t, unreachableRedis(t)).Register(mux,
 		func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get("X-Test-No-Tenant") == "" {
-					r = r.WithContext(tenant.NewContext(r.Context(), tn))
+				store := tn
+				if r.Host == offHost {
+					store = off
 				}
-				next.ServeHTTP(w, r)
+				next.ServeHTTP(w, r.WithContext(
+					tenant.NewContext(r.Context(), store)))
 			})
 		})
 	const session = "/acp/checkout_sessions/" +
@@ -88,20 +97,45 @@ func TestRoutesAnswerSpecErrors(t *testing.T) {
 	createBody := `{"line_items":[{"id":"1"}],"currency":"eur"}`
 
 	cases := []struct {
-		name, method, path, body string
-		headers                  map[string]string
-		status                   int
-		code                     string
+		name, method, path, body, host string
+		headers                        map[string]string
+		status                         int
+		code                           string
 	}{
-		{
-			name: "unknown store", method: http.MethodGet, path: session,
-			headers: map[string]string{"X-Test-No-Tenant": "1"},
-			status:  http.StatusNotFound, code: "not_found",
-		},
 		{
 			name: "wrong bearer", method: http.MethodGet, path: session,
 			headers: map[string]string{"Authorization": "Bearer nope"},
 			status:  http.StatusUnauthorized, code: "unauthorized",
+		},
+		// The bearer is checked before the version: a caller without a
+		// valid one learns nothing else.
+		{
+			name: "wrong bearer and no API-Version", method: http.MethodGet,
+			path: session,
+			headers: map[string]string{
+				"Authorization": "Bearer nope", "API-Version": "",
+			},
+			status: http.StatusUnauthorized, code: "unauthorized",
+		},
+		{
+			name:   "no bearer and an unsupported API-Version",
+			method: http.MethodPost, path: "/acp/checkout_sessions",
+			body: createBody,
+			headers: map[string]string{
+				"Authorization": "", "API-Version": "2025-09-29",
+			},
+			status: http.StatusUnauthorized, code: "unauthorized",
+		},
+		{
+			name:   "a store with ACP off, with or without API-Version",
+			method: http.MethodGet, path: session, host: offHost,
+			headers: map[string]string{"API-Version": ""},
+			status:  http.StatusUnauthorized, code: "unauthorized",
+		},
+		{
+			name:   "a store with ACP off and a valid API-Version",
+			method: http.MethodGet, path: session, host: offHost,
+			status: http.StatusUnauthorized, code: "unauthorized",
 		},
 		{
 			name: "no API-Version", method: http.MethodGet, path: session,
@@ -155,6 +189,9 @@ func TestRoutesAnswerSpecErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, tc.path,
 				strings.NewReader(tc.body))
+			if tc.host != "" {
+				req.Host = tc.host
+			}
 			req.Header.Set("Authorization", "Bearer "+token)
 			req.Header.Set("API-Version", Version)
 			req.Header.Set("Idempotency-Key", "key-1")
@@ -235,7 +272,7 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 			checkout.ErrPaymentSessionFailed, http.StatusBadGateway,
 			"payment_link_failed"},
 		"checkout.ErrSessionNotSaved": {
-			checkout.ErrSessionNotSaved, http.StatusServiceUnavailable,
+			checkout.ErrSessionNotSaved, http.StatusInternalServerError,
 			"order_placed"},
 		"django.ErrNotFound": {
 			django.ErrNotFound, http.StatusBadRequest, "not_found"},
@@ -308,4 +345,29 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 			specError(t, rec, http.StatusBadGateway, "order_outcome_unknown")
 			assert.Empty(t, rec.Header().Get("Retry-After"))
 		})
+
+	// A deadline ahead (a writer whose clock runs fast) is waited for,
+	// never reported as an unknown outcome.
+	t.Run("a deadline far ahead is in flight until it", func(t *testing.T) {
+		ahead := *session
+		ahead.UpdatedAt = time.Now().Add(time.Hour)
+		rec := httptest.NewRecorder()
+		h.completeError(rec, &ahead, checkout.ErrCompletionInProgress)
+		specError(t, rec, http.StatusConflict, "idempotency_in_flight")
+		after, err := strconv.Atoi(rec.Header().Get("Retry-After"))
+		require.NoError(t, err)
+		assert.Greater(t, after, int(time.Hour.Seconds()))
+	})
+}
+
+// A 405 names what its target still serves, even when that is nothing.
+func TestWriteClosedNamesTheAllowedMethods(t *testing.T) {
+	for _, allow := range []string{"", "GET, HEAD"} {
+		rec := httptest.NewRecorder()
+		writeClosed(rec, allow, "Session is canceled.")
+		specError(t, rec, http.StatusMethodNotAllowed, "conflict")
+		values, ok := rec.Header()["Allow"]
+		require.True(t, ok, "Allow %q must be sent", allow)
+		assert.Equal(t, []string{allow}, values)
+	}
 }

@@ -366,6 +366,8 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | ACP POST with no key | 400 `idempotency_key_required` |
 | ACP create replayed, same key and body | 201 with `Idempotent-Replayed: true` |
 | ACP same key, different body | 422 `idempotency_conflict` |
+| ACP create replayed after its session expired, same key and body | 201 with the original body and `Idempotent-Replayed: true` |
+| ACP call while another holds the session (lock busy) | 409 `idempotency_in_flight` with `Retry-After` |
 
 ### Invalid input
 
@@ -398,6 +400,7 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | Update or cancel a completed checkout | Refused, naming the order |
 | Update a cancelled checkout | Refused |
 | Cancel an ACP session twice | 405 |
+| Update a completed or cancelled ACP session | 405 `conflict`, `Allow: GET, HEAD` |
 
 ## 7. Store-admin connector (`/mcp/admin`)
 
