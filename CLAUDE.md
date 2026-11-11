@@ -319,9 +319,10 @@ passes.
   `http.ErrAbortHandler` is passed on to net/http, which aborts the
   response silently. Metrics sits right around Recover and sees the
   `r.Pattern` the mux sets. Its `method` label is one of net/http's
-  method constants, any other method `other` (`methodLabel`). An inbound `X-Request-Id` keeps its visible
-  ASCII only, trimmed and cut to 64 bytes (the 64 characters Django keeps
-  of `X-Correlation-ID`), else one is minted.
+  method constants, any other method `other` (`methodLabel`). An
+  inbound `X-Request-Id` keeps its visible ASCII only, trimmed and cut
+  to 64 bytes (the 64 characters Django keeps of `X-Correlation-ID`),
+  else one is minted.
 - `internal/obs` — slog JSON to stdout, Prometheus registry, health.
   The logger's context handler adds `request_id` and `tenant` to every
   line logged with a request's context (`obs.WithRequestID`; the tenant
