@@ -10,6 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/media"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
@@ -43,56 +44,11 @@ func (h *handlers) linksFor(
 	return h.deps.Site.Links(t.Domain, django.Language(ctx, t.TenantConfig))
 }
 
-// ToolError is a failed tool call's answer, rendered as JSON text so an
-// agent reads why the call failed and what to do, not just that it did:
-//
-//   - Code: the store's stable code when it gave one for a refusal the
-//     agent may explain (Django's `code`, or a refused coupon's
-//     `reason`), else the gateway's own.
-//   - Detail: the store's explanation, in the store's language.
-//   - RetryAfter: seconds to wait before retrying, when known.
-//   - Hint: what the agent should do next.
-//
-// Only what Django wrote for a client reaches it: never a raw body, a
-// status line or a 5xx's text.
-type ToolError struct {
-	Code       string `json:"code"`
-	Detail     string `json:"detail,omitempty"`
-	RetryAfter int    `json:"retryAfterSeconds,omitempty"`
-	Hint       string `json:"hint"`
-}
-
-func (e *ToolError) Error() string {
-	var b strings.Builder
-	enc := json.NewEncoder(&b)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(e)
-	return strings.TrimSpace(b.String())
-}
-
-// Gateway codes for failures Django gave no code for, or whose code
-// would say more than the agent may know (a 403 is reported as
-// not_found).
-const (
-	codeNotFound        = "not_found"
-	codeCartUnreachable = "cart_unreachable"
-	codeUnauthorized    = "unauthorized"
-	codeNotGranted      = "not_granted"
-	codeThrottled       = "throttled"
-	codeConflict        = "conflict"
-	codeInvalid         = "invalid"
-	codeUnavailable     = "unavailable"
-)
-
-// unavailableRetryAfter is the wait, in seconds, an unavailable answer
-// names: the store's backend or its checkout records.
-const unavailableRetryAfter = 30
-
 // withHint adds a sentence to the hint of the ToolError err is, on a copy:
 // what the failed call left behind, which the hint for its cause cannot
 // know.
 func withHint(err error, sentence string) error {
-	te, ok := errors.AsType[*ToolError](err)
+	te, ok := errors.AsType[*mcptool.ToolError](err)
 	if !ok {
 		return err
 	}
@@ -122,7 +78,7 @@ const mcpCartGone = "that cart no longer exists; create a new one with " +
 func (h *handlers) cartErr(err error, notFound string) error {
 	if h.surface == chatSurface &&
 		errors.Is(err, django.ErrCartUnreachable) {
-		return &ToolError{Code: codeCartUnreachable,
+		return &mcptool.ToolError{Code: mcptool.CodeCartUnreachable,
 			Hint: shopperCartUnreachable}
 	}
 	return upstreamErr(err, notFound)
@@ -133,8 +89,8 @@ func (h *handlers) cartErr(err error, notFound string) error {
 func upstreamErr(err error, notFound string) error {
 	apiErr, _ := errors.AsType[*django.APIError](err)
 	// storeSaid is the store's own code and explanation for a refusal.
-	storeSaid := func(fallback, hint string) *ToolError {
-		e := &ToolError{Code: fallback, Hint: hint}
+	storeSaid := func(fallback, hint string) *mcptool.ToolError {
+		e := &mcptool.ToolError{Code: fallback, Hint: hint}
 		if apiErr != nil {
 			if apiErr.Code != "" {
 				e.Code = apiErr.Code
@@ -147,34 +103,34 @@ func upstreamErr(err error, notFound string) error {
 	// Checked first: it is ErrCartUnreachable too, whose not-found
 	// wording ("create a new cart") would mislead for the shopper's own.
 	case errors.Is(err, django.ErrCartTokenRefused):
-		return &ToolError{Code: codeCartUnreachable,
+		return &mcptool.ToolError{Code: mcptool.CodeCartUnreachable,
 			Hint: shopperCartUnreachable}
 	case errors.Is(err, django.ErrNotFound),
 		errors.Is(err, django.ErrCartUnreachable),
 		// Guest-flow 403s (e.g. a wrong order UUID) are "not yours to
 		// see" — for an agent that is indistinguishable from not found.
 		errors.Is(err, django.ErrForbidden):
-		return &ToolError{Code: codeNotFound, Hint: notFound}
+		return &mcptool.ToolError{Code: mcptool.CodeNotFound, Hint: notFound}
 	case errors.Is(err, django.ErrUnauthorized):
-		return &ToolError{Code: codeUnauthorized, Hint: "authentication " +
-			"is required or the access token has expired; re-link the " +
-			"shopper's account and retry"}
+		return &mcptool.ToolError{Code: mcptool.CodeUnauthorized,
+			Hint: "authentication is required or the access token has " +
+				"expired; re-link the shopper's account and retry"}
 	case errors.Is(err, django.ErrThrottled):
-		e := storeSaid(codeThrottled, "the store is rate limiting "+
+		e := storeSaid(mcptool.CodeThrottled, "the store is rate limiting "+
 			"requests; tell the shopper to wait, then retry")
 		if apiErr != nil {
 			e.RetryAfter = int(apiErr.RetryAfter.Seconds())
 		}
 		return e
 	case errors.Is(err, django.ErrConflict):
-		return storeSaid(codeConflict, "the store refused the change in "+
+		return storeSaid(mcptool.CodeConflict, "the store refused the change in "+
 			"its current state; explain the detail to the shopper")
 	case errors.Is(err, django.ErrValidation):
-		return storeSaid(codeInvalid, "the store rejected the request; "+
+		return storeSaid(mcptool.CodeInvalid, "the store rejected the request; "+
 			"explain the detail to the shopper, or correct the arguments")
 	default:
-		return &ToolError{Code: codeUnavailable,
-			RetryAfter: unavailableRetryAfter,
+		return &mcptool.ToolError{Code: mcptool.CodeUnavailable,
+			RetryAfter: mcptool.UnavailableRetryAfter,
 			Hint: "the store's backend is temporarily unavailable; retry " +
 				"once, then tell the shopper to try again later"}
 	}

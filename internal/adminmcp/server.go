@@ -9,12 +9,11 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcpsrv"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/text"
 )
@@ -128,7 +127,7 @@ func newServer(d Deps, id identity) *mcp.Server {
 	})
 	h := &handlers{deps: d}
 
-	add(srv, d.Log, &mcp.Tool{
+	mcptool.Add(srv, d.Log, &mcp.Tool{
 		Name:        "whoami",
 		Annotations: readOnly("Who is connected"),
 		Description: "Which store this connection reads, as whom (email " +
@@ -136,7 +135,7 @@ func newServer(d Deps, id identity) *mcp.Server {
 			"and whether the role allows it. Call it first when a tool is " +
 			"refused.",
 	}, h.whoami)
-	add(srv, d.Log, &mcp.Tool{
+	mcptool.Add(srv, d.Log, &mcp.Tool{
 		Name:        "list_orders",
 		Annotations: readOnly("List orders"),
 		Description: "The store's orders, newest first: status, payment " +
@@ -147,7 +146,7 @@ func newServer(d Deps, id identity) *mcp.Server {
 			"the order id, customer email or name." +
 			untrustedNote,
 	}, h.listOrders)
-	add(srv, d.Log, &mcp.Tool{
+	mcptool.Add(srv, d.Log, &mcp.Tool{
 		Name:        "get_order",
 		Annotations: readOnly("Get an order"),
 		Description: "One order in full: lines, totals, payment and " +
@@ -155,7 +154,7 @@ func newServer(d Deps, id identity) *mcp.Server {
 			"and country (never the street or phone), and the customer's " +
 			"note." + untrustedNote,
 	}, h.getOrder)
-	add(srv, d.Log, &mcp.Tool{
+	mcptool.Add(srv, d.Log, &mcp.Tool{
 		Name:        "sales_report",
 		Annotations: readOnly("Sales and turnover"),
 		Description: "The store's turnover as its admin report computes " +
@@ -166,7 +165,7 @@ func newServer(d Deps, id identity) *mcp.Server {
 			"(day, week, month, quarter) for one row per period. Amounts " +
 			"are decimal strings in the report's currency.",
 	}, h.salesReport)
-	add(srv, d.Log, &mcp.Tool{
+	mcptool.Add(srv, d.Log, &mcp.Tool{
 		Name:        "profit_report",
 		Annotations: readOnly("Profit"),
 		Description: "The store's profit as its owner's admin report " +
@@ -176,7 +175,7 @@ func newServer(d Deps, id identity) *mcp.Server {
 			"payments a fee (coverage, percent). The store's owner only. " +
 			"Same range and bucket as sales_report.",
 	}, h.profitReport)
-	add(srv, d.Log, &mcp.Tool{
+	mcptool.Add(srv, d.Log, &mcp.Tool{
 		Name:        "list_products",
 		Annotations: readOnly("Products and stock"),
 		Description: "Products with SKU, price, final price, stock and " +
@@ -184,7 +183,7 @@ func newServer(d Deps, id identity) *mcp.Server {
 			"lowStock lists only products at or under their low-stock " +
 			"threshold, lowest first.",
 	}, h.listProducts)
-	add(srv, d.Log, &mcp.Tool{
+	mcptool.Add(srv, d.Log, &mcp.Tool{
 		Name:        "find_customers",
 		Annotations: readOnly("Find customers"),
 		Description: "The store's customers, newest first: name, email, " +
@@ -192,14 +191,14 @@ func newServer(d Deps, id identity) *mcp.Server {
 			"placed. Search by email or name. No addresses or phones." +
 			untrustedNote,
 	}, h.findCustomers)
-	add(srv, d.Log, &mcp.Tool{
+	mcptool.Add(srv, d.Log, &mcp.Tool{
 		Name:        "list_reviews",
 		Annotations: readOnly("Product reviews"),
 		Description: "Product reviews, newest first, with their rating " +
 			"(1–10) and status: NEW waits for approval, TRUE is approved, " +
 			"FALSE rejected." + untrustedNote,
 	}, h.listReviews)
-	add(srv, d.Log, &mcp.Tool{
+	mcptool.Add(srv, d.Log, &mcp.Tool{
 		Name:        "list_messages",
 		Annotations: readOnly("Contact messages"),
 		Description: "Messages sent through the store's contact form, " +
@@ -207,49 +206,6 @@ func newServer(d Deps, id identity) *mcp.Server {
 			untrustedNote,
 	}, h.listMessages)
 	return srv
-}
-
-// add registers a tool with a log line per call: the tool, the store, the
-// outcome and how long it took. Never its arguments or result, which carry
-// customer data.
-func add[In, Out any](
-	srv *mcp.Server, log *slog.Logger, def *mcp.Tool,
-	h mcp.ToolHandlerFor[In, Out],
-) {
-	mcp.AddTool(srv, def, func(
-		ctx context.Context, req *mcp.CallToolRequest, in In,
-	) (*mcp.CallToolResult, Out, error) {
-		start := time.Now()
-		res, out, err := h(ctx, req, in)
-		outcome := "ok"
-		if err != nil {
-			outcome = "error"
-			var te *mcpsrv.ToolError
-			if errors.As(err, &te) {
-				outcome = te.Code
-			}
-		}
-		log.InfoContext(ctx, "staff tool call",
-			slog.String("tool", def.Name),
-			slog.String("outcome", outcome),
-			slog.Int64("duration_ms", time.Since(start).Milliseconds()))
-		return res, out, err
-	})
-}
-
-// Untrusted is text a customer wrote (a review, a contact message, an
-// order note), marked so a model reads it as data and not as instructions.
-type Untrusted struct {
-	Untrusted bool   `json:"untrusted"`
-	Source    string `json:"source"`
-	Text      string `json:"text"`
-}
-
-func untrusted(source, s string) *Untrusted {
-	if s == "" {
-		return nil
-	}
-	return &Untrusted{Untrusted: true, Source: source, Text: s}
 }
 
 type handlers struct{ deps Deps }
@@ -278,30 +234,19 @@ func (h *handlers) call(
 	return t, django.Language(ctx, t.TenantConfig), staff, nil
 }
 
-const (
-	codeNotGranted  = "not_granted"
-	codeNotAllowed  = "not_allowed"
-	codeNotFound    = "not_found"
-	codeAccessOff   = "access_off"
-	codeReconnect   = "unauthorized"
-	codeThrottled   = "throttled"
-	codeInvalid     = "invalid"
-	codeUnavailable = "unavailable"
-)
-
 func scopeRefusal(p *django.StaffProfile, scope string) error {
 	granted, allowed := p.Opens(scope)
 	switch {
 	case !allowed:
-		return &mcpsrv.ToolError{Code: codeNotAllowed, Hint: fmt.Sprintf(
-			"the person's role in the store (%s) does not allow this; "+
-				"tell them, and that the store's owner decides roles",
-			p.RoleDisplay)}
+		return &mcptool.ToolError{Code: mcptool.CodeNotAllowed,
+			Hint: fmt.Sprintf("the person's role in the store (%s) does "+
+				"not allow this; tell them, and that the store's owner "+
+				"decides roles", p.RoleDisplay)}
 	case !granted:
-		return &mcpsrv.ToolError{Code: codeNotGranted, Hint: fmt.Sprintf(
-			"this connection was not given %q; to use it, disconnect "+
-				"and connect the store again, and approve it on the "+
-				"consent page", scope)}
+		return &mcptool.ToolError{Code: mcptool.CodeNotGranted,
+			Hint: fmt.Sprintf("this connection was not given %q; to use "+
+				"it, disconnect and connect the store again, and approve "+
+				"it on the consent page", scope)}
 	}
 	return nil
 }
@@ -321,36 +266,38 @@ func (h *handlers) upstreamErr(
 	switch {
 	case errors.Is(err, django.ErrNotFound):
 		if h.accessOff(ctx) {
-			return &mcpsrv.ToolError{Code: codeAccessOff, Hint: "the " +
-				"store has switched AI app access off for its team; tell " +
-				"the person: an Owner or Admin can turn it back on in the " +
-				"store settings"}
+			return &mcptool.ToolError{Code: mcptool.CodeAccessOff,
+				Hint: "the store has switched AI app access off for its " +
+					"team; tell the person: an Owner or Admin can turn it " +
+					"back on in the store settings"}
 		}
-		return &mcpsrv.ToolError{Code: codeNotFound, Hint: notFound}
+		return &mcptool.ToolError{Code: mcptool.CodeNotFound, Hint: notFound}
 	case errors.Is(err, django.ErrForbidden):
-		return &mcpsrv.ToolError{Code: codeNotAllowed, Hint: "the store " +
-			"refused this for the connected account; call whoami to see " +
-			"what it may read"}
+		return &mcptool.ToolError{Code: mcptool.CodeNotAllowed,
+			Hint: "the store refused this for the connected account; " +
+				"call whoami to see what it may read"}
 	case errors.Is(err, django.ErrUnauthorized):
-		return &mcpsrv.ToolError{Code: codeReconnect, Hint: "the " +
-			"connection is no longer valid (expired, or the person left " +
-			"the store's team); connect the store again"}
+		return &mcptool.ToolError{Code: mcptool.CodeUnauthorized,
+			Hint: "the connection is no longer valid (expired, or the " +
+				"person left the store's team); connect the store again"}
 	case errors.Is(err, django.ErrThrottled):
-		e := &mcpsrv.ToolError{Code: codeThrottled, Hint: "too many " +
-			"requests; wait, then retry"}
+		e := &mcptool.ToolError{Code: mcptool.CodeThrottled,
+			Hint: "too many requests; wait, then retry"}
 		if apiErr != nil {
 			e.RetryAfter = int(apiErr.RetryAfter.Seconds())
 		}
 		return e
 	case errors.Is(err, django.ErrValidation):
-		e := &mcpsrv.ToolError{Code: codeInvalid, Hint: "the store " +
-			"rejected the arguments; correct them from the detail"}
+		e := &mcptool.ToolError{Code: mcptool.CodeInvalid,
+			Hint: "the store rejected the arguments; correct them from " +
+				"the detail"}
 		if apiErr != nil {
 			e.Detail = apiErr.Detail
 		}
 		return e
 	default:
-		return &mcpsrv.ToolError{Code: codeUnavailable, RetryAfter: 30,
+		return &mcptool.ToolError{Code: mcptool.CodeUnavailable,
+			RetryAfter: mcptool.UnavailableRetryAfter,
 			Hint: "the store's backend is temporarily unavailable; retry " +
 				"once, then try again later"}
 	}

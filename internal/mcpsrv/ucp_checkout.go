@@ -11,6 +11,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
@@ -420,8 +421,8 @@ func (h *handlers) settleCompletion(
 // errCheckoutUnavailable answers a checkout store (Redis) that could not
 // be read or written: the sessions, their locks and completion claims,
 // and the order links.
-var errCheckoutUnavailable = &ToolError{Code: codeUnavailable,
-	RetryAfter: unavailableRetryAfter,
+var errCheckoutUnavailable = &mcptool.ToolError{Code: mcptool.CodeUnavailable,
+	RetryAfter: mcptool.UnavailableRetryAfter,
 	Hint: "the store's checkout records are temporarily unavailable; " +
 		"retry shortly, then tell the shopper to try again later"}
 

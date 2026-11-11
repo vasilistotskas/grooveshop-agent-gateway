@@ -1,8 +1,9 @@
 // Package adminmcp is the store-admin MCP server on /mcp/admin: a store's
 // owner and staff ask their own AI app about the store (orders, sales,
-// stock, customers, reviews, messages). It shares nothing with the
-// shoppers' /mcp beyond the tenant resolver and the Django client: its
-// own tools, its own middleware, and its own authorization server.
+// stock, customers, reviews, messages). It has its own tools, its own
+// middleware and its own authorization server; with the shoppers' /mcp
+// it shares the tenant resolver, the Django client and what every tool
+// answers with (internal/mcptool).
 //
 // Staff are platform identities, not the store's customers, so their
 // tokens come from Django's staff issuer on the platform's connect host

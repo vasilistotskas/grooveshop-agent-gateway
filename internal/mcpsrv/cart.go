@@ -9,6 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -369,7 +370,7 @@ func (h *handlers) applyCoupon(
 	c, err := h.deps.Django.ApplyCoupon(
 		ctx, t.Domain, lang, in.CartID, code)
 	if rejected, ok := errors.AsType[*django.CouponRejectedError](err); ok {
-		return nil, out, &ToolError{Code: rejected.Reason,
+		return nil, out, &mcptool.ToolError{Code: rejected.Reason,
 			Detail: rejected.Detail, Hint: "the store refused coupon " +
 				code + "; explain the detail to the shopper"}
 	}

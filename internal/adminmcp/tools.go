@@ -7,6 +7,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
 )
 
@@ -71,18 +72,18 @@ type ListOrdersIn struct {
 // Order is an order row with the name its customer typed marked
 // untrusted.
 type Order struct {
-	ID            int64      `json:"id"`
-	UUID          string     `json:"uuid"`
-	Status        string     `json:"status"`
-	StatusDisplay string     `json:"statusDisplay"`
-	PaymentStatus string     `json:"paymentStatus"`
-	PaymentMethod string     `json:"paymentMethod"`
-	PlacedAt      string     `json:"placedAt"`
-	ShippedAt     *string    `json:"shippedAt"`
-	CustomerName  *Untrusted `json:"customerName,omitempty"`
-	CustomerEmail string     `json:"customerEmail"`
-	Total         string     `json:"total"`
-	Currency      string     `json:"currency"`
+	ID            int64              `json:"id"`
+	UUID          string             `json:"uuid"`
+	Status        string             `json:"status"`
+	StatusDisplay string             `json:"statusDisplay"`
+	PaymentStatus string             `json:"paymentStatus"`
+	PaymentMethod string             `json:"paymentMethod"`
+	PlacedAt      string             `json:"placedAt"`
+	ShippedAt     *string            `json:"shippedAt"`
+	CustomerName  *mcptool.Untrusted `json:"customerName,omitempty"`
+	CustomerEmail string             `json:"customerEmail"`
+	Total         string             `json:"total"`
+	Currency      string             `json:"currency"`
 }
 
 func orderOf(o django.StaffOrder) Order {
@@ -95,7 +96,7 @@ func orderOf(o django.StaffOrder) Order {
 		PaymentMethod: o.PaymentMethod,
 		PlacedAt:      o.PlacedAt,
 		ShippedAt:     o.ShippedAt,
-		CustomerName:  untrusted("customer", o.CustomerName),
+		CustomerName:  mcptool.MarkUntrusted("customer", o.CustomerName),
 		CustomerEmail: o.CustomerEmail,
 		Total:         amount(o.Total),
 		Currency:      o.Currency,
@@ -140,16 +141,16 @@ type GetOrderIn struct {
 // note) marked untrusted.
 type OrderDetail struct {
 	Order
-	ItemsTotal      string      `json:"itemsTotal"`
-	Shipping        string      `json:"shipping"`
-	PaymentFee      string      `json:"paymentFee"`
-	Discount        string      `json:"discount"`
-	ShippingCarrier string      `json:"shippingCarrier"`
-	TrackingNumber  string      `json:"trackingNumber"`
-	City            *Untrusted  `json:"city,omitempty"`
-	Country         *string     `json:"country"`
-	CustomerNote    *Untrusted  `json:"customerNote,omitempty"`
-	Lines           []OrderLine `json:"lines"`
+	ItemsTotal      string             `json:"itemsTotal"`
+	Shipping        string             `json:"shipping"`
+	PaymentFee      string             `json:"paymentFee"`
+	Discount        string             `json:"discount"`
+	ShippingCarrier string             `json:"shippingCarrier"`
+	TrackingNumber  string             `json:"trackingNumber"`
+	City            *mcptool.Untrusted `json:"city,omitempty"`
+	Country         *string            `json:"country"`
+	CustomerNote    *mcptool.Untrusted `json:"customerNote,omitempty"`
+	Lines           []OrderLine        `json:"lines"`
 }
 
 // OrderLine is one line of an order.
@@ -194,9 +195,9 @@ func (h *handlers) getOrder(
 		Discount:        amount(o.Discount),
 		ShippingCarrier: o.ShippingCarrier,
 		TrackingNumber:  o.TrackingNumber,
-		City:            untrusted("customer", o.City),
+		City:            mcptool.MarkUntrusted("customer", o.City),
 		Country:         o.Country,
-		CustomerNote:    untrusted("customer", o.CustomerNotes),
+		CustomerNote:    mcptool.MarkUntrusted("customer", o.CustomerNotes),
 		Lines:           lines,
 	}, nil
 }
@@ -405,13 +406,13 @@ type SearchIn struct {
 
 // Customer is a customer with the name they typed marked untrusted.
 type Customer struct {
-	ID          int64      `json:"id"`
-	Name        *Untrusted `json:"name,omitempty"`
-	Email       string     `json:"email"`
-	JoinedAt    string     `json:"joinedAt"`
-	IsActive    bool       `json:"isActive"`
-	Orders      int64      `json:"orders"`
-	LastOrderAt *string    `json:"lastOrderAt"`
+	ID          int64              `json:"id"`
+	Name        *mcptool.Untrusted `json:"name,omitempty"`
+	Email       string             `json:"email"`
+	JoinedAt    string             `json:"joinedAt"`
+	IsActive    bool               `json:"isActive"`
+	Orders      int64              `json:"orders"`
+	LastOrderAt *string            `json:"lastOrderAt"`
 }
 
 type FindCustomersOut struct {
@@ -434,7 +435,7 @@ func (h *handlers) findCustomers(
 	for _, c := range customers {
 		out.Customers = append(out.Customers, Customer{
 			ID:          c.ID,
-			Name:        untrusted("customer", c.Name),
+			Name:        mcptool.MarkUntrusted("customer", c.Name),
 			Email:       c.Email,
 			JoinedAt:    c.JoinedAt,
 			IsActive:    c.IsActive,
@@ -452,15 +453,15 @@ type ListReviewsIn struct {
 
 // Review is a review with its comment marked untrusted.
 type Review struct {
-	ID            int64      `json:"id"`
-	ProductID     int64      `json:"productId"`
-	ProductName   string     `json:"productName"`
-	Rating        int64      `json:"rating"`
-	Status        string     `json:"status"`
-	StatusDisplay string     `json:"statusDisplay"`
-	Published     bool       `json:"published"`
-	CreatedAt     string     `json:"createdAt"`
-	Comment       *Untrusted `json:"comment,omitempty"`
+	ID            int64              `json:"id"`
+	ProductID     int64              `json:"productId"`
+	ProductName   string             `json:"productName"`
+	Rating        int64              `json:"rating"`
+	Status        string             `json:"status"`
+	StatusDisplay string             `json:"statusDisplay"`
+	Published     bool               `json:"published"`
+	CreatedAt     string             `json:"createdAt"`
+	Comment       *mcptool.Untrusted `json:"comment,omitempty"`
 }
 
 type ListReviewsOut struct {
@@ -490,7 +491,7 @@ func (h *handlers) listReviews(
 			StatusDisplay: r.StatusDisplay,
 			Published:     r.Published,
 			CreatedAt:     r.CreatedAt,
-			Comment:       untrusted("customer", r.Comment),
+			Comment:       mcptool.MarkUntrusted("customer", r.Comment),
 		})
 	}
 	return nil, out, nil
@@ -503,12 +504,12 @@ type LimitIn struct {
 // Message is a contact message with what the sender wrote marked
 // untrusted.
 type Message struct {
-	ID        int64      `json:"id"`
-	Name      *Untrusted `json:"name,omitempty"`
-	Email     string     `json:"email"`
-	Subject   *Untrusted `json:"subject,omitempty"`
-	CreatedAt string     `json:"createdAt"`
-	Message   *Untrusted `json:"message"`
+	ID        int64              `json:"id"`
+	Name      *mcptool.Untrusted `json:"name,omitempty"`
+	Email     string             `json:"email"`
+	Subject   *mcptool.Untrusted `json:"subject,omitempty"`
+	CreatedAt string             `json:"createdAt"`
+	Message   *mcptool.Untrusted `json:"message"`
 }
 
 type ListMessagesOut struct {
@@ -531,11 +532,11 @@ func (h *handlers) listMessages(
 	for _, m := range rows {
 		out.Messages = append(out.Messages, Message{
 			ID:        m.ID,
-			Name:      untrusted("sender", m.Name),
+			Name:      mcptool.MarkUntrusted("sender", m.Name),
 			Email:     m.Email,
-			Subject:   untrusted("sender", m.Subject),
+			Subject:   mcptool.MarkUntrusted("sender", m.Subject),
 			CreatedAt: m.CreatedAt,
-			Message:   untrusted("sender", m.Message),
+			Message:   mcptool.MarkUntrusted("sender", m.Message),
 		})
 	}
 	return nil, out, nil

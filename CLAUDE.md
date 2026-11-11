@@ -258,7 +258,7 @@ passes.
   money as `json.Number` → integer cents internally, format at the edge.
 - Business failures in MCP tools surface as `CallToolResult{IsError:
   true}` with actionable text. A Django failure goes through
-  `upstreamErr`, which renders an `mcpsrv.ToolError` as JSON text:
+  `upstreamErr`, which renders an `mcptool.ToolError` as JSON text:
   Django's `code` and its `detail` (or its validation `fields`) for a
   refusal, `retryAfterSeconds` for a throttle, and a `hint`. A 403 is
   reported as `not_found`, and a 5xx or network failure only as

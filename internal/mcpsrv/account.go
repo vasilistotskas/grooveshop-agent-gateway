@@ -10,6 +10,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/identity"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -23,11 +24,12 @@ func (h *handlers) linkedFor(
 ) (*identity.Linked, error) {
 	l, ok := identity.FromContext(ctx)
 	if !ok {
-		return nil, &ToolError{Code: codeUnauthorized, Hint: fmt.Sprintf(
-			"no linked account: complete the OAuth flow first — fetch "+
-				"%s to discover the authorization server, authorize with "+
-				"the shopper, then retry with the access token",
-			storefront.OAuthResourceMetadata(t.Domain))}
+		return nil, &mcptool.ToolError{Code: mcptool.CodeUnauthorized,
+			Hint: fmt.Sprintf("no linked account: complete the OAuth "+
+				"flow first — fetch %s to discover the authorization "+
+				"server, authorize with the shopper, then retry with the "+
+				"access token",
+				storefront.OAuthResourceMetadata(t.Domain))}
 	}
 	return l, nil
 }
@@ -37,7 +39,7 @@ func (h *handlers) linkedFor(
 // needs, which the agent fixes by re-authorizing, not by retrying.
 func scopedErr(err error, scope, notFound string) error {
 	if errors.Is(err, django.ErrForbidden) {
-		return &ToolError{Code: codeNotGranted, Hint: "the linked " +
+		return &mcptool.ToolError{Code: mcptool.CodeNotGranted, Hint: "the linked " +
 			"account's token is missing the " + scope + " scope; " +
 			"re-authorize requesting it"}
 	}
