@@ -988,14 +988,15 @@ func (h *Handler) lockSession(
 	return s, release, true
 }
 
-// msgSessionGone answers an id no session is held for. Why cannot be
-// told from the id: it expired unplaced, it was placed and its record is
-// gone (expired, or evicted), or it never existed. So the answer never
+// msgSessionGone answers an id no session is stored for. The id does not
+// say why: the session was never completed and expired, it placed an
+// order and is no longer kept, or the id is wrong. So the answer never
 // reads as "nothing happened, create another".
 const msgSessionGone = "No checkout session is held for this id. It " +
-	"may have expired, and it may have placed an order: if complete " +
-	"was ever called for it, check for that order before creating " +
-	"another session."
+	"may never have been completed, it may have placed an order and " +
+	"no longer be kept, or the id may be wrong, so an order may " +
+	"exist: check for it (the order id complete returned, or the " +
+	"buyer's order confirmation) before creating another session."
 
 func (h *Handler) sessionError(w http.ResponseWriter, err error) {
 	if errors.Is(err, checkout.ErrNotFound) {

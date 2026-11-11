@@ -344,7 +344,7 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | Unknown `Host` on `/mcp`, `/.well-known/ucp`, `/acp`, `/feeds` | 404 on all four |
 | `X-Forwarded-Host` spoofed | Ignored: the real `Host` decides |
 | One store's ACP token on another store | 401 |
-| One store's checkout id on another store | "that checkout no longer exists" |
+| One store's checkout id on another store | "that checkout no longer exists here", as for any id no session is stored for: the answer says an order may exist and how to check, never only "start a new one" (ACP: 404 `not_found`, with the same meaning in its message) |
 | Cart and catalogue off (staging fyteia) | 4 tools, and 404 on UCP, ACP and feeds |
 
 ### Stock

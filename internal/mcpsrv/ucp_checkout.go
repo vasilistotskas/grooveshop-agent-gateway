@@ -447,18 +447,6 @@ func saveFailed(err error) error {
 	return errCheckoutUnavailable
 }
 
-// errCheckoutGone answers an id no checkout is held for. Why cannot be
-// told from the id: it expired unplaced, it was placed and its record is
-// gone (expired, or evicted), or it never existed. So the answer never
-// says to start another without saying to look for an order first.
-var errCheckoutGone = errors.New(
-	"that checkout no longer exists here, and its id does not say " +
-		"whether it placed an order. If complete_checkout was ever " +
-		"called for it, an order may exist: look it up with get_order " +
-		"or track_order (or ask the shopper for the store's " +
-		"confirmation email) before starting another checkout. If it " +
-		"was never completed, start a new one with create_checkout")
-
 // closedTo answers an update or a cancel (action: "updated", "canceled")
 // of a checkout that takes neither, and is nil for one that is open: an
 // order that is being placed, a canceled checkout, and one that placed
@@ -498,6 +486,21 @@ func (h *handlers) cartFailed(
 	}
 	return withHint(upstreamErr(err, cartGone), checkoutNotUpdated)
 }
+
+// errCheckoutGone answers a checkout id no session is stored for. The id
+// does not say why: the checkout was never completed and expired, it
+// placed an order and its session is no longer kept, or the id is wrong.
+// So the answer never says only to start another: an agent that did
+// would order a second time in the second case.
+var errCheckoutGone = errors.New(
+	"that checkout no longer exists here. It may never have been " +
+		"completed, it may have placed an order whose checkout is no " +
+		"longer kept, or the id may be wrong, so an order may exist: " +
+		"do not start another checkout before checking. If you hold " +
+		"its order id, read the order with get_order or track_order; " +
+		"if not, ask the shopper for the store's order confirmation. " +
+		"Only if it was never completed, start a new one with " +
+		"create_checkout")
 
 // errCheckoutUnavailable answers a checkout store (Redis) that could not
 // be read or written: the sessions, their locks and completion claims,

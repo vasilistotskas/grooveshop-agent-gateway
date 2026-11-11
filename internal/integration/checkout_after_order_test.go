@@ -319,7 +319,7 @@ func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
 			resp, body := acpCall(t, http.MethodGet, base+"/"+id, nil, "")
 			assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 			assert.Equal(t, "not_found", body["code"])
-			assert.Contains(t, body["message"], "may have placed an order")
+			assert.Contains(t, body["message"], "an order may exist")
 
 			for what, answer := range map[string]surfaceAnswer{
 				"complete": surfaces["ucp"].answer(
@@ -339,7 +339,7 @@ func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
 					"an order may exist", what)
 				assert.Contains(t, answer.refusal, "get_order", what)
 				assert.Contains(t, answer.refusal,
-					"before starting another checkout", what)
+					"do not start another checkout before checking", what)
 			}
 		})
 	}
