@@ -16,10 +16,8 @@ package adminmcp
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
@@ -117,30 +115,8 @@ func RequireStaff(
 				return
 			}
 			profile, err := v.Verify(r.Context(), t, token)
-			switch {
-			case errors.Is(err, identity.ErrInvalidToken):
-				identity.WriteChallenge(w, ResourceMetadataURL(t),
-					`error="invalid_token"`, "invalid or expired access token")
-				return
-			case errors.Is(err, django.ErrNotFound):
-				// The store switched it off and this pod's copy of its
-				// configuration has not caught up yet: Django is right.
-				httpmw.WriteJSONError(w, http.StatusNotFound, "not found")
-				return
-			case errors.Is(err, django.ErrThrottled):
-				if apiErr, ok := errors.AsType[*django.APIError](err); ok &&
-					apiErr.RetryAfter > 0 {
-					w.Header().Set("Retry-After", strconv.Itoa(
-						int(apiErr.RetryAfter.Seconds())))
-				}
-				httpmw.WriteJSONError(w, http.StatusTooManyRequests,
-					"too many requests")
-				return
-			case err != nil:
-				log.ErrorContext(r.Context(), "staff token verification failed",
-					slog.String("error", err.Error()))
-				httpmw.WriteJSONError(w, http.StatusServiceUnavailable,
-					"store temporarily unavailable")
+			if err != nil {
+				identity.Refuse(w, r, log, ResourceMetadataURL(t), err)
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(withStaff(r.Context(),

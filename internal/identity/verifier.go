@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -146,6 +147,44 @@ func (v *Verifier[P]) fetch(
 	v.cache[key] = entry
 	v.mu.Unlock()
 	return entry, nil
+}
+
+// Refuse answers a call whose bearer Verify did not accept, with err, the
+// same way on both MCP servers:
+//   - an invalid token: 401 with the challenge naming metadataURL;
+//   - Django's 404: the store switched the surface off and this pod's
+//     copy of the store has not caught up yet. 404, as the gateway's own
+//     gate answers once it has;
+//   - Django's 429: 429 with its Retry-After;
+//   - a caller that hung up: 503, and no error line;
+//   - anything else: a logged 503.
+func Refuse(
+	w http.ResponseWriter, r *http.Request, log *slog.Logger,
+	metadataURL string, err error,
+) {
+	switch {
+	case errors.Is(err, ErrInvalidToken):
+		WriteChallenge(w, metadataURL, `error="invalid_token"`,
+			"invalid or expired access token")
+		return
+	case errors.Is(err, django.ErrNotFound):
+		httpmw.WriteJSONError(w, http.StatusNotFound, "not found")
+		return
+	case errors.Is(err, django.ErrThrottled):
+		if apiErr, ok := errors.AsType[*django.APIError](err); ok &&
+			apiErr.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(
+				int(apiErr.RetryAfter.Seconds())))
+		}
+		httpmw.WriteJSONError(w, http.StatusTooManyRequests,
+			"too many requests")
+		return
+	case !errors.Is(err, context.Canceled):
+		log.ErrorContext(r.Context(), "token verification failed",
+			slog.String("error", err.Error()))
+	}
+	httpmw.WriteJSONError(w, http.StatusServiceUnavailable,
+		"store temporarily unavailable")
 }
 
 // WriteChallenge answers 401 with the RFC 9728 challenge, which sends an

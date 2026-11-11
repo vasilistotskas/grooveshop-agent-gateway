@@ -86,16 +86,9 @@ func Middleware(
 			}
 
 			profile, err := v.Verify(r.Context(), t, token)
-			switch {
-			case errors.Is(err, ErrInvalidToken):
-				WriteChallenge(w, storefront.OAuthResourceMetadata(t.Domain),
-					`error="invalid_token"`, "invalid or expired access token")
-				return
-			case err != nil:
-				log.ErrorContext(r.Context(), "token verification failed",
-					slog.String("error", err.Error()))
-				httpmw.WriteJSONError(w, http.StatusServiceUnavailable,
-					"store temporarily unavailable")
+			if err != nil {
+				Refuse(w, r, log, storefront.OAuthResourceMetadata(t.Domain),
+					err)
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(NewContext(r.Context(),
