@@ -20,6 +20,13 @@ import (
 // ErrUnknownTenant means the host maps to no active store.
 var ErrUnknownTenant = errors.New("tenant: unknown store")
 
+// errUnrecognised is a resolve Django answered as it answers any caller:
+// the gateway's internal token is not the secret Django holds, most likely
+// after a rotation that reached one side only. The body is a valid public
+// config, but its empty credentials are not the store's.
+var errUnrecognised = errors.New(
+	"tenant: Django did not recognise the gateway's internal token")
+
 // negativeSentinel marks a confirmed-unknown host in Redis so scanner
 // traffic cannot stampede Django.
 const negativeSentinel = "!"
@@ -135,22 +142,36 @@ func (r *Resolver) resolveSlow(ctx context.Context, domain string) (*Tenant, err
 // credentials included, in memory and its public config in Redis; or, for a
 // store Django does not know, the negative entry in both, returned as
 // ErrUnknownTenant. Every other failure is answered by serveStale.
+//
+// An answer for a token Django did not recognise is a public config: it is
+// cached as one, never as a store without credentials, and logged. A
+// caller that needs the credentials gets the failed top-up's answer.
 func (r *Resolver) fromDjango(
 	ctx context.Context, domain string, needSecrets bool,
 ) (*Tenant, error) {
-	cfg, err := r.django.ResolveTenant(ctx, domain)
+	cfg, recognised, err := r.django.ResolveTenant(ctx, domain)
 	switch {
 	case err == nil:
 		t := &Tenant{
 			TenantConfig:  *cfg,
 			Domain:        domain,
 			ResolvedAt:    time.Now(),
-			SecretsLoaded: true,
+			SecretsLoaded: recognised,
 		}
 		r.storeMemory(domain, memEntry{tenant: t, expires: time.Now().Add(r.ttl)})
 		r.storeRedis(ctx, domain, cfg)
 		r.count("miss")
-		return t, nil
+		if !recognised {
+			r.log.ErrorContext(ctx,
+				"Django did not recognise the gateway's internal token",
+				slog.String(obs.KeyTenant, cfg.SchemaName),
+				slog.String("host", domain),
+			)
+		}
+		if recognised || !needSecrets {
+			return t, nil
+		}
+		err = errUnrecognised
 
 	case errors.Is(err, django.ErrNotFound):
 		r.storeMemory(domain, memEntry{negative: true, expires: time.Now().Add(r.negTTL)})

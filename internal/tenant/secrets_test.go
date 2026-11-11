@@ -250,14 +250,14 @@ func assertNoCredentialInRedis(t *testing.T, rd *fakeRedis, more ...string) {
 	}
 }
 
-// ageCredentials moves the time this pod fetched the store's credentials
+// ageCredentials moves the time this pod fetched secretsHost's credentials
 // from Django back by age, in every place the pod holds them.
-func ageCredentials(t *testing.T, r *Resolver, host string, age time.Duration) {
+func ageCredentials(t *testing.T, r *Resolver, age time.Duration) {
 	t.Helper()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	e, ok := r.mem[host]
-	require.True(t, ok, "no memory entry for %s to age", host)
+	e, ok := r.mem[secretsHost]
+	require.True(t, ok, "no memory entry for %s to age", secretsHost)
 	older := func(tn *Tenant) *Tenant {
 		if tn == nil || !tn.SecretsLoaded {
 			return tn
@@ -268,7 +268,7 @@ func ageCredentials(t *testing.T, r *Resolver, host string, age time.Duration) {
 	}
 	e.tenant = older(e.tenant)
 	e.held = older(e.held)
-	r.mem[host] = e
+	r.mem[secretsHost] = e
 }
 
 const unknownStore = `{"error":"unknown store"}`
@@ -343,7 +343,7 @@ func TestAGoneStoreDropsTheHeldCredentials(t *testing.T) {
 	// The store comes back, another pod writes its config to Redis, and
 	// Django goes down before this pod asks it again.
 	f.reactivate()
-	cfg, err := f.client(t).ResolveTenant(t.Context(), secretsHost)
+	cfg, _, err := f.client(t).ResolveTenant(t.Context(), secretsHost)
 	require.NoError(t, err)
 	newPod(t, f, rd.client()).storeRedis(t.Context(), secretsHost, cfg)
 	f.goDown()
@@ -432,7 +432,7 @@ func TestCredentialsOutliveARedisHitThroughAnOutage(t *testing.T) {
 	// The bound is one TTL after the credentials went stale, two after
 	// the pod got them: half a TTL before it they are still served.
 	for name, r := range pods {
-		ageCredentials(t, r, secretsHost, testTTL+testTTL/2)
+		ageCredentials(t, r, testTTL+testTTL/2)
 		expireMemory(t, r, secretsHost)
 		rec, seen := serve(MiddlewareWithSecrets(r, testLogger()))
 		assert.Equal(t, http.StatusNoContent, rec.Code, name)
@@ -443,7 +443,7 @@ func TestCredentialsOutliveARedisHitThroughAnOutage(t *testing.T) {
 	// Past the bound the credentials are not served: the credential
 	// routes answer 503, the others keep serving the config.
 	for name, r := range pods {
-		ageCredentials(t, r, secretsHost, testTTL)
+		ageCredentials(t, r, testTTL)
 		expireMemory(t, r, secretsHost)
 		rec, seen := serve(MiddlewareWithSecrets(r, testLogger()))
 		assert.Equal(t, http.StatusServiceUnavailable, rec.Code, name)
@@ -469,7 +469,7 @@ func TestStaleCredentialsAreCachedNoLongerThanTheirBound(t *testing.T) {
 		longNegTTL, testLogger(), nil)
 	_, err := pod.Resolve(t.Context(), secretsHost)
 	require.NoError(t, err)
-	ageCredentials(t, pod, secretsHost, testTTL+testTTL/2)
+	ageCredentials(t, pod, testTTL+testTTL/2)
 	expireMemory(t, pod, secretsHost)
 	f.goDown()
 
@@ -588,4 +588,125 @@ func TestEnsureSecretsReadsMemoryInsideItsFlight(t *testing.T) {
 	_, err = podC.EnsureSecrets(t.Context(), c)
 	require.ErrorIs(t, err, ErrUnknownTenant)
 	assert.Equal(t, before, gone.calls.Load())
+}
+
+// unrecognised is the cause the resolver logs when Django answers a call
+// carrying the internal token as it answers any caller.
+const unrecognised = "Django did not recognise the gateway's internal token"
+
+// A rotation of the internal secret that reached Django first: Django
+// answers the gateway as it answers anyone, 200 with the public body. That
+// is a valid public config, not a store without credentials.
+func TestAnUnrecognisedTokenIsNotAStoreWithoutCredentials(t *testing.T) {
+	f := newFakeDjango(t)
+	f.rotateToken("rotated-on-django-only")
+	rd := newFakeRedis(t)
+	var logs capturedLog
+	pod := newPodLogging(t, f, rd.client(), logs.logger())
+
+	got, err := pod.Resolve(t.Context(), secretsHost)
+	require.NoError(t, err)
+	assert.False(t, got.SecretsLoaded)
+	assert.Equal(t, "demostore", got.SchemaName)
+	assert.Equal(t, 1, strings.Count(logs.String(), `msg="`+unrecognised))
+	assert.Contains(t, logs.String(), `level=ERROR msg="`+unrecognised)
+	assert.Contains(t, logs.String(), "tenant=demostore")
+	assertMemoryTTL(t, pod, secretsHost, testTTL)
+	pod.mu.RLock()
+	assert.Nil(t, pod.mem[secretsHost].held, "nothing is held")
+	pod.mu.RUnlock()
+	// The public config refreshes the shared entry.
+	raw, ok := rd.raw(redisKey(secretsHost))
+	require.True(t, ok)
+	assert.Contains(t, raw, `"schemaName":"demostore"`)
+
+	rec, seen := serve(Middleware(pod, testLogger()))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotNil(t, seen)
+	assert.False(t, seen.SecretsLoaded)
+
+	// The credential routes: a failed top-up, logged each time.
+	for range 2 {
+		rec, seen := serve(MiddlewareWithSecrets(pod, testLogger()))
+		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		assert.Nil(t, seen)
+	}
+	assert.Equal(t, 3, strings.Count(logs.String(), `msg="`+unrecognised))
+	assertNoCredentialInRedis(t, rd)
+}
+
+// The same after a Redis hit: the top-up is refused, not answered with
+// empty credentials.
+func TestAnUnrecognisedTopUpFailsTheCredentialRoutes(t *testing.T) {
+	f := newFakeDjango(t)
+	rd := newFakeRedis(t)
+	_, podB, b := twoPods(t, f, rd)
+	f.rotateToken("rotated-on-django-only")
+
+	_, err := podB.EnsureSecrets(t.Context(), b)
+	require.ErrorContains(t, err, unrecognised)
+	rec, seen := serve(MiddlewareWithSecrets(podB, testLogger()))
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Nil(t, seen)
+	rec, _ = serve(Middleware(podB, testLogger()))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assertNoCredentialInRedis(t, rd)
+}
+
+// While Django does not recognise the token, a pod serves the credentials
+// it held within their bound; once Django recognises it again the next
+// call loads them, without a restart.
+func TestATokenRotationIsBridgedByHeldCredentials(t *testing.T) {
+	f := newFakeDjango(t)
+	rd := newFakeRedis(t)
+	var logs capturedLog
+	pod := newPodLogging(t, f, rd.client(), logs.logger())
+	_, err := pod.Resolve(t.Context(), secretsHost)
+	require.NoError(t, err)
+	expireMemory(t, pod, secretsHost)
+	f.rotateToken("rotated-on-django-only")
+
+	rec, seen := serve(MiddlewareWithSecrets(pod, testLogger()))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotNil(t, seen)
+	assert.True(t, seen.Stale)
+	assert.Equal(t, testACPBearer, seen.ACPBearerToken)
+	assert.Equal(t, 1, strings.Count(logs.String(), `msg="`+unrecognised))
+
+	// Past the bound it is refused.
+	ageCredentials(t, pod, 2*testTTL)
+	expireMemory(t, pod, secretsHost)
+	rec, seen = serve(MiddlewareWithSecrets(pod, testLogger()))
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Nil(t, seen)
+
+	// The gateway gets the new secret Django holds.
+	f.rotateToken(testInternalSecret)
+	expireMemory(t, pod, secretsHost)
+	rec, seen = serve(MiddlewareWithSecrets(pod, testLogger()))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotNil(t, seen)
+	assert.False(t, seen.Stale)
+	assert.True(t, seen.SecretsLoaded)
+	assert.Equal(t, testChatKey, seen.ChatAPIKey)
+	assertNoCredentialInRedis(t, rd)
+}
+
+// A store that has no chat key and no ACP token: Django sends both keys,
+// empty. It is loaded with empty credentials and nothing is logged.
+func TestAStoreWithoutCredentialsIsLoaded(t *testing.T) {
+	f := newFakeDjango(t)
+	f.rotate("", "")
+	var logs capturedLog
+	pod := newPodLogging(t, f, newFakeRedis(t).client(), logs.logger())
+
+	rec, seen := serve(MiddlewareWithSecrets(pod, testLogger()))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotNil(t, seen)
+	assert.True(t, seen.SecretsLoaded)
+	assert.False(t, seen.Stale)
+	assert.Empty(t, seen.ChatAPIKey)
+	assert.Empty(t, seen.ACPBearerToken)
+	assert.Equal(t, int32(1), f.calls.Load())
+	assert.Empty(t, logs.String())
 }

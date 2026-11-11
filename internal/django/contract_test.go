@@ -74,9 +74,9 @@ var djangoContract = []contractCall{
 		fn: "ResolveTenant", method: http.MethodGet,
 		path: "/tenant/resolve", status: http.StatusOK,
 		query: []contractParam{{"domain", true}},
-		out:   reflect.TypeFor[TenantConfig](),
+		out:   reflect.TypeFor[tenantResolve](),
 		names: map[string]string{
-			"TenantConfig":  "TenantConfig",
+			"tenantResolve": "TenantConfig",
 			"StoreFeatures": "StoreFeatures",
 		},
 	},

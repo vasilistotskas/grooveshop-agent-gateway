@@ -134,8 +134,10 @@ passes.
   only: Redis holds the public config, so `/chat` and `/acp/*`
   (`MiddlewareWithSecrets`) top a Redis-tier tenant up with
   `EnsureSecrets`, which asks Django through the resolve's own path
-  (`fromDjango`): a store Django answers 404 for is a 404 there too and
-  is cached as the negative entry in memory and Redis. A memory entry
+  (`fromDjango`), so a top-up counts on `gateway_tenant_cache_total`
+  and rewrites the public Redis entry as a resolve does; a store Django
+  answers 404 for is a 404 there too and is cached as the negative entry
+  in memory and Redis. A memory entry
   keeps the last tenant this pod got from Django (`memEntry.held`)
   through a Redis hit, so while Django cannot be asked the credential
   routes serve those credentials marked `Stale`, cached for the negative
@@ -144,8 +146,22 @@ passes.
   the other routes keep the config without credentials. So an ACP
   bearer rotated in Django is refused by a pod within one TTL while
   Django answers, and within two while it cannot; the chat key the same.
-  A store Django called gone drops what the pod held.
-- `internal/django` — typed API client. Every tenant-scoped call sends
+  A store Django called gone drops what the pod held. A resolve Django
+  answered without recognising the gateway's internal token (a rotation
+  that reached one side) is logged at error ("Django did not recognise
+  the gateway's internal token") and cached as a public config, in
+  memory and Redis, never as a store without credentials: the plain
+  routes serve it, the credential routes take the failed top-up's path
+  (held credentials within their bound, else 503), and the next call
+  after Django recognises the token loads them. It counts as a `miss`
+  on `gateway_tenant_cache_total`, like any Django answer. The stale
+  config itself still has no age bound.
+- `internal/django` — typed API client. `ResolveTenant` also reports
+  whether Django recognised the internal token: Django adds `chatApiKey`
+  and `acpBearerToken`, possibly empty, only then, so their presence is
+  the answer, decoded beside `TenantConfig` (`tenantResolve`), never in
+  it; one key without the other is a decode error. Every tenant-scoped
+  call sends
   `X-Forwarded-Host: <tenant domain>` + `X-Forwarded-Proto: https` (+
   `X-Language`). A GET is retried twice on a 5xx or a lost connection
   (refused, reset, closed, before the headers or in the body); never on a

@@ -230,7 +230,7 @@ func TestGetRetriesDroppedConnection(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, err := c.ResolveTenant(context.Background(), "shop.example.test")
+	_, _, err := c.ResolveTenant(context.Background(), "shop.example.test")
 	require.NoError(t, err)
 	assert.Equal(t, int32(3), calls.Load())
 }

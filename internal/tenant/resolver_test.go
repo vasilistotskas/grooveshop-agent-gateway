@@ -77,9 +77,11 @@ func unreachableRedis() *redis.Client {
 	})
 }
 
-// fakeDjango serves tenant/resolve for one known domain and counts calls.
-// Like Django it answers with the secret fields only to a caller that
-// sends the internal token.
+// fakeDjango serves tenant/resolve for one known domain and counts calls,
+// as Django's tenant_resolve view does (tenant/views.py): the credential
+// keys are added, possibly empty, only for a caller whose X-Internal-Token
+// matches the secret it holds; any other caller gets 200 and the public
+// body without them.
 type fakeDjango struct {
 	calls atomic.Int32
 	mu    sync.Mutex
@@ -87,6 +89,8 @@ type fakeDjango struct {
 	gone  bool
 	// The credentials it serves, until rotate changes them.
 	chatKey, acpBearer string
+	// token is the internal secret it holds, until rotateToken.
+	token string
 	// hold, when set, parks every call until it is closed.
 	hold chan struct{}
 	srv  *httptest.Server
@@ -94,13 +98,16 @@ type fakeDjango struct {
 
 func newFakeDjango(t *testing.T) *fakeDjango {
 	t.Helper()
-	f := &fakeDjango{chatKey: testChatKey, acpBearer: testACPBearer}
+	f := &fakeDjango{
+		chatKey: testChatKey, acpBearer: testACPBearer,
+		token: testInternalSecret,
+	}
 	f.srv = httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			f.calls.Add(1)
 			f.mu.Lock()
 			failing, gone, hold := f.fail, f.gone, f.hold
-			chatKey, acpBearer := f.chatKey, f.acpBearer
+			chatKey, acpBearer, token := f.chatKey, f.acpBearer, f.token
 			f.mu.Unlock()
 			if hold != nil {
 				<-hold
@@ -112,14 +119,15 @@ func newFakeDjango(t *testing.T) *fakeDjango {
 			w.Header().Set("Content-Type", "application/json")
 			if !gone && r.URL.Query().Get("domain") == "shop.example.test" {
 				body := demostoreJSON
-				if r.Header.Get("X-Internal-Token") == testInternalSecret {
+				if r.Header.Get("X-Internal-Token") == token {
 					body = withSecrets(demostoreJSON, chatKey, acpBearer)
 				}
 				_, _ = w.Write([]byte(body))
 				return
 			}
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"detail": "Store not found."}`))
+			_, _ = w.Write([]byte(
+				`{"detail": "Store not found.", "code": "store_not_found"}`))
 		}))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -149,6 +157,14 @@ func (f *fakeDjango) deactivate() {
 func (f *fakeDjango) reactivate() {
 	f.mu.Lock()
 	f.gone = false
+	f.mu.Unlock()
+}
+
+// rotateToken changes the internal secret Django holds, as a rotation that
+// reaches Django before the gateway does.
+func (f *fakeDjango) rotateToken(token string) {
+	f.mu.Lock()
+	f.token = token
 	f.mu.Unlock()
 }
 
