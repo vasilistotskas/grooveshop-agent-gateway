@@ -285,7 +285,7 @@ func (c *Client) do(ctx context.Context, r request) error {
 	case err != nil:
 		return err
 	case resp.StatusCode >= 400:
-		return c.apiError(resp, errBody)
+		return c.apiError(ctx, r, resp, errBody)
 	case resp.StatusCode >= 300:
 		return c.redirected(ctx, r, resp)
 	}
@@ -391,8 +391,26 @@ func (c *Client) redirected(
 // largest structured failure is a stock shortfall listing cart lines.
 const maxErrorBody = 64 << 10
 
-// apiError is a 4xx/5xx with its body as read (readBody).
-func (c *Client) apiError(resp *http.Response, body []byte) error {
+// apiError is a 4xx/5xx with its body as read (readBody), logged at
+// debug with the route's template, the status and Django's `code`: the
+// caller decides what the answer means, and most are an ordinary
+// refusal. Its detail is never logged: it can quote what a customer
+// typed.
+func (c *Client) apiError(
+	ctx context.Context, r request, resp *http.Response, body []byte,
+) error {
+	apiErr := parseAPIError(resp, body)
+	c.log.DebugContext(ctx, "django answered with an error",
+		slog.String("upstream", r.path),
+		slog.String("method", r.method),
+		slog.Int("status", apiErr.Status),
+		slog.String("code", apiErr.Code),
+	)
+	return apiErr
+}
+
+// parseAPIError reads a 4xx/5xx's status, Retry-After and body.
+func parseAPIError(resp *http.Response, body []byte) *APIError {
 	apiErr := &APIError{Status: resp.StatusCode, Body: body}
 	if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil &&
 		s > 0 {

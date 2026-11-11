@@ -16,6 +16,7 @@ type Metrics struct {
 	UpstreamRequests *prometheus.CounterVec
 	UpstreamDuration *prometheus.HistogramVec
 	TenantCache      *prometheus.CounterVec
+	ToolCalls        *prometheus.CounterVec
 	RateLimited      prometheus.Counter
 	FeedFailures     prometheus.Counter
 }
@@ -46,6 +47,11 @@ func NewMetrics() *Metrics {
 			Name: "gateway_tenant_cache_total",
 			Help: "Tenant resolution outcomes: hit, redis_hit, miss, negative, stale.",
 		}, []string{"result"}),
+		ToolCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gateway_tool_calls_total",
+			Help: "MCP tool calls by server (mcp, chat, mcp_admin), tool " +
+				"and outcome.",
+		}, []string{"server", "tool", "outcome"}),
 		RateLimited: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "gateway_rate_limited_total",
 			Help: "Requests rejected by the gateway rate limiter.",
@@ -63,6 +69,7 @@ func NewMetrics() *Metrics {
 		m.UpstreamRequests,
 		m.UpstreamDuration,
 		m.TenantCache,
+		m.ToolCalls,
 		m.RateLimited,
 		m.FeedFailures,
 	)

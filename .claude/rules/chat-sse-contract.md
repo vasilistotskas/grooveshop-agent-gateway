@@ -93,7 +93,12 @@ cross-repo change. The code wins over this page.
     `/mcp` requires it;
   - only the chat carries the `chatOnly` tools: `apply_coupon` and
     `remove_coupon`, gated on `promotions`, never on `/mcp` or in
-    discovery.
+    discovery;
+  - it never registers /mcp's own: the six UCP tools (`meta`), the
+    account tools (a linked bearer) and `create_cart` (`add_to_cart`
+    without a cart creates one, which the widget adopts);
+  - `done.cartId` is read from the result of a tool marked
+    `changesCart` (`mcpsrv.ChangesCart`).
 
   `products` follows the
   `tool` done event of `search_products` (query + `totalHits` as total)

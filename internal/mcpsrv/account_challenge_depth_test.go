@@ -144,7 +144,7 @@ func TestTheChallengeRefusesABodyNestedDeeperThanTheSDKReads(t *testing.T) {
 	store := cartTenant()
 	store.Features = EveryFeature
 	h := RequireLinkedAccount(Handler(Deps{Site: testSite, Version: "test",
-		Log: slog.New(slog.DiscardHandler)}, slog.New(slog.DiscardHandler)))
+		Log: slog.New(slog.DiscardHandler)}))
 	// A collection would shrink the stack the request grew before it is
 	// read.
 	defer debug.SetGCPercent(debug.SetGCPercent(-1))

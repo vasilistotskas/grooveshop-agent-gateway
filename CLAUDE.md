@@ -143,7 +143,11 @@ passes.
     case-sensitive keys, the first JSON value only. A body nested deeper
     is passed on undecoded and the SDK refuses it whole. It challenges
     when any message calls an account tool.
-  - Account tools forward the bearer — Django enforces scopes.
+  - Account tools forward the bearer — Django enforces scopes. Each
+    carries its scope on its definition (`account` in
+    `internal/mcpsrv/server.go`), the challenge reads them off the toolset
+    (`accountScopes`), and they are /mcp's alone: the chat server does
+    not register them.
 - `internal/mcptool` — what the tools of both MCP servers answer with:
   `ToolError` and every code the gateway mints, the `Untrusted` marker
   (`MarkUntrusted`) for text a customer wrote, and `Add`, through which
@@ -154,9 +158,17 @@ passes.
     and the duration. The context handler adds the request id and the
     store.
   - It never logs the arguments or the result.
+  - It counts the call on `gateway_tool_calls_total{server,tool,outcome}`.
+    The outcome is the gateway's own: a code Django or a coupon refusal
+    gave is counted as `refused` (`mcptool.OutcomeRefused`), the log line
+    keeps it.
   - An unknown tool, and arguments that fail the input schema, are
-    refused by the SDK before the handler and log no line.
+    refused by the SDK before the handler, neither logged nor counted.
   - A handler panic is recovered there (see `internal/httpmw`).
+  - Every tool has a `Title` and annotations (`mcptool.ReadOnly`, `Adds`,
+    `Changes`), none open-world. `mcptool.Cacheable` lets a client keep
+    `tools/list` for `TENANT_CACHE_TTL`: public on /mcp, private on
+    /mcp/admin.
 
   How a Django failure maps to a code is each server's own `upstreamErr`.
 - `internal/adminmcp` — `/mcp/admin`, a separate MCP server with its own
@@ -269,6 +281,8 @@ passes.
   retried, as in `internal/ucp/fetch.go`. Errors unwrap to sentinels
   (`ErrNotFound`, `ErrConflict`, `ErrThrottled`, `ErrValidation`,
   `ErrUpstreamDown`) — branch with `errors.Is`, never on status literals.
+  An error answer is logged at debug with the route's template, the
+  status and Django's `code`, never its detail.
   A failure while reading a body (a document, an error body) is
   `ErrUpstreamDown` like one before the headers, or `context.Canceled`
   for a caller that hung up; a redirect whose body is cut stays the
@@ -518,7 +532,10 @@ passes.
   feeds `catalogue` (`ProductFeedsOn`). The per-store server (cached per feature set) neither
   lists nor serves it, discovery does not advertise it, and the chat
   bridge, which shares one server built with `EveryFeature`, filters
-  through `mcpsrv.Offered`. With reviews off no rating or review count
+  through `mcpsrv.Offered`. Which surface serves a tool is a trait on
+  its definition too (`tool.on`): `chatOnly` (the coupon tools),
+  `mcpOnly` (the six UCP tools, whose input requires `meta`, and
+  `create_cart`) and `account`. With reviews off no rating or review count
   leaves the catalog tools either (ratings are on Django's 1–10 scale).
   With promotions off `checkout.ApplyDiscountCodes` refuses every code
   as `discount_code_invalid` without applying it (Django answers 404

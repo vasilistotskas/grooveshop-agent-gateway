@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -186,27 +185,4 @@ func TestCartChangeRefusedByTheStoreIsNoChange(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "could not be reached")
 	assert.False(t, activity.Mutated())
-}
-
-// create_cart for a signed-in shopper creates nothing: their cart exists,
-// and the tool says so instead of announcing a new one.
-func TestCreateCartForASignedInShopperCreatesNothing(t *testing.T) {
-	h, _ := cartHandlers(t, http.StatusOK)
-	ctx, activity := listening(signedIn(t))
-
-	res, out, err := h.createCart(ctx, nil, struct{}{})
-
-	require.NoError(t, err)
-	assert.Equal(t, fixtureCartID, out.CartID)
-	text := res.Content[0].(*mcp.TextContent).Text
-	assert.Contains(t, text, "No cart was created")
-	assert.NotContains(t, text, "Created cart")
-	assert.False(t, activity.Mutated())
-
-	ctx, activity = listening(
-		tenant.NewContext(context.Background(), cartTenant()))
-	res, _, err = h.createCart(ctx, nil, struct{}{})
-	require.NoError(t, err)
-	assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, "Created cart")
-	assert.True(t, activity.Mutated())
 }

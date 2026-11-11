@@ -128,17 +128,6 @@ func (h *handlers) createCart(
 		return nil, out, upstreamErr(err, "the cart service is unavailable")
 	}
 	out.CartID = c.UUID
-	// The token resolves to the cart the signed-in shopper already has:
-	// nothing is created, and saying so keeps the model from presenting
-	// their existing cart as a new, empty one.
-	if django.HasCartToken(ctx) {
-		return textResult(
-			"No cart was created: the shopper is signed in and already "+
-				"has cart %s, which the cart tools act on. Fetch it with "+
-				"get_cart to see what is in it.", out.CartID,
-		), out, nil
-	}
-	cartChanged(ctx)
 	return textResult(
 		"Created cart %s. Persist this cartId — it identifies the "+
 			"shopper's cart in every subsequent call.", out.CartID,
@@ -146,7 +135,7 @@ func (h *handlers) createCart(
 }
 
 type GetCartIn struct {
-	CartID string `json:"cartId" jsonschema:"cart id from create_cart or add_to_cart"`
+	CartID string `json:"cartId" jsonschema:"the cartId a cart tool returned"`
 }
 
 func (h *handlers) getCart(
@@ -160,7 +149,7 @@ func (h *handlers) getCart(
 	lang := django.Language(ctx, t.TenantConfig)
 	if in.CartID == "" && !django.HasCartToken(ctx) {
 		return nil, out, errors.New(
-			"cartId is required; create one with create_cart")
+			"cartId is required; add_to_cart without one creates a cart")
 	}
 	c, err := h.deps.Django.GetCart(ctx, t.Domain, lang, in.CartID)
 	if err != nil {
