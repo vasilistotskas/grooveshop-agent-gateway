@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -156,7 +159,10 @@ func TestACPWriterGolden(t *testing.T) {
 	}
 	got, err := w.Bytes()
 	require.NoError(t, err)
-	goldenCompare(t, "feed_acp.json", got)
+	// The feed is served compact; the golden file is indented to read.
+	var indented bytes.Buffer
+	require.NoError(t, json.Indent(&indented, got, "", " "))
+	goldenCompare(t, "feed_acp.json", indented.Bytes())
 }
 
 func TestRSSItemRules(t *testing.T) {
@@ -349,6 +355,56 @@ func TestACPGoldenValidatesAgainstSchema(t *testing.T) {
 	require.NoError(t, validateACP(t, "ProductsResponse", doc))
 }
 
+// Every field stays within the strictest limit of the three targets, cut
+// by runes (Greek), and every repeated field within its count.
+func TestFeedItemFieldLimits(t *testing.T) {
+	ctx := testFeedContext()
+	p := fixtureProducts()[1]
+	long := func(n int) string { return strings.Repeat("Ω", n) }
+	p.BrandName = new(long(255))
+	p.VariantGroupTitle = new(long(255))
+	p.Highlights = []string{long(200), long(10)}
+	p.Attributes = nil
+	for i := range 40 {
+		p.Attributes = append(p.Attributes, django.ProductAttribute{
+			AttributeName: fmt.Sprintf("Ά%d", i), Value: long(255),
+			IsVariant: true,
+		})
+	}
+	for i := range 120 {
+		p.Attributes = append(p.Attributes, django.ProductAttribute{
+			AttributeName: fmt.Sprintf("Λ%d", i), Value: "x",
+		})
+	}
+
+	it, err := newFeedItem(&p, ctx)
+	require.NoError(t, err)
+	require.NotNil(t, it)
+	runes := utf8.RuneCountInString
+	assert.Equal(t, feedBrandMax, runes(it.Brand))
+	assert.Equal(t, feedItemGroupTitleMax, runes(it.ItemGroupTitle))
+	assert.Equal(t, feedHighlightMax, runes(it.Highlights[0]))
+	assert.Len(t, it.Details, feedDetailsMax)
+
+	require.NotEmpty(t, it.VariantOptions)
+	assert.LessOrEqual(t, len(it.VariantOptions), feedVariantOptionsMax)
+	var total int
+	for _, o := range it.VariantOptions {
+		assert.LessOrEqual(t, runes(o.Value), feedVariantOptionPartMax)
+		total += runes(o.Name) + runes(o.Value)
+	}
+	assert.LessOrEqual(t, total, feedVariantOptionsTotalMax)
+	assert.True(t, utf8.ValidString(it.VariantOptions[0].Value))
+
+	// The count cap applies on its own when the options are short.
+	for i := range p.Attributes[:40] {
+		p.Attributes[i].Value = "v"
+	}
+	it, err = newFeedItem(&p, ctx)
+	require.NoError(t, err)
+	assert.Len(t, it.VariantOptions, feedVariantOptionsMax)
+}
+
 func TestPlainText(t *testing.T) {
 	for in, want := range map[string]string{
 		"a<br>b":                            "a b",
@@ -357,6 +413,12 @@ func TestPlainText(t *testing.T) {
 		"bold <b>USB-C</b>.":                "bold USB-C.",
 		"&lt;b&gt; &amp;amp; &eacute;":      "<b> &amp; é",
 		"  spaced\n\tout  ":                 "spaced out",
+		// An attribute value may hold ">"; it is never text.
+		`<a title="a>b" href="/x">link</a> end`: "link end",
+		`<img alt="1 > 0" src="x.jpg">ok`:       "ok",
+		"a<script>var x = '<p>';</script>b":     "ab",
+		"a<style>p > b { color: red }</style>b": "ab",
+		"<!-- note -->text":                     "text",
 	} {
 		assert.Equal(t, want, plainText(in), in)
 	}

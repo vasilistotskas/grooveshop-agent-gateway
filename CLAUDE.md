@@ -201,6 +201,18 @@ passes.
   `/en` links `/en/...` and `/mcp` links the store's default; ACP, the
   UCP order webhooks, the Server Card and the feeds link the store's
   default.
+- `internal/feeds` — one catalog sweep renders every feed, cached in
+  Redis (`ag:{schema}:feed:{format}` plus `:meta`) between
+  `FEED_FRESH_TTL` and `FEED_STALE_TTL`. A failed generation is logged
+  once with the request that started it, counted
+  (`gateway_feed_generation_failures_total`) and marked
+  (`ag:{schema}:feed:failed`, `failureBackoff`): until the mark expires
+  or an invalidation drops it, a stale feed is served without a refresh
+  and a missing one answers 503 without a sweep. A revalidation reads
+  the meta key only. Field limits are the strictest of Google, Meta and
+  TikTok, named at the top of `rss.go`. `internal/httphdr` parses
+  `If-None-Match` and `Accept-Encoding` for the feeds and the Server
+  Card alike.
 - `internal/text` — rune-safe truncation. Byte-index cuts split Greek
   runes; use `text.Runes` / `text.Ellipsize`.
 - `testdata/fixtures/django/` — recorded upstream responses for the DTO

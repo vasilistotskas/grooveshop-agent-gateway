@@ -17,6 +17,7 @@ type Metrics struct {
 	UpstreamDuration *prometheus.HistogramVec
 	TenantCache      *prometheus.CounterVec
 	RateLimited      prometheus.Counter
+	FeedFailures     prometheus.Counter
 }
 
 func NewMetrics() *Metrics {
@@ -49,6 +50,10 @@ func NewMetrics() *Metrics {
 			Name: "gateway_rate_limited_total",
 			Help: "Requests rejected by the gateway rate limiter.",
 		}),
+		FeedFailures: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "gateway_feed_generation_failures_total",
+			Help: "Product feed generations that failed, any store.",
+		}),
 	}
 	reg.MustRegister(
 		collectors.NewGoCollector(),
@@ -59,6 +64,7 @@ func NewMetrics() *Metrics {
 		m.UpstreamDuration,
 		m.TenantCache,
 		m.RateLimited,
+		m.FeedFailures,
 	)
 	return m
 }

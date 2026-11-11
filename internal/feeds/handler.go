@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httphdr"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -24,28 +25,56 @@ func (s *Service) Handler(kind string) http.Handler {
 			http.Error(w, "unknown store", http.StatusNotFound)
 			return
 		}
-		gz, meta, err := s.Get(r.Context(), t, kind)
-		if err != nil {
-			s.log.ErrorContext(r.Context(), "feed generation failed",
+		unavailable := func(err error) {
+			s.log.WarnContext(r.Context(), "feed unavailable",
 				slog.String("kind", kind),
 				slog.String("error", err.Error()),
 			)
 			http.Error(w, "feed temporarily unavailable",
 				http.StatusServiceUnavailable)
+		}
+		meta, err := s.Meta(r.Context(), t, kind)
+		if err != nil {
+			unavailable(err)
 			return
 		}
 
-		w.Header().Set("ETag", meta.ETag)
-		w.Header().Set("Cache-Control", "public, max-age=3600")
-		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Vary", "Accept-Encoding")
-		if r.Header.Get("If-None-Match") == meta.ETag {
+		h := w.Header()
+		cacheable := func(etag string) {
+			h.Set("ETag", etag)
+			h.Set("Cache-Control", "public, max-age=3600")
+			h.Set("Content-Type", contentType)
+			h.Set("Vary", "Accept-Encoding")
+		}
+		ifNoneMatch := strings.Join(r.Header.Values("If-None-Match"), ",")
+		if httphdr.ETagMatches(ifNoneMatch, meta.ETag) {
+			cacheable(meta.ETag)
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 
-		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
-			w.Header().Set("Content-Encoding", "gzip")
+		// An absent Accept-Encoding accepts any coding (RFC 9110
+		// 12.5.3), but a client that sent none may not decode gzip, so
+		// it gets identity like an empty one.
+		acceptEncoding := strings.Join(r.Header.Values("Accept-Encoding"), ",")
+		gzipWeight := httphdr.EncodingWeight(acceptEncoding, httphdr.Gzip)
+		identityWeight := httphdr.EncodingWeight(acceptEncoding,
+			httphdr.Identity)
+		if gzipWeight == 0 && identityWeight == 0 {
+			h.Set("Accept-Encoding", httphdr.Gzip)
+			http.Error(w, "feed served gzip or identity only",
+				http.StatusUnsupportedMediaType)
+			return
+		}
+
+		gz, meta, err := s.Body(r.Context(), t.SchemaName, kind)
+		if err != nil {
+			unavailable(err)
+			return
+		}
+		cacheable(meta.ETag)
+		if gzipWeight > 0 && gzipWeight >= identityWeight {
+			h.Set("Content-Encoding", httphdr.Gzip)
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(gz)
 			return

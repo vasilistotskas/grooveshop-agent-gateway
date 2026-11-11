@@ -7,9 +7,9 @@ import (
 
 // ACP feed types mirror testdata/schemas/acp/2026-04-17/schema.feed.json.
 // Prices are integer ISO 4217 minor units. Each catalog row becomes one
-// Product with a single self-Variant: variant grouping across the streamed
-// catalog would require full buffering, and the RSS feeds already carry
-// item_group_id for the platforms that use it.
+// Product with a single self-Variant: the RSS feeds carry item_group_id
+// for the platforms that use it. The writer holds every product until
+// Bytes encodes the document.
 
 type acpPrice struct {
 	Amount   int64  `json:"amount"`
@@ -106,5 +106,5 @@ func (w *acpWriter) Item(it *feedItem) {
 }
 
 func (w *acpWriter) Bytes() ([]byte, error) {
-	return json.MarshalIndent(w.feed, "", " ")
+	return json.Marshal(w.feed)
 }

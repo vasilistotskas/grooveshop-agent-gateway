@@ -3,9 +3,11 @@ package feeds
 import (
 	"bytes"
 	"fmt"
-	"html"
-	"regexp"
 	"strings"
+	"unicode/utf8"
+
+	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/media"
@@ -24,20 +26,32 @@ import (
 //   - g:id equals the pixel/CAPI content_ids — always the product id,
 //     never sku/uuid
 //   - text limits are the strictest of the three so one document serves
-//     them all: Google caps titles at 150 and descriptions at 5000 (Meta
-//     allows 200 / 9999; TikTok's catalog spec states no limit)
+//     them all. Google's product data specification
+//     (support.google.com/merchants/answer/7052112) is the strictest
+//     for every field below; Meta's catalog reference allows title 200,
+//     description 9999, brand 100, and TikTok's catalog guide title 150,
+//     description 20000.
 const (
 	feedTitleMax       = 150
 	feedDescriptionMax = 5000
+	feedBrandMax       = 70
 	// Google takes up to 10 additional images per product.
 	feedAdditionalImagesMax = 10
-	// Google's limits for a g:product_detail's name and value.
+	// g:product_detail: name and value, up to 100 per item.
 	feedDetailNameMax  = 140
 	feedDetailValueMax = 1000
-	// Google's bounds for g:product_highlight: an item with fewer than the
-	// minimum breaks its requirements, so it goes out with none.
-	feedHighlightsMin = 2
-	feedHighlightsMax = 100
+	feedDetailsMax     = 100
+	// g:product_highlight: an item with fewer than the minimum breaks its
+	// requirements, so it goes out with none.
+	feedHighlightsMin     = 2
+	feedHighlightsMax     = 100
+	feedHighlightMax      = 150
+	feedItemGroupTitleMax = 150
+	// g:variant_option: a name and a value of up to 250 each, up to 30
+	// per item and 5000 characters in all.
+	feedVariantOptionPartMax   = 250
+	feedVariantOptionsMax      = 30
+	feedVariantOptionsTotalMax = 5000
 )
 
 // feedContext carries per-generation tenant data every writer needs.
@@ -136,23 +150,34 @@ func newFeedItem(p *django.ProductFeed, ctx *feedContext) (*feedItem, error) {
 	}
 
 	var options, details []variantOption
+	var optionRunes int
 	for _, a := range p.Attributes {
 		if a.AttributeName == "" || a.Value == "" {
 			continue
 		}
 		if a.IsVariant && p.VariantGroup != nil {
-			options = append(options,
-				variantOption{Name: a.AttributeName, Value: a.Value})
+			o := variantOption{
+				Name:  text.Runes(a.AttributeName, feedVariantOptionPartMax),
+				Value: text.Runes(a.Value, feedVariantOptionPartMax),
+			}
+			n := utf8.RuneCountInString(o.Name) + utf8.RuneCountInString(o.Value)
+			if len(options) < feedVariantOptionsMax &&
+				optionRunes+n <= feedVariantOptionsTotalMax {
+				options = append(options, o)
+				optionRunes += n
+			}
 			continue
 		}
-		details = append(details, variantOption{
-			Name:  text.Runes(a.AttributeName, feedDetailNameMax),
-			Value: text.Runes(a.Value, feedDetailValueMax),
-		})
+		if len(details) < feedDetailsMax {
+			details = append(details, variantOption{
+				Name:  text.Runes(a.AttributeName, feedDetailNameMax),
+				Value: text.Runes(a.Value, feedDetailValueMax),
+			})
+		}
 	}
 	var groupTitle string
 	if p.VariantGroup != nil && p.VariantGroupTitle != nil {
-		groupTitle = *p.VariantGroupTitle
+		groupTitle = text.Runes(*p.VariantGroupTitle, feedItemGroupTitleMax)
 	}
 
 	var additional []string
@@ -171,6 +196,7 @@ func newFeedItem(p *django.ProductFeed, ctx *feedContext) (*feedItem, error) {
 	if p.BrandName != nil && *p.BrandName != "" {
 		brand = *p.BrandName
 	}
+	brand = text.Runes(brand, feedBrandMax)
 
 	// A product without a category gets no product_type, never the name
 	// of whatever category 0 would map to.
@@ -207,7 +233,11 @@ func feedHighlights(highlights []string) []string {
 	if len(highlights) < feedHighlightsMin {
 		return nil
 	}
-	return highlights[:min(len(highlights), feedHighlightsMax)]
+	kept := make([]string, 0, min(len(highlights), feedHighlightsMax))
+	for _, h := range highlights[:cap(kept)] {
+		kept = append(kept, text.Runes(h, feedHighlightMax))
+	}
+	return kept
 }
 
 // rssWriter accumulates the RSS-dialect feed google.xml, meta.xml and
@@ -349,19 +379,42 @@ var xmlReplacer = strings.NewReplacer(
 	"'", "&apos;",
 )
 
-var (
-	// Block-level tags separate words; inline ones (<b>, <a>) do not.
-	blockTagRe = regexp.MustCompile(`(?i)</?(?:br|p|div|li|ul|ol|h[1-6]|` +
-		`tr|td|th|table|blockquote|hr)\b[^>]*>`)
-	htmlTagRe = regexp.MustCompile(`<[^>]*>`)
-)
+// blockTags separate words; inline ones (<b>, <a>) do not.
+var blockTags = map[atom.Atom]bool{
+	atom.Br: true, atom.P: true, atom.Div: true, atom.Li: true,
+	atom.Ul: true, atom.Ol: true, atom.H1: true, atom.H2: true,
+	atom.H3: true, atom.H4: true, atom.H5: true, atom.H6: true,
+	atom.Tr: true, atom.Td: true, atom.Th: true, atom.Table: true,
+	atom.Blockquote: true, atom.Hr: true,
+}
 
-// plainText turns a rich-text description into one line of plain text.
-// Block tags become spaces so "a<br>b" or "</li><li>" keep their words
-// apart; entities are decoded after stripping so an encoded "&lt;b&gt;"
-// stays text, and escapeXML encodes the result exactly once.
+// plainText turns a rich-text description into one line of plain text:
+// the text tokens of the HTML tokenizer, so a ">" inside an attribute
+// value is never mistaken for a tag's end, and the contents of a script
+// or style are dropped. Block tags become spaces so "a<br>b" or
+// "</li><li>" keep their words apart. The tokenizer decodes entities
+// once, so an encoded "&lt;b&gt;" stays text, and escapeXML encodes the
+// result exactly once.
 func plainText(v string) string {
-	v = blockTagRe.ReplaceAllString(v, " ")
-	v = html.UnescapeString(htmlTagRe.ReplaceAllString(v, ""))
-	return strings.Join(strings.Fields(v), " ")
+	var b strings.Builder
+	var hidden bool
+	z := html.NewTokenizer(strings.NewReader(v))
+	for {
+		switch tt := z.Next(); tt {
+		case html.ErrorToken:
+			return strings.Join(strings.Fields(b.String()), " ")
+		case html.TextToken:
+			if !hidden {
+				b.Write(z.Text())
+			}
+		case html.StartTagToken, html.EndTagToken, html.SelfClosingTagToken:
+			name, _ := z.TagName()
+			tag := atom.Lookup(name)
+			hidden = tt == html.StartTagToken &&
+				(tag == atom.Script || tag == atom.Style)
+			if blockTags[tag] {
+				b.WriteByte(' ')
+			}
+		}
+	}
 }

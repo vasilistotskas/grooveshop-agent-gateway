@@ -57,6 +57,18 @@ const generationTimeout = 5 * time.Minute
 // invalidations; each retry means another invalidation landed mid-write.
 const storeAttempts = 3
 
+// failureBackoff is how long a failed generation holds off the next one
+// for its store, across every pod. Without it, every request between
+// FEED_FRESH_TTL and FEED_STALE_TTL (18h by default) or on a missing feed
+// starts another full sweep of the catalog while the failure lasts. A
+// stale feed is still served meanwhile; a missing one answers 503 for at
+// most this long, and an invalidation lifts it at once.
+const failureBackoff = time.Minute
+
+// errRecentlyFailed answers a missing feed while failureBackoff runs.
+var errRecentlyFailed = errors.New(
+	"feeds: the last generation failed; waiting before the next")
+
 type Meta struct {
 	ETag string `json:"etag"`
 	// GeneratedAt is when the sweep that produced the feed STARTED — the
@@ -74,9 +86,10 @@ type Meta struct {
 }
 
 type Service struct {
-	dj  *django.Client
-	rdb *redis.Client
-	log *slog.Logger
+	dj      *django.Client
+	rdb     *redis.Client
+	log     *slog.Logger
+	metrics *obs.Metrics
 	// imageTpl expands {assets_host}/{schema}/{path}; assetsHost is the
 	// PLATFORM media origin used for tenants that have not opted into
 	// white-label asset URLs (the documented default).
@@ -91,11 +104,12 @@ type Service struct {
 
 func NewService(
 	dj *django.Client, rdb *redis.Client, log *slog.Logger,
+	metrics *obs.Metrics,
 	imageTpl, assetsHost string, freshTTL, staleTTL time.Duration,
 	generator string, site storefront.Site,
 ) *Service {
 	return &Service{
-		dj: dj, rdb: rdb, log: log,
+		dj: dj, rdb: rdb, log: log, metrics: metrics,
 		imageTpl: imageTpl, assetsHost: assetsHost,
 		freshTTL: freshTTL, staleTTL: staleTTL,
 		generator: generator, site: site,
@@ -116,55 +130,115 @@ func epochKey(schema string) string {
 	return "ag:" + schema + ":feed:epoch"
 }
 
-// Get returns the gzipped feed. Fresh cache serves directly; a stale entry
-// serves immediately while a background refresh runs; a miss waits for a
-// generation. One generation pass renders every kind.
-func (s *Service) Get(
+// failedKey marks a store whose last generation failed, for
+// failureBackoff.
+func failedKey(schema string) string {
+	return "ag:" + schema + ":feed:failed"
+}
+
+// Meta returns the metadata of the feed the store serves, without its
+// body, so a revalidation that matches costs no blob read. A fresh entry
+// is returned as it is; a stale one too, while a background refresh
+// runs; a miss waits for a generation. After a failed generation,
+// failureBackoff holds off the next: a stale entry is returned without
+// a refresh and a miss fails at once. One generation renders every kind.
+func (s *Service) Meta(
 	ctx context.Context, t *tenant.Tenant, kind string,
-) ([]byte, Meta, error) {
+) (Meta, error) {
 	format := formatOf(kind)
-	gz, meta, ok := s.fromCache(ctx, t.SchemaName, format)
+	meta, ok, failed := s.cachedMeta(ctx, t.SchemaName, format)
 	if ok {
-		if time.Since(meta.GeneratedAt) >= s.freshTTL {
-			s.refresh(t)
+		if !failed && time.Since(meta.GeneratedAt) >= s.freshTTL {
+			s.refresh(ctx, t)
 		}
-		return gz, meta, nil
+		return meta, nil
+	}
+	if failed {
+		return Meta{}, errRecentlyFailed
 	}
 
 	select {
-	case res := <-s.refresh(t):
+	case res := <-s.refresh(ctx, t):
 		if res.Err != nil {
-			return nil, Meta{}, res.Err
+			return Meta{}, res.Err
 		}
 	case <-ctx.Done():
-		return nil, Meta{}, ctx.Err()
+		return Meta{}, ctx.Err()
 	}
-	gz, meta, ok = s.fromCache(ctx, t.SchemaName, format)
+	meta, ok, _ = s.cachedMeta(ctx, t.SchemaName, format)
 	if !ok {
-		return nil, Meta{}, errors.New("feeds: generation produced no cache")
+		return Meta{}, errors.New("feeds: generation produced no cache")
+	}
+	return meta, nil
+}
+
+// Body returns the gzipped feed with the metadata stored beside it, both
+// read in one step. It follows Meta, which brought the entry into the
+// cache; an invalidation landing in between leaves nothing to read.
+func (s *Service) Body(
+	ctx context.Context, schema, kind string,
+) ([]byte, Meta, error) {
+	gz, meta, ok := s.fromCache(ctx, schema, formatOf(kind))
+	if !ok {
+		return nil, Meta{}, errors.New("feeds: cache entry gone")
 	}
 	return gz, meta, nil
 }
 
 // refresh starts (or joins) the tenant's generation. The sweep is
-// decoupled from any request: on a large catalog it can outlast a
-// crawler's timeout, and tying it to the first caller would cancel it
-// for every waiter and restart it from zero on the next request — a
-// feed that never lands. An abandoned sweep still fills the cache the
-// next crawler reads, and singleflight keeps it to one per tenant. A
-// panic is logged and returned as an error (obs.Recover): here for the
-// whole generation on the singleflight goroutine, and in
-// fetchAllProducts for pages 2..N, fetched on errgroup goroutines.
-func (s *Service) refresh(t *tenant.Tenant) <-chan singleflight.Result {
+// detached from the request that started it (context.WithoutCancel,
+// which keeps its request id and tenant for the log lines): on a large
+// catalog it can outlast a crawler's timeout, and tying it to the first
+// caller would cancel it for every waiter and restart it from zero on
+// the next request, a feed that never lands. An abandoned sweep still
+// fills the cache the next crawler reads, and singleflight keeps it to
+// one per tenant. A panic is logged and returned as an error
+// (obs.Recover): here for the whole generation on the singleflight
+// goroutine, and in fetchAllProducts for pages 2..N, fetched on errgroup
+// goroutines. A failure is logged, counted and marked here, whichever
+// caller waits for it or none.
+func (s *Service) refresh(
+	ctx context.Context, t *tenant.Tenant,
+) <-chan singleflight.Result {
+	ctx = context.WithoutCancel(ctx)
 	return s.sf.DoChan(t.SchemaName, func() (_ any, err error) {
-		ctx, cancel := context.WithTimeout(
-			context.Background(), generationTimeout)
+		gctx, cancel := context.WithTimeout(ctx, generationTimeout)
 		defer cancel()
-		defer obs.Recover(ctx,
-			s.log.With(slog.String(obs.KeyTenant, t.SchemaName)),
-			"feeds: generation", &err)
-		return nil, s.generate(ctx, t)
+		defer s.failed(ctx, t.SchemaName, &err)
+		defer obs.Recover(gctx, s.log, "feeds: generation", &err)
+		return nil, s.generate(gctx, t)
 	})
+}
+
+// failed records a generation that ended in *err, after obs.Recover has
+// turned a panic into one.
+func (s *Service) failed(ctx context.Context, schema string, err *error) {
+	if *err == nil {
+		return
+	}
+	s.metrics.FeedFailures.Inc()
+	s.log.ErrorContext(ctx, "feed generation failed",
+		slog.String("error", (*err).Error()))
+	if mErr := s.rdb.Set(ctx, failedKey(schema), 1,
+		failureBackoff).Err(); mErr != nil {
+		s.log.WarnContext(ctx, "feed generation failure not marked",
+			slog.String("error", mErr.Error()))
+	}
+}
+
+// cachedMeta reads the feed's metadata and whether a generation failed
+// within failureBackoff, in one round trip.
+func (s *Service) cachedMeta(
+	ctx context.Context, schema, format string,
+) (meta Meta, ok, failed bool) {
+	vals, err := s.rdb.MGet(ctx,
+		metaKey(schema, format), failedKey(schema)).Result()
+	if err != nil || len(vals) != 2 {
+		return Meta{}, false, false
+	}
+	failed = vals[1] != nil
+	meta, ok = s.decodeMeta(vals[0])
+	return meta, ok, failed
 }
 
 func (s *Service) fromCache(
@@ -172,22 +246,31 @@ func (s *Service) fromCache(
 ) ([]byte, Meta, bool) {
 	vals, err := s.rdb.MGet(ctx,
 		dataKey(schema, format), metaKey(schema, format)).Result()
-	if err != nil || len(vals) != 2 || vals[0] == nil || vals[1] == nil {
+	if err != nil || len(vals) != 2 {
 		return nil, Meta{}, false
 	}
-	data, ok1 := vals[0].(string)
-	rawMeta, ok2 := vals[1].(string)
-	if !ok1 || !ok2 {
-		return nil, Meta{}, false
-	}
-	var meta Meta
-	if err := json.Unmarshal([]byte(rawMeta), &meta); err != nil {
-		return nil, Meta{}, false
-	}
-	if meta.Generator != s.generator {
+	data, isString := vals[0].(string)
+	meta, ok := s.decodeMeta(vals[1])
+	if !isString || !ok {
 		return nil, Meta{}, false
 	}
 	return []byte(data), meta, true
+}
+
+// decodeMeta reads a stored Meta; one from another build is a miss.
+func (s *Service) decodeMeta(v any) (Meta, bool) {
+	raw, ok := v.(string)
+	if !ok {
+		return Meta{}, false
+	}
+	var meta Meta
+	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+		return Meta{}, false
+	}
+	if meta.Generator != s.generator {
+		return Meta{}, false
+	}
+	return meta, true
 }
 
 // Invalidate drops every cached feed for one tenant so the next request
@@ -207,7 +290,10 @@ func (s *Service) fromCache(
 // regeneration: generating is a Django round trip per tenant, and the
 // next feed request will do it anyway.
 func (s *Service) Invalidate(ctx context.Context, schema string) (int64, error) {
-	keys := make([]string, 0, len(formats)*2)
+	// The failure mark goes too: an invalidation follows a catalogue
+	// change, which may be the fix.
+	keys := make([]string, 0, len(formats)*2+1)
+	keys = append(keys, failedKey(schema))
 	for _, format := range formats {
 		keys = append(keys, dataKey(schema, format), metaKey(schema, format))
 	}
@@ -264,12 +350,12 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 	rss := newRSSWriter(fctx)
 	acp := newACPWriter()
 
-	var skipped int
-	count, truncated, err := fetchAllProducts(
-		ctx, s.dj, s.log.With(slog.String(obs.KeyTenant, t.SchemaName)),
-		t.Domain, t.DefaultLocale,
+	var listed, inactive, skipped int
+	_, truncated, err := fetchAllProducts(
+		ctx, s.dj, s.log, t.Domain, t.DefaultLocale,
 		func(p django.ProductFeed) error {
 			if !p.Active {
+				inactive++
 				return nil
 			}
 			item, err := newFeedItem(&p, fctx)
@@ -282,6 +368,7 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 			}
 			rss.Item(item)
 			acp.Item(item)
+			listed++
 			return nil
 		})
 	if err != nil {
@@ -290,7 +377,6 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 	if truncated {
 		s.log.WarnContext(ctx,
 			"feed catalog sweep hit the page cap — feed truncated",
-			slog.String(obs.KeyTenant, t.SchemaName),
 			slog.Int("pages", maxPages))
 	}
 
@@ -317,9 +403,9 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 	}
 
 	s.log.InfoContext(ctx, "feeds generated",
-		slog.String(obs.KeyTenant, t.SchemaName),
-		slog.Int("products", count),
-		slog.Int("skipped_no_name_or_image", skipped),
+		slog.Int("products", listed),
+		slog.Int("inactive", inactive),
+		slog.Int("skipped_no_name_image_or_price", skipped),
 		slog.Bool("overtaken_by_invalidation", overtaken),
 		slog.Int64("duration_ms", time.Since(start).Milliseconds()),
 	)

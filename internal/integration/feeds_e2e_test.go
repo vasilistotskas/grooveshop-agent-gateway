@@ -178,6 +178,55 @@ func TestFeedsEndToEnd(t *testing.T) {
 		assert.Contains(t, resp.Header.Get("Content-Type"), "application/json")
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
-		assert.Contains(t, string(body), `"amount": 1240`)
+		assert.Contains(t, string(body), `"amount":1240`)
 	})
+
+	t.Run("gzip refused with q=0 gets identity", func(t *testing.T) {
+		resp := get("/feeds/google.xml",
+			map[string]string{"Accept-Encoding": "gzip;q=0, br"})
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Empty(t, resp.Header.Get("Content-Encoding"))
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.True(t, strings.HasPrefix(string(body), `<?xml`))
+	})
+
+	t.Run("no acceptable coding is refused", func(t *testing.T) {
+		resp := get("/feeds/google.xml",
+			map[string]string{"Accept-Encoding": "br, identity;q=0, *;q=0"})
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusUnsupportedMediaType, resp.StatusCode)
+		assert.Equal(t, "gzip", resp.Header.Get("Accept-Encoding"))
+		assert.Empty(t, resp.Header.Get("Cache-Control"))
+	})
+
+	// Revalidation reads the metadata alone: with the blobs gone from
+	// Redis, a matching tag (weak, listed) still answers 304, and the
+	// next full read finds the entry gone.
+	t.Run("weak and listed etags revalidate without the blob",
+		func(t *testing.T) {
+			first := get("/feeds/tiktok.xml",
+				map[string]string{"Accept-Encoding": "gzip"})
+			_ = first.Body.Close()
+			etag := first.Header.Get("ETag")
+			require.NotEmpty(t, etag)
+
+			require.NoError(t, rdb.Unlink(t.Context(),
+				"ag:demostore:feed:rss", "ag:demostore:feed:acp").Err())
+			for _, inm := range []string{
+				"W/" + etag, `"stale", ` + etag, "*",
+			} {
+				resp := get("/feeds/tiktok.xml", map[string]string{
+					"Accept-Encoding": "gzip", "If-None-Match": inm,
+				})
+				_ = resp.Body.Close()
+				assert.Equal(t, http.StatusNotModified, resp.StatusCode, inm)
+				assert.Equal(t, etag, resp.Header.Get("ETag"), inm)
+			}
+			resp := get("/feeds/tiktok.xml",
+				map[string]string{"Accept-Encoding": "gzip"})
+			_ = resp.Body.Close()
+			assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+		})
 }

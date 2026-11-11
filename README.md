@@ -95,7 +95,7 @@ internal/
 ├── chat/           # Chatbot handler, model loop, quotas
 ├── identity/       # Bearer verification for /mcp
 ├── storefront/     # Every link into the Nuxt storefront
-└── ...             # config, httpmw, httpsig, media, money, obs, text
+└── ...             # config, httphdr, httpmw, httpsig, media, money, obs, text
 contract/           # The gateway's Django consumer contract (OpenAPI)
 testdata/           # Recorded Django responses for the decode tests
 ```

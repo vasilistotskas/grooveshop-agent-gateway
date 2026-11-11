@@ -105,21 +105,6 @@ func TestServerCardSchemaRejectsNonConformingCards(t *testing.T) {
 	}
 }
 
-func TestETagMatchesWeakAndListedTags(t *testing.T) {
-	const etag = `"abc"`
-	for header, want := range map[string]bool{
-		`"abc"`:              true,
-		`W/"abc"`:            true,
-		`"x", "abc"`:         true,
-		`*`:                  true,
-		`"other"`:            false,
-		``:                   false,
-		`W/"x" , W/"abc"   `: true,
-	} {
-		assert.Equal(t, want, etagMatches(header, etag), header)
-	}
-}
-
 // A long store name is bounded once, so the card and initialize agree.
 func TestIdentityTitleIsBoundedForBothSurfaces(t *testing.T) {
 	tn := cardTenant()

@@ -1,7 +1,9 @@
 // Package feeds generates per-tenant product feeds (Google Merchant, Meta,
-// TikTok RSS dialect and the ACP JSON feed) from the Django catalog with a
-// bounded-memory concurrent fetch, cached gzipped in Redis with
-// stale-while-revalidate semantics.
+// TikTok RSS dialect and the ACP JSON feed) from the Django catalog,
+// cached gzipped in Redis with stale-while-revalidate semantics. The
+// concurrent fetch bounds the catalog pages held in flight; the rendered
+// documents are not bounded: each format is built whole in memory, then
+// compressed, for up to maxPages*pageSize products.
 package feeds
 
 import (
