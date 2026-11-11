@@ -128,11 +128,14 @@ func limiterKey(r *http.Request) string {
 const ipv6BucketBits = 64
 
 // ClientBucket names the caller for the budgets kept per caller: the
-// per-pod rate limiter and the chat's daily visitor quota. An IPv4 caller
-// is its address, and so is one written as IPv4-mapped IPv6; an IPv6
-// caller is its /64, in canonical form ("2001:db8:1:2::/64"). A hop that
-// is not an address, which only a caller skipping Traefik can send, is
-// its own bucket.
+// per-pod rate limiter, in front of every public route, and the chat's
+// daily visitor quota. An IPv4 caller is its address, and so is one
+// written as IPv4-mapped IPv6; an IPv6 caller is its /64, in canonical
+// form ("2001:db8:1:2::/64"), on every route: agent platforms and
+// crawlers that share a provider's /64 share a bucket too. A hop that is
+// not an address, and the special IPv6 forms (IPv4-compatible, NAT64,
+// Teredo), which only a caller skipping Traefik can send, may share one
+// bucket among themselves.
 func ClientBucket(r *http.Request) string {
 	ip := clientIP(r)
 	addr, err := netip.ParseAddr(ip)
