@@ -154,6 +154,7 @@ func (r *Resolver) shared(
 func (r *Resolver) resolveSlow(ctx context.Context, domain string) (*Tenant, error) {
 	// Re-check under singleflight: a concurrent caller may have filled it.
 	if t, ok, err := r.fromMemory(domain); ok {
+		r.count("hit")
 		return t, err
 	}
 
@@ -194,8 +195,8 @@ func (r *Resolver) fromDjango(
 		}
 		r.mu.Unlock()
 		r.storeRedis(ctx, domain, cfg)
-		r.count("miss")
 		if recognised {
+			r.count("miss")
 			return t, nil
 		}
 		r.log.ErrorContext(ctx,
@@ -205,8 +206,10 @@ func (r *Resolver) fromDjango(
 		)
 		r.logTopUp(ctx, domain, errUnrecognised, a)
 		if !needSecrets {
+			r.count("miss")
 			return t, nil
 		}
+		r.countAnswer("stale", a.tenant, a.err)
 		return a.tenant, a.err
 
 	case errors.Is(err, django.ErrNotFound):
@@ -238,6 +241,7 @@ func (r *Resolver) serveStale(
 	switch {
 	case ok && time.Now().Before(e.expires):
 		r.mu.Unlock()
+		r.count("hit")
 		if e.negative {
 			return nil, ErrUnknownTenant
 		}
@@ -276,6 +280,7 @@ func (r *Resolver) answerSecrets(
 	e, ok := r.mem[domain]
 	if t, err, live := e.secretsAnswer(now); ok && live {
 		r.mu.Unlock()
+		r.countAnswer("hit", t, err)
 		return t, err
 	}
 	if !ok || e.negative {
@@ -285,6 +290,7 @@ func (r *Resolver) answerSecrets(
 	a := r.rememberLocked(domain, now, cause)
 	r.mu.Unlock()
 	r.logTopUp(ctx, domain, cause, a)
+	r.countAnswer("stale", a.tenant, a.err)
 	return a.tenant, a.err
 }
 
@@ -337,7 +343,6 @@ func (r *Resolver) logTopUp(
 	}
 	switch {
 	case a.tenant != nil:
-		r.count("stale")
 		r.log.WarnContext(ctx, "serving stale tenant credentials", attrs...)
 	case !errors.Is(cause, errUnrecognised):
 		r.log.ErrorContext(ctx, "tenant credentials unavailable", attrs...)
@@ -532,9 +537,21 @@ func (r *Resolver) evictLocked() {
 	}
 }
 
+// count records one answer a lookup served, under result: where it came
+// from (hit, redis_hit, miss) or what it was (negative, stale). Every
+// path that returns an answer counts it once, where it returns it; a
+// failure is not an answer and is not counted.
 func (r *Resolver) count(result string) {
 	if r.metrics != nil {
 		r.metrics.TenantCache.WithLabelValues(result).Inc()
+	}
+}
+
+// countAnswer counts a credential lookup's answer under result when it is
+// one: a tenant, or a store that is gone.
+func (r *Resolver) countAnswer(result string, t *Tenant, err error) {
+	if t != nil || errors.Is(err, ErrUnknownTenant) {
+		r.count(result)
 	}
 }
 
@@ -595,6 +612,7 @@ func (r *Resolver) EnsureSecrets(
 			e, ok := r.mem[t.Domain]
 			r.mu.RUnlock()
 			if cur, err, live := e.secretsAnswer(time.Now()); ok && live {
+				r.countAnswer("hit", cur, err)
 				return cur, err
 			}
 			return r.fromDjango(ctx, t.Domain, true)

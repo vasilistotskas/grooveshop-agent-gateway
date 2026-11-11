@@ -1213,3 +1213,56 @@ func TestATopUpLeaderHangingUpDoesNotFailItsFollowers(t *testing.T) {
 	assert.True(t, res.t.SecretsLoaded)
 	assert.Equal(t, int32(1), f.calls.Load()-before)
 }
+
+// Each lookup counts the answer it serves once on
+// gateway_tenant_cache_total, where it returns it; a failure is not an
+// answer.
+func TestTheCacheMetricCountsEachServedAnswerOnce(t *testing.T) {
+	outage := func(t *testing.T) *Resolver {
+		t.Helper()
+		f := newFakeDjango(t)
+		pod := newPod(t, f, unreachableRedis())
+		_, err := pod.Resolve(t.Context(), secretsHost)
+		require.NoError(t, err)
+		expireMemory(t, pod, secretsHost)
+		f.goDown()
+		pod.metrics = obs.NewMetrics()
+		return pod
+	}
+
+	t.Run("a stale resolve", func(t *testing.T) {
+		pod := outage(t)
+		got, err := pod.Resolve(t.Context(), secretsHost)
+		require.NoError(t, err)
+		require.True(t, got.Stale)
+		assert.Equal(t, map[string]float64{"stale": 1},
+			tenantCacheCounts(t, pod.metrics))
+	})
+
+	// The resolve decided the credential answer too; the request that
+	// follows reads both from memory.
+	t.Run("then a credential request", func(t *testing.T) {
+		pod := outage(t)
+		_, err := pod.Resolve(t.Context(), secretsHost)
+		require.NoError(t, err)
+		rec, seen := serve(MiddlewareWithSecrets(pod, testLogger()))
+		require.Equal(t, http.StatusNoContent, rec.Code)
+		require.NotNil(t, seen)
+		require.True(t, seen.SecretsLoaded)
+		assert.Equal(t, map[string]float64{"stale": 1, "hit": 2},
+			tenantCacheCounts(t, pod.metrics))
+	})
+
+	t.Run("a failed top-up", func(t *testing.T) {
+		f := newFakeDjango(t)
+		_, podB, _ := twoPods(t, f, newFakeRedis(t))
+		f.goDown()
+		podB.metrics = obs.NewMetrics()
+		for range 2 {
+			rec, _ := serve(MiddlewareWithSecrets(podB, testLogger()))
+			require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		}
+		assert.Equal(t, map[string]float64{"hit": 2},
+			tenantCacheCounts(t, podB.metrics))
+	})
+}

@@ -184,8 +184,10 @@ passes.
   only: Redis holds the public config, so `/chat` and `/acp/*`
   (`MiddlewareWithSecrets`) top a Redis-tier tenant up with
   `EnsureSecrets`, which asks Django through the resolve's own path
-  (`fromDjango`), so a top-up counts on `gateway_tenant_cache_total`
-  and rewrites the public Redis entry as a resolve does; a store Django
+  (`fromDjango`), so a top-up counts its answer on
+  `gateway_tenant_cache_total` (each lookup counts the answer it serves
+  once, where it returns it; a failure is not counted) and rewrites the
+  public Redis entry as a resolve does; a store Django
   answers 404 for is a 404 there too and is cached as the negative entry
   in memory and Redis.
   - **Held credentials.** A memory entry keeps the last tenant this pod
@@ -227,9 +229,9 @@ passes.
     config, in memory and Redis, never
     as a store without credentials. The plain routes serve it; the
     credential routes take the failed top-up's path above. Once Django
-    recognises the token, credentials load within one negative TTL. It
-    counts as a `miss` on `gateway_tenant_cache_total`, like any Django
-    answer.
+    recognises the token, credentials load within one negative TTL. A
+    resolve that meets it counts a `miss`, like any Django answer; a
+    top-up counts the held answer it serves as `stale`.
   - **Stale config.** A stale config carries no credentials and still
     has no age bound. A stale answer never replaces an entry another
     flight made live meanwhile.
