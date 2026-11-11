@@ -13,10 +13,15 @@ import (
 // MCP tool errors, UCP/ACP error payloads, or HTTP statuses — never raw
 // upstream bodies.
 var (
-	ErrNotFound     = errors.New("django: not found")
-	ErrConflict     = errors.New("django: conflict")
-	ErrValidation   = errors.New("django: invalid request")
-	ErrThrottled    = errors.New("django: throttled")
+	ErrNotFound   = errors.New("django: not found")
+	ErrConflict   = errors.New("django: conflict")
+	ErrValidation = errors.New("django: invalid request")
+	ErrThrottled  = errors.New("django: throttled")
+	// ErrUpstreamDown: Django gave no usable answer (unreachable, timed
+	// out, a 5xx or a redirect). A call whose caller's context ended is
+	// not this: it wraps context.Canceled or context.DeadlineExceeded.
+	// A Django timeout matches context.DeadlineExceeded too (net/http
+	// makes it so), so test ErrUpstreamDown first.
 	ErrUpstreamDown = errors.New("django: upstream unavailable")
 	// ErrUnauthorized: the bearer token is missing, invalid, or expired.
 	ErrUnauthorized = errors.New("django: unauthorized")

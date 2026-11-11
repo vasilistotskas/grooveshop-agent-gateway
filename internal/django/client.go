@@ -46,7 +46,16 @@ func New(
 		IdleConnTimeout:     90 * time.Second,
 	}
 	return &Client{
-		hc:             &http.Client{Transport: transport, Timeout: timeout},
+		hc: &http.Client{
+			Transport: transport,
+			Timeout:   timeout,
+			// A redirect is an error (redirected), as in
+			// internal/ucp/fetch.go: no Django path the client calls
+			// redirects, and following one would replay the call.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		baseURL:        baseURL,
 		publicHost:     publicHost,
 		internalSecret: internalSecret,
@@ -75,8 +84,9 @@ type request struct {
 }
 
 // Ping reports Django reachability for /readyz's informational field.
+// One attempt: the probe repeats on its own period.
 func (c *Client) Ping(ctx context.Context) error {
-	return c.get(ctx, request{
+	return c.send(ctx, http.MethodGet, request{
 		path: "/health/live",
 		host: c.publicHost,
 	})
@@ -102,9 +112,10 @@ func (c *Client) ResolveTenant(ctx context.Context, domain string) (*TenantConfi
 	return &out, nil
 }
 
-// get performs a GET with bounded retries. Only GETs are retried —
-// mutations are not idempotent at the transport level; checkout idempotency
-// lives in the checkout package.
+// get performs a GET with bounded retries (retryable). Only GETs are
+// retried — mutations are not idempotent at the transport level; checkout
+// idempotency lives in the checkout package. A caller whose context has
+// ended is never retried.
 func (c *Client) get(ctx context.Context, req request) error {
 	req.method = http.MethodGet
 
@@ -115,7 +126,7 @@ func (c *Client) get(ctx context.Context, req request) error {
 				time.Duration(rand.IntN(100))*time.Millisecond
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return callerGone(ctx, req)
 			case <-time.After(delay):
 			}
 		}
@@ -125,14 +136,14 @@ func (c *Client) get(ctx context.Context, req request) error {
 			return nil
 		}
 		lastErr = err
-		if !retryable(err) {
+		if ctx.Err() != nil || !retryable(err) {
 			return err
 		}
 	}
 	return lastErr
 }
 
-// send performs a non-GET call exactly once.
+// send performs a call exactly once: every mutation, and Ping.
 func (c *Client) send(ctx context.Context, method string, req request) error {
 	req.method = method
 	if key := idempotencyKeyFrom(ctx); key != "" {
@@ -192,12 +203,18 @@ func (c *Client) do(ctx context.Context, r request) error {
 	elapsed := time.Since(start)
 
 	code := "error"
-	if resp != nil {
+	switch {
+	case resp != nil:
 		code = strconv.Itoa(resp.StatusCode)
+	case ctx.Err() != nil:
+		code = "canceled"
 	}
 	if c.metrics != nil {
 		c.metrics.UpstreamRequests.WithLabelValues(r.path, r.method, code).Inc()
 		c.metrics.UpstreamDuration.WithLabelValues(r.path).Observe(elapsed.Seconds())
+	}
+	if err != nil && ctx.Err() != nil {
+		return callerGone(ctx, r)
 	}
 	if err != nil {
 		err = withoutQuery(err)
@@ -213,6 +230,9 @@ func (c *Client) do(ctx context.Context, r request) error {
 	if resp.StatusCode >= 400 {
 		return c.apiError(resp)
 	}
+	if resp.StatusCode >= 300 {
+		return c.redirected(ctx, r, resp)
+	}
 	if r.out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
@@ -220,9 +240,42 @@ func (c *Client) do(ctx context.Context, r request) error {
 	dec := json.NewDecoder(resp.Body)
 	dec.UseNumber()
 	if err := dec.Decode(r.out); err != nil {
+		if ctx.Err() != nil {
+			return callerGone(ctx, r)
+		}
 		return fmt.Errorf("django: decode %s: %w", r.path, err)
 	}
 	return nil
+}
+
+// callerGone is the error of a call whose caller's context ended: it
+// wraps ctx.Err() and is never ErrUpstreamDown, since Django did not
+// fail. It is neither logged nor retried.
+func callerGone(ctx context.Context, r request) error {
+	return fmt.Errorf("django: %s %s: %w", r.method, r.path, ctx.Err())
+}
+
+// redirected turns a 3xx into ErrUpstreamDown, never retried: Django
+// did not answer the call it was sent, and a mutation it redirected
+// may have run. Location is logged without its query.
+func (c *Client) redirected(
+	ctx context.Context, r request, resp *http.Response,
+) error {
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBody))
+	location := resp.Header.Get("Location")
+	if u, err := url.Parse(location); err == nil {
+		u.RawQuery, u.ForceQuery, u.Fragment = "", false, ""
+		location = u.String()
+	} else {
+		location = "(unparsable)"
+	}
+	c.log.WarnContext(ctx, "django redirected a call",
+		slog.String("upstream", r.path),
+		slog.Int("status", resp.StatusCode),
+		slog.String("location", location),
+	)
+	return fmt.Errorf("%w: %s %s redirected with status %d",
+		ErrUpstreamDown, r.method, r.path, resp.StatusCode)
 }
 
 // maxErrorBody bounds how much of an upstream error body is retained; the
@@ -285,14 +338,17 @@ func fieldMessages(path string, v any) []string {
 	return out
 }
 
+// retryable: a 5xx, or a connection that failed before Django answered
+// (refused, reset, closed). Not a call cut by the client's timeout: a
+// Django that hangs would get the same call twice more while it hangs,
+// and the caller would wait three timeouts instead of one. Not a
+// redirect either.
 func retryable(err error) bool {
 	if apiErr, ok := errors.AsType[*APIError](err); ok {
 		return apiErr.Status >= 500
 	}
-	if _, ok := errors.AsType[net.Error](err); ok {
-		return true
-	}
-	return errors.Is(err, ErrUpstreamDown)
+	netErr, ok := errors.AsType[net.Error](err)
+	return ok && !netErr.Timeout()
 }
 
 // withoutQuery drops the query string from a transport error's URL. A

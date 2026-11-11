@@ -58,8 +58,10 @@ reading the whole tree.
 - Errors unwrap to the sentinels (`ErrNotFound`, `ErrConflict`, `ErrThrottled`,
   `ErrValidation`, `ErrUpstreamDown`) and are branched on with `errors.Is`.
   Flag a branch on a status-code literal.
-- GETs to Django may retry twice on 5xx/network; **mutations must never retry**
-  at transport level. Flag a retrying mutation.
+- GETs to Django may retry twice on a 5xx or a failed connection, never on
+  a client timeout or a caller whose context ended; **mutations must never
+  retry** at transport level. Flag a retrying mutation, and a redirect
+  followed.
 
 ### 5. Readiness and observability
 - `/healthz` is process-only. `/readyz` gates on **Redis only** — a Django

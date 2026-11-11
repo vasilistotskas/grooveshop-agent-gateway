@@ -132,10 +132,17 @@ passes.
   deliberately ignored; spoofing it must never switch tenants).
 - `internal/django` — typed API client. Every tenant-scoped call sends
   `X-Forwarded-Host: <tenant domain>` + `X-Forwarded-Proto: https` (+
-  `X-Language`). GETs retry twice on 5xx/network; mutations never retry at
-  transport level. Errors unwrap to sentinels (`ErrNotFound`, `ErrConflict`,
-  `ErrThrottled`, `ErrValidation`, `ErrUpstreamDown`) — branch with
-  `errors.Is`, never on status literals. Django never refuses a cart an
+  `X-Language`). A GET is retried twice on a 5xx or a connection that
+  failed before Django answered (refused, reset); never on a call cut by
+  `UPSTREAM_TIMEOUT` (a hung Django would get it three times), never once
+  the caller's context has ended. Mutations and the `/readyz` ping are
+  sent once. A redirect is never followed: it is `ErrUpstreamDown`, not
+  retried, as in `internal/ucp/fetch.go`. Errors unwrap to sentinels
+  (`ErrNotFound`, `ErrConflict`, `ErrThrottled`, `ErrValidation`,
+  `ErrUpstreamDown`) — branch with `errors.Is`, never on status literals.
+  A call whose caller's context ended wraps `ctx.Err()` and is not
+  `ErrUpstreamDown`: it is not logged, and its metric code is
+  `canceled`. Django never refuses a cart an
   anonymous caller cannot reach (a signed-in shopper's, or a guest cart
   since deleted): it answers 200/201 with a new guest cart and acts on
   that one. Every cart call that names a cart therefore checks the cart

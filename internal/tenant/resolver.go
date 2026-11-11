@@ -151,7 +151,7 @@ func (r *Resolver) resolveSlow(ctx context.Context, domain string) (*Tenant, err
 			stale.Stale = true
 			// Re-cache for the negative TTL: otherwise every request
 			// re-probes a Django that may be hanging rather than refusing,
-			// paying the full retry budget before getting this answer.
+			// paying a full upstream timeout before getting this answer.
 			r.storeMemory(domain, memEntry{
 				tenant: &stale, expires: time.Now().Add(r.negTTL),
 			})
