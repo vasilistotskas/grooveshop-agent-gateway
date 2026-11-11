@@ -1,9 +1,16 @@
 package feeds
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/xml"
 	"errors"
+	"io"
 	"log/slog"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -200,6 +207,57 @@ func TestRefreshFailureIsLoggedAndCounted(t *testing.T) {
 
 	assert.InDelta(t, 1, counterValue(t, metrics,
 		"gateway_feed_generation_failures_total"), 0)
+}
+
+// A generation stores each document as one gzip member written as the
+// catalogue arrived, whose header and ISIZE the read path accepts and
+// whose metadata are the document's: its length, and the weak tag of
+// its SHA-256.
+func TestGenerationStoresEachDocumentWithItsMetadata(t *testing.T) {
+	m, rdb := newMemRedis(map[string]string{})
+	s := feedService(storeCatalog(t, 3), rdb, io.Discard)
+	store := &tenant.Tenant{
+		TenantConfig: django.TenantConfig{
+			SchemaName: "demostore", StoreName: "Demo Store",
+			DefaultLocale: "el", DefaultCurrency: "EUR",
+		},
+		Domain: "demo.example.test",
+	}
+	require.NoError(t, (<-s.refresh(context.Background(), store)).Err)
+
+	docs := map[string][]byte{}
+	for _, format := range formats {
+		gz, ok := m.get(dataKey("demostore", format))
+		require.True(t, ok, format)
+		rawMeta, ok := m.get(metaKey("demostore", format))
+		require.True(t, ok, format)
+		meta, ok := s.decodeMeta(rawMeta)
+		require.True(t, ok, format)
+
+		require.NoError(t, intact([]byte(gz), meta.Size), format)
+		var doc bytes.Buffer
+		require.NoError(t, decode([]byte(gz), meta.Size, &doc), format)
+		sum := sha256.Sum256(doc.Bytes())
+		assert.Equal(t, `W/"`+hex.EncodeToString(sum[:16])+`"`, meta.ETag)
+		docs[format] = doc.Bytes()
+	}
+
+	var rss struct {
+		Items []struct {
+			ID string `xml:"http://base.google.com/ns/1.0 id"`
+		} `xml:"channel>item"`
+	}
+	require.NoError(t, xml.Unmarshal(docs[formatRSS], &rss))
+	require.Len(t, rss.Items, 3)
+	for i, item := range rss.Items {
+		assert.Equal(t, strconv.Itoa(i+1), item.ID, "in catalogue order")
+	}
+
+	var acp any
+	require.NoError(t, json.Unmarshal(docs[formatACP], &acp))
+	require.NoError(t, validateACP(t, "ProductsResponse", acp))
+	products, _ := acp.(map[string]any)["products"].([]any)
+	assert.Len(t, products, 3)
 }
 
 func counterValue(t *testing.T, m *obs.Metrics, name string) float64 {

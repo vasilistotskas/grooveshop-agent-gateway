@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"log/slog"
 	"time"
@@ -49,7 +50,12 @@ func formatOf(kind string) string {
 }
 
 // generationSlots bounds concurrent catalog sweeps per pod (memory
-// guard); the semaphore is shared by every tenant.
+// guard); the semaphore is shared by every tenant. At the page cap one
+// sweep peaked under 70 MiB of heap and two under 140 MiB, measured with
+// Django's page rendering in the same process (memory_measure_test.go),
+// so less in a pod. The pod's memory limit has to hold that above its
+// steady state: grooveshop-infrastructure,
+// manifests/app-constructs/grooveshop/base/agent-gateway.yaml.
 var generationSlots = make(chan struct{}, 2)
 
 // generationTimeout bounds one sweep, including its wait for a slot.
@@ -592,8 +598,23 @@ func (s *Service) generate(
 		fctx.CategoryNames[c.ID] = c.Translations[t.DefaultLocale].Name
 	}
 
-	rss := newRSSWriter(fctx)
-	acp := newACPWriter()
+	// Each document is compressed as it is written, so none is ever held
+	// whole and uncompressed: a sweep holds the fetch window and the gzip
+	// output.
+	streams := make(map[string]*docStream, len(formats))
+	for _, format := range formats {
+		if streams[format], err = newDocStream(); err != nil {
+			return err
+		}
+	}
+	rss, err := newRSSWriter(fctx, streams[formatRSS])
+	if err != nil {
+		return err
+	}
+	acp, err := newACPWriter(streams[formatACP])
+	if err != nil {
+		return err
+	}
 
 	var listed, inactive, skipped, overCap int
 	_, truncated, err := fetchAllProducts(
@@ -611,8 +632,12 @@ func (s *Service) generate(
 				skipped++
 				return nil
 			}
-			rss.Item(item)
-			acp.Item(item)
+			if err := rss.Item(item); err != nil {
+				return err
+			}
+			if err := acp.Item(item); err != nil {
+				return err
+			}
 			listed++
 			if item.OverCap {
 				overCap++
@@ -628,24 +653,17 @@ func (s *Service) generate(
 			slog.Int("pages", maxPages))
 	}
 
-	acpBytes, err := acp.Bytes()
-	if err != nil {
-		return fmt.Errorf("feeds: acp encode: %w", err)
+	if err := rss.Close(); err != nil {
+		return err
 	}
-	outputs := map[string][]byte{formatRSS: rss.Bytes(), formatACP: acpBytes}
-	entries := make(map[string]cacheEntry, len(outputs))
-	for format, raw := range outputs {
-		gz, err := gzipBytes(raw)
-		if err != nil {
+	if err := acp.Close(); err != nil {
+		return err
+	}
+	entries := make(map[string]cacheEntry, len(streams))
+	for format, stream := range streams {
+		if entries[format], err = stream.entry(); err != nil {
 			return err
 		}
-		sum := sha256.Sum256(raw)
-		// Weak: the gzip and the identity body share it, and a strong
-		// tag has to differ between codings (RFC 9110 8.8.3.3).
-		entries[format] = cacheEntry{gz: gz, meta: Meta{
-			ETag: `W/"` + hex.EncodeToString(sum[:16]) + `"`,
-			Size: len(raw),
-		}}
 	}
 	overtaken, err := s.store(ctx, t.SchemaName, epoch, start, entries)
 	if err != nil {
@@ -666,6 +684,51 @@ func (s *Service) generate(
 type cacheEntry struct {
 	gz   []byte
 	meta Meta
+}
+
+// docStream compresses one feed document as it is written. It keeps the
+// gzip output and the SHA-256 and length of what was written, which are
+// the cached blob, its ETag and Meta.Size; never the document itself.
+type docStream struct {
+	gz   bytes.Buffer
+	zw   *gzip.Writer
+	sum  hash.Hash
+	size int
+}
+
+func newDocStream() (*docStream, error) {
+	s := &docStream{sum: sha256.New()}
+	zw, err := gzip.NewWriterLevel(&s.gz, gzip.BestCompression)
+	if err != nil {
+		return nil, err
+	}
+	s.zw = zw
+	return s, nil
+}
+
+func (s *docStream) Write(p []byte) (int, error) {
+	n, err := s.zw.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("feeds: compress: %w", err)
+	}
+	s.sum.Write(p)
+	s.size += n
+	return n, nil
+}
+
+// entry ends the gzip member and returns it with the document's
+// metadata.
+func (s *docStream) entry() (cacheEntry, error) {
+	if err := s.zw.Close(); err != nil {
+		return cacheEntry{}, fmt.Errorf("feeds: compress: %w", err)
+	}
+	sum := s.sum.Sum(nil)
+	// Weak: the gzip and the identity body share it, and a strong tag
+	// has to differ between codings (RFC 9110 8.8.3.3).
+	return cacheEntry{gz: s.gz.Bytes(), meta: Meta{
+		ETag: `W/"` + hex.EncodeToString(sum[:16]) + `"`,
+		Size: s.size,
+	}}, nil
 }
 
 // store writes the rendered formats unless an invalidation landed since
@@ -731,19 +794,4 @@ func storeName(t *tenant.Tenant) string {
 		return t.StoreName
 	}
 	return t.Name
-}
-
-func gzipBytes(b []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	zw, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := zw.Write(b); err != nil {
-		return nil, err
-	}
-	if err := zw.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }
