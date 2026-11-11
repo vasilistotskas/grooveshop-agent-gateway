@@ -512,7 +512,8 @@ passes.
   detach places no order; after a placed order it is answered "order
   placed, read it again" without the upstream read, with an info log
   line. The process does not exit under one: the shutdown's final
-  window holds the budget (`cmd/gateway`). `Flow.Complete` alone stores
+  window holds `checkout.CompletionBudget` and the key settle after it
+  (`completionTail`, `cmd/gateway`). `Flow.Complete` alone stores
   the session and the order link from the in-progress save on, and
   returns a `checkout.Placement`: `OrderMayExist` (the zero value)
   spends the caller's idempotency key, `NothingPlaced` releases it. A

@@ -104,5 +104,5 @@ func run() error {
 		return err
 	}
 	return serve(ctx, ln, handler,
-		podTiming(completionTail(dj, log)), log)
+		podTiming(completionTail(dj.Timeout())), log)
 }

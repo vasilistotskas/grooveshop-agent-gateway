@@ -18,10 +18,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 )
 
 // lockedBuffer collects log lines written from serve's goroutines.
@@ -282,17 +280,11 @@ func TestServeReturnsAListenerFailure(t *testing.T) {
 // final window holds its whole detached budget and the key settle after
 // it; a stream keeps its own window when that is longer.
 func TestPodTimingHoldsACompletion(t *testing.T) {
-	discard := slog.New(slog.DiscardHandler)
 	for _, upstream := range []time.Duration{time.Second, 10 * time.Second} {
-		dj := django.New("http://127.0.0.1:1", "platform.test", "secret",
-			upstream, discard, obs.NewMetrics())
-		now := time.Now()
-		detached := checkout.NewFlow(dj, nil, storefront.Site{}, discard).
-			CompletionDeadline(&checkout.Session{UpdatedAt: now}).Sub(now)
+		tm := podTiming(completionTail(upstream))
 
-		tm := podTiming(completionTail(dj, discard))
-
-		assert.GreaterOrEqual(t, tm.final, detached+upstream, upstream)
+		assert.GreaterOrEqual(t, tm.final,
+			checkout.CompletionBudget(upstream)+upstream, upstream)
 		assert.GreaterOrEqual(t, tm.final, streamFinal, upstream)
 	}
 }

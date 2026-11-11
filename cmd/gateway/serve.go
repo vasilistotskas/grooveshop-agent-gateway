@@ -9,9 +9,7 @@ import (
 	"time"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 )
 
 // timing is the server's request-read bound and its shutdown budget.
@@ -58,15 +56,10 @@ func podTiming(completion time.Duration) timing {
 // checkout.Flow.Complete that runs without its caller, then one upstream
 // timeout in which the caller settles its idempotency key by the
 // placement. A completion can detach until the end of the drain, so the
-// final window must hold all of it.
-//
-// The budget is read from the flow's own deadline for a session stored
-// in progress, so it cannot drift from what Complete runs on.
-func completionTail(dj *django.Client, log *slog.Logger) time.Duration {
-	var stored checkout.Session
-	budget := checkout.NewFlow(dj, nil, storefront.Site{}, log).
-		CompletionDeadline(&stored).Sub(stored.UpdatedAt)
-	return budget + dj.Timeout()
+// final window must hold all of it. upstream is the Django client's
+// timeout.
+func completionTail(upstream time.Duration) time.Duration {
+	return checkout.CompletionBudget(upstream) + upstream
 }
 
 const (
