@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -106,6 +107,21 @@ func TestRequireLinkedAccountBoundsTheBody(t *testing.T) {
 		strings.Repeat("x", maxRequestBodyBytes+1))
 	assert.False(t, reached)
 	assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+}
+
+// A body that could not be read is not one that was too large.
+func TestRequireLinkedAccountRefusesAnUnreadableBody(t *testing.T) {
+	ctx := tenant.NewContext(context.Background(), challengeTenant())
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/mcp",
+		iotest.ErrReader(io.ErrUnexpectedEOF))
+	rec := httptest.NewRecorder()
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("an unread body must not reach the handler")
+	})
+
+	RequireLinkedAccount(next).ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestEveryAccountToolHasItsToolDefinition(t *testing.T) {

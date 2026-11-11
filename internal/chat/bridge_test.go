@@ -87,7 +87,8 @@ func TestBridgeReportsAFailedCartToolAsAFailure(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, failed)
 	assert.True(t, strings.HasPrefix(text, "ERROR: "), text)
-	assert.Contains(t, text, "the product is not in it")
+	assert.Contains(t, text, `"code":"not_found"`)
+	assert.Contains(t, text, "create_cart")
 	_, mutated := br.cartState()
 	assert.False(t, mutated)
 }

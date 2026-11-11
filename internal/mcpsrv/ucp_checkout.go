@@ -91,37 +91,15 @@ func (h *handlers) createCheckout(
 			"checkout.line_items is required to start a checkout")
 	}
 
-	cartID := in.CartID
-	if cartID == "" {
-		c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, "")
-		if err != nil {
-			return nil, zero, upstreamErr(err,
-				"the cart service is unavailable")
-		}
-		cartID = c.UUID
-		if err := checkout.SyncCartLines(
-			ctx, h.deps.Django, t, checkout.ProtocolUCP, cartID, lines,
-		); err != nil {
-			return nil, zero, upstreamErr(err,
-				"a requested product was not found")
-		}
-	}
-
-	s := checkout.NewSession(t.SchemaName, t.Domain, checkout.ProtocolUCP, cartID)
+	s := checkout.NewSession(
+		t.SchemaName, t.Domain, checkout.ProtocolUCP, in.CartID)
 	// The platform's order-event endpoint, from its profile's negotiated
 	// order capability (vetted by negotiate); none when it negotiated
 	// no order capability.
 	s.WebhookURL = neg.OrderWebhookURL()
-	codes, hasCodes := in.Checkout.discountCodes()
-	if hasCodes {
-		if err := checkout.ApplyDiscountCodes(
-			ctx, h.deps.Django, t, s, codes,
-		); err != nil {
-			return nil, zero, upstreamErr(err,
-				"the discount code could not be applied; the cart is "+
-					"unchanged")
-		}
-	}
+	// Every lookup and refusal before the first cart write, which here
+	// may be creating the cart: a region or payment the store refuses
+	// leaves no cart behind. A line sync failing after it does.
 	in.Checkout.applyTo(s)
 	if err := h.applyRegion(ctx, t, s, &in.Checkout); err != nil {
 		return nil, zero, err
@@ -129,10 +107,35 @@ func (h *handlers) createCheckout(
 	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
 		return nil, zero, err
 	}
+
+	if s.CartID == "" {
+		c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, "")
+		if err != nil {
+			return nil, zero, upstreamErr(err,
+				"the cart service is unavailable")
+		}
+		s.CartID = c.UUID
+		if err := checkout.SyncCartLines(
+			ctx, h.deps.Django, t, checkout.ProtocolUCP, s.CartID, lines,
+		); err != nil {
+			return nil, zero, withHint(upstreamErr(err,
+				"the cart made for this checkout could not be reached; "+
+					"start again"), checkoutNotCreated)
+		}
+	}
+	codes, hasCodes := in.Checkout.discountCodes()
+	if hasCodes {
+		if err := checkout.ApplyDiscountCodes(
+			ctx, h.deps.Django, t, s, codes,
+		); err != nil {
+			return nil, zero, withHint(upstreamErr(err,
+				"the cart was not found; start a new checkout with "+
+					"line_items"), checkoutNotCreated)
+		}
+	}
 	s.Recompute()
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
-		return nil, zero, errors.New(
-			"checkout is temporarily unavailable; retry shortly")
+		return nil, zero, errCheckoutUnavailable
 	}
 	res, out, err := h.checkoutResult(ctx, t, s, neg)
 	return h.discountAnnotated(res, out, err, s, hasCodes)
@@ -207,30 +210,33 @@ func (h *handlers) updateCheckout(
 			"checkout %s is %s and can no longer be updated",
 			s.ID, s.Status)
 	}
-	// Before any cart write: a failed lookup must leave the cart and the
-	// stored session agreeing. Nothing here is saved until the end.
+	// line_items is full-state on update: the submitted list replaces
+	// the cart's lines. Ignoring it would complete the old order.
+	lines, err := in.Checkout.lines()
+	if err != nil {
+		return nil, zero, err
+	}
+	if in.Checkout.LineItems != nil && len(lines) == 0 {
+		return nil, zero, errors.New(
+			"checkout.line_items must not be empty; cancel the " +
+				"checkout to abandon it")
+	}
+	// Every lookup and refusal before the first cart write: a refused
+	// update must leave the cart and the stored session agreeing.
+	// Nothing here is saved until the end.
 	in.Checkout.applyTo(s)
 	if err := h.applyRegion(ctx, t, s, &in.Checkout); err != nil {
 		return nil, zero, err
 	}
-	// line_items is full-state on update: the submitted list replaces
-	// the cart's lines. Ignoring it would complete the old order.
+	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
+		return nil, zero, err
+	}
 	if in.Checkout.LineItems != nil {
-		lines, err := in.Checkout.lines()
-		if err != nil {
-			return nil, zero, err
-		}
-		if len(lines) == 0 {
-			return nil, zero, errors.New(
-				"checkout.line_items must not be empty; cancel the " +
-					"checkout to abandon it")
-		}
 		if err := checkout.SyncCartLines(
 			ctx, h.deps.Django, t, s.Protocol, s.CartID, lines,
 		); err != nil {
-			return nil, zero, upstreamErr(err,
-				"the line items could not be applied; the checkout is "+
-					"unchanged")
+			return nil, zero, withHint(upstreamErr(err, cartGone),
+				checkoutNotUpdated)
 		}
 	}
 	codes, hasCodes := in.Checkout.discountCodes()
@@ -238,18 +244,13 @@ func (h *handlers) updateCheckout(
 		if err := checkout.ApplyDiscountCodes(
 			ctx, h.deps.Django, t, s, codes,
 		); err != nil {
-			return nil, zero, upstreamErr(err,
-				"the discount code could not be applied; the checkout is "+
-					"unchanged")
+			return nil, zero, withHint(upstreamErr(err, cartGone),
+				checkoutNotUpdated)
 		}
-	}
-	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
-		return nil, zero, err
 	}
 	s.Recompute()
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
-		return nil, zero, errors.New(
-			"checkout is temporarily unavailable; retry shortly")
+		return nil, zero, errCheckoutUnavailable
 	}
 	res, out, err := h.checkoutResult(ctx, t, s, neg)
 	return h.discountAnnotated(res, out, err, s, hasCodes)
@@ -292,8 +293,7 @@ func (h *handlers) completeCheckout(
 			return nil, zero, paymentLinkErr(s)
 		}
 		if err := h.deps.Checkout.Save(ctx, s); err != nil {
-			return nil, zero, errors.New(
-				"checkout is temporarily unavailable; retry shortly")
+			return nil, zero, errCheckoutUnavailable
 		}
 		return h.checkoutResult(ctx, t, s, neg)
 	}
@@ -321,8 +321,7 @@ func (h *handlers) completeCheckout(
 		if errors.Is(err, checkout.ErrCompletionInProgress) {
 			return nil, zero, err
 		}
-		return nil, zero, errors.New(
-			"checkout is temporarily unavailable; retry shortly")
+		return nil, zero, errCheckoutUnavailable
 	}
 	if !claimed {
 		// A prior attempt finished; render the session's current state.
@@ -340,8 +339,7 @@ func (h *handlers) completeCheckout(
 	if s.Open() && (s.PayWayID != payWay || s.Status != status) {
 		if err := h.deps.Checkout.Save(ctx, s); err != nil {
 			h.settleCompletion(ctx, t, s, idemKey, checkout.NothingPlaced)
-			return nil, zero, errors.New(
-				"checkout is temporarily unavailable; retry shortly")
+			return nil, zero, errCheckoutUnavailable
 		}
 	}
 
@@ -419,6 +417,29 @@ func (h *handlers) settleCompletion(
 	}
 }
 
+// errCheckoutUnavailable answers a checkout store (Redis) that could not
+// be read or written: the sessions, their locks and completion claims,
+// and the order links.
+var errCheckoutUnavailable = &ToolError{Code: codeUnavailable,
+	RetryAfter: unavailableRetryAfter,
+	Hint: "the store's checkout records are temporarily unavailable; " +
+		"retry shortly, then tell the shopper to try again later"}
+
+// What a create or update whose cart write failed left behind, added to
+// the hint for its cause (withHint). An update's cart writes cannot be
+// undone: lines may already be in the cart while the session keeps its
+// old buyer, fulfillment and payment.
+const (
+	checkoutNotCreated = "No checkout was created"
+	checkoutNotUpdated = "The checkout was not updated: its buyer, " +
+		"fulfillment and payment were not stored, though line items it " +
+		"sent may already be in the cart"
+	// cartGone is a checkout's cart Django no longer serves for its id:
+	// each retry would reach a new guest cart, never this one.
+	cartGone = "the checkout's cart no longer exists; start a new one " +
+		"with create_checkout"
+)
+
 // unrenderedErr is the answer for an order that exists while its
 // checkout is not rendered: the agent must read it again, not order
 // again.
@@ -465,8 +486,7 @@ func (h *handlers) lockedSession(
 		if errors.Is(err, checkout.ErrLocked) {
 			return nil, nil, err
 		}
-		return nil, nil, errors.New(
-			"checkout is temporarily unavailable; retry shortly")
+		return nil, nil, errCheckoutUnavailable
 	}
 	s, err := h.deps.Checkout.Load(ctx, t.SchemaName, id)
 	if err != nil {
@@ -476,8 +496,7 @@ func (h *handlers) lockedSession(
 				"that checkout no longer exists; start a new one with " +
 					"create_checkout")
 		}
-		return nil, nil, errors.New(
-			"checkout is temporarily unavailable; retry shortly")
+		return nil, nil, errCheckoutUnavailable
 	}
 	return s, release, nil
 }
@@ -578,8 +597,7 @@ func (h *handlers) getCheckout(
 				"that checkout no longer exists; start a new one with " +
 					"create_checkout")
 		}
-		return nil, zero, errors.New(
-			"checkout is temporarily unavailable; retry shortly")
+		return nil, zero, errCheckoutUnavailable
 	}
 	return h.checkoutResult(ctx, t, s, neg)
 }
@@ -630,8 +648,7 @@ func (h *handlers) cancelCheckout(
 	}
 	s.Status = checkout.StatusCanceled
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
-		return nil, zero, errors.New(
-			"checkout is temporarily unavailable; retry shortly")
+		return nil, zero, errCheckoutUnavailable
 	}
 	return h.checkoutResult(ctx, t, s, neg)
 }

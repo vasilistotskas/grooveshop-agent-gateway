@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,8 +16,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
 // A refusal reaches the agent with the store's code and its words, so it
@@ -87,6 +90,56 @@ func TestUpstreamErrLeaksNothingTheAgentMayNotSee(t *testing.T) {
 	network := upstreamErr(fmt.Errorf("%w: dial tcp 10.0.0.7:8000",
 		django.ErrUpstreamDown), "not found")
 	assert.NotContains(t, network.Error(), "10.0.0.7")
+
+	// resolvePayWay reports a failed pay-way lookup like every other tool.
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"code": "error", ` +
+				`"detail": "relation \"pay_way\" does not exist"}`))
+		}))
+	t.Cleanup(srv.Close)
+	_, payWays := resolvePayWay(context.Background(),
+		django.New(srv.URL+"/api/v1", "api.example.test", "secret",
+			5*time.Second, slog.New(slog.DiscardHandler), nil),
+		cartTenant(), checkout.Fulfillment{},
+		&UCPPaymentIn{Instruments: []UCPInstrumentIn{{
+			Type: ucp.InstrumentCashOnDelivery}}})
+	require.ErrorAs(t, payWays, &got)
+	assert.Equal(t, "unavailable", got.Code)
+	assert.Empty(t, got.Detail)
+	assert.NotContains(t, payWays.Error(), "relation")
+}
+
+// What a failed checkout write left behind reaches the agent whatever the
+// cause, and changes nothing else upstreamErr decided to tell.
+func TestWithHintAddsWhatTheCallLeftBehind(t *testing.T) {
+	for name, cause := range map[string]error{
+		"a refusal": &django.APIError{Status: 400,
+			Code: "insufficient_stock", Detail: "Μόνο 2 διαθέσιμα."},
+		"an outage":   &django.APIError{Status: 502},
+		"a gone cart": django.ErrCartUnreachable,
+	} {
+		t.Run(name, func(t *testing.T) {
+			base := upstreamErr(cause, cartGone)
+			before, ok := errors.AsType[*ToolError](base)
+			require.True(t, ok)
+			want := *before
+
+			got := withHint(base, checkoutNotUpdated)
+
+			var te *ToolError
+			require.ErrorAs(t, got, &te)
+			assert.Equal(t, want.Code, te.Code)
+			assert.Equal(t, want.Detail, te.Detail)
+			assert.Equal(t, want.RetryAfter, te.RetryAfter)
+			assert.Equal(t, want.Hint+". "+checkoutNotUpdated, te.Hint)
+		})
+	}
+	shared := *errCheckoutUnavailable
+	_ = withHint(errCheckoutUnavailable, checkoutNotCreated)
+	assert.Equal(t, shared, *errCheckoutUnavailable, "a shared value is copied")
 }
 
 // The tool result is JSON an agent can read field by field, Greek
@@ -202,6 +255,23 @@ func TestAddToCartIsIdempotentWithinATurn(t *testing.T) {
 	_, _, err = h.addToCart(retried, nil, in)
 	require.NoError(t, err)
 	assert.Equal(t, k[0], (*keys)[4])
+}
+
+// A cart the store no longer serves for its id is gone: the agent is told
+// to start a new one, as every other cart tool tells it.
+func TestAddToCartToAGoneCartSaysToCreateANewOne(t *testing.T) {
+	status := http.StatusCreated
+	h, _, _ := addDjango(t, &status)
+	ctx := tenant.NewContext(context.Background(), cartTenant())
+
+	_, _, err := h.addToCart(ctx, nil, AddToCartIn{
+		CartID: "6f1c1f3e-2d6a-4b0f-9a3e-2f6d6c1b9a10", ProductID: 1,
+	})
+
+	var got *ToolError
+	require.ErrorAs(t, err, &got)
+	assert.Equal(t, "not_found", got.Code)
+	assert.Contains(t, got.Hint, "create_cart")
 }
 
 // An /mcp agent has no turn: its adds carry no key.

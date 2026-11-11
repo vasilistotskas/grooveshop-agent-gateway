@@ -196,7 +196,7 @@ func resolvePayWay(
 
 	pws, err := checkout.PayWaysFor(ctx, dj, t, f)
 	if err != nil {
-		return 0, fmt.Errorf("pay ways unavailable: %w", err)
+		return 0, upstreamErr(err, "payment methods are unavailable")
 	}
 	for i := range pws {
 		pw := &pws[i]

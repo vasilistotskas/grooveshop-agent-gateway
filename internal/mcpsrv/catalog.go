@@ -292,6 +292,7 @@ func (h *handlers) listCategories(
 	}
 
 	topLevel := 0
+	out.Categories = make([]CategoryOut, 0, len(cats))
 	for _, c := range cats {
 		if !c.Active {
 			continue
@@ -319,11 +320,13 @@ type TrendingIn struct {
 }
 
 type TrendingOut struct {
-	WindowHours int `json:"windowHours"`
-	Queries     []struct {
-		Query string `json:"query"`
-		Count int    `json:"count"`
-	} `json:"queries"`
+	WindowHours int             `json:"windowHours"`
+	Queries     []TrendingQuery `json:"queries"`
+}
+
+type TrendingQuery struct {
+	Query string `json:"query"`
+	Count int    `json:"count"`
 }
 
 func (h *handlers) getTrendingSearches(
@@ -341,11 +344,9 @@ func (h *handlers) getTrendingSearches(
 		return nil, out, upstreamErr(err, "trending searches are unavailable")
 	}
 	out.WindowHours = res.WindowHours
+	out.Queries = make([]TrendingQuery, 0, len(res.Results))
 	for _, q := range res.Results {
-		out.Queries = append(out.Queries, struct {
-			Query string `json:"query"`
-			Count int    `json:"count"`
-		}{q.Query, q.Count})
+		out.Queries = append(out.Queries, TrendingQuery{q.Query, q.Count})
 	}
 	return textResult(
 		"%d trending search queries over the last %d hours.",
@@ -359,14 +360,16 @@ type ReviewsIn struct {
 }
 
 type ReviewsOut struct {
-	Average string `json:"average"`
-	Count   int64  `json:"count"`
-	Reviews []struct {
-		Reviewer string `json:"reviewer"`
-		Rating   int    `json:"rating"`
-		Comment  string `json:"comment"`
-		Date     string `json:"date"`
-	} `json:"reviews"`
+	Average string      `json:"average"`
+	Count   int64       `json:"count"`
+	Reviews []ReviewOut `json:"reviews"`
+}
+
+type ReviewOut struct {
+	Reviewer string `json:"reviewer"`
+	Rating   int    `json:"rating"`
+	Comment  string `json:"comment"`
+	Date     string `json:"date"`
 }
 
 func (h *handlers) getProductReviews(
@@ -402,15 +405,11 @@ func (h *handlers) getProductReviews(
 
 	out.Average = num(p.ReviewAverage)
 	out.Count = page.Count
+	out.Reviews = make([]ReviewOut, 0, len(page.Results))
 	for _, r := range page.Results {
 		// Only rating, comment and first name leave the gateway — the
 		// upstream payload carries reviewer PII that must not propagate.
-		out.Reviews = append(out.Reviews, struct {
-			Reviewer string `json:"reviewer"`
-			Rating   int    `json:"rating"`
-			Comment  string `json:"comment"`
-			Date     string `json:"date"`
-		}{
+		out.Reviews = append(out.Reviews, ReviewOut{
 			Reviewer: r.User.FirstName,
 			Rating:   r.Rate,
 			Comment:  django.Localized(r.Translations, lang).Comment,

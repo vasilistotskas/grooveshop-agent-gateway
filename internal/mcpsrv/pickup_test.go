@@ -200,6 +200,98 @@ func TestPickupPointsReportARefusedCartToken(t *testing.T) {
 	assert.Empty(t, seen[nearestPath])
 }
 
+// upstreamAnswer is one status and body a fake Django route answers with.
+type upstreamAnswer struct {
+	status int
+	body   string
+}
+
+// Django's nearest-locker view answers every BOX NOW refusal with a 400
+// (shipping_boxnow/views/locker.py, nearest): the ordinary "no locker
+// near the address", and today a BOX NOW outage too, whose detail is the
+// connection error's text. Both are no point found, and that text never
+// reaches the agent. A failure Django itself answers (a 5xx, a refused
+// network) is an outage the agent hears, as is an ACS failure, whatever
+// BOX NOW still needs.
+func TestPickupPointsTellNoneFoundFromAFailure(t *testing.T) {
+	stations, err := os.ReadFile(filepath.Join("..", "..", "testdata",
+		"fixtures", "django", "acs_stations_nearest.json"))
+	require.NoError(t, err)
+	found := upstreamAnswer{http.StatusOK, string(stations)}
+	none := upstreamAnswer{http.StatusOK, "[]"}
+	down := upstreamAnswer{http.StatusServiceUnavailable, ""}
+	noLocker := upstreamAnswer{http.StatusBadRequest,
+		`{"detail": "No nearby locker could be found.", "code": "P423"}`}
+	boxNowDown := upstreamAnswer{http.StatusBadRequest, `{"detail": ` +
+		`"BoxNow connection error: HTTPSConnectionPool(host='api.boxnow.test'` +
+		`, port=443): Max retries exceeded", "code": null}`}
+	noStreet := PickupPointsIn{CountryCode: "GR", PostalCode: "10434",
+		City: "Αθήνα"}
+
+	for name, tc := range map[string]struct {
+		rows     []string
+		in       PickupPointsIn
+		acs, box upstreamAnswer
+		// want is the ToolError code, "" for none found, "points" for
+		// points listed.
+		want, hint string
+	}{
+		"no locker near the address": {rows: []string{boxnowBox},
+			in: athens, box: noLocker},
+		"BOX NOW down, as Django answers it": {rows: []string{boxnowBox},
+			in: athens, box: boxNowDown},
+		"Django down for BOX NOW": {rows: []string{boxnowBox},
+			in: athens, box: down, want: "unavailable"},
+		"ACS found none, Django down for BOX NOW": {
+			rows: []string{acsLocker, boxnowBox}, in: athens,
+			acs: none, box: down, want: "unavailable"},
+		"ACS points stand": {rows: []string{acsLocker, boxnowBox},
+			in: athens, acs: found, box: down, want: "points"},
+		"ACS down, BOX NOW needs the street": {
+			rows: []string{acsLocker, boxnowBox}, in: noStreet,
+			acs: down, want: "unavailable", hint: "city and street"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(
+				func(w http.ResponseWriter, r *http.Request) {
+					answer := upstreamAnswer{http.StatusOK,
+						"[" + strings.Join(tc.rows, ",") + "]"}
+					switch r.URL.Path {
+					case acsPath:
+						answer = tc.acs
+					case nearestPath:
+						answer = tc.box
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(answer.status)
+					_, _ = w.Write([]byte(answer.body))
+				}))
+			t.Cleanup(srv.Close)
+			h := &handlers{deps: Deps{Site: testSite, Django: django.New(
+				srv.URL+"/api/v1", "api.example.test", "secret",
+				5*time.Second, slog.New(slog.DiscardHandler), nil)}}
+
+			_, out, err := h.findPickupPoints(storeContext(), nil, tc.in)
+
+			switch tc.want {
+			case "points":
+				require.NoError(t, err)
+				assert.NotEmpty(t, out.Points)
+			case "":
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "no pickup points found")
+				assert.NotContains(t, err.Error(), "HTTPSConnectionPool")
+				assert.NotContains(t, err.Error(), "P423")
+			default:
+				var got *ToolError
+				require.ErrorAs(t, err, &got)
+				assert.Equal(t, tc.want, got.Code)
+				assert.Contains(t, got.Hint, tc.hint)
+			}
+		})
+	}
+}
+
 func providers(out PickupPointsOut) []string {
 	var p []string
 	for _, pt := range out.Points {

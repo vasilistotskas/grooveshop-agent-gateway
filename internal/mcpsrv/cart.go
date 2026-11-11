@@ -214,14 +214,13 @@ func (h *handlers) addToCart(
 	_, err = h.deps.Django.AddCartItem(context.WithoutCancel(addCtx),
 		t.Domain, lang, cartID, in.ProductID, qty, h.cartAttribution(ctx),
 	)
-	if errors.Is(err, django.ErrCartUnreachable) {
-		return nil, out, errors.New("the shopper's cart could not be " +
-			"reached, so the product is not in it; tell the shopper " +
-			"their cart could not be updated")
-	}
 	if err != nil {
-		return nil, out, upstreamErr(err, fmt.Sprintf(
-			"product %d was not found", in.ProductID))
+		notFound := fmt.Sprintf("product %d was not found", in.ProductID)
+		if errors.Is(err, django.ErrCartUnreachable) {
+			notFound = "that cart no longer exists, so the product is " +
+				"not in it; create a new one with create_cart"
+		}
+		return nil, out, upstreamErr(err, notFound)
 	}
 	added()
 	cartChanged(ctx)
@@ -372,8 +371,9 @@ func (h *handlers) applyCoupon(
 	c, err := h.deps.Django.ApplyCoupon(
 		ctx, t.Domain, lang, in.CartID, code)
 	if rejected, ok := errors.AsType[*django.CouponRejectedError](err); ok {
-		return nil, out, fmt.Errorf("the store refused coupon %s (%s): %s",
-			code, rejected.Reason, rejected.Detail)
+		return nil, out, &ToolError{Code: rejected.Reason,
+			Detail: rejected.Detail, Hint: "the store refused coupon " +
+				code + "; explain the detail to the shopper"}
 	}
 	if err != nil {
 		return nil, out, upstreamErr(err, "that cart no longer exists; "+

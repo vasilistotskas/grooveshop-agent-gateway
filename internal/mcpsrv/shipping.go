@@ -1,6 +1,7 @@
 package mcpsrv
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"strconv"
@@ -72,6 +73,7 @@ func (h *handlers) getShippingOptions(
 	if err != nil {
 		return nil, out, upstreamErr(err, "shipping options are unavailable")
 	}
+	out.Options = make([]ShippingOptionOut, 0, len(opts))
 	for _, o := range opts {
 		// Listed upstream so a storefront can explain the greyed-out
 		// option; an agent can only act on options it may choose.
@@ -237,46 +239,62 @@ func (h *handlers) findPickupPoints(
 
 	// BOX NOW's nearest lookup proxies their live API, which Django calls
 	// only with a full address: city, street and postal code are each
-	// required there, so a call without one is a certain 400. When BOX
-	// NOW declines, the other network's results stand alone.
+	// required there, so a call without one is a certain 400. Django
+	// answers every BOX NOW refusal with a 400, the ordinary "no locker
+	// near that address" among them, so a 400 is no point found; a BOX
+	// NOW outage reads the same until Django answers it as a 5xx. Any
+	// other failure is kept: with no point found, it is the answer.
 	note := ""
+	var boxNowErr error
 	if carriers[django.ShippingProviderBoxNow] {
 		if in.City == "" || in.Street == "" {
-			note = " BOX NOW lockers are searched only with the " +
+			note = "BOX NOW lockers are searched only with the " +
 				"shopper's city and street (with number): ask the " +
 				"shopper for them, then call again."
-		} else if l, err := h.deps.Django.BoxNowNearestLocker(
-			ctx, t.Domain, lang, django.BoxNowNearestRequest{
-				City:       in.City,
-				Street:     in.Street,
-				PostalCode: in.PostalCode,
-			}); err == nil {
-			out.Points = append(out.Points, PickupPoint{
-				Provider:   django.ShippingProviderBoxNow,
-				ID:         l.ID,
-				Name:       l.Name,
-				Address:    l.AddressLine1,
-				City:       l.AddressLine2,
-				PostalCode: l.PostalCode,
-				Lat:        l.Lat,
-				Lng:        l.Lng,
-				Note:       l.Note,
-			})
+		} else {
+			l, err := h.deps.Django.BoxNowNearestLocker(
+				ctx, t.Domain, lang, django.BoxNowNearestRequest{
+					City:       in.City,
+					Street:     in.Street,
+					PostalCode: in.PostalCode,
+				})
+			switch {
+			case err == nil:
+				out.Points = append(out.Points, PickupPoint{
+					Provider:   django.ShippingProviderBoxNow,
+					ID:         l.ID,
+					Name:       l.Name,
+					Address:    l.AddressLine1,
+					City:       l.AddressLine2,
+					PostalCode: l.PostalCode,
+					Lat:        l.Lat,
+					Lng:        l.Lng,
+					Note:       l.Note,
+				})
+			case !errors.Is(err, django.ErrValidation):
+				boxNowErr = err
+			}
 		}
 	}
 
 	if len(out.Points) == 0 {
-		if note != "" {
-			return textResult("No pickup points listed yet.%s", note),
-				out, nil
+		if err := cmp.Or(acsErr, boxNowErr); err != nil {
+			err = upstreamErr(err, "pickup point lookup is unavailable")
+			if note != "" {
+				err = withHint(err, note)
+			}
+			return nil, out, err
 		}
-		if acsErr != nil {
-			return nil, out, upstreamErr(acsErr,
-				"pickup point lookup is unavailable")
+		if note != "" {
+			return textResult("No pickup points listed yet. %s", note),
+				out, nil
 		}
 		return nil, out, errors.New(
 			"no pickup points found near that postal code; try a " +
 				"neighbouring postal code or add the city name")
+	}
+	if note != "" {
+		note = " " + note
 	}
 	return textResult(
 		"Found %d pickup points near %s.%s",
@@ -324,6 +342,7 @@ func (h *handlers) getPaymentMethods(
 	if err != nil {
 		return nil, out, upstreamErr(err, "payment methods are unavailable")
 	}
+	out.Methods = make([]PaymentMethodOut, 0, len(page.Results))
 	for _, pw := range page.Results {
 		if !pw.Active {
 			continue

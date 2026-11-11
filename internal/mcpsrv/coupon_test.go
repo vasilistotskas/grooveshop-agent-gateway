@@ -77,9 +77,11 @@ func TestApplyCouponPassesTheRefusalThrough(t *testing.T) {
 
 	_, _, err := h.applyCoupon(ctx, nil, ApplyCouponIn{Code: "OLD5"})
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "discount_code_expired")
-	assert.Contains(t, err.Error(), "The promotion has ended")
+	var got *ToolError
+	require.ErrorAs(t, err, &got)
+	assert.Equal(t, "discount_code_expired", got.Code)
+	assert.Equal(t, "The promotion has ended", got.Detail)
+	assert.Contains(t, got.Hint, "OLD5")
 	assert.False(t, activity.Mutated())
 }
 
