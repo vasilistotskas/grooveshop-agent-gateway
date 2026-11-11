@@ -19,6 +19,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
@@ -277,14 +278,15 @@ func TestServeReturnsAListenerFailure(t *testing.T) {
 }
 
 // An order completion can detach at the very end of the drain, so the
-// final window holds its whole detached budget and the key settle after
-// it; a stream keeps its own window when that is longer.
+// final window holds its whole detached budget, then the key settle and
+// the lock release (one upstream timeout each), with room left to write
+// the answer; a stream keeps its own window when that is longer.
 func TestPodTimingHoldsACompletion(t *testing.T) {
 	for _, upstream := range []time.Duration{time.Second, 10 * time.Second} {
 		tm := podTiming(completionTail(upstream))
 
-		assert.GreaterOrEqual(t, tm.final,
-			checkout.CompletionBudget(upstream)+upstream, upstream)
+		settled := checkout.CompletionBudget(upstream) + 2*upstream
+		assert.Greater(t, tm.final, settled, upstream)
 		assert.GreaterOrEqual(t, tm.final, streamFinal, upstream)
 	}
 }
@@ -310,16 +312,8 @@ func TestServeWaitsForAToolThatOutlivesItsRequest(t *testing.T) {
 		close(finished)
 		return &mcp.CallToolResult{}, struct{}{}, nil
 	})
-	// As /mcp and /mcp/admin serve it.
-	handler := mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return server },
-		&mcp.StreamableHTTPOptions{
-			Stateless:                    true,
-			JSONResponse:                 true,
-			PropagateRequestCancellation: true,
-		})
 	ctx, stop := stoppable(t)
-	url, logs, done := startServe(t, ctx, handler, tm)
+	url, logs, done := startServe(t, ctx, mcpHandler(server), tm)
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).
 		Connect(context.Background(),
 			&mcp.StreamableClientTransport{Endpoint: url}, nil)
@@ -347,4 +341,65 @@ func TestServeWaitsForAToolThatOutlivesItsRequest(t *testing.T) {
 		assert.Fail(t, "serve returned before the tool finished")
 	}
 	assert.NotContains(t, logs.String(), "level=WARN")
+}
+
+// The SDK ends a tool's context with its request only on protocol
+// 2026-07-28 or later. A tool registered through mcptool.Add sees the
+// shutdown cut on any protocol, here a call naming none, so work it has
+// not detached stops there as an ACP request's does.
+func TestServeCutsAToolOnAnOldProtocol(t *testing.T) {
+	tm := timing{
+		read: time.Minute, drain: 50 * time.Millisecond,
+		final: 5 * time.Second,
+	}
+	started := make(chan struct{})
+	causes := make(chan error, 1)
+	server := mcp.NewServer(&mcp.Implementation{Name: "test"}, nil)
+	mcptool.Add(server, slog.New(slog.DiscardHandler), mcptool.ServerMCP,
+		&mcp.Tool{Name: "place"}, func(
+			ctx context.Context, _ *mcp.CallToolRequest, _ struct{},
+		) (*mcp.CallToolResult, struct{}, error) {
+			close(started)
+			select {
+			case <-ctx.Done():
+				causes <- context.Cause(ctx)
+			case <-time.After(tm.final):
+				causes <- nil
+			}
+			return &mcp.CallToolResult{}, struct{}{}, nil
+		})
+	ctx, stop := stoppable(t)
+	url, logs, done := startServe(t, ctx, mcpHandler(server), tm)
+	go func() {
+		req, err := http.NewRequestWithContext(context.Background(),
+			http.MethodPost, url, strings.NewReader(
+				`{"jsonrpc":"2.0","id":1,"method":"tools/call",`+
+					`"params":{"name":"place","arguments":{}}}`))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	<-started
+
+	stop()
+
+	assert.ErrorIs(t, <-causes, httpmw.ErrShuttingDown)
+	require.NoError(t, waitServe(t, done, tm.drain+tm.final))
+	assert.NotContains(t, logs.String(), "level=WARN")
+}
+
+// mcpHandler serves server as /mcp and /mcp/admin do.
+func mcpHandler(server *mcp.Server) http.Handler {
+	return mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return server },
+		&mcp.StreamableHTTPOptions{
+			Stateless:                    true,
+			JSONResponse:                 true,
+			PropagateRequestCancellation: true,
+		})
 }

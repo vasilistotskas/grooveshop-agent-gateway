@@ -18,9 +18,10 @@ import (
 // Traefik drops the pod) before SIGTERM reaches us, and kills the
 // process terminationGracePeriodSeconds after the sleep began. So the
 // grace period must cover the sleep, drain + final, and a margin to
-// close what remains and exit. With UPSTREAM_TIMEOUT=10s final is 40s
-// and the grace period 65s (grooveshop-infrastructure,
-// base/agent-gateway.yaml); raising the timeout raises both.
+// close what remains and exit. With UPSTREAM_TIMEOUT=10s final is 51s
+// and the grace period 76s (grooveshop-infrastructure,
+// base/agent-gateway.yaml, whose pre-commit check computes it from
+// UPSTREAM_TIMEOUT); each second of timeout adds 5s to both.
 type timing struct {
 	// read bounds reading a whole request, body included; the server
 	// clears it once the body is read, so streams outlive it.
@@ -51,15 +52,25 @@ func podTiming(completion time.Duration) timing {
 	}
 }
 
+// completionSettles is what a completion's request does on its own after
+// checkout.Flow.Complete, in upstream timeouts, each on a context of its
+// own bounded by one: settle its idempotency key by the placement, then
+// release the session lock.
+const completionSettles = 2
+
+// answerSlack is what writing the answer after the settles takes, so the
+// window does not close the connection under it.
+const answerSlack = time.Second
+
 // completionTail is the longest an order completion keeps its request
 // open once the request's context has ended: the part of
-// checkout.Flow.Complete that runs without its caller, then one upstream
-// timeout in which the caller settles its idempotency key by the
-// placement. A completion can detach until the end of the drain, so the
-// final window must hold all of it. upstream is the Django client's
-// timeout.
+// checkout.Flow.Complete that runs without its caller, the settles after
+// it and the answer. A completion can detach until the end of the drain,
+// so the final window must hold all of it. upstream is the Django
+// client's timeout.
 func completionTail(upstream time.Duration) time.Duration {
-	return checkout.CompletionBudget(upstream) + upstream
+	return checkout.CompletionBudget(upstream) +
+		completionSettles*upstream + answerSlack
 }
 
 const (
@@ -78,8 +89,11 @@ func serve(
 	ctx context.Context, ln net.Listener, handler http.Handler,
 	t timing, log *slog.Logger,
 ) error {
-	base, endRequests := context.WithCancelCause(context.Background())
+	requests, endRequests := context.WithCancelCause(context.Background())
 	defer endRequests(nil)
+	// Carried as a value too, so a context that lost the cancellation
+	// (an MCP tool's on an older protocol) can still find the cut.
+	base := httpmw.WithShutdown(requests)
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,

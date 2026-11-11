@@ -16,6 +16,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
@@ -114,6 +115,12 @@ var errPanicked = &ToolError{Code: CodeUnavailable,
 // The SDK runs a handler on a goroutine of its own, which no recover
 // covers, so a panic would end the process. It is recovered here
 // (obs.Recover logs it with its stack) and answered as unavailable.
+//
+// The SDK ends a handler's context with its request only for a client on
+// protocol 2026-07-28 or later. Every handler's context ends at the
+// server's shutdown cut, with httpmw.ErrShuttingDown, whatever the
+// protocol (httpmw.UntilShutdown): work a tool has not detached stops
+// there, as an ACP request's does.
 func Add[In, Out any](
 	srv *mcp.Server, log *slog.Logger, server string, def *mcp.Tool,
 	h mcp.ToolHandlerFor[In, Out],
@@ -121,6 +128,8 @@ func Add[In, Out any](
 	mcp.AddTool(srv, def, func(
 		ctx context.Context, req *mcp.CallToolRequest, in In,
 	) (*mcp.CallToolResult, Out, error) {
+		ctx, stop := httpmw.UntilShutdown(ctx)
+		defer stop()
 		start := time.Now()
 		res, out, err, panicked := run(ctx, log, def.Name, h, req, in)
 		outcome := "ok"
