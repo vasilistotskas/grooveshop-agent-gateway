@@ -411,6 +411,32 @@ func TestARefusedOrderDoesNotLeaveASessionClaimingOne(t *testing.T) {
 	}
 }
 
+// The order link is what order events, get_order and the webhooks find a
+// checkout's order by. A failed write of the record beside the session
+// does not cost it.
+func TestAFailedOrderRecordStillLinksTheOrder(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	ctx := context.Background()
+	s := f.readySession(t)
+	record := sessionRedisKey(s.ID) + ":order"
+	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+		if args := cmd.Args(); cmd.Name() == "set" && len(args) > 1 &&
+			args[1] == record {
+			return errors.New("redis is down")
+		}
+		return nil
+	}))
+
+	placement, err := f.flow.Complete(ctx, f.tenant, s)
+
+	require.NoError(t, err)
+	assert.Equal(t, checkout.OrderMayExist, placement)
+	link, err := f.store.OrderLinkFor(ctx, s.Schema, fixtureOrderUUID)
+	require.NoError(t, err, "the order link exists")
+	assert.Equal(t, s.ID, link.CheckoutID)
+	assert.Zero(t, f.rdb.Exists(ctx, record).Val())
+}
+
 // replyLost lets a command reach Redis and then fails it when lose says
 // so: a connection that drops after the write and before its reply.
 type replyLost func(redis.Cmder) bool

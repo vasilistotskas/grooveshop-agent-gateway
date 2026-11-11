@@ -590,14 +590,14 @@ Callers are told "in progress" for three upstream timeouts, and after that "the 
    $R PTTL "$key"           # how long the session still lives, in ms
    ```
 
-   The session is no longer being placed once `updatedAt` is more than three times `UPSTREAM_TIMEOUT` old.
+   The gateway's completion has ended once `updatedAt` is more than three times `UPSTREAM_TIMEOUT` old. Django's order request may still be running: the gateway's timeout ends its wait, not Django's work.
 
 2. Decide whether an order exists.
    - `$key:order` exists, or the session has an `orderUuid`: it does. Leave the session; give the platform or the buyer the order.
    - Otherwise search the gateway's logs for the session id (`session`). "checkout: session save failed" and "checkout: order index write failed" each name the `order` when one exists.
    - Otherwise look in the store's Django admin for an order with the buyer's email created at or after the session's `updatedAt`. The store's order confirmation email, which the "never confirmed" answer points the buyer to, settles the same question.
 
-3. Clear it, **only when no order exists**: `$R DEL "$key"`. The next call on that checkout id gets the missing-session answer, and the platform starts a new checkout. A session with `"unconfirmed":true` is otherwise kept the full 24 hours.
+3. Clear it **only when you have confirmed that no order exists**: no order was sent (step 2's logs), or the order request ended in Django without one. An admin search that finds nothing while that request may still be running is not that confirmation. Then `$R DEL "$key"`: the next call on that checkout id gets the missing-session answer, and the platform starts a new checkout. If the outcome stays unknown, keep the session and start no new checkout. A session with `"unconfirmed":true` is otherwise kept the full 24 hours.
 
    When an order exists, do not delete the session to "unblock" the platform: a new checkout for the same cart would be a second order. The order is the answer.
 

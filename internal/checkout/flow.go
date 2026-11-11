@@ -80,6 +80,13 @@ const (
 // Django answers, the writes keep their share.
 const completionSteps = 3
 
+// CompletionBudget is the longest the part of Complete that runs without
+// its caller can take, for a Django client cut at upstreamTimeout: what
+// a shutdown has to wait for once it stops waiting for callers.
+func CompletionBudget(upstreamTimeout time.Duration) time.Duration {
+	return completionSteps * upstreamTimeout
+}
+
 // Flow orchestrates order creation over the existing Django endpoints.
 type Flow struct {
 	dj     *django.Client
@@ -94,7 +101,7 @@ func NewFlow(
 ) *Flow {
 	return &Flow{
 		dj: dj, st: st, site: site,
-		budget: completionSteps * dj.Timeout(), log: log,
+		budget: CompletionBudget(dj.Timeout()), log: log,
 	}
 }
 

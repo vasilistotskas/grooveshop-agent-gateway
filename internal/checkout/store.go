@@ -313,8 +313,10 @@ func placedKey(schema, id string) string {
 }
 
 // IndexOrder records the order the session's completion placed, both
-// ways: the order's link to its checkout, and the order's uuid beside
-// the session, kept as long as a placed session is.
+// ways: the order's link to its checkout, which order events, get_order
+// and the order webhooks go through, and the order's uuid beside the
+// session, kept as long as a placed session is. Each write is attempted
+// whatever became of the other.
 func (st *Store) IndexOrder(ctx context.Context, s *Session) error {
 	link, err := json.Marshal(OrderLink{
 		CheckoutID: s.ID, Domain: s.Domain, WebhookURL: s.WebhookURL,
@@ -322,12 +324,12 @@ func (st *Store) IndexOrder(ctx context.Context, s *Session) error {
 	if err != nil {
 		return fmt.Errorf("checkout: encode order link: %w", err)
 	}
-	if err := st.rdb.Set(ctx, placedKey(s.Schema, s.ID), s.OrderUUID,
-		terminalTTL).Err(); err != nil {
-		return err
-	}
-	return st.rdb.Set(ctx, orderLinkKey(s.Schema, s.OrderUUID), link,
-		orderLinkTTL).Err()
+	return errors.Join(
+		st.rdb.Set(ctx, orderLinkKey(s.Schema, s.OrderUUID), link,
+			orderLinkTTL).Err(),
+		st.rdb.Set(ctx, placedKey(s.Schema, s.ID), s.OrderUUID,
+			terminalTTL).Err(),
+	)
 }
 
 // placedOrder reads the uuid of the order recorded beside a session; ""
