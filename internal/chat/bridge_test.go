@@ -44,6 +44,13 @@ func offeredNames(t *testing.T, features django.StoreFeatures) []string {
 func TestBridgeOffersOnlyTheStoreTools(t *testing.T) {
 	every := offeredNames(t, mcpsrv.EveryFeature)
 	assert.Contains(t, every, "get_product_reviews")
+	// /mcp's alone: the UCP tools need `meta` a model cannot supply, the
+	// account tools a linked bearer, and create_cart's cart would never
+	// reach the shopper.
+	for _, name := range []string{"create_checkout", "complete_checkout",
+		"get_order", "my_orders", "create_cart"} {
+		assert.NotContains(t, every, name)
+	}
 
 	noReviews := mcpsrv.EveryFeature
 	noReviews.ProductReviews = false

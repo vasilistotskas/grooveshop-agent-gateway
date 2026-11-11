@@ -1,7 +1,9 @@
 package django
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -177,6 +179,38 @@ func TestGetDoesNotRetryClientErrors(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrValidation)
 	assert.Equal(t, int32(1), calls.Load())
+}
+
+// A refusal is logged at debug with the route's template, the status and
+// Django's code, never its detail: the caller decides what it means.
+func TestAnErrorAnswerIsLoggedAtDebug(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(
+				`{"code":"insufficient_stock","detail":"customer-text-4e1a"}`))
+		}))
+	defer srv.Close()
+	var out bytes.Buffer
+	c := New(srv.URL+"/api/v1", "api.example.test", "test-secret",
+		2*time.Second, slog.New(slog.NewJSONHandler(&out,
+			&slog.HandlerOptions{Level: slog.LevelDebug})), nil)
+
+	err := c.do(context.Background(), request{method: http.MethodPost,
+		path: "/cart/item/{id}", rawPath: "/cart/item/7",
+		host: "shop.example.test"})
+
+	require.ErrorIs(t, err, ErrConflict)
+	var line map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &line))
+	assert.Equal(t, "DEBUG", line["level"])
+	assert.Equal(t, "django answered with an error", line["msg"])
+	assert.Equal(t, "/cart/item/{id}", line["upstream"])
+	assert.Equal(t, http.MethodPost, line["method"])
+	assert.EqualValues(t, http.StatusConflict, line["status"])
+	assert.Equal(t, "insufficient_stock", line["code"])
+	assert.NotContains(t, out.String(), "customer-text-4e1a")
 }
 
 func TestGetPersistentServerErrorWrapsUpstreamDown(t *testing.T) {

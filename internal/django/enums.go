@@ -18,6 +18,11 @@ const (
 	PaymentStatusCompleted  = "COMPLETED"
 )
 
+// CodeCartNotFound is the `code` of Django's 404 for a cart it does not
+// have (cart/views/cart.py). A 404 without it is another refusal, such as
+// a feature gate's bare NotFound.
+const CodeCartNotFound = "cart_not_found"
+
 // AgentProtocolMCP is the attribution agentProtocol (Django's
 // AGENT_PROTOCOLS) of a cart an agent fills through the /mcp commerce
 // tools. A UCP or ACP checkout sends its own protocol

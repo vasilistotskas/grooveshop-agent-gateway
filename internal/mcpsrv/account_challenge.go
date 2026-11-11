@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -20,17 +21,23 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
-// accountScopes names the account tools and the scope each one needs.
-var accountScopes = map[string]string{
-	"my_orders":         "orders:read",
-	"my_loyalty_points": "loyalty:read",
-	"my_favourites":     "favourites:read",
-}
+// accountScopes names the account tools and the scope each one needs,
+// read off the toolset (account).
+var accountScopes = sync.OnceValue(func() map[string]string {
+	scopes := map[string]string{}
+	for _, t := range definitions() {
+		if t.scope != "" {
+			scopes[t.def.Name] = t.scope
+		}
+	}
+	return scopes
+})
 
-// IsAccountTool reports whether a tool needs a linked shopper account.
-func IsAccountTool(name string) bool {
-	_, ok := accountScopes[name]
-	return ok
+// needsAccount reports whether a store with features serves the named
+// tool and it needs a linked shopper account.
+func needsAccount(name string, f django.StoreFeatures) bool {
+	_, ok := accountScopes()[name]
+	return ok && Offered(name, f)
 }
 
 // linkScopes is what one link asks for: every account tool the store serves,
@@ -40,7 +47,7 @@ func IsAccountTool(name string) bool {
 // shopper can still narrow them on the consent screen.
 func linkScopes(f django.StoreFeatures) string {
 	scopes := []string{"profile"}
-	for tool, scope := range accountScopes {
+	for tool, scope := range accountScopes() {
 		if Offered(tool, f) {
 			scopes = append(scopes, scope)
 		}
@@ -81,7 +88,7 @@ func RequireLinkedAccount(next http.Handler) http.Handler {
 		// Any account tool the body calls, in a batch too. A tool the
 		// store does not serve is unknown, not locked.
 		if !slices.ContainsFunc(calledTools(body), func(name string) bool {
-			return IsAccountTool(name) && Offered(name, t.Features)
+			return needsAccount(name, t.Features)
 		}) {
 			next.ServeHTTP(w, r)
 			return

@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +19,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
 // The tool result is JSON an agent can read field by field, Greek
@@ -85,20 +91,48 @@ func serve(t *testing.T, register func(*mcp.Server)) *mcp.ClientSession {
 	return session
 }
 
+// toolCalls is gateway_tool_calls_total by "server tool outcome".
+func toolCalls(t *testing.T, m *obs.Metrics) map[string]float64 {
+	t.Helper()
+	families, err := m.Registry.Gather()
+	require.NoError(t, err)
+	out := map[string]float64{}
+	for _, f := range families {
+		if f.GetName() != "gateway_tool_calls_total" {
+			continue
+		}
+		for _, metric := range f.GetMetric() {
+			labels := map[string]string{}
+			for _, l := range metric.GetLabel() {
+				labels[l.GetName()] = l.GetValue()
+			}
+			out[labels["server"]+" "+labels["tool"]+" "+
+				labels["outcome"]] = metric.GetCounter().GetValue()
+		}
+	}
+	return out
+}
+
 // Every call is one info line with exactly the server, the tool, the
 // outcome (ok, the ToolError's code, or error) and the duration; the
-// arguments and the result appear nowhere in what is logged.
-func TestAddLogsOneLinePerCall(t *testing.T) {
+// arguments and the result appear nowhere in what is logged. Each is
+// counted too, a code the store gave as refused: the counter's values
+// are the gateway's own.
+func TestAddLogsAndCountsOneLinePerCall(t *testing.T) {
 	out := &output{}
-	log := slog.New(slog.NewJSONHandler(out, nil))
+	metrics := obs.NewMetrics()
+	rec := Recorder{Server: ServerAdmin,
+		Log: slog.New(slog.NewJSONHandler(out, nil)), Metrics: metrics}
 	failures := map[string]error{
 		"works":   nil,
 		"refuses": &ToolError{Code: CodeNotGranted, Hint: "re-link"},
+		"store":   &ToolError{Code: "insufficient_stock", Hint: "explain"},
 		"breaks":  errors.New("boom"),
 	}
 	session := serve(t, func(srv *mcp.Server) {
 		for name, failure := range failures {
-			Add(srv, log, ServerAdmin, &mcp.Tool{Name: name}, func(
+			Add(srv, rec, &mcp.Tool{Name: name,
+				Annotations: ReadOnly(name)}, func(
 				_ context.Context, _ *mcp.CallToolRequest, in secretIn,
 			) (*mcp.CallToolResult, secretOut, error) {
 				return nil, secretOut{Echo: resultValue + in.Secret}, failure
@@ -106,7 +140,7 @@ func TestAddLogsOneLinePerCall(t *testing.T) {
 		}
 	})
 
-	for _, name := range []string{"works", "refuses", "breaks"} {
+	for _, name := range []string{"works", "refuses", "store", "breaks"} {
 		res, err := session.CallTool(t.Context(), &mcp.CallToolParams{
 			Name: name, Arguments: map[string]any{"secret": argumentValue},
 		})
@@ -116,10 +150,17 @@ func TestAddLogsOneLinePerCall(t *testing.T) {
 		}
 	}
 
+	assert.Equal(t, map[string]float64{
+		"mcp_admin works ok":                  1,
+		"mcp_admin refuses " + CodeNotGranted: 1,
+		"mcp_admin store refused":             1,
+		"mcp_admin breaks error":              1,
+	}, toolCalls(t, metrics))
 	raw, lines := out.lines(t)
-	require.Len(t, lines, 3)
+	require.Len(t, lines, 4)
 	for i, want := range []struct{ tool, outcome string }{
-		{"works", "ok"}, {"refuses", CodeNotGranted}, {"breaks", "error"},
+		{"works", "ok"}, {"refuses", CodeNotGranted},
+		{"store", "insufficient_stock"}, {"breaks", "error"},
 	} {
 		line := lines[i]
 		assert.Equal(t, []string{
@@ -140,9 +181,12 @@ func TestAddLogsOneLinePerCall(t *testing.T) {
 // handler on a goroutine no recover covers.
 func TestAddRecoversAPanickingHandler(t *testing.T) {
 	out := &output{}
-	log := slog.New(slog.NewJSONHandler(out, nil))
+	metrics := obs.NewMetrics()
+	rec := Recorder{Server: ServerMCP,
+		Log: slog.New(slog.NewJSONHandler(out, nil)), Metrics: metrics}
 	session := serve(t, func(srv *mcp.Server) {
-		Add(srv, log, ServerMCP, &mcp.Tool{Name: "explodes"}, func(
+		Add(srv, rec, &mcp.Tool{Name: "explodes",
+			Annotations: ReadOnly("Explodes")}, func(
 			context.Context, *mcp.CallToolRequest, secretIn,
 		) (*mcp.CallToolResult, secretOut, error) {
 			var nothing *secretOut
@@ -171,4 +215,35 @@ func TestAddRecoversAPanickingHandler(t *testing.T) {
 	assert.Equal(t, "tool call", lines[1]["msg"])
 	assert.Equal(t, OutcomePanic, lines[1]["outcome"])
 	assert.NotContains(t, raw, argumentValue)
+	assert.Equal(t, map[string]float64{"mcp explodes panic": 1},
+		toolCalls(t, metrics))
+}
+
+// Every Code constant is counted as itself: a code added to the list
+// above gatewayCodes and not to it would be counted as refused.
+func TestEveryGatewayCodeIsCountedAsItself(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "mcptool.go", nil, 0)
+	require.NoError(t, err)
+	var codes []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		spec, ok := n.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		for i, name := range spec.Names {
+			if strings.HasPrefix(name.Name, "Code") {
+				lit := spec.Values[i].(*ast.BasicLit)
+				code, err := strconv.Unquote(lit.Value)
+				require.NoError(t, err)
+				codes = append(codes, code)
+			}
+		}
+		return true
+	})
+
+	require.NotEmpty(t, codes)
+	assert.ElementsMatch(t, codes, gatewayCodes)
+	for _, code := range codes {
+		assert.Equal(t, code, counted(code))
+	}
 }
