@@ -56,7 +56,8 @@ func (h *handlers) whoami(
 		RoleLabel: p.RoleDisplay,
 		Store:     p.StoreName,
 		Domain:    p.StoreDomain,
-		Scopes:    p.Scopes,
+		Scopes: append(make([]django.StaffScope, 0, len(p.Scopes)),
+			p.Scopes...),
 	}, nil
 }
 
