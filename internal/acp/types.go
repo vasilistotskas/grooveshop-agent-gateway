@@ -11,6 +11,10 @@ import "encoding/json"
 // Version is the implemented ACP specification version.
 const Version = "2026-04-17"
 
+// supportedVersions is every API-Version this server accepts, newest
+// first, the order the Error schema gives supported_versions.
+var supportedVersions = []string{Version}
+
 // Wire types mirror testdata/schemas/acp/2026-04-17/schema.agentic_checkout
 // (responses are additionalProperties:false — emit only known members;
 // amounts are ISO 4217 minor units).
@@ -173,12 +177,14 @@ type DiscountsIn struct {
 	Codes []string `json:"codes"`
 }
 
-// Error is the protocol-level 4xx/5xx body.
+// Error is the protocol-level 4xx/5xx body. SupportedVersions is set on
+// API-Version errors only.
 type Error struct {
-	Type    string `json:"type"`
-	Code    string `json:"code,omitempty"`
-	Message string `json:"message,omitempty"`
-	Param   string `json:"param,omitempty"`
+	Type              string   `json:"type"`
+	Code              string   `json:"code"`
+	Message           string   `json:"message"`
+	Param             string   `json:"param,omitempty"`
+	SupportedVersions []string `json:"supported_versions,omitempty"`
 }
 
 // Request bodies. Unknown members are ignored on decode.

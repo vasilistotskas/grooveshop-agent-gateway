@@ -296,7 +296,7 @@ tool cancel_checkout "{\"meta\":$(ucp_meta "$(uuid)"),\"id\":\"$(j 't.id' <<<"$R
 
 ## 5. ACP
 
-ACP needs the tenant's `acp_bearer_token`, on staging as on local, and every POST needs an `Idempotency-Key`. Without the token, every call gets 401:
+ACP needs the tenant's `acp_bearer_token`, on staging as on local, every call an `API-Version` (the `acp` helper sends it; without it the answer is 400 `missing_api_version`), and every POST an `Idempotency-Key`. Without the token, every call gets 401:
 
 ```bash
 export ACP_TOKEN="<the demo tenant's acp_bearer_token>"
@@ -354,7 +354,7 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | `add_to_cart`, UCP or ACP create on an out-of-stock product | Refused: `insufficient_stock`, in the store's words |
 | Quantity above 999 | Refused: `quantity_too_large` |
 | Stock gone between ready and complete, UCP | Refused, naming the product. The session stays `ready_for_complete`, and a retry succeeds once stock returns |
-| Stock gone, ACP | 409 `out_of_stock` |
+| Stock gone, ACP | 400 `out_of_stock`, naming the product |
 
 ### Idempotency
 

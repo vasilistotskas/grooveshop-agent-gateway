@@ -180,6 +180,9 @@ type checkoutFaults struct {
 	orderCreates atomic.Int32
 	// orderRefuse makes order creation answer 400: nothing is created.
 	orderRefuse atomic.Bool
+	// orderConflict makes order creation answer a 409 that is not a
+	// stock shortfall: nothing is created.
+	orderConflict atomic.Bool
 	// orderHold runs inside an accepted order creation, before it
 	// answers.
 	orderHold atomic.Pointer[func(*http.Request)]
@@ -294,6 +297,13 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(
 					`{"detail": "The cart can no longer be ordered."}`))
+				return
+			}
+			if faults.orderConflict.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(
+					`{"detail": "The cart changed while it was ordered."}`))
 				return
 			}
 			// The cart rides the header, never the body.

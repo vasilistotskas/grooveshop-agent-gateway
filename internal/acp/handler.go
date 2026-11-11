@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -48,7 +50,7 @@ func NewHandler(
 // inside routing so patterns stay visible to metrics.
 func (h *Handler) Register(mux *http.ServeMux, mw func(http.Handler) http.Handler) {
 	wrap := func(fn http.HandlerFunc) http.Handler {
-		return mw(h.auth(fn))
+		return mw(h.auth(requireVersion(fn)))
 	}
 	mux.Handle("POST /acp/checkout_sessions", wrap(h.create))
 	mux.Handle("GET /acp/checkout_sessions/{id}", wrap(h.get))
@@ -86,6 +88,29 @@ func (h *Handler) auth(next http.HandlerFunc) http.Handler {
 	})
 }
 
+// requireVersion refuses a request whose API-Version this server does not
+// implement: the spec has the client send it and the server validate it,
+// answering 400 with the versions it accepts.
+func requireVersion(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		version := r.Header.Get("API-Version")
+		if slices.Contains(supportedVersions, version) {
+			next(w, r)
+			return
+		}
+		e := Error{
+			Type: "invalid_request", Code: "unsupported_api_version",
+			Message:           "This API-Version is not supported.",
+			SupportedVersions: supportedVersions,
+		}
+		if version == "" {
+			e.Code = "missing_api_version"
+			e.Message = "The API-Version header is required."
+		}
+		writeError(w, http.StatusBadRequest, e)
+	}
+}
+
 func writeError(w http.ResponseWriter, status int, e Error) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -96,7 +121,15 @@ func writeError(w http.ResponseWriter, status int, e Error) {
 // failure (Redis, rendering); the platform retries.
 func writeUnavailable(w http.ResponseWriter, msg string) {
 	writeError(w, http.StatusServiceUnavailable, Error{
-		Type: "service_unavailable", Message: msg,
+		Type: "service_unavailable", Code: "unavailable", Message: msg,
+	})
+}
+
+// writePlaced answers for an order that exists while its session cannot
+// show it: the platform must not order again.
+func writePlaced(w http.ResponseWriter, msg string) {
+	writeError(w, http.StatusServiceUnavailable, Error{
+		Type: "service_unavailable", Code: "order_placed", Message: msg,
 	})
 }
 
@@ -104,9 +137,32 @@ func writeUnavailable(w http.ResponseWriter, msg string) {
 // session is not rendered: the platform must read it again, not order
 // again.
 func writePlacedUnrendered(w http.ResponseWriter, s *checkout.Session) {
-	writeUnavailable(w, "Order "+s.OrderUUID+" is placed, but the "+
+	writePlaced(w, "Order "+s.OrderUUID+" is placed, but the "+
 		"session cannot be rendered right now. Read the session "+
 		"again, and do not start a new checkout.")
+}
+
+// writeOutcomeUnknown answers for a session whose order the store never
+// confirmed or denied: it stays complete_in_progress until it expires, so
+// no retry changes the answer, and a new checkout could order twice.
+func writeOutcomeUnknown(w http.ResponseWriter) {
+	writeError(w, http.StatusBadGateway, Error{
+		Type: "processing_error", Code: "order_outcome_unknown",
+		Message: "The store did not confirm whether the order was " +
+			"placed. Do not complete again or start a new checkout: " +
+			"the buyer receives the store's confirmation email if it was.",
+	})
+}
+
+// writeClosed refuses to change a completed or canceled session. The spec
+// answers a cancel of one 405; an update or a complete of one is the same
+// refusal. allow is what the target still serves, which a 405 must name
+// (RFC 9110 §15.5.6).
+func writeClosed(w http.ResponseWriter, allow, msg string) {
+	w.Header().Set("Allow", allow)
+	writeError(w, http.StatusMethodNotAllowed, Error{
+		Type: "invalid_request", Code: "conflict", Message: msg,
+	})
 }
 
 func writeSession(w http.ResponseWriter, status int, s *Session) {
@@ -130,8 +186,10 @@ func upstreamError(w http.ResponseWriter, err error) {
 			Message: "Too many requests; retry shortly.",
 		})
 	case errors.Is(err, django.ErrValidation),
+		errors.Is(err, django.ErrConflict),
 		errors.Is(err, django.ErrForbidden),
-		errors.Is(err, django.ErrUnauthorized):
+		errors.Is(err, django.ErrUnauthorized),
+		errors.Is(err, django.ErrInvalidCartToken):
 		msg := "The store rejected the request as invalid."
 		if apiErr, ok := errors.AsType[*django.APIError](err); ok &&
 			apiErr.Detail != "" {
@@ -167,7 +225,16 @@ type idemRecord struct {
 	SessionID string `json:"sessionId"`
 	BodyHash  string `json:"bodyHash"`
 	Status    int    `json:"status"`
+	// stored is the record as Redis held it when it was read.
+	stored string
 }
+
+const (
+	// idemInflight is a claimed key's value until its request settles it.
+	idemInflight = "inflight"
+	// idemClaimTTL bounds a claim whose request never settled it.
+	idemClaimTTL = time.Minute
+)
 
 // idemRedisKey scopes a key to one endpoint: "create", or an operation
 // on one session ("complete:<id>"). The spec scopes keys per endpoint, and
@@ -185,16 +252,39 @@ func bodyHash(raw []byte) string {
 // maxIdempotencyKeyLen is the spec's bound on the header.
 const maxIdempotencyKeyLen = 255
 
-// idemRetryAfter is the Retry-After (seconds) sent with a 409 for a key
-// whose first request is still running.
-const idemRetryAfter = "2"
+// idemRetryAfter is the Retry-After sent with a 409 for a key whose first
+// request, or another request on the same session, is still running.
+const idemRetryAfter = 2 * time.Second
 
-func writeInFlight(w http.ResponseWriter) {
-	w.Header().Set("Retry-After", idemRetryAfter)
+const (
+	msgKeyInFlight = "A request with this Idempotency-Key is in flight."
+	msgSessionBusy = "Another request on this checkout session is in " +
+		"flight."
+)
+
+// writeInFlight is the spec's 409: the platform retries the same request
+// after the Retry-After it requires, in whole seconds.
+func writeInFlight(w http.ResponseWriter, after time.Duration, msg string) {
+	w.Header().Set("Retry-After",
+		strconv.Itoa(int(math.Ceil(after.Seconds()))))
 	writeError(w, http.StatusConflict, Error{
 		Type: "invalid_request", Code: "idempotency_in_flight",
-		Message: "A request with this Idempotency-Key is in flight.",
+		Message: msg,
 	})
+}
+
+// writeCompletionPending answers a call that finds the session's order
+// being placed: while the completion can still run, retry once it must
+// have ended; past that, its outcome was never recorded.
+func (h *Handler) writeCompletionPending(
+	w http.ResponseWriter, s *checkout.Session,
+) {
+	if left := time.Until(h.flow.CompletionDeadline(s)); left > 0 {
+		writeInFlight(w, left,
+			"This checkout session's order is being placed.")
+		return
+	}
+	writeOutcomeUnknown(w)
 }
 
 // claimIdem implements POST idempotency: the first caller claims the key,
@@ -220,8 +310,8 @@ func (h *Handler) claimIdem(
 		return "", false, nil, true
 	}
 	redisKey := idemRedisKey(schema, scope, key)
-	ok, err := h.rdb.SetNX(r.Context(), redisKey, "inflight", time.Minute).
-		Result()
+	ok, err := h.rdb.SetNX(r.Context(), redisKey, idemInflight,
+		idemClaimTTL).Result()
 	if err != nil {
 		writeUnavailable(w, "Checkout is temporarily unavailable.")
 		return "", false, nil, true
@@ -231,13 +321,13 @@ func (h *Handler) claimIdem(
 		return key, true, nil, false
 	}
 	stored, err := h.rdb.Get(r.Context(), redisKey).Result()
-	if err != nil || stored == "inflight" {
-		writeInFlight(w)
+	if err != nil || stored == idemInflight {
+		writeInFlight(w, idemRetryAfter, msgKeyInFlight)
 		return "", false, nil, true
 	}
-	var rec idemRecord
+	rec := idemRecord{stored: stored}
 	if json.Unmarshal([]byte(stored), &rec) != nil {
-		writeInFlight(w)
+		writeInFlight(w, idemRetryAfter, msgKeyInFlight)
 		return "", false, nil, true
 	}
 	if rec.BodyHash != bodyHash(raw) {
@@ -250,6 +340,25 @@ func (h *Handler) claimIdem(
 	w.Header().Set("Idempotency-Key", key)
 	w.Header().Set("Idempotent-Replayed", "true")
 	return key, false, &rec, false
+}
+
+// reclaimIdem claims again a key whose record names a session that has
+// expired: its response is gone, and the spec treats a key reused after
+// expiry as a new request. It swaps only the record that was read, so of
+// two replays racing here one goes on and the other is in flight.
+func (h *Handler) reclaimIdem(
+	ctx context.Context, schema, scope, key string, prior *idemRecord,
+) (bool, error) {
+	const script = `if redis.call("get", KEYS[1]) == ARGV[1] then
+		return redis.call("set", KEYS[1], ARGV[2], "PX", ARGV[3]) end
+		return 0`
+	res, err := h.rdb.Eval(ctx, script,
+		[]string{idemRedisKey(schema, scope, key)}, prior.stored,
+		idemInflight, idemClaimTTL.Milliseconds()).Result()
+	if err != nil {
+		return false, err
+	}
+	return res == "OK", nil
 }
 
 // settling is the context a claimed key is recorded or released on. It
@@ -486,15 +595,25 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if !claimed {
 		s, err := h.store.Load(r.Context(), t.SchemaName, prior.SessionID)
-		if err != nil {
-			writeError(w, http.StatusConflict, Error{
-				Type: "invalid_request", Code: "idempotency_conflict",
-				Message: "The original session for this key has expired.",
-			})
+		if err == nil {
+			h.render(w, r, t, s, prior.Status)
 			return
 		}
-		h.render(w, r, t, s, prior.Status)
-		return
+		if !errors.Is(err, checkout.ErrNotFound) {
+			writeUnavailable(w, "Checkout is temporarily unavailable.")
+			return
+		}
+		reclaimed, err := h.reclaimIdem(r.Context(), t.SchemaName,
+			"create", key, prior)
+		if err != nil {
+			writeUnavailable(w, "Checkout is temporarily unavailable.")
+			return
+		}
+		if !reclaimed {
+			writeInFlight(w, idemRetryAfter, msgKeyInFlight)
+			return
+		}
+		w.Header().Del("Idempotent-Replayed")
 	}
 
 	if len(req.LineItems) == 0 {
@@ -611,15 +730,13 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.Status == checkout.StatusCompleteInProgress {
 		fail()
-		writeInFlight(w)
+		h.writeCompletionPending(w, s)
 		return
 	}
 	if s.Terminal() {
 		fail()
-		writeError(w, http.StatusConflict, Error{
-			Type: "invalid_request", Code: "conflict",
-			Message: fmt.Sprintf("Session is %s and cannot change.", s.Status),
-		})
+		writeClosed(w, http.MethodGet,
+			fmt.Sprintf("Session is %s and cannot change.", s.Status))
 		return
 	}
 
@@ -688,7 +805,10 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		h.render(w, r, t, s, http.StatusOK)
 		return
 	case checkout.StatusCompleteInProgress:
-		writeInFlight(w)
+		h.writeCompletionPending(w, s)
+		return
+	case checkout.StatusCanceled:
+		writeClosed(w, "", "Session is canceled and cannot be completed.")
 		return
 	}
 
@@ -753,7 +873,7 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	// pay way can be chosen, which says nothing about what the store offers.
 	if s.Status == checkout.StatusIncomplete {
 		h.releaseIdem(r, t.SchemaName, scope, key)
-		h.completeError(w, checkout.ErrNotReady)
+		h.completeError(w, s, checkout.ErrNotReady)
 		return
 	}
 	if err := h.selectPayWay(r, t, s); err != nil {
@@ -781,7 +901,7 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		h.storeIdem(r, t.SchemaName, scope, key, record)
 	}
 	if err != nil {
-		h.completeError(w, err)
+		h.completeError(w, s, err)
 		return
 	}
 	if r.Context().Err() != nil {
@@ -827,15 +947,12 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.Status == checkout.StatusCompleteInProgress {
 		h.releaseIdem(r, t.SchemaName, scope, key)
-		writeInFlight(w)
+		h.writeCompletionPending(w, s)
 		return
 	}
 	if s.Terminal() {
 		h.releaseIdem(r, t.SchemaName, scope, key)
-		writeError(w, http.StatusMethodNotAllowed, Error{
-			Type: "invalid_request", Code: "conflict",
-			Message: fmt.Sprintf("Session is already %s.", s.Status),
-		})
+		writeClosed(w, "", fmt.Sprintf("Session is already %s.", s.Status))
 		return
 	}
 	s.Status = checkout.StatusCanceled
@@ -859,10 +976,7 @@ func (h *Handler) lockSession(
 	release, err := h.store.Lock(r.Context(), t.SchemaName, id)
 	if err != nil {
 		if errors.Is(err, checkout.ErrLocked) {
-			writeError(w, http.StatusConflict, Error{
-				Type: "invalid_request", Code: "conflict",
-				Message: "The session is busy; retry shortly.",
-			})
+			writeInFlight(w, idemRetryAfter, msgSessionBusy)
 			return nil, nil, false
 		}
 		writeUnavailable(w, "Checkout is temporarily unavailable.")
@@ -888,7 +1002,13 @@ func (h *Handler) sessionError(w http.ResponseWriter, err error) {
 	writeUnavailable(w, "Checkout is temporarily unavailable.")
 }
 
-func (h *Handler) completeError(w http.ResponseWriter, err error) {
+// completeError answers a refused or failed completion of s. Every
+// sentinel of checkout and of the Django client has its case here or in
+// upstreamError (TestCompleteErrorMapsEverySentinel): a refusal is a 4xx,
+// and an order that exists, or may, is never answered as a failure.
+func (h *Handler) completeError(
+	w http.ResponseWriter, s *checkout.Session, err error,
+) {
 	var shortfall *django.StockShortfall
 	switch {
 	case errors.As(err, &shortfall):
@@ -898,27 +1018,36 @@ func (h *Handler) completeError(w http.ResponseWriter, err error) {
 				"%s: requested %d, available %d",
 				item.ProductName, item.Requested, item.Available))
 		}
-		writeError(w, http.StatusConflict, Error{
-			Type: "processing_error", Code: "out_of_stock",
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: "out_of_stock",
 			Message: "Not enough stock: " + strings.Join(lines, "; "),
 		})
+	case errors.Is(err, checkout.ErrNotFound):
+		h.sessionError(w, err)
+	case errors.Is(err, checkout.ErrLocked):
+		writeInFlight(w, idemRetryAfter, msgSessionBusy)
 	case errors.Is(err, checkout.ErrNotReady):
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "missing",
 			Message: "The session is missing buyer or fulfillment data.",
 		})
 	case errors.Is(err, checkout.ErrCompletionInProgress):
-		writeInFlight(w)
+		h.writeCompletionPending(w, s)
 	case errors.Is(err, checkout.ErrOrderOutcomeUnknown):
+		writeOutcomeUnknown(w)
+	case errors.Is(err, checkout.ErrPaymentSessionFailed):
 		writeError(w, http.StatusBadGateway, Error{
-			Type: "processing_error", Code: "order_outcome_unknown",
-			Message: "The store did not confirm whether the order was " +
-				"placed; do not retry — retrieve the session later.",
+			Type: "processing_error", Code: "payment_link_failed",
+			Message: "Order " + s.OrderUUID + " is placed, but its " +
+				"payment page could not be opened. Do not complete " +
+				"again or start a new checkout.",
 		})
 	case errors.Is(err, checkout.ErrSessionNotSaved):
-		writeUnavailable(w, "The order was placed but the session could not be "+
-			"saved; retrieve it again shortly.")
-	case errors.Is(err, checkout.ErrPayWayUnavailable):
+		writePlaced(w, "Order "+s.OrderUUID+" is placed, but its "+
+			"checkout session could not be saved. Do not complete again "+
+			"or start a new checkout.")
+	case errors.Is(err, checkout.ErrPayWayUnavailable),
+		errors.Is(err, checkout.ErrPaymentMethodUnsupported):
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "unsupported",
 			Message: "No agent-completable payment method serves this " +

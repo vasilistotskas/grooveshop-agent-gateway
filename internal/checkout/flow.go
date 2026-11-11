@@ -156,6 +156,14 @@ func (f *Flow) Complete(
 	return placement, err
 }
 
+// CompletionDeadline is the latest a completion of s can still run, for a
+// session stored in progress: its budget starts just before that save,
+// which set s.UpdatedAt. A session still in progress after it stays so
+// until it expires, because its outcome was never recorded.
+func (f *Flow) CompletionDeadline(s *Session) time.Time {
+	return s.UpdatedAt.Add(f.budget)
+}
+
 // admit checks that the session can be placed and reserves its stock.
 // No order exists yet, so it runs on the caller's context.
 func (f *Flow) admit(
