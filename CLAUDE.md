@@ -398,7 +398,8 @@ passes.
     answered as a failure.
 - **A checkout no session is stored for is not "nothing happened".**
   The id does not say whether the checkout was never completed, placed
-  an order and is no longer kept (expiry, eviction, a redeploy), or
+  an order and is no longer kept (expiry, eviction, a release that
+  changes the session key), or
   never existed. Every "no session" answer is `mcpsrv.errCheckoutGone`
   (UCP) or `acp.msgSessionGone` (ACP's 404): an order may exist, check
   before starting another checkout, with the order id if the caller
