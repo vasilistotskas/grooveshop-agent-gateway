@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -42,10 +43,142 @@ type completionSurface struct {
 	complete func(
 		ctx context.Context, id, key string, submit map[string]any,
 	) string
+	// answer is complete with the whole answer. It asserts nothing, so a
+	// test may call it from another goroutine.
+	answer func(
+		ctx context.Context, id, key string, submit map[string]any,
+	) surfaceAnswer
+	// update changes the buyer's email, after reading the store's pay
+	// ways, and reports the whole answer. It asserts nothing either.
+	update func(ctx context.Context, id string) surfaceAnswer
+	// updateLines replaces the checkout's lines, which writes its cart.
+	updateLines func(ctx context.Context, id string) surfaceAnswer
+	// updateAsking replaces the lines too, and submits what the store is
+	// asked about first, at the route asked.
+	updateAsking func(ctx context.Context, id string) surfaceAnswer
+	asked        string
+	// abandon is cancel with the whole answer. It asserts nothing.
+	abandon func(ctx context.Context, id string) surfaceAnswer
+	// read reads the checkout. It asserts nothing.
+	read func(ctx context.Context, id string) surfaceAnswer
 	// keyName is where the surface keeps that key's state in Redis.
 	keyName func(id, key string) string
 	// cancel abandons the checkout.
 	cancel func(t *testing.T, id string)
+}
+
+// surfaceAnswer is how a surface answered one call.
+type surfaceAnswer struct {
+	// status is the checkout status it rendered, "" when it refused.
+	status string
+	// refusal is why it refused: ACP's "<http status> <code>", UCP's
+	// error text.
+	refusal string
+	// retryAfter is ACP's Retry-After header.
+	retryAfter string
+	// errorBody is ACP's error as sent, for the spec's Error schema.
+	errorBody []byte
+	// continueURL is the rendered checkout's continue_url.
+	continueURL string
+	// text is what the rendered checkout says beside its status: UCP's
+	// summary text, ACP's messages.
+	text string
+}
+
+// acpAnswer sends an ACP request and reads its answer: a POST under key,
+// or a GET when key is empty. It asserts nothing, so it runs on any
+// goroutine.
+func acpAnswer(
+	ctx context.Context, url, key string, body map[string]any,
+) surfaceAnswer {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	method := http.MethodPost
+	if key == "" {
+		method = http.MethodGet
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url,
+		bytes.NewReader(raw))
+	if err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	req.Header.Set("Authorization", "Bearer "+acpBearerToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("API-Version", acp.Version)
+	req.Header.Set("Idempotency-Key", key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	sent, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(sent, &out); err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	if resp.StatusCode != http.StatusOK {
+		code, _ := out["code"].(string)
+		return surfaceAnswer{
+			refusal:    fmt.Sprintf("%d %s", resp.StatusCode, code),
+			retryAfter: resp.Header.Get("Retry-After"), errorBody: sent,
+		}
+	}
+	return rendered(out)
+}
+
+// mcpAnswer calls a UCP tool and reads its answer. It asserts nothing,
+// so it runs on any goroutine.
+func mcpAnswer(
+	ctx context.Context, session *mcp.ClientSession, tool string,
+	args map[string]any,
+) surfaceAnswer {
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: tool, Arguments: args,
+	})
+	if err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	if res.IsError {
+		refusal := "refused"
+		if len(res.Content) > 0 {
+			if text, ok := res.Content[0].(*mcp.TextContent); ok {
+				refusal = text.Text
+			}
+		}
+		return surfaceAnswer{refusal: refusal}
+	}
+	raw, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	a := rendered(out)
+	if len(res.Content) > 0 {
+		if text, ok := res.Content[0].(*mcp.TextContent); ok {
+			a.text = text.Text
+		}
+	}
+	return a
+}
+
+// rendered is the answer of a call that rendered the checkout.
+func rendered(out map[string]any) surfaceAnswer {
+	a := surfaceAnswer{}
+	a.status, _ = out["status"].(string)
+	a.continueURL, _ = out["continue_url"].(string)
+	// ACP's messages; UCP's summary text replaces this.
+	if messages, err := json.Marshal(out["messages"]); err == nil {
+		a.text = string(messages)
+	}
+	return a
 }
 
 // codPayment is UCP's payment object selecting cash on delivery, the
@@ -66,38 +199,47 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			t.Helper()
 			return acpReady(t, base)
 		},
-		complete: func(
+		answer: func(
 			ctx context.Context, id, key string, submit map[string]any,
-		) string {
+		) surfaceAnswer {
 			body := map[string]any{"payment_data": map[string]any{}}
 			for member, value := range submit {
 				body[member] = value
 			}
-			raw, err := json.Marshal(body)
-			if err != nil {
-				return ""
-			}
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-				base+"/"+id+"/complete", bytes.NewReader(raw))
-			if err != nil {
-				return ""
-			}
-			req.Header.Set("Authorization", "Bearer "+acpBearerToken)
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("API-Version", acp.Version)
-			req.Header.Set("Idempotency-Key", key)
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				return ""
-			}
-			defer func() { _ = resp.Body.Close() }()
-			var out map[string]any
-			if resp.StatusCode != http.StatusOK ||
-				json.NewDecoder(resp.Body).Decode(&out) != nil {
-				return ""
-			}
-			status, _ := out["status"].(string)
-			return status
+			return acpAnswer(ctx, base+"/"+id+"/complete", key, body)
+		},
+		update: func(ctx context.Context, id string) surfaceAnswer {
+			return acpAnswer(ctx, base+"/"+id, uuid.NewString(),
+				otherBuyer())
+		},
+		updateLines: func(ctx context.Context, id string) surfaceAnswer {
+			return acpAnswer(ctx, base+"/"+id, uuid.NewString(),
+				map[string]any{"line_items": []map[string]any{
+					{"id": "1", "quantity": 3},
+				}})
+		},
+		updateAsking: func(ctx context.Context, id string) surfaceAnswer {
+			return acpAnswer(ctx, base+"/"+id, uuid.NewString(),
+				map[string]any{
+					"line_items": []map[string]any{
+						{"id": "1", "quantity": 3},
+					},
+					"fulfillment_details": map[string]any{
+						"address": map[string]any{
+							"line_one": "Πανεπιστημίου 12", "city": "Αθήνα",
+							"state": "GR-14", "country": "GR",
+							"postal_code": "10431",
+						},
+					},
+				})
+		},
+		asked: "GET /api/v1/region/GR/get_regions_by_country_alpha_2",
+		abandon: func(ctx context.Context, id string) surfaceAnswer {
+			return acpAnswer(ctx, base+"/"+id+"/cancel", uuid.NewString(),
+				nil)
+		},
+		read: func(ctx context.Context, id string) surfaceAnswer {
+			return acpAnswer(ctx, base+"/"+id, "", nil)
 		},
 		keyName: func(id, key string) string {
 			return "ag:demostore:acp:idem:complete:" + id + ":" + key
@@ -151,31 +293,58 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			require.Equal(t, "ready_for_complete", created["status"])
 			return created["id"].(string)
 		},
-		complete: func(
+		answer: func(
 			ctx context.Context, id, key string, submit map[string]any,
-		) string {
+		) surfaceAnswer {
 			if submit == nil {
 				submit = map[string]any{}
 			}
-			res, err := session.CallTool(ctx, &mcp.CallToolParams{
-				Name: "complete_checkout",
-				Arguments: map[string]any{
+			return mcpAnswer(ctx, session, "complete_checkout",
+				map[string]any{
 					"meta": meta(key), "id": id, "checkout": submit,
-				},
-			})
-			if err != nil || res.IsError {
-				return ""
-			}
-			raw, err := json.Marshal(res.StructuredContent)
-			if err != nil {
-				return ""
-			}
-			var out map[string]any
-			if json.Unmarshal(raw, &out) != nil {
-				return ""
-			}
-			status, _ := out["status"].(string)
-			return status
+				})
+		},
+		update: func(ctx context.Context, id string) surfaceAnswer {
+			return mcpAnswer(ctx, session, "update_checkout",
+				map[string]any{
+					"meta": meta(""), "id": id,
+					"checkout": map[string]any{
+						"buyer":   map[string]any{"email": otherBuyerEmail},
+						"payment": codPayment(),
+					},
+				})
+		},
+		updateLines: func(ctx context.Context, id string) surfaceAnswer {
+			return mcpAnswer(ctx, session, "update_checkout",
+				map[string]any{
+					"meta": meta(""), "id": id,
+					"checkout": map[string]any{"line_items": []any{
+						map[string]any{
+							"item": map[string]any{"id": "1"}, "quantity": 3,
+						},
+					}},
+				})
+		},
+		updateAsking: func(ctx context.Context, id string) surfaceAnswer {
+			return mcpAnswer(ctx, session, "update_checkout",
+				map[string]any{
+					"meta": meta(""), "id": id,
+					"checkout": map[string]any{
+						"line_items": []any{map[string]any{
+							"item": map[string]any{"id": "1"}, "quantity": 3,
+						}},
+						"payment": codPayment(),
+					},
+				})
+		},
+		asked: "GET /api/v1/pay_way",
+		abandon: func(ctx context.Context, id string) surfaceAnswer {
+			return mcpAnswer(ctx, session, "cancel_checkout",
+				map[string]any{"meta": meta(uuid.NewString()), "id": id})
+		},
+		read: func(ctx context.Context, id string) surfaceAnswer {
+			return mcpAnswer(ctx, session, "get_checkout",
+				map[string]any{"meta": meta(""), "id": id})
 		},
 		keyName: func(id, key string) string {
 			return "ag:demostore:idem:" + id + ":" + key
@@ -188,7 +357,16 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			require.False(t, res.IsError, "%v", res.Content)
 		},
 	}
-	return []completionSurface{acpSurface, mcpSurface}
+	surfaces := []completionSurface{acpSurface, mcpSurface}
+	for i := range surfaces {
+		answer := surfaces[i].answer
+		surfaces[i].complete = func(
+			ctx context.Context, id, key string, submit map[string]any,
+		) string {
+			return answer(ctx, id, key, submit).status
+		}
+	}
+	return surfaces
 }
 
 // The states a completion leaves an idempotency key in.
@@ -213,7 +391,7 @@ func (stack ucpStack) bookkeeping(
 ) bookkeeping {
 	t.Helper()
 	ctx := context.Background()
-	store := checkout.NewStore(stack.rdb)
+	store := checkout.NewStore(stack.rdb, ucpUpstreamTimeout)
 	s, err := store.Load(ctx, "demostore", id)
 	require.NoError(t, err)
 	out := bookkeeping{Session: s.Status, Key: keySpent}
@@ -229,7 +407,7 @@ func (stack ucpStack) bookkeeping(
 		out.Key = keyReleased
 	case err != nil:
 		require.NoError(t, err)
-	case state == keyInFlight:
+	case strings.HasPrefix(state, keyInFlight+":"):
 		out.Key = keyInFlight
 	}
 	return out
@@ -276,9 +454,7 @@ func TestCompleteBookkeepingIsTheSameOnBothSurfaces(t *testing.T) {
 					outcome.fault.Store(true)
 					t.Cleanup(func() { outcome.fault.Store(false) })
 				}
-				before, err := stack.rdb.Get(ctx, "ag:demostore:cs:"+id).
-					Result()
-				require.NoError(t, err)
+				before := stack.storedBytes(t, id)
 				creates := stack.faults.orderCreates.Load()
 				key := uuid.NewString()
 				surface.complete(ctx, id, key, nil)
@@ -286,10 +462,7 @@ func TestCompleteBookkeepingIsTheSameOnBothSurfaces(t *testing.T) {
 				assert.Equal(t, outcome.want,
 					stack.bookkeeping(t, id, surface.keyName(id, key)))
 				if outcome.untouched {
-					after, err := stack.rdb.Get(ctx, "ag:demostore:cs:"+id).
-						Result()
-					require.NoError(t, err)
-					assert.Equal(t, before, after,
+					assert.Equal(t, before, stack.storedBytes(t, id),
 						"the stored session, its updatedAt included")
 					assert.Equal(t, creates,
 						stack.faults.orderCreates.Load())
@@ -391,7 +564,7 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 			// returns, and a retry meanwhile is told the session is busy.
 			require.Eventually(t, func() bool {
 				held, err := stack.rdb.Exists(context.Background(),
-					"ag:demostore:cs:"+id+":lock").Result()
+					lockRedisKey(id)).Result()
 				return err == nil && held == 0
 			}, 10*time.Second, 20*time.Millisecond)
 			// The order was not read back for a caller that had gone,
@@ -501,7 +674,7 @@ func (stack ucpStack) storedSession(
 	t *testing.T, id string,
 ) *checkout.Session {
 	t.Helper()
-	s, err := checkout.NewStore(stack.rdb).
+	s, err := checkout.NewStore(stack.rdb, ucpUpstreamTimeout).
 		Load(context.Background(), "demostore", id)
 	require.NoError(t, err)
 	return s
@@ -512,7 +685,7 @@ func (stack ucpStack) storedSession(
 func (stack ucpStack) storedBytes(t *testing.T, id string) string {
 	t.Helper()
 	raw, err := stack.rdb.Get(context.Background(),
-		"ag:demostore:cs:"+id).Result()
+		sessionRedisKey(id)).Result()
 	require.NoError(t, err)
 	return raw
 }
@@ -670,8 +843,10 @@ func TestCompleteWithoutItsClaimWritesNothing(t *testing.T) {
 			ucpSurface = surface
 		}
 	}
-	for _, claim := range []string{"inflight", "done"} {
-		t.Run("a key that is "+claim, func(t *testing.T) {
+	for name, claim := range map[string]string{
+		"another attempt's": "inflight:" + uuid.NewString(), "done": "done",
+	} {
+		t.Run("a key that is "+name, func(t *testing.T) {
 			ctx := context.Background()
 			id := ucpSurface.ready(t)
 			key := uuid.NewString()
@@ -721,8 +896,16 @@ func TestCompleteLeavesAClosedSessionAsItIs(t *testing.T) {
 			ctx, id, uuid.NewString(), changeBy("ucp")))
 		before := stack.storedBytes(t, id)
 
-		require.Empty(t, surfaces["acp"].complete(
-			ctx, id, uuid.NewString(), changeBy("acp")))
+		// The order a complete asks for exists: the session is answered
+		// as it is, and what the call submitted is not stored.
+		answer := surfaces["acp"].answer(
+			ctx, id, uuid.NewString(), changeBy("acp"))
+		require.Equal(t, "requires_escalation", answer.status)
+		// continue_url is the payment page the store opened for the
+		// order, as its message says, and the message names the order.
+		assert.Equal(t, vivaCheckoutURL, answer.continueURL)
+		assert.Contains(t, answer.text, "Order "+fixtureOrderUUID+
+			" is placed and awaits its payment")
 
 		assert.Equal(t, before, stack.storedBytes(t, id))
 	})

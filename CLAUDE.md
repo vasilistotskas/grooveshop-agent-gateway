@@ -442,13 +442,22 @@ passes.
     `missing_api_version` or `unsupported_api_version` with
     `supported_versions`.
   - 409 is only `idempotency_in_flight`, with `Retry-After`: a key or
-    the session lock in use, or an order being placed until
-    `Flow.CompletionDeadline`. Past it the outcome was never recorded
-    and stays so until the session expires: 502
-    `order_outcome_unknown`, no `Retry-After`.
-  - A completed or canceled session refuses update and cancel with
-    405 and an `Allow` header, and so does a canceled one complete. A
-    complete of a completed session answers 200 with the session.
+    the session lock in use, a session another request stored while
+    this one ran (`checkout.ErrSessionChanged`), or an order being
+    placed until `Flow.CompletionDeadline`. Past it the outcome was
+    never recorded and stays so until the session expires: 502
+    `order_outcome_unknown`, no `Retry-After`. A session in progress
+    whose order is known (`Flow.PlacedOrder`) answers neither: 500
+    `order_placed`, naming the order (`writePlacedUnsaved`).
+  - A session that is not open refuses update and cancel
+    (`refuseChange`): 405 and an `Allow` header once it is completed,
+    canceled or awaiting its payment, the in-flight answer while its
+    order is being placed. A canceled one refuses complete with 405. A
+    complete of a session whose order is placed (completed, or awaiting
+    payment) answers 200 with the session. The `continue_url` of one
+    awaiting payment is the payment page the store opened for the
+    order (`Session.PaymentURL`), as on UCP, and its message names the
+    order; without a payment page it is the order's page.
   - A create stores the response it sent (status and body) with its
     key (`createScope`, versioned with that record); a replay with the
     same body answers those bytes for the record's 24 hours, whether
@@ -461,14 +470,24 @@ passes.
     lives 30 minutes: the spec requires a key's response to be kept at
     least 24 hours (§6.6). Nothing else reads it.
   - A create is rendered before it is saved, and a 4xx or 5xx releases
-    its key: a create that failed leaves no session and no record.
+    its key: a create that failed leaves no session and no record. A
+    create that ran past its key's claim, with another create holding
+    the key by then, discards its session and answers 409: one key
+    answers one session. A create whose record could not be written
+    (`storeIdem` returned an error that is not `errClaimLapsed`) does
+    not know whether the key holds its response: it answers 503 and
+    hands out no session, and does not discard it, because the record
+    may name it. A retry of the key replays the session if it was
+    recorded and creates anew if not. A 201 without its record would
+    let that retry create a second session.
   - `completeError` answers every `checkout` and `django` sentinel
     deliberately (`TestCompleteErrorMapsEverySentinel` walks them): a
     refusal is a 4xx, and an order that exists or may is never
     answered as a failure.
 - **A checkout no session is stored for is not "nothing happened".**
   The id does not say whether the checkout was never completed, placed
-  an order and is no longer kept (expiry, eviction, a redeploy), or
+  an order and is no longer kept (expiry, eviction, a release that
+  changes the session key), or
   never existed. Every "no session" answer is `mcpsrv.errCheckoutGone`
   (UCP) or `acp.msgSessionGone` (ACP's 404): an order may exist, check
   before starting another checkout, with the order id if the caller
@@ -496,14 +515,174 @@ passes.
   the ACP handler and the UCP tool store what the call itself
   submitted (ACP's buyer, UCP's payment) before they call it, so that
   a refused call keeps the buyer's latest choice, and only for a
-  session that is still open (`Session.Open`). ACP stores it under the
-  session lock and its idempotency key, before any Django call. UCP
-  stores it under its completion claim: its payment lookup can
-  outlast the lock, which may have lapsed by then (#84). After the
-  flow they only settle their own key by the placement (ACP's
-  body-hash record, UCP's completion claim), on a context the caller
-  cannot cancel, bounded by the Django client's timeout, and map the
-  error; neither saves the session again.
+  session that is still open (`Session.Open`). After the flow they
+  only settle their own key by the placement (ACP's body-hash record,
+  UCP's completion claim), on a context the caller cannot cancel,
+  bounded by the Django client's timeout, and map the error; neither
+  saves the session again.
+- **One completion places a session's order, and no guard that expires
+  decides which** (#84). Every guard on a checkout expires while its
+  holder may still be working, because Django can take longer than any
+  of them lasts. So nothing rests on one:
+  - **A session is stored by compare-and-set** (`checkout.Store`,
+    `saveScript`). Every save gives the session a new random
+    `Session.Revision`; `Store.Save` writes only over the revision the
+    request loaded, and answers `ErrSessionChanged`, having written
+    nothing, when another request stored the session since or it is
+    gone. `Store.Create` writes only where no session is. There is no
+    unconditional write of a session. The delete of a placed one past
+    its lifetime is the save script's own, under the same check.
+    `Store.Discard` is the one delete outside it: it removes a session
+    its create stored and never handed out (the create's key turned
+    out to be another request's), whose id no other request can hold.
+    The revision is random, not a counter or a time: two
+    requests that read one state and save in the same clock tick would
+    otherwise write the same bytes, and neither could tell its own
+    write from the other's.
+  - **The in-progress save is the fence.** `Flow.Complete` sends
+    `POST /order` only after its save of `complete_in_progress` was
+    accepted, so of all the completions that loaded one ready session,
+    under any lock or key, one reaches Django. The others return
+    `ErrSessionChanged` with `NothingPlaced`. The same check keeps a
+    stale snapshot (an update or a cancel that ran past its lock, a
+    refused order's reset) from being written over a session that is
+    being placed or is placed.
+  - **A lost save is answered like a busy session**: ACP 409
+    `idempotency_in_flight` with `Retry-After: 2`, UCP
+    `errCheckoutChanged` (a `conflict` tool error), the order-event
+    push 503. The request is sent again and reads the session as it is
+    then. `ErrSessionChanged` means nothing was stored in the session,
+    and no order was sent. It does not mean nothing happened: an
+    update has written its cart lines and coupon to Django by then, so
+    UCP adds `checkoutNotUpdated` to that answer. A completion's last
+    save can lose only to an order event, the one other writer of a
+    session in progress: the completion then stores its outcome over
+    the event's (`Flow.saveOverEvent`), keeping `completed` if the
+    event said the order is paid. A last save that still cannot be
+    stored, after its order was placed, is `ErrSessionNotSaved` with
+    the key spent, and does not wrap `ErrSessionChanged`. A save Redis
+    failed is `ErrUnavailable`, answered "the checkout records are
+    unavailable" (`errCheckoutUnavailable`, ACP 503), never with
+    Django's wording. The in-progress save and the save after the
+    order call each get one more attempt when Redis fails them, with
+    the same write: a first that was stored and lost only its reply is
+    recognised as this call's.
+  - **The lock only orders requests** (`Store.Lock`, `ErrLocked`). It
+    lasts `lockSteps` upstream timeouts: what a completion does under
+    it when Django answers every call just inside its timeout. A
+    request that runs longer loses the lock, never the fence.
+  - **A lock and an idempotency key are both a `checkout.Claim`**: a
+    key holding `inflight:<the request's token>` until it expires.
+    `Settle` and `Release` act only on a key that still holds that
+    token (`Settle` also on one nobody holds), so a request that
+    outlived its claim never writes or deletes the next holder's. A
+    claim lasts one upstream timeout more than the lock. A request
+    that lost its claim answers by what it did (the order it placed,
+    the session it saved): the session, not the key, tells the next
+    holder.
+  - go-redis sends a command again when its reply was lost, so each
+    script reports its own earlier run as done: a claim finds its own
+    token, a save its own revision, a settle the value it wrote.
+- **No answer hands out a new checkout while an order for the old one
+  may exist.** A session is open (`Session.Open`), canceled, or may
+  have an order (`Session.MayHaveOrder`: being placed, awaiting its
+  payment, completed). Decide on those, never on `OrderUUID` or one
+  status:
+  - A session that may have an order takes no update and no cancel, on
+    either surface (`acp.refuseChange`, `mcpsrv.closedTo`): neither
+    would touch the order.
+  - It is kept `terminalTTL` once the stored session says an order
+    exists or may (`Session.keptLong`, `Session.ttl`): placed, a day
+    after `PlacedAt`; its order call unanswered (`Session.Unconfirmed`,
+    set by `Flow.place`), a day after that save. While it is held a
+    caller is told what became of the checkout and a payment event
+    finds it; afterwards its id is only "no session" (above). A
+    session only marked in progress keeps an open one's half hour. The
+    mark is written before Django is asked, and the save after the
+    answer can fail: a session Django refused the order of must not
+    read "an order may exist" for a day because Redis failed twice
+    (the second attempt sends the same revision, so a first that was
+    stored and lost only its reply counts as this save's). The
+    price is the other outcomes of that same failure, and a pod that
+    dies in between: an order placed or unanswered is answered from
+    its session for half an hour, and as a missing session after. The
+    stored value cannot tell them apart; Django could (#83, Django
+    #637). `docs/agent-protocols-runbook.md` section 11 is the
+    operator's side.
+  - A complete of one answers what it is, before any lookup: the
+    session when its order is placed (completed, or awaiting payment,
+    on ACP too), in flight while it is being placed, canceled when it
+    is. A session being placed is "in flight" only until
+    `Flow.CompletionDeadline`; past it, both surfaces say the outcome
+    was never recorded (ACP `order_outcome_unknown`, UCP
+    `errOutcomeUnknown`, which says what a person can do), and that
+    holds for a read whose render fails too (`renderBody`,
+    `checkoutResult`). A UCP read that renders says the same in its
+    text (`pending`), beside the status. It is offered no link back to
+    its cart.
+  - **A handler holds a snapshot, and answers from it only through its
+    exit.** Once update, complete or cancel has loaded its session, the
+    lock that keeps the snapshot current can lapse, and another request
+    may store the session: a complete that places the order, a payment
+    event. What Django then says about the cart (it is empty, a line is
+    gone, the stock is short) is that request's doing, and the snapshot
+    describes a session that no longer exists. So the body of each of
+    the three cannot answer by itself. On ACP it has no
+    `http.ResponseWriter` and returns an `answer`
+    (`updateSession`, `completeSession`, `cancelSession`); on UCP it
+    returns a `sessionAnswer`, not the tool's result. Only `finish`
+    turns one into a response, so a way out added later is a `return`
+    of one too.
+    - `fromSnapshot` (UCP also `refusedBy`) is an answer made from the
+      loaded session or from what Django said on its behalf: a
+      refusal, a render, a replayed key. `finish` reads the stored
+      session and gives it only while the revision is the loaded one.
+      Otherwise the request is answered by what is stored, through the
+      function that answers that state everywhere else
+      (`completeClosed`, `refuseChange`; `closedTo`, `cancelClosed`);
+      "changed by another request" for a session still open; the
+      missing-session answer; or unavailable when it cannot be read.
+    - `afterSave` is the answer of a request whose own save was just
+      accepted, which proves its snapshot was the stored session: an
+      update or cancel that stored, a completion past the in-progress
+      save. It is given as it is. Using it without such a save is the
+      one mistake the types do not stop.
+    - Create and the reads hold no snapshot across a wait: they answer
+      the session as they stored or loaded it then. Answers given
+      before a session is loaded (the key, the lock, the tenant) are
+      not about it.
+    - An update reads the stored session once more before its first
+      cart write (`Store.Current`), and writes nothing to the cart of a
+      session stored since. That is a check, not a fence: Django's cart
+      is outside the session's compare-and-set, so a completion that
+      starts while an update's cart writes are under way can order a
+      cart that update has half written. Only the lock stands against
+      that.
+  - **Order events** (`Flow.ApplyOrderEvent`), by the session the
+    order's link leads to:
+    - terminal: nothing;
+    - naming no order: any event records the order, read from Django
+      by the event's own uuid, which the order link vouches is this
+      checkout's: its id, and its creation time, from which the
+      session's day counts. An order Django no longer has is logged at
+      warn and answered 204, and the session is left as it is: a
+      session is never completed without its order. The record
+      `Flow.place` writes beside the session (`Store.IndexOrder`:
+      `ag:{schema}:cs:v2:{id}:order`, the order's uuid) is for calls on
+      the session, not events: Redis may evict it;
+    - a payment-completed event also sets `completed`. No other event
+      changes a status.
+
+    It takes no session lock. Its save is the compare-and-set, and a
+    lost one is a 503 that Django sends again. Django retries five
+    times, each after a random delay between zero and 10, 20, 40, 80
+    and 160 seconds (`push_order_event_to_gateway`, Celery's
+    `retry_jitter`), so all five can fall inside the time a crashed
+    pod's lock lasts, and a lock would then lose the event.
+    `Flow.PlacedOrder` reads the same record for a session in progress,
+    so a call on one whose completion placed the order and could not
+    save it is answered with the order (`placedUnsavedErr`,
+    `writePlacedUnsaved`).
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before
@@ -554,6 +733,14 @@ passes.
   gateway's authenticated call, and none of those is written to the shared
   Redis entry: `publicConfig` clears each, and
   `TestPublicConfigClearsEveryUndocumentedField` finds them by reflection.
+  A checkout session is `ag:{schema}:cs:v2:{id}`, its lock that plus
+  `:lock`, the order it placed that plus `:order`. The version is of how sessions are written, not only of their
+  shape: bump it whenever an older pod writing the key its own way could
+  undo what a newer one relies on (v1 pods wrote sessions unconditionally),
+  so the two never share a session; a session under an older key is not
+  found. `TestSessionKeyIsVersioned` pins it. A Redis write that depends
+  on what the key holds is a script (`redis.NewScript`), never a read
+  followed by a write.
 - No tenant label on Prometheus metrics (unbounded cardinality) — tenant
   goes in logs.
 - **No fallback/legacy/backward-compat code paths.** Environment differences

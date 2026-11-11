@@ -94,7 +94,7 @@ func ucpHandlers(t *testing.T, dj *django.Client) *handlers {
 	})
 	t.Cleanup(func() { _ = rdb.Close() })
 	return &handlers{deps: Deps{Site: testSite, Django: dj,
-		Profiles: profiles, Checkout: checkout.NewStore(rdb),
+		Profiles: profiles, Checkout: checkout.NewStore(rdb, dj.Timeout()),
 		AllowLocalWebhooks: true, Log: slog.New(slog.DiscardHandler)}}
 }
 
@@ -211,7 +211,8 @@ func TestCheckoutStoreOutageIsUnavailable(t *testing.T) {
 }
 
 // A checkout no session is stored for may have placed an order: its
-// session can be gone by expiry, by eviction or by a redeploy, and the
+// session can be gone by expiry, by eviction, or by a release that
+// changes the session key (an ordinary rollout drops none), and the
 // id does not say. An agent told only to start a new one would order a
 // second time, so it is told to check first, with what it holds.
 func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
@@ -220,7 +221,10 @@ func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
 	ctx := tenant.NewContext(context.Background(), cartTenant())
 
 	// An id that is not a session id is known to be missing without the
-	// store being asked.
+	// store being asked. update, complete and cancel take the session
+	// lock in Redis before they load, which this package's tests do not
+	// run: the integration suite covers their answer
+	// (TestAMissingCheckoutMayHavePlacedAnOrder).
 	_, _, err := h.getCheckout(ctx, nil, GetCheckoutIn{
 		Meta: ucpMeta(t, ""), ID: "not-a-session-id",
 	})

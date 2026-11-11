@@ -9,23 +9,29 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 )
 
 // sessionCount is how many checkout sessions the store holds.
 func (stack ucpStack) sessionCount(t *testing.T) int {
 	t.Helper()
 	keys, err := stack.rdb.Keys(context.Background(),
-		"ag:demostore:cs:*").Result()
+		sessionRedisKey("*")).Result()
 	require.NoError(t, err)
 	n := 0
 	for _, key := range keys {
-		if !strings.HasSuffix(key, ":lock") {
+		// Beside a session: its lock, and the order it placed.
+		if !strings.HasSuffix(key, ":lock") &&
+			!strings.HasSuffix(key, ":order") {
 			n++
 		}
 	}
@@ -40,6 +46,22 @@ type rawAnswer struct {
 	err      error
 }
 
+// acpSend sends req and reads its answer in full. It asserts nothing, so
+// it runs on any goroutine.
+func acpSend(req *http.Request) rawAnswer {
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return rawAnswer{err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	a := rawAnswer{
+		status:   resp.StatusCode,
+		replayed: resp.Header.Get("Idempotent-Replayed"),
+	}
+	a.body, a.err = io.ReadAll(resp.Body)
+	return a
+}
+
 // concurrently sends n copies of the same create at once.
 func concurrently(
 	t *testing.T, n int, url string, body any, key string,
@@ -49,23 +71,105 @@ func concurrently(
 	var wg sync.WaitGroup
 	for i := range answers {
 		req := acpRequest(t, http.MethodPost, url, body, key)
-		wg.Go(func() {
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				answers[i].err = err
-				return
-			}
-			defer func() { _ = resp.Body.Close() }()
-			answers[i].status = resp.StatusCode
-			answers[i].replayed = resp.Header.Get("Idempotent-Replayed")
-			answers[i].body, answers[i].err = io.ReadAll(resp.Body)
-		})
+		wg.Go(func() { answers[i] = acpSend(req) })
 	}
 	wg.Wait()
 	for _, a := range answers {
 		require.NoError(t, a.err)
 	}
 	return answers
+}
+
+// redisAround wraps each Redis command: it decides whether the command
+// is sent, and what its caller is told.
+type redisAround func(cmd redis.Cmder, send func() error) error
+
+func (redisAround) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (around redisAround) ProcessHook(
+	next redis.ProcessHook,
+) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		return around(cmd, func() error { return next(ctx, cmd) })
+	}
+}
+
+func (redisAround) ProcessPipelineHook(
+	next redis.ProcessPipelineHook,
+) redis.ProcessPipelineHook {
+	return next
+}
+
+// A create answers 201 only once its key holds the response. When the
+// write of that record fails, whether the key holds it is not known. The
+// session is then not handed out, because a retry of the key could
+// create a second one, and not discarded, because the record may name
+// it. The retry replays it if it was recorded, and creates anew if not.
+func TestACreateWhoseRecordIsNotConfirmedHandsOutNoSession(t *testing.T) {
+	stack := startUCPGateway(t)
+	base := stack.gw.URL + "/acp/checkout_sessions"
+	body := map[string]any{
+		"line_items":   []map[string]any{{"id": "1", "quantity": 2}},
+		"currency":     "EUR",
+		"capabilities": map[string]any{},
+	}
+	// Redis knows both scripts from here on: each is one command.
+	resp, _ := acpCall(t, http.MethodPost, base, body, uuid.NewString())
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	for name, written := range map[string]bool{
+		"the record was not written":             false,
+		"the record was written, its reply lost": true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			key := uuid.NewString()
+			record := "ag:demostore:acp:idem:create.v2:" + key
+			var scripts atomic.Int32
+			stack.rdb.AddHook(redisAround(
+				func(cmd redis.Cmder, send func() error) error {
+					// The key's first script claims it, its second
+					// records the response.
+					if !savesKey(cmd, record) || scripts.Add(1) != 2 {
+						return send()
+					}
+					if written {
+						if err := send(); err != nil {
+							return err
+						}
+					}
+					return errRedisDown
+				}))
+			sessions := stack.sessionCount(t)
+
+			resp, refused := acpCall(t, http.MethodPost, base, body, key)
+
+			require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+			assert.Equal(t, "unavailable", refused["code"])
+			assert.Equal(t, sessions+1, stack.sessionCount(t),
+				"the session is kept: the record may name it")
+
+			if !written {
+				// The key is still claimed, until the claim ends.
+				resp, _ := acpCall(t, http.MethodPost, base, body, key)
+				require.Equal(t, http.StatusConflict, resp.StatusCode)
+				stack.lapse(t, record)
+			}
+			resp, created := acpCall(t, http.MethodPost, base, body, key)
+			require.Equal(t, http.StatusCreated, resp.StatusCode)
+			stored := stack.storedSession(t, created["id"].(string))
+			assert.Equal(t, checkout.StatusIncomplete, stored.Status)
+			if written {
+				assert.Equal(t, "true",
+					resp.Header.Get("Idempotent-Replayed"))
+				assert.Equal(t, sessions+1, stack.sessionCount(t))
+			} else {
+				assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
+				assert.Equal(t, sessions+2, stack.sessionCount(t))
+			}
+		})
+	}
 }
 
 // The spec keeps a key's response for at least 24 hours: "Same key +
@@ -113,8 +217,7 @@ func TestACPIdempotencyKeys(t *testing.T) {
 		assertReplay(resp, body)
 
 		// Its session gone, the key still answers what it answered.
-		require.NoError(t, stack.rdb.Del(ctx,
-			"ag:demostore:cs:"+created["id"].(string)).Err())
+		stack.lapse(t, sessionRedisKey(created["id"].(string)))
 		sessions := stack.sessionCount(t)
 		resp, body = create(t, key, createBody)
 		assertReplay(resp, body)
@@ -215,7 +318,10 @@ func TestACPIdempotencyKeys(t *testing.T) {
 		assertFresh(t, resp, body)
 	})
 
-	t.Run("a settled key is kept 24 hours, a claim a minute",
+	// A claim lasts what its request can take when the store answers
+	// every call just inside the upstream timeout: the lock's six, and
+	// one more for the write that settles the key.
+	t.Run("a settled key is kept 24 hours, a claim seven upstream timeouts",
 		func(t *testing.T) {
 			key := uuid.NewString()
 			resp, body := create(t, key, createBody)
@@ -257,7 +363,12 @@ func TestACPIdempotencyKeys(t *testing.T) {
 				"ag:demostore:acp:idem:complete:"+id+":"+completeKey).Result()
 			require.NoError(t, err)
 			assert.Positive(t, ttl, "a claim must expire")
-			assert.LessOrEqual(t, ttl, time.Minute)
+			assert.InDelta(t, (7 * ucpUpstreamTimeout).Seconds(),
+				ttl.Seconds(), 2)
+			lock, err := stack.rdb.TTL(ctx, lockRedisKey(id)).Result()
+			require.NoError(t, err)
+			assert.InDelta(t, (6 * ucpUpstreamTimeout).Seconds(),
+				lock.Seconds(), 2)
 			release()
 			assert.Equal(t, http.StatusOK, <-done)
 		})
