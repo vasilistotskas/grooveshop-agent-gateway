@@ -147,8 +147,10 @@ passes.
   retried, as in `internal/ucp/fetch.go`. Errors unwrap to sentinels
   (`ErrNotFound`, `ErrConflict`, `ErrThrottled`, `ErrValidation`,
   `ErrUpstreamDown`) — branch with `errors.Is`, never on status literals.
-  A failure while reading the body is `ErrUpstreamDown` like one before
-  the headers; a complete body that is not the JSON expected is a decode
+  A failure while reading a body (a document, an error body) is
+  `ErrUpstreamDown` like one before the headers, or `context.Canceled`
+  for a caller that hung up; a redirect whose body is cut stays the
+  redirect. A complete body that is not the JSON expected is a decode
   error. A context deadline is one of the gateway's own budgets, so a
   call it cuts is `ErrUpstreamDown`, logged. A caller that hung up (a
   cancelled context, shutdown included) gets an error wrapping

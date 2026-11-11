@@ -252,35 +252,68 @@ func (c *Client) do(ctx context.Context, r request) error {
 	defer func() { _ = resp.Body.Close() }()
 	code = strconv.Itoa(resp.StatusCode)
 
-	if resp.StatusCode >= 400 {
-		return c.apiError(resp)
-	}
-	if resp.StatusCode >= 300 {
-		return c.redirected(ctx, r, resp)
-	}
-	if r.out == nil {
-		// The status is the whole answer here (Ping, a deleted cart
-		// line): a body cut after it changes nothing the caller reads.
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil
-	}
-	// The read error is kept apart from the decode error: json turns a
-	// cut body into io.ErrUnexpectedEOF, as it does a short document.
-	rb := &bodyReader{r: resp.Body}
-	dec := json.NewDecoder(rb)
-	dec.UseNumber()
-	if err := dec.Decode(r.out); err != nil {
-		if rb.err == nil {
+	var errBody []byte
+	err = c.readBody(ctx, r, resp, &code, start, func(body io.Reader) error {
+		var err error
+		switch {
+		case resp.StatusCode >= 400:
+			errBody, err = io.ReadAll(io.LimitReader(body, maxErrorBody))
+			return err
+		case resp.StatusCode >= 300:
+			_, err = io.Copy(io.Discard, io.LimitReader(body, maxErrorBody))
+			return err
+		case r.out == nil:
+			// The status is the whole answer (Ping, a deleted cart
+			// line): a body cut after it changes nothing the caller
+			// reads. Read to its end so the connection is reused.
+			_, _ = io.Copy(io.Discard, body)
+			return nil
+		}
+		dec := json.NewDecoder(body)
+		dec.UseNumber()
+		if err := dec.Decode(r.out); err != nil {
 			return fmt.Errorf("django: decode %s: %w", r.path, err)
 		}
-		if hungUp(ctx.Err()) {
-			code = "canceled"
-			return callerGone(r)
-		}
-		code = "error"
-		return c.unavailable(ctx, r, rb.err, start)
+		return nil
+	})
+	switch {
+	case err != nil:
+		return err
+	case resp.StatusCode >= 400:
+		return c.apiError(resp, errBody)
+	case resp.StatusCode >= 300:
+		return c.redirected(ctx, r, resp)
 	}
 	return nil
+}
+
+// readBody runs consume over the response body; every body do reads is
+// read here. When consume fails because the read did (the read error
+// is kept apart from consume's: json reports a cut body as
+// io.ErrUnexpectedEOF, as it does a short document), whatever the
+// status:
+//   - a caller that hung up: callerGone, counted canceled;
+//   - a redirect: the redirect stands, it was received (nil);
+//   - otherwise: an outage like one before the headers, counted error.
+//
+// Any other consume error is returned as it is.
+func (c *Client) readBody(
+	ctx context.Context, r request, resp *http.Response, code *string,
+	start time.Time, consume func(io.Reader) error,
+) error {
+	rb := &bodyReader{r: resp.Body}
+	err := consume(rb)
+	switch {
+	case err == nil || rb.err == nil:
+		return err
+	case hungUp(ctx.Err()):
+		*code = "canceled"
+		return callerGone(r)
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		return nil
+	}
+	*code = "error"
+	return c.unavailable(ctx, r, rb.err, start)
 }
 
 // bodyReader keeps the error that ended a response body early.
@@ -328,11 +361,11 @@ func callerGone(r request) error {
 
 // redirected turns a 3xx into ErrUpstreamDown, never retried: Django
 // did not answer the call it was sent, and a mutation it redirected
-// may have run. Location is logged without its query.
+// may have run. Location is logged without its query. Its body was
+// read (readBody), so the connection is back in the pool.
 func (c *Client) redirected(
 	ctx context.Context, r request, resp *http.Response,
 ) error {
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBody))
 	location := resp.Header.Get("Location")
 	if u, err := url.Parse(location); err == nil {
 		u.User, u.RawQuery, u.ForceQuery, u.Fragment = nil, "", false, ""
@@ -353,8 +386,8 @@ func (c *Client) redirected(
 // largest structured failure is a stock shortfall listing cart lines.
 const maxErrorBody = 64 << 10
 
-func (c *Client) apiError(resp *http.Response) error {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+// apiError is a 4xx/5xx with its body as read (readBody).
+func (c *Client) apiError(resp *http.Response, body []byte) error {
 	apiErr := &APIError{Status: resp.StatusCode, Body: body}
 	if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil &&
 		s > 0 {

@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -381,9 +383,9 @@ func TestNoRetryOnceTheCallerHungUp(t *testing.T) {
 	assert.Equal(t, int32(1), hits.Load())
 }
 
-// cutServer answers its first cuts requests with the headers and a body
-// cut short, sent once the client has the headers (afterHeaders), and
-// every later one with ok. wait returns once every cut handler is done.
+// cutServer answers its first cuts requests with status and a body cut
+// short, sent once the client has the headers (afterHeaders), and every
+// later one with ok. close returns once every cut handler is done.
 type cutServer struct {
 	srv        *httptest.Server
 	hits       atomic.Int32
@@ -392,7 +394,7 @@ type cutServer struct {
 }
 
 func newCutServer(
-	t *testing.T, cuts int32, rst bool, part string, ok []byte,
+	t *testing.T, status int, cuts int32, rst bool, part string, ok []byte,
 ) *cutServer {
 	t.Helper()
 	s := &cutServer{gotHeaders: make(chan struct{}, 1)}
@@ -404,7 +406,7 @@ func newCutServer(
 			}
 			s.handlers.Add(1)
 			defer s.handlers.Done()
-			cutBody(t, w, rst, part, s.gotHeaders)
+			cutBody(t, w, status, rst, part, s.gotHeaders)
 		}))
 	return s
 }
@@ -424,16 +426,17 @@ func (s *cutServer) close() {
 // cutBody sends the headers and part, a body declared longer, waits
 // until the client has the headers, then closes the connection: with a
 // FIN, or with an RST when rst is set.
-func cutBody(t *testing.T, w http.ResponseWriter, rst bool, part string,
-	gotHeaders <-chan struct{}) {
+func cutBody(t *testing.T, w http.ResponseWriter, status int, rst bool,
+	part string, gotHeaders <-chan struct{}) {
 	conn, _, err := http.NewResponseController(w).Hijack()
 	if !assert.NoError(t, err) {
 		return
 	}
 	defer func() { _ = conn.Close() }()
-	_, err = io.WriteString(conn, "HTTP/1.1 200 OK\r\n"+
-		"Content-Type: application/json\r\nContent-Length: 100\r\n\r\n"+
-		part)
+	_, err = fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\n"+
+		"Location: /elsewhere\r\n"+
+		"Content-Type: application/json\r\nContent-Length: 100\r\n\r\n%s",
+		status, http.StatusText(status), part)
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -464,7 +467,7 @@ func TestBodyCutShort(t *testing.T) {
 	for _, cut := range cuts {
 		for _, method := range bothMethods {
 			t.Run(cut.name+"/"+method, func(t *testing.T) {
-				s := newCutServer(t, 2, cut.rst, `{"cart":`, []byte(`{}`))
+				s := newCutServer(t, http.StatusOK, 2, cut.rst, `{"cart":`, []byte(`{}`))
 				defer s.close()
 				p := s.probe(t)
 
@@ -528,7 +531,7 @@ func TestBodyCutByTheClientTimeout(t *testing.T) {
 
 // The status is the whole answer of a call that reads no body.
 func TestCutBodyWithoutOutputIsTheStatus(t *testing.T) {
-	s := newCutServer(t, 1, false, `{"cart":`, nil)
+	s := newCutServer(t, http.StatusOK, 1, false, `{"cart":`, nil)
 	defer s.close()
 	p := s.probe(t)
 
@@ -544,7 +547,7 @@ func TestCutBodyWithoutOutputIsTheStatus(t *testing.T) {
 // A whole document is the answer, whatever happens to the connection
 // after it.
 func TestDocumentThenCutIsTheAnswer(t *testing.T) {
-	s := newCutServer(t, 1, false, `{"cart":1}`, nil)
+	s := newCutServer(t, http.StatusOK, 1, false, `{"cart":1}`, nil)
 	defer s.close()
 	p := s.probe(t)
 
@@ -617,7 +620,7 @@ func TestGetCartNamingNoCartIsSentOnce(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := newCutServer(t, 2, false, `{"id":`, cart)
+			s := newCutServer(t, http.StatusOK, 2, false, `{"id":`, cart)
 			defer s.close()
 			p := s.probe(t)
 
@@ -648,4 +651,121 @@ func TestPingIsOneAttempt(t *testing.T) {
 	c := newTestClient(t, srv.URL)
 	require.ErrorIs(t, c.Ping(context.Background()), ErrUpstreamDown)
 	assert.Equal(t, int32(1), calls.Load())
+}
+
+// An error body or a redirect body is read like any other: a failed
+// read is an outage, or the caller's hang-up, whatever the status.
+func TestErrorBodyCutShort(t *testing.T) {
+	cuts := []struct {
+		name string
+		rst  bool
+	}{{"fin", false}, {"rst", true}}
+	for _, cut := range cuts {
+		for _, method := range bothMethods {
+			t.Run(cut.name+"/"+method, func(t *testing.T) {
+				s := newCutServer(t, http.StatusServiceUnavailable, 3,
+					cut.rst, `{"detail":`, nil)
+				defer s.close()
+				p := s.probe(t)
+
+				err := p.call(context.Background(), method)
+				s.handlers.Wait()
+
+				require.ErrorIs(t, err, ErrUpstreamDown)
+				_, isAPIErr := errors.AsType[*APIError](err)
+				assert.False(t, isAPIErr, "not a 503: %v", err)
+				assert.Contains(t, p.logs.String(), "django request failed")
+				attempts := 1
+				if method == http.MethodGet {
+					attempts = 3
+				}
+				assert.Equal(t, int32(attempts), s.hits.Load())
+				assert.Equal(t, map[string]float64{
+					"/cart " + method + " error": float64(attempts),
+				}, p.counts(t))
+			})
+		}
+	}
+}
+
+// slowBody answers status with part of a body declared longer, then
+// holds the rest until the client leaves.
+func slowBody(status int, release <-chan struct{}) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "/elsewhere")
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"detail":`))
+		_ = http.NewResponseController(w).Flush()
+		blockUntilGone(r, release)
+	}
+}
+
+func TestErrorBodyCutByTheClientTimeout(t *testing.T) {
+	for _, method := range bothMethods {
+		t.Run(method, func(t *testing.T) {
+			release := make(chan struct{})
+			srv := httptest.NewServer(slowBody(
+				http.StatusServiceUnavailable, release))
+			defer srv.Close()
+			defer close(release)
+			p := newProbe(t, srv, time.Second)
+			var gotHeaders atomic.Bool
+			p.afterHeaders(func(*http.Response) { gotHeaders.Store(true) })
+
+			err := p.call(context.Background(), method)
+
+			assert.True(t, gotHeaders.Load(), "timed out in the body")
+			require.ErrorIs(t, err, ErrUpstreamDown)
+			assert.ErrorIs(t, err, context.DeadlineExceeded)
+			assert.Equal(t, map[string]float64{
+				"/cart " + method + " error": 1,
+			}, p.counts(t), "one attempt")
+		})
+	}
+}
+
+func TestCallerHangingUpDuringAnErrorOrRedirectBody(t *testing.T) {
+	for _, status := range []int{
+		http.StatusServiceUnavailable, http.StatusFound,
+	} {
+		for _, method := range bothMethods {
+			t.Run(strconv.Itoa(status)+"/"+method, func(t *testing.T) {
+				release := make(chan struct{})
+				srv := httptest.NewServer(slowBody(status, release))
+				defer srv.Close()
+				defer close(release)
+				p := newProbe(t, srv, 5*time.Second)
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				p.afterHeaders(func(*http.Response) { cancel() })
+
+				err := p.call(ctx, method)
+
+				require.ErrorIs(t, err, context.Canceled)
+				assert.NotErrorIs(t, err, ErrUpstreamDown)
+				assert.Empty(t, p.logs.String())
+				assert.Equal(t, map[string]float64{
+					"/cart " + method + " canceled": 1,
+				}, p.counts(t))
+			})
+		}
+	}
+}
+
+// A redirect whose body is cut by anything but the caller is still the
+// redirect: it was received.
+func TestRedirectBodyCutIsStillARedirect(t *testing.T) {
+	s := newCutServer(t, http.StatusFound, 1, false, `moved`, nil)
+	defer s.close()
+	p := s.probe(t)
+
+	err := p.call(context.Background(), http.MethodGet)
+
+	require.ErrorIs(t, err, ErrUpstreamDown)
+	assert.Contains(t, err.Error(), "redirected with status 302")
+	assert.Contains(t, p.logs.String(), "django redirected a call")
+	assert.NotContains(t, p.logs.String(), "django request failed")
+	assert.Equal(t, int32(1), s.hits.Load())
+	assert.Equal(t, map[string]float64{"/cart GET 302": 1}, p.counts(t))
 }
