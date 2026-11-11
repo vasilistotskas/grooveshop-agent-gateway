@@ -410,6 +410,35 @@ func TestARefusedOrderDoesNotLeaveASessionClaimingOne(t *testing.T) {
 	}
 }
 
+// An order call that went unanswered leaves an order that may exist.
+// The save that says so, and keeps the session a day, gets the same
+// second attempt when Redis fails it.
+func TestAnUnansweredOrdersMarkIsTriedAgain(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	s := f.readySession(t)
+	f.faults.orderCreate.Store(true)
+	saves := 0
+	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+		if !savesKey(cmd, sessionRedisKey(s.ID)) {
+			return nil
+		}
+		// The first save marks it in progress; the second fails.
+		if saves++; saves == 2 {
+			return errors.New("redis is down")
+		}
+		return nil
+	}))
+
+	placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+
+	require.ErrorIs(t, err, checkout.ErrOrderOutcomeUnknown)
+	assert.Equal(t, checkout.OrderMayExist, placement)
+	stored := f.stored(t, s)
+	assert.Equal(t, checkout.StatusCompleteInProgress, stored.Status)
+	assert.True(t, stored.Unconfirmed)
+	assert.Greater(t, f.lifetime(t, s), 23*time.Hour)
+}
+
 // A session in progress can still be stored before its completion's
 // last save, by the one other writer of such a session: an order event,
 // for an order that is paid at once. The completion stores its outcome

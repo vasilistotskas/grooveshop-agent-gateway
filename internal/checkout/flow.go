@@ -153,13 +153,17 @@ func (f *Flow) Complete(
 	saveErr := f.st.Save(ctx, s)
 	switch {
 	case saveErr == nil:
-	case placement == NothingPlaced:
-		// The refusal is definite, and a session left in progress would
-		// claim an order that cannot exist: one more attempt. If it
-		// fails too, the in-progress session ends with the short
-		// lifetime of an open one (Session.ttl), not a placed one's.
+	case !errors.Is(saveErr, ErrSessionChanged):
+		// Redis failed, and the session still reads as only marked in
+		// progress, which says neither what happened nor how long to
+		// keep it: one more attempt. If it fails too, the session ends
+		// with an open one's lifetime (Session.ttl). That is right for
+		// an order Django refused, which must not read "an order may
+		// exist" for a day, and it is the price for the other two: an
+		// order placed or unanswered is then answered from the stored
+		// session for that long only, and as a missing one after.
 		saveErr = f.st.Save(ctx, s)
-	case errors.Is(saveErr, ErrSessionChanged):
+	case placement == OrderMayExist:
 		saveErr = f.saveOverEvent(ctx, s)
 	}
 	if saveErr != nil {
@@ -321,6 +325,7 @@ func (f *Flow) place(
 	s.PlacedAt = time.Now().UTC()
 	if err := f.st.IndexOrder(ctx, s); err != nil {
 		f.log.ErrorContext(ctx, "checkout: order index write failed",
+			slog.String("session", s.ID),
 			slog.String("order", order.UUID),
 			slog.String("error", err.Error()))
 	}
