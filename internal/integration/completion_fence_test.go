@@ -348,7 +348,8 @@ func TestACPRequestPastItsClaimLeavesTheKeyToItsHolder(t *testing.T) {
 				"capabilities": map[string]any{},
 			}
 			sessions := stack.sessionCount(t)
-			held := stack.hold(t, "POST /api/v1/cart/item", 1)[0]
+			// A create's first call to the store: the cart it mints.
+			held := stack.hold(t, "GET /api/v1/cart", 1)[0]
 			first := make(chan rawAnswer, 1)
 			req := acpRequest(t, http.MethodPost, base, body, key)
 			go func() { first <- acpSend(req) }()
