@@ -292,14 +292,18 @@ func (r *Resolver) count(result string) {
 	}
 }
 
-// redisKey is versioned with the cached TenantConfig shape: a gateway
+// redisKeyVersion versions the cached TenantConfig shape: a gateway
 // that decodes a field an older one never wrote must not read that
 // one's entries, or the field reads as its zero value until they
 // expire (v2: TenantConfig.Features, which would read as every
 // feature off; v3: its cart, catalogue and product alerts; v4:
 // AvailableLocales, which would read as the default language alone).
+// Bump it with every change to the shape; TestCachedShapeMatchesKeyVersion
+// fails until it is.
+const redisKeyVersion = "v5"
+
 func redisKey(domain string) string {
-	return "ag:tenant:v5:" + domain
+	return "ag:tenant:" + redisKeyVersion + ":" + domain
 }
 
 // NormalizeHost lowercases and strips any port from an inbound Host header.

@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,7 +11,7 @@ import (
 
 func TestMiddlewareInjectsTenant(t *testing.T) {
 	f := newFakeDjango(t)
-	r := newTestResolver(t, f, time.Minute)
+	r := newTestResolver(t, f)
 
 	var got *Tenant
 	next := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -34,7 +33,7 @@ func TestMiddlewareInjectsTenant(t *testing.T) {
 
 func TestMiddlewareUnknownHost404(t *testing.T) {
 	f := newFakeDjango(t)
-	r := newTestResolver(t, f, time.Minute)
+	r := newTestResolver(t, f)
 
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("handler must not run for unknown hosts")
@@ -51,7 +50,7 @@ func TestMiddlewareUnknownHost404(t *testing.T) {
 
 func TestMiddlewareIgnoresForwardedHost(t *testing.T) {
 	f := newFakeDjango(t)
-	r := newTestResolver(t, f, time.Minute)
+	r := newTestResolver(t, f)
 
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("spoofed X-Forwarded-Host must not resolve a tenant")
@@ -70,7 +69,7 @@ func TestMiddlewareIgnoresForwardedHost(t *testing.T) {
 func TestMiddlewareResolverError503(t *testing.T) {
 	f := newFakeDjango(t)
 	f.goDown()
-	r := newTestResolver(t, f, time.Minute)
+	r := newTestResolver(t, f)
 
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("handler must not run when resolution fails")
