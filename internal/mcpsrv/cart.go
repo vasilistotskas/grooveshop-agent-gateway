@@ -153,7 +153,7 @@ func (h *handlers) getCart(
 	}
 	c, err := h.deps.Django.GetCart(ctx, t.Domain, lang, in.CartID)
 	if err != nil {
-		return nil, out, h.cartErr(err, mcpCartGone)
+		return nil, out, h.cartGoneErr(err)
 	}
 	out = h.cartOut(t, lang, c)
 	return h.cartSummary(out), out, nil
@@ -322,7 +322,7 @@ func (h *handlers) getCheckoutLink(
 	if _, err := h.deps.Django.GetCart(
 		ctx, t.Domain, lang, in.CartID,
 	); err != nil {
-		return nil, out, h.cartErr(err, mcpCartGone)
+		return nil, out, h.cartGoneErr(err)
 	}
 	// A signed-in shopper's cart is already their session's: the claim
 	// link adopts guest carts only, so they go straight to checkout.
@@ -364,7 +364,7 @@ func (h *handlers) applyCoupon(
 				code + "; explain the detail to the shopper"}
 	}
 	if err != nil {
-		return nil, out, h.cartErr(err, mcpCartGone)
+		return nil, out, h.cartGoneErr(err)
 	}
 	cartChanged(ctx)
 	out = h.cartOut(t, lang, c)
@@ -390,7 +390,7 @@ func (h *handlers) removeCoupon(
 	c, err := h.deps.Django.RemoveCoupon(
 		ctx, t.Domain, lang, in.CartID)
 	if err != nil {
-		return nil, out, h.cartErr(err, mcpCartGone)
+		return nil, out, h.cartGoneErr(err)
 	}
 	cartChanged(ctx)
 	out = h.cartOut(t, lang, c)

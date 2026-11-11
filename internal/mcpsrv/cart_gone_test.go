@@ -126,6 +126,101 @@ func TestChatCartToolsNeverAnswerAGoneCartWithCreateCart(t *testing.T) {
 	}
 }
 
+// notFoundDjango answers every call 404, as Django answers a cart it no
+// longer has.
+func notFoundDjango(t *testing.T, s surface) *handlers {
+	t.Helper()
+	return refusingDjango(t, s, http.StatusNotFound)
+}
+
+// refusingDjango answers every call with status.
+func refusingDjango(t *testing.T, s surface, status int) *handlers {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"detail": "Not found."}`))
+		}))
+	t.Cleanup(srv.Close)
+	return &handlers{surface: s, deps: Deps{Site: testSite,
+		Django: django.New(srv.URL+"/api/v1", "api.example.test", "secret",
+			5*time.Second, slog.New(slog.DiscardHandler), nil)}}
+}
+
+// cartScoped are the cart tools whose 404 is the cart itself.
+var cartScoped = []string{"get_cart", "get_checkout_link",
+	"get_shipping_options", "apply_coupon", "remove_coupon"}
+
+// A cart the chat names that Django answers 404 for is the shopper's own
+// browser cart gone: unreachable, reload, never create_cart, which the
+// chat does not serve. A 403, which reads as a 404, is the same.
+func TestChatCartAnswered404IsUnreachable(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+	}{
+		{"get_cart", http.StatusNotFound},
+		{"get_checkout_link", http.StatusNotFound},
+		{"get_shipping_options", http.StatusNotFound},
+		{"apply_coupon", http.StatusNotFound},
+		{"remove_coupon", http.StatusNotFound},
+		{"get_cart", http.StatusForbidden},
+	} {
+		name := tc.name
+		t.Run(name+" "+http.StatusText(tc.status), func(t *testing.T) {
+			h := refusingDjango(t, chatSurface, tc.status)
+			ctx := tenant.NewContext(context.Background(), cartTenant())
+
+			err := goneCartCalls[name](h, ctx)
+
+			var got *mcptool.ToolError
+			require.ErrorAs(t, err, &got)
+			assert.Equal(t, &mcptool.ToolError{
+				Code: mcptool.CodeCartUnreachable,
+				Hint: shopperCartUnreachable}, got)
+			assert.NotContains(t, err.Error(), "create_cart")
+		})
+	}
+}
+
+// On /mcp the same 404 is a cart that is gone, which the agent may
+// replace with create_cart.
+func TestMCPCartAnswered404IsNotFound(t *testing.T) {
+	for _, name := range cartScoped {
+		if name == "apply_coupon" || name == "remove_coupon" {
+			continue // the chat's alone
+		}
+		t.Run(name, func(t *testing.T) {
+			h := notFoundDjango(t, mcpSurface)
+			ctx := tenant.NewContext(context.Background(), cartTenant())
+
+			err := goneCartCalls[name](h, ctx)
+
+			var got *mcptool.ToolError
+			require.ErrorAs(t, err, &got)
+			assert.Equal(t, mcptool.CodeNotFound, got.Code)
+			assert.Equal(t, mcpCartGone, got.Hint)
+		})
+	}
+}
+
+// add_to_cart's 404 is its product's, on either surface: not a cart
+// that is gone.
+func TestAddToCartAnswered404IsTheProduct(t *testing.T) {
+	for _, s := range []surface{mcpSurface, chatSurface} {
+		h := notFoundDjango(t, s)
+		ctx := tenant.NewContext(context.Background(), cartTenant())
+
+		err := goneCartCalls["add_to_cart"](h, ctx)
+
+		var got *mcptool.ToolError
+		require.ErrorAs(t, err, &got)
+		assert.Equal(t, mcptool.CodeNotFound, got.Code, s.label())
+		assert.Equal(t, "product 1 was not found", got.Hint, s.label())
+	}
+}
+
 // On /mcp the agent owns its cart id: a gone cart is not found, and the
 // agent may create another.
 func TestMCPCartToolsAnswerAGoneCartWithCreateCart(t *testing.T) {

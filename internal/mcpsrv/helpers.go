@@ -70,18 +70,36 @@ const shopperCartUnreachable = "the shopper's cart could not be " +
 const mcpCartGone = "that cart no longer exists; create a new one with " +
 	"create_cart"
 
-// cartErr is upstreamErr for a call that names a cart. In the chat the
-// cart is the shopper's own browser cart, which a cart the model created
-// would never replace (the widget adopts a cart id only when it sent
-// none): one the store cannot reach is shopperCartUnreachable there,
-// whatever notFound says.
+// cartErr is upstreamErr for a call that names a cart, whose 404 is
+// notFound (a line, a product). In the chat the cart is the shopper's own
+// browser cart, which a cart the model created would never replace (the
+// widget adopts a cart id only when it sent none): one the store cannot
+// reach is shopperCartUnreachable there, whatever notFound says.
 func (h *handlers) cartErr(err error, notFound string) error {
 	if h.surface == chatSurface &&
 		errors.Is(err, django.ErrCartUnreachable) {
-		return &mcptool.ToolError{Code: mcptool.CodeCartUnreachable,
-			Hint: shopperCartUnreachable}
+		return shopperCartErr()
 	}
 	return upstreamErr(err, notFound)
+}
+
+// cartGoneErr is cartErr for a call on the cart itself, whose 404 (and
+// 403, which upstreamErr reads as one) is the cart gone:
+// shopperCartUnreachable in the chat, which serves no create_cart, and
+// mcpCartGone on /mcp.
+func (h *handlers) cartGoneErr(err error) error {
+	if h.surface == chatSurface && (errors.Is(err, django.ErrNotFound) ||
+		errors.Is(err, django.ErrForbidden)) {
+		return shopperCartErr()
+	}
+	return h.cartErr(err, mcpCartGone)
+}
+
+// shopperCartErr is the chat's answer for the shopper's cart the store
+// cannot reach.
+func shopperCartErr() *mcptool.ToolError {
+	return &mcptool.ToolError{Code: mcptool.CodeCartUnreachable,
+		Hint: shopperCartUnreachable}
 }
 
 // upstreamErr converts Django client errors into agent-actionable tool
@@ -103,8 +121,7 @@ func upstreamErr(err error, notFound string) error {
 	// Checked first: it is ErrCartUnreachable too, whose not-found
 	// wording ("create a new cart") would mislead for the shopper's own.
 	case errors.Is(err, django.ErrCartTokenRefused):
-		return &mcptool.ToolError{Code: mcptool.CodeCartUnreachable,
-			Hint: shopperCartUnreachable}
+		return shopperCartErr()
 	case errors.Is(err, django.ErrNotFound),
 		errors.Is(err, django.ErrCartUnreachable),
 		// Guest-flow 403s (e.g. a wrong order UUID) are "not yours to

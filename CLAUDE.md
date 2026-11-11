@@ -423,14 +423,17 @@ passes.
   scope (`not_granted`, as on `/mcp/admin`), a refused coupon (its
   reason as the code) and the checkout store down
   (`errCheckoutUnavailable`, one value, `retryAfterSeconds` as an
-  upstream outage). A cart tool's failure goes through `handlers.cartErr`:
-  a cart the store no longer serves (`django.ErrCartUnreachable`) is
+  upstream outage). A cart tool's failure goes through `handlers.cartErr`,
+  or `handlers.cartGoneErr` for a call on the cart itself, whose 404 is
+  the cart gone (a line's or a product's 404 stays theirs): a cart the
+  store no longer serves (`django.ErrCartUnreachable`, or that 404) is
   `not_found` on `/mcp`, whose agent owns its cart id and is told to
   create another with `create_cart`. In the chat it is the shopper's
-  own browser cart, which a cart the model created would never replace,
-  so it is `cart_unreachable`: nothing changed, tell the shopper to
-  reload the page and try again (`shopperCartUnreachable`, the same
-  answer as a refused cart token). A checkout write that failed after
+  own browser cart, which a cart the model created would never replace
+  and which the chat serves no `create_cart` for, so it is
+  `cart_unreachable`: nothing changed, tell the shopper to reload the
+  page and try again (`shopperCartUnreachable`, the same answer as a
+  refused cart token). A checkout write that failed after
   another landed says so on top of its cause's hint (`withHint`). A list
   with nothing in it is `[]`, never `null`
   (`TestToolOutputsListNothingAsEmptyArrays`).
