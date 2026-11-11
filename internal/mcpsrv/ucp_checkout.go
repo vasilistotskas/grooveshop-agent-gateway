@@ -433,7 +433,7 @@ func (h *handlers) settleCompletion(
 
 // errCheckoutChanged answers a checkout another call stored while this
 // one ran: nothing of this call was stored in it.
-var errCheckoutChanged = &ToolError{Code: codeConflict,
+var errCheckoutChanged = &mcptool.ToolError{Code: mcptool.CodeConflict,
 	Hint: "this checkout was changed by another request while this one " +
 		"ran, so nothing of this call was stored in it; read it with " +
 		"get_checkout before trying again"}
