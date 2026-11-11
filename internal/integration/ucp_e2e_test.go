@@ -191,8 +191,13 @@ type checkoutFaults struct {
 	// stockShort makes the stock reservation answer a 409 shortfall.
 	stockShort atomic.Bool
 	// cartDeletedOnOrder makes the cart go with the first order, as it
-	// does in Django: asked for it, Django answers a new guest cart.
+	// does in Django for a pay way that is not settled online: asked for
+	// it, Django answers a new guest cart, and refuses to order from it.
 	cartDeletedOnOrder atomic.Bool
+	// ordersPlaced counts the order creations that were accepted.
+	ordersPlaced atomic.Int32
+	// before runs ahead of every request the fake receives.
+	before atomic.Pointer[func(*http.Request)]
 	// regionLookup makes the country's region list answer 502.
 	regionLookup atomic.Bool
 	// payWayLookup makes the pay-way list answer 502.
@@ -239,7 +244,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				}
 			}
 			if faults.cartDeletedOnOrder.Load() &&
-				faults.orderCreates.Load() > 0 {
+				faults.ordersPlaced.Load() > 0 {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"uuid": "` + uuid.NewString() +
 					`", "items": []}`))
@@ -317,6 +322,20 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 					`{"detail": "The cart changed while it was ordered."}`))
 				return
 			}
+			if faults.cartDeletedOnOrder.Load() &&
+				faults.ordersPlaced.Load() > 0 {
+				// Django's answer for a cart that no longer exists:
+				// order/views/order.py _get_cart_and_user, through
+				// core/api/exception_handler.py.
+				const msg = "Cart not found. Please add items to cart " +
+					"before checkout."
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"cart": ["` + msg + `"], ` +
+					`"code": "cart_not_found", "fields": {"cart": [` +
+					`{"message": "` + msg + `", "code": "cart_not_found"}]}}`))
+				return
+			}
 			// The cart rides the header, never the body.
 			assert.Equal(t, fixtureCartID, r.Header.Get("X-Cart-Id"))
 			var body map[string]any
@@ -336,6 +355,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			if hold := faults.orderHold.Load(); hold != nil {
 				(*hold)(r)
 			}
+			faults.ordersPlaced.Add(1)
 			serveFixture(t, w, "order_by_uuid.json")
 		})
 	outer.HandleFunc("POST /api/v1/order/684/create_checkout_session",
@@ -357,7 +377,12 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			}`))
 		})
 	outer.Handle("/", inner)
-	return outer
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if before := faults.before.Load(); before != nil {
+			(*before)(r)
+		}
+		outer.ServeHTTP(w, r)
+	})
 }
 
 // ucpUpstreamTimeout is how long the stack's gateway waits for Django.

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -42,10 +43,106 @@ type completionSurface struct {
 	complete func(
 		ctx context.Context, id, key string, submit map[string]any,
 	) string
+	// answer is complete with the whole answer. It asserts nothing, so a
+	// test may call it from another goroutine.
+	answer func(
+		ctx context.Context, id, key string, submit map[string]any,
+	) surfaceAnswer
+	// update changes the buyer's email, after reading the store's pay
+	// ways, and reports the whole answer. It asserts nothing either.
+	update func(ctx context.Context, id string) surfaceAnswer
 	// keyName is where the surface keeps that key's state in Redis.
 	keyName func(id, key string) string
 	// cancel abandons the checkout.
 	cancel func(t *testing.T, id string)
+}
+
+// surfaceAnswer is how a surface answered one call.
+type surfaceAnswer struct {
+	// status is the checkout status it rendered, "" when it refused.
+	status string
+	// refusal is why it refused: ACP's "<http status> <code>", UCP's
+	// error text.
+	refusal string
+	// retryAfter is ACP's Retry-After header.
+	retryAfter string
+	// errorBody is ACP's error as sent, for the spec's Error schema.
+	errorBody []byte
+}
+
+// acpAnswer sends an ACP request and reads its answer. It asserts
+// nothing, so it runs on any goroutine.
+func acpAnswer(
+	ctx context.Context, url, key string, body map[string]any,
+) surfaceAnswer {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url,
+		bytes.NewReader(raw))
+	if err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	req.Header.Set("Authorization", "Bearer "+acpBearerToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("API-Version", acp.Version)
+	req.Header.Set("Idempotency-Key", key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	sent, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(sent, &out); err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	if resp.StatusCode != http.StatusOK {
+		code, _ := out["code"].(string)
+		return surfaceAnswer{
+			refusal:    fmt.Sprintf("%d %s", resp.StatusCode, code),
+			retryAfter: resp.Header.Get("Retry-After"), errorBody: sent,
+		}
+	}
+	status, _ := out["status"].(string)
+	return surfaceAnswer{status: status}
+}
+
+// mcpAnswer calls a UCP tool and reads its answer. It asserts nothing,
+// so it runs on any goroutine.
+func mcpAnswer(
+	ctx context.Context, session *mcp.ClientSession, tool string,
+	args map[string]any,
+) surfaceAnswer {
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: tool, Arguments: args,
+	})
+	if err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	if res.IsError {
+		refusal := "refused"
+		if len(res.Content) > 0 {
+			if text, ok := res.Content[0].(*mcp.TextContent); ok {
+				refusal = text.Text
+			}
+		}
+		return surfaceAnswer{refusal: refusal}
+	}
+	raw, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return surfaceAnswer{refusal: err.Error()}
+	}
+	status, _ := out["status"].(string)
+	return surfaceAnswer{status: status}
 }
 
 // codPayment is UCP's payment object selecting cash on delivery, the
@@ -66,38 +163,18 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			t.Helper()
 			return acpReady(t, base)
 		},
-		complete: func(
+		answer: func(
 			ctx context.Context, id, key string, submit map[string]any,
-		) string {
+		) surfaceAnswer {
 			body := map[string]any{"payment_data": map[string]any{}}
 			for member, value := range submit {
 				body[member] = value
 			}
-			raw, err := json.Marshal(body)
-			if err != nil {
-				return ""
-			}
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-				base+"/"+id+"/complete", bytes.NewReader(raw))
-			if err != nil {
-				return ""
-			}
-			req.Header.Set("Authorization", "Bearer "+acpBearerToken)
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("API-Version", acp.Version)
-			req.Header.Set("Idempotency-Key", key)
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				return ""
-			}
-			defer func() { _ = resp.Body.Close() }()
-			var out map[string]any
-			if resp.StatusCode != http.StatusOK ||
-				json.NewDecoder(resp.Body).Decode(&out) != nil {
-				return ""
-			}
-			status, _ := out["status"].(string)
-			return status
+			return acpAnswer(ctx, base+"/"+id+"/complete", key, body)
+		},
+		update: func(ctx context.Context, id string) surfaceAnswer {
+			return acpAnswer(ctx, base+"/"+id, uuid.NewString(),
+				otherBuyer())
 		},
 		keyName: func(id, key string) string {
 			return "ag:demostore:acp:idem:complete:" + id + ":" + key
@@ -151,31 +228,26 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			require.Equal(t, "ready_for_complete", created["status"])
 			return created["id"].(string)
 		},
-		complete: func(
+		answer: func(
 			ctx context.Context, id, key string, submit map[string]any,
-		) string {
+		) surfaceAnswer {
 			if submit == nil {
 				submit = map[string]any{}
 			}
-			res, err := session.CallTool(ctx, &mcp.CallToolParams{
-				Name: "complete_checkout",
-				Arguments: map[string]any{
+			return mcpAnswer(ctx, session, "complete_checkout",
+				map[string]any{
 					"meta": meta(key), "id": id, "checkout": submit,
-				},
-			})
-			if err != nil || res.IsError {
-				return ""
-			}
-			raw, err := json.Marshal(res.StructuredContent)
-			if err != nil {
-				return ""
-			}
-			var out map[string]any
-			if json.Unmarshal(raw, &out) != nil {
-				return ""
-			}
-			status, _ := out["status"].(string)
-			return status
+				})
+		},
+		update: func(ctx context.Context, id string) surfaceAnswer {
+			return mcpAnswer(ctx, session, "update_checkout",
+				map[string]any{
+					"meta": meta(""), "id": id,
+					"checkout": map[string]any{
+						"buyer":   map[string]any{"email": otherBuyerEmail},
+						"payment": codPayment(),
+					},
+				})
 		},
 		keyName: func(id, key string) string {
 			return "ag:demostore:idem:" + id + ":" + key
@@ -188,7 +260,16 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			require.False(t, res.IsError, "%v", res.Content)
 		},
 	}
-	return []completionSurface{acpSurface, mcpSurface}
+	surfaces := []completionSurface{acpSurface, mcpSurface}
+	for i := range surfaces {
+		answer := surfaces[i].answer
+		surfaces[i].complete = func(
+			ctx context.Context, id, key string, submit map[string]any,
+		) string {
+			return answer(ctx, id, key, submit).status
+		}
+	}
+	return surfaces
 }
 
 // The states a completion leaves an idempotency key in.

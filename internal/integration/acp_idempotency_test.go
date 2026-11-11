@@ -40,6 +40,22 @@ type rawAnswer struct {
 	err      error
 }
 
+// acpSend sends req and reads its answer in full. It asserts nothing, so
+// it runs on any goroutine.
+func acpSend(req *http.Request) rawAnswer {
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return rawAnswer{err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	a := rawAnswer{
+		status:   resp.StatusCode,
+		replayed: resp.Header.Get("Idempotent-Replayed"),
+	}
+	a.body, a.err = io.ReadAll(resp.Body)
+	return a
+}
+
 // concurrently sends n copies of the same create at once.
 func concurrently(
 	t *testing.T, n int, url string, body any, key string,
@@ -49,17 +65,7 @@ func concurrently(
 	var wg sync.WaitGroup
 	for i := range answers {
 		req := acpRequest(t, http.MethodPost, url, body, key)
-		wg.Go(func() {
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				answers[i].err = err
-				return
-			}
-			defer func() { _ = resp.Body.Close() }()
-			answers[i].status = resp.StatusCode
-			answers[i].replayed = resp.Header.Get("Idempotent-Replayed")
-			answers[i].body, answers[i].err = io.ReadAll(resp.Body)
-		})
+		wg.Go(func() { answers[i] = acpSend(req) })
 	}
 	wg.Wait()
 	for _, a := range answers {
