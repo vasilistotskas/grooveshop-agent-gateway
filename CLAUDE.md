@@ -232,9 +232,11 @@ passes.
   (`ag:{schema}:feed:failed`, `failureBackoff`): until the mark expires
   or an invalidation drops it, a stale feed is served without a refresh
   and a missing one answers 503 without a sweep. A generation whose feed
-  is gone again before it is read back is marked too; a failure an
-  invalidation overtook (its epoch moved) is not, and one that failed
-  before reading the epoch always is. A revalidation reads the meta key
+  is gone again before it is read back is marked too; a read-back that
+  failed is not (the feed was written): the request gets that error,
+  its own context's when the crawler left, with no log line and no
+  mark. A failure an invalidation overtook (its epoch moved) is not
+  marked, and one that failed before reading the epoch always is. A revalidation reads the meta key
   and only TOUCHes the blob (Redis evicts keys one by one, and TOUCH,
   unlike EXISTS, keeps the blob's LRU clock with the meta key's): an
   entry without its blob is a miss and regenerates. The sweep is
@@ -266,9 +268,17 @@ passes.
   scope (`not_granted`, as on `/mcp/admin`), a refused coupon (its
   reason as the code) and the checkout store down
   (`errCheckoutUnavailable`, one value, `retryAfterSeconds` as an
-  upstream outage). A checkout write that failed after another landed
-  says so on top of its cause's hint (`withHint`). A list with nothing
-  in it is `[]`, never `null` (`TestToolOutputsListNothingAsEmptyArrays`).
+  upstream outage). A cart tool's failure goes through `handlers.cartErr`:
+  a cart the store no longer serves (`django.ErrCartUnreachable`) is
+  `not_found` on `/mcp`, whose agent owns its cart id and is told to
+  create another with `create_cart`. In the chat it is the shopper's
+  own browser cart, which a cart the model created would never replace,
+  so it is `cart_unreachable`: nothing changed, tell the shopper to
+  reload the page and try again (`shopperCartUnreachable`, the same
+  answer as a refused cart token). A checkout write that failed after
+  another landed says so on top of its cause's hint (`withHint`). A list
+  with nothing in it is `[]`, never `null`
+  (`TestToolOutputsListNothingAsEmptyArrays`).
   `find_pickup_points` reads Django's 400 from BOX NOW's nearest lookup
   as no locker found: Django answers every BOX NOW refusal with it.
   Returning a plain Go error from a typed tool handler is fine — the

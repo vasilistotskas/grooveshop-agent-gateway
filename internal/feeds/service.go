@@ -160,7 +160,9 @@ func (s *Service) Meta(
 	ctx context.Context, t *tenant.Tenant, kind string,
 ) (Meta, error) {
 	format := formatOf(kind)
-	meta, ok, failed := s.cachedMeta(ctx, t.SchemaName, format)
+	// An unreadable cache is a miss here: the generation that follows
+	// needs Redis too, and is marked if it cannot reach it.
+	meta, ok, failed, _ := s.cachedMeta(ctx, t.SchemaName, format)
 	if ok {
 		if !failed && time.Since(meta.GeneratedAt) >= s.freshTTL {
 			s.refresh(ctx, t)
@@ -171,7 +173,10 @@ func (s *Service) Meta(
 	if err != nil {
 		return Meta{}, err
 	}
-	meta, ok, _ = s.cachedMeta(ctx, t.SchemaName, format)
+	meta, ok, _, err = s.cachedMeta(ctx, t.SchemaName, format)
+	if err != nil {
+		return Meta{}, err
+	}
 	if !ok {
 		return Meta{}, s.notCached(ctx, t.SchemaName, epoch)
 	}
@@ -186,7 +191,7 @@ func (s *Service) Body(
 	ctx context.Context, t *tenant.Tenant, kind string,
 ) ([]byte, Meta, error) {
 	format := formatOf(kind)
-	gz, meta, ok, failed := s.fromCache(ctx, t.SchemaName, format)
+	gz, meta, ok, failed, _ := s.fromCache(ctx, t.SchemaName, format)
 	if ok {
 		return gz, meta, nil
 	}
@@ -194,7 +199,10 @@ func (s *Service) Body(
 	if err != nil {
 		return nil, Meta{}, err
 	}
-	gz, meta, ok, _ = s.fromCache(ctx, t.SchemaName, format)
+	gz, meta, ok, _, err = s.fromCache(ctx, t.SchemaName, format)
+	if err != nil {
+		return nil, Meta{}, err
+	}
 	if !ok {
 		return nil, Meta{}, s.notCached(ctx, t.SchemaName, epoch)
 	}
@@ -221,11 +229,14 @@ func (s *Service) await(
 	}
 }
 
-// notCached handles a generation that succeeded but whose feed cannot be
-// read back (evicted again at once, under memory pressure): without a
-// mark, every request would run another full sweep and still get 503.
-// An invalidation since the generation's epoch lifts it, as for a
-// failure.
+// notCached handles a generation that succeeded but whose feed is not
+// there when read back (evicted again at once, under memory pressure):
+// without a mark, every request would run another full sweep and still
+// get 503. An invalidation since the generation's epoch lifts it, as for
+// a failure. A read-back that failed is not this: the generation wrote
+// the feed, so the failure says nothing about it. The request gets that
+// error (its own context's, when the caller left) and nothing is marked,
+// so the next request reads the feed.
 func (s *Service) notCached(
 	ctx context.Context, schema string, epoch int64,
 ) error {
@@ -325,41 +336,50 @@ func (s *Service) mark(ctx context.Context, schema string, epoch int64) {
 // whether a generation failed within failureBackoff, in one round trip
 // that reads no blob. TOUCH, not EXISTS: it refreshes the blob's LRU
 // clock (EXISTS looks it up with LOOKUP_NOTOUCH), so revalidations that
-// keep the meta key warm keep its blob warm too under allkeys-lru.
+// keep the meta key warm keep its blob warm too under allkeys-lru. A read
+// that failed (Redis, or the caller's context) is an error, not a miss.
 func (s *Service) cachedMeta(
 	ctx context.Context, schema, format string,
-) (meta Meta, ok, failed bool) {
+) (meta Meta, ok, failed bool, err error) {
 	var vals *redis.SliceCmd
 	var blob *redis.IntCmd
 	if _, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
 		vals = p.MGet(ctx, metaKey(schema, format), failedKey(schema))
 		blob = p.Touch(ctx, dataKey(schema, format))
 		return nil
-	}); err != nil || len(vals.Val()) != 2 {
-		return Meta{}, false, false
+	}); err != nil {
+		return Meta{}, false, false, fmt.Errorf("feeds: cache read: %w", err)
+	}
+	if len(vals.Val()) != 2 {
+		return Meta{}, false, false, nil
 	}
 	failed = vals.Val()[1] != nil
 	meta, ok = s.decodeMeta(vals.Val()[0])
-	return meta, ok && blob.Val() == 1, failed
+	return meta, ok && blob.Val() == 1, failed, nil
 }
 
 // fromCache reads the feed's blob and metadata, and whether a generation
-// failed within failureBackoff, in one step.
+// failed within failureBackoff, in one step. Like cachedMeta, a read that
+// failed is an error, not a miss.
 func (s *Service) fromCache(
 	ctx context.Context, schema, format string,
-) (gz []byte, meta Meta, ok, failed bool) {
+) (gz []byte, meta Meta, ok, failed bool, err error) {
 	vals, err := s.rdb.MGet(ctx, dataKey(schema, format),
 		metaKey(schema, format), failedKey(schema)).Result()
-	if err != nil || len(vals) != 3 {
-		return nil, Meta{}, false, false
+	if err != nil {
+		return nil, Meta{}, false, false,
+			fmt.Errorf("feeds: cache read: %w", err)
+	}
+	if len(vals) != 3 {
+		return nil, Meta{}, false, false, nil
 	}
 	failed = vals[2] != nil
 	data, isString := vals[0].(string)
 	meta, ok = s.decodeMeta(vals[1])
 	if !isString || !ok {
-		return nil, Meta{}, false, failed
+		return nil, Meta{}, false, failed, nil
 	}
-	return []byte(data), meta, true, failed
+	return []byte(data), meta, true, failed, nil
 }
 
 // decodeMeta reads a stored Meta; one from another build is a miss.

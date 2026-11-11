@@ -257,8 +257,8 @@ func TestAddToCartIsIdempotentWithinATurn(t *testing.T) {
 	assert.Equal(t, k[0], (*keys)[4])
 }
 
-// A cart the store no longer serves for its id is gone: the agent is told
-// to start a new one, as every other cart tool tells it.
+// A cart the store no longer serves for its id is gone: an /mcp agent is
+// told to start a new one, as every other cart tool tells it.
 func TestAddToCartToAGoneCartSaysToCreateANewOne(t *testing.T) {
 	status := http.StatusCreated
 	h, _, _ := addDjango(t, &status)

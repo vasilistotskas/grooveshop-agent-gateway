@@ -86,11 +86,12 @@ func (s *scriptedRedis) run(cmd redis.Cmder) error {
 	return err
 }
 
-func (s *scriptedRedis) sent(name, key string) bool {
+// set reports whether a SET of key was sent.
+func (s *scriptedRedis) set(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, args := range s.seen {
-		if args[0] == name && len(args) > 1 && args[1] == key {
+		if args[0] == "set" && len(args) > 1 && args[1] == key {
 			return true
 		}
 	}
@@ -134,8 +135,9 @@ func TestShortMGetReplyIsAMiss(t *testing.T) {
 		obs.NewMetrics(), "", "", time.Hour, 24*time.Hour, "test",
 		storefront.NewSite("el"))
 	require.NotPanics(t, func() {
-		_, ok, failed := s.cachedMeta(context.Background(), "demostore",
-			formatRSS)
+		_, ok, failed, err := s.cachedMeta(context.Background(),
+			"demostore", formatRSS)
+		require.NoError(t, err)
 		assert.False(t, ok)
 		assert.False(t, failed)
 	})
@@ -157,7 +159,7 @@ func TestFailureBeforeTheEpochIsMarked(t *testing.T) {
 		storefront.NewSite("el"))
 	res := <-s.refresh(context.Background(), demoTenant())
 	require.ErrorContains(t, res.Err, "epoch unreadable")
-	assert.True(t, r.sent("set", "ag:demostore:feed:failed"))
+	assert.True(t, r.set("ag:demostore:feed:failed"))
 }
 
 // unreachableRedis fails every command at once.

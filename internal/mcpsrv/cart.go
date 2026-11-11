@@ -163,8 +163,7 @@ func (h *handlers) getCart(
 	}
 	c, err := h.deps.Django.GetCart(ctx, t.Domain, lang, in.CartID)
 	if err != nil {
-		return nil, out, upstreamErr(err, "that cart no longer exists; "+
-			"create a new one with create_cart")
+		return nil, out, h.cartErr(err, mcpCartGone)
 	}
 	out = h.cartOut(t, lang, c)
 	return h.cartSummary(out), out, nil
@@ -220,7 +219,7 @@ func (h *handlers) addToCart(
 			notFound = "that cart no longer exists, so the product is " +
 				"not in it; create a new one with create_cart"
 		}
-		return nil, out, upstreamErr(err, notFound)
+		return nil, out, h.cartErr(err, notFound)
 	}
 	added()
 	cartChanged(ctx)
@@ -264,7 +263,7 @@ func (h *handlers) updateCartItem(
 	if _, err := h.deps.Django.UpdateCartItem(
 		ctx, t.Domain, lang, in.CartID, in.ItemID, in.Quantity,
 	); err != nil {
-		return nil, out, upstreamErr(err,
+		return nil, out, h.cartErr(err,
 			"that cart line was not found; fetch the cart with get_cart")
 	}
 	cartChanged(ctx)
@@ -296,7 +295,7 @@ func (h *handlers) removeCartItem(
 	if err := h.deps.Django.RemoveCartItem(
 		ctx, t.Domain, lang, in.CartID, in.ItemID,
 	); err != nil {
-		return nil, out, upstreamErr(err,
+		return nil, out, h.cartErr(err,
 			"that cart line was not found; fetch the cart with get_cart")
 	}
 	cartChanged(ctx)
@@ -333,8 +332,7 @@ func (h *handlers) getCheckoutLink(
 	if _, err := h.deps.Django.GetCart(
 		ctx, t.Domain, lang, in.CartID,
 	); err != nil {
-		return nil, out, upstreamErr(err,
-			"that cart no longer exists; create a new one with create_cart")
+		return nil, out, h.cartErr(err, mcpCartGone)
 	}
 	// A signed-in shopper's cart is already their session's: the claim
 	// link adopts guest carts only, so they go straight to checkout.
@@ -376,8 +374,7 @@ func (h *handlers) applyCoupon(
 				code + "; explain the detail to the shopper"}
 	}
 	if err != nil {
-		return nil, out, upstreamErr(err, "that cart no longer exists; "+
-			"create a new one with create_cart")
+		return nil, out, h.cartErr(err, mcpCartGone)
 	}
 	cartChanged(ctx)
 	out = h.cartOut(t, lang, c)
@@ -403,8 +400,7 @@ func (h *handlers) removeCoupon(
 	c, err := h.deps.Django.RemoveCoupon(
 		ctx, t.Domain, lang, in.CartID)
 	if err != nil {
-		return nil, out, upstreamErr(err, "that cart no longer exists; "+
-			"create a new one with create_cart")
+		return nil, out, h.cartErr(err, mcpCartGone)
 	}
 	cartChanged(ctx)
 	out = h.cartOut(t, lang, c)
