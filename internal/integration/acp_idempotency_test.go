@@ -81,10 +81,15 @@ func TestACPIdempotencyKeys(t *testing.T) {
 		"currency":     "EUR",
 		"capabilities": map[string]any{},
 	}
-	create := func(key string, body any) (*http.Response, []byte) {
+	// create and assertFresh take the subtest's t: a helper that
+	// failed the parent from a subtest would misname the failure.
+	create := func(
+		t *testing.T, key string, body any,
+	) (*http.Response, []byte) {
+		t.Helper()
 		return acpRaw(t, acpRequest(t, http.MethodPost, base, body, key))
 	}
-	assertFresh := func(resp *http.Response, body []byte) {
+	assertFresh := func(t *testing.T, resp *http.Response, body []byte) {
 		t.Helper()
 		assert.Equal(t, http.StatusCreated, resp.StatusCode, "%s", body)
 		assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
@@ -92,8 +97,8 @@ func TestACPIdempotencyKeys(t *testing.T) {
 
 	t.Run("a create replay answers the original response", func(t *testing.T) {
 		key := uuid.NewString()
-		resp, original := create(key, createBody)
-		assertFresh(resp, original)
+		resp, original := create(t, key, createBody)
+		assertFresh(t, resp, original)
 		var created map[string]any
 		require.NoError(t, json.Unmarshal(original, &created))
 		mints := stack.faults.cartCreates.Load()
@@ -104,13 +109,15 @@ func TestACPIdempotencyKeys(t *testing.T) {
 			assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
 			assert.Equal(t, string(original), string(body))
 		}
-		assertReplay(create(key, createBody))
+		resp, body := create(t, key, createBody)
+		assertReplay(resp, body)
 
 		// Its session gone, the key still answers what it answered.
 		require.NoError(t, stack.rdb.Del(ctx,
 			"ag:demostore:cs:"+created["id"].(string)).Err())
 		sessions := stack.sessionCount(t)
-		assertReplay(create(key, createBody))
+		resp, body = create(t, key, createBody)
+		assertReplay(resp, body)
 		for _, a := range concurrently(t, 2, base, createBody, key) {
 			assert.Equal(t, http.StatusCreated, a.status)
 			assert.Equal(t, "true", a.replayed)
@@ -126,9 +133,9 @@ func TestACPIdempotencyKeys(t *testing.T) {
 			"currency":     "EUR",
 			"capabilities": map[string]any{},
 		}
-		resp, body := acpCall(t, http.MethodPost, base, other, key)
+		resp, refused := acpCall(t, http.MethodPost, base, other, key)
 		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
-		assert.Equal(t, "idempotency_conflict", body["code"])
+		assert.Equal(t, "idempotency_conflict", refused["code"])
 		assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
 	})
 
@@ -175,7 +182,8 @@ func TestACPIdempotencyKeys(t *testing.T) {
 			assert.Equal(t, "missing", body["code"])
 			assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
 		}
-		assertFresh(create(key, createBody))
+		resp, body := create(t, key, createBody)
+		assertFresh(t, resp, body)
 	})
 
 	t.Run("a create that cannot be answered stores nothing",
@@ -193,7 +201,8 @@ func TestACPIdempotencyKeys(t *testing.T) {
 				"a create that cannot be answered must not keep a session")
 
 			stack.faults.namedCartReadsFailFrom.Store(0)
-			assertFresh(create(key, createBody))
+			resp, raw := create(t, key, createBody)
+			assertFresh(t, resp, raw)
 		})
 
 	t.Run("an older pod's create record is not read", func(t *testing.T) {
@@ -202,14 +211,15 @@ func TestACPIdempotencyKeys(t *testing.T) {
 			"ag:demostore:acp:idem:create:"+key,
 			`{"sessionId":"`+uuid.NewString()+`","bodyHash":"x",`+
 				`"status":201}`, time.Hour).Err())
-		assertFresh(create(key, createBody))
+		resp, body := create(t, key, createBody)
+		assertFresh(t, resp, body)
 	})
 
 	t.Run("a settled key is kept 24 hours, a claim a minute",
 		func(t *testing.T) {
 			key := uuid.NewString()
-			resp, body := create(key, createBody)
-			assertFresh(resp, body)
+			resp, body := create(t, key, createBody)
+			assertFresh(t, resp, body)
 			ttl, err := stack.rdb.TTL(ctx,
 				"ag:demostore:acp:idem:create.v2:"+key).Result()
 			require.NoError(t, err)
