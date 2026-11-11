@@ -53,6 +53,28 @@ reading the whole tree.
   platform profile that cannot be fetched, validated or version-matched, or a
   spent discovery budget, is the spec's transport error (`-32001` / `-32000`)
   and stays a `*jsonrpc.Error`.
+- Both MCP servers answer a failure with `mcptool.ToolError` and its codes,
+  and register every tool through `mcptool.Add` (one log line per call,
+  never the arguments or the result). Flag a second ToolError type or
+  code list, and a tool registered with a bare `mcp.AddTool`.
+- Each server's `upstreamErr` is its own policy. `/mcp` reports a 403 as
+  `not_found`, and `/mcp/admin` reports it as `not_allowed`. Flag a change
+  that merges them.
+- A list a tool has nothing for is `[]`, never `null`, on `/mcp` and
+  `/mcp/admin` alike. Flag a Django slice passed straight into a tool's
+  output.
+- `internal/adminmcp` must not import `internal/mcpsrv`. What they share
+  lives in `internal/mcptool` and `internal/identity`.
+
+### 3b. Bearer verification
+- One `identity.Verifier` caches verdicts for both servers, keyed by
+  SHA-256(schema, token). Flag a key without the schema, or a second
+  cache: a verdict for one store must never answer for another.
+- A bearer that does not verify is answered by `identity.Refuse` on both
+  servers. Flag a middleware that maps Django's 404 or 429 itself.
+- `RequireLinkedAccount` must read a body as the MCP SDK does
+  (`calledTools`: batch, case-sensitive keys, first value). Flag a reader
+  that decodes it any other way.
 
 ### 4. Error handling
 - Errors unwrap to the sentinels (`ErrNotFound`, `ErrConflict`, `ErrThrottled`,

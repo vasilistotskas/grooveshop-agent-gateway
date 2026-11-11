@@ -101,27 +101,58 @@ passes.
   every tenant, whatever the tenant's own default.
   Per-tenant values come from Django `tenant/resolve` at request time,
   never env.
-- `internal/identity` — optional-auth middleware on /mcp: a present
-  `Authorization: Bearer` is verified against Django `/agent/me`
-  (60s in-memory cache, SHA-256 keys); invalid tokens get 401 + the
-  RFC 9728 `WWW-Authenticate` challenge; anonymous requests pass
-  through, except a call to an account tool, which gets the same
-  challenge naming the scopes of every account tool the store serves
-  (`mcpsrv.RequireLinkedAccount`), because a client starts OAuth on a
-  401 and on nothing else. Account tools forward the bearer — Django
-  enforces scopes.
+- `internal/identity` — the bearer verification both MCP servers share,
+  and /mcp's optional-auth middleware.
+  - `Verifier[P]` caches a `Probe`'s verdict for 60s, keyed by
+    SHA-256(schema, token), so a verdict for one store never answers for
+    another. The cache holds at most 4096 entries and is flushed when
+    full. A valid token is cached, and so is Django's 401 (invalid).
+    Anything else is returned uncached.
+  - Concurrent calls with one uncached token share one probe
+    (singleflight). The probe is detached from the caller who started it.
+  - `Refuse` is the one answer, on both servers, to a bearer that did not
+    verify:
+    - invalid: a 401 and the RFC 9728 `WWW-Authenticate` challenge
+      (`WriteChallenge`, naming the server's own metadata);
+    - Django's 404: a 404. The store switched the surface off and this
+      pod's copy has not caught up; it is the answer the gateway's own
+      gate gives once it has;
+    - Django's 429: a 429 with its `Retry-After`;
+    - a caller that hung up: a 503 with no error line;
+    - anything else: a logged 503.
+  - On /mcp a present `Authorization: Bearer` is verified against Django
+    `/agent/me` (`NewShopperVerifier`; a 403 there is a valid token
+    without the `profile` scope).
+  - Anonymous requests pass through, except a call to an account tool.
+    That gets the challenge naming the scopes of every account tool the
+    store serves (`mcpsrv.RequireLinkedAccount`), because a client starts
+    OAuth on a 401 and on nothing else. The middleware reads the body as
+    the MCP SDK's handler does (`calledTools`): a batch, case-sensitive
+    keys, the first JSON value only. It challenges when any message
+    calls an account tool.
+  - Account tools forward the bearer — Django enforces scopes.
+- `internal/mcptool` — what the tools of both MCP servers answer with:
+  `ToolError` and every code the gateway mints, the `Untrusted` marker
+  (`MarkUntrusted`) for text a customer wrote, and `Add`, through which
+  every tool on /mcp, the chat and /mcp/admin is registered. `Add` logs
+  one info line per call, "tool call", with `server` (mcp, chat or
+  mcp_admin), the tool, the outcome (ok, the code, or error) and the
+  duration. It never logs the arguments or the result. How a Django
+  failure maps to a code is each server's own `upstreamErr`.
 - `internal/adminmcp` — `/mcp/admin`, a separate MCP server with its own
   tools and middleware. `RequireStaff` refuses a call without a staff
   bearer (401 + RFC 9728 challenge naming every read scope and
   `/.well-known/oauth-protected-resource/mcp/admin`), verifies one against
-  Django `/agent/staff/me` (60s cache keyed by SHA-256(schema, token)) and
+  Django `/agent/staff/me` (`identity.Verifier`, refused through
+  `identity.Refuse`) and
   forwards it to `/api/v1/agent/staff/*`, which checks the scope, the role
   and the team on every call. A scope not granted or not open to the role
   is refused before Django is asked; a 403 from Django is reported as
   `not_allowed` here (the person needs to know it is their role), unlike
   `/mcp`, and a 404 is checked against `/agent/staff/me` first, so a store
   that switched access off answers `access_off`, never "no data".
-  Customer-written text comes back as `{untrusted: true, source, text}`. Staff tokens come from Django's staff
+  Customer-written text comes back as `{untrusted: true, source, text}`
+  (`mcptool.Untrusted`). Staff tokens come from Django's staff
   issuer, never the store's own (that one signs in customers), and are
   bound to the store's `/mcp/admin` on its primary domain. Every tool is
   read only; a write tool needs the owner's approval first
@@ -129,7 +160,9 @@ passes.
 - `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:<version>:{host}`
   → Django; singleflight; 60s negative cache; stale-if-error) + middleware
   (tenant from the **real Host header only** — inbound X-Forwarded-Host is
-  deliberately ignored; spoofing it must never switch tenants).
+  deliberately ignored; spoofing it must never switch tenants). A store
+  it cannot resolve is a 503 with an error line, unless the caller hung
+  up (`context.Canceled`), which logs nothing.
 - `internal/django` — typed API client. Every tenant-scoped call sends
   `X-Forwarded-Host: <tenant domain>` + `X-Forwarded-Proto: https` (+
   `X-Language`). A GET is retried twice on a 5xx or a lost connection
