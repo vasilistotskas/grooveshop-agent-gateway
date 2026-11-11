@@ -1,10 +1,7 @@
 package feeds
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"sync"
@@ -175,7 +172,8 @@ func unreachableRedis() *redis.Client {
 // A failed generation is logged once, under the request that started
 // it (even after that request has gone), and counted.
 func TestRefreshFailureIsLoggedAndCounted(t *testing.T) {
-	var logs bytes.Buffer
+	// Written on the generation's goroutine, read once its result is in.
+	var logs syncBuffer
 	log := slog.New(obs.NewContextHandler(slog.NewJSONHandler(&logs, nil)))
 	metrics := obs.NewMetrics()
 	s := NewService(nil, unreachableRedis(), log, metrics, "", "",
@@ -192,17 +190,9 @@ func TestRefreshFailureIsLoggedAndCounted(t *testing.T) {
 	assert.NotErrorIs(t, res.Err, context.Canceled,
 		"the generation is detached from its request")
 
-	var failed map[string]any
-	sc := bufio.NewScanner(&logs)
-	for sc.Scan() {
-		var line map[string]any
-		require.NoError(t, json.Unmarshal(sc.Bytes(), &line))
-		if line["msg"] == "feed generation failed" {
-			require.Nil(t, failed, "logged once")
-			failed = line
-		}
-	}
-	require.NotNil(t, failed, logs.String())
+	lines := logLines(t, &logs, "feed generation failed")
+	require.Len(t, lines, 1, logs.String())
+	failed := lines[0]
 	assert.Equal(t, "ERROR", failed["level"])
 	assert.Equal(t, "req-98", failed[obs.KeyRequestID])
 	assert.Equal(t, "demostore", failed[obs.KeyTenant])

@@ -4,9 +4,11 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -348,6 +350,88 @@ func evict(cmd redis.Cmder) {
 			}
 		}
 	}
+}
+
+// A blob judged broken is dropped only while it is still the one judged:
+// a generation that replaced it between the read and the drop keeps its
+// blob, and the request is served.
+func TestBrokenBlobDropSparesAReplacement(t *testing.T) {
+	g := newGatedDjango(t)
+	g.armed.Store(false)
+	srv := httptest.NewServer(g)
+	t.Cleanup(srv.Close)
+	rdb := startRedis(t)
+	other := redis.NewClient(&redis.Options{Addr: rdb.Options().Addr})
+	t.Cleanup(func() { _ = other.Close() })
+	svc := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Hour, obs.NewMetrics())
+	ten := feedTenant()
+	ctx := context.Background()
+
+	_, err := svc.Meta(ctx, ten, feeds.KindGoogle)
+	require.NoError(t, err)
+	const data, metaKey = "ag:demostore:feed:rss", "ag:demostore:feed:rss:meta"
+	good := rdb.Get(ctx, data).Val()
+	var meta feeds.Meta
+	require.NoError(t, json.Unmarshal([]byte(rdb.Get(ctx, metaKey).Val()),
+		&meta))
+	meta.GeneratedAt = meta.GeneratedAt.Add(time.Second)
+	newer, err := json.Marshal(meta)
+	require.NoError(t, err)
+	require.NoError(t, rdb.Set(ctx, data, "not gzip", 0).Err())
+
+	hook := &replaceBeforeDrop{other: other, key: data, replace: func() {
+		other.Set(ctx, data, good, 0)
+		other.Set(ctx, metaKey, newer, 0)
+	}}
+	rdb.AddHook(hook)
+	gz, _, err := svc.Body(ctx, ten, feeds.KindGoogle)
+	require.NoError(t, err)
+	assert.Equal(t, good, string(gz))
+	require.True(t, hook.fired.Load(), "the drop ran")
+	assert.True(t, hook.survived.Load(), "the replacement was not dropped")
+}
+
+// replaceBeforeDrop writes a replacement just before the first command
+// that would drop key runs, and records whether key survived it.
+type replaceBeforeDrop struct {
+	other    *redis.Client
+	key      string
+	replace  func()
+	once     sync.Once
+	fired    atomic.Bool
+	survived atomic.Bool
+}
+
+func (h *replaceBeforeDrop) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *replaceBeforeDrop) ProcessHook(
+	next redis.ProcessHook,
+) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		switch cmd.Name() {
+		case "evalsha", "eval", "unlink":
+		default:
+			return next(ctx, cmd)
+		}
+		if !slices.ContainsFunc(cmd.Args(), func(a any) bool {
+			return fmt.Sprint(a) == h.key
+		}) {
+			return next(ctx, cmd)
+		}
+		h.once.Do(h.replace)
+		err := next(ctx, cmd)
+		h.fired.Store(true)
+		h.survived.Store(h.other.Exists(ctx, h.key).Val() == 1)
+		return err
+	}
+}
+
+func (h *replaceBeforeDrop) ProcessPipelineHook(
+	next redis.ProcessPipelineHook,
+) redis.ProcessPipelineHook {
+	return next
 }
 
 // A sweep an invalidation overtook does not mark its failure: the

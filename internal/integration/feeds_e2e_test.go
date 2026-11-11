@@ -3,12 +3,14 @@
 package integration
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -136,8 +138,10 @@ func TestFeedsEndToEnd(t *testing.T) {
 	gw := httptest.NewServer(handler)
 	t.Cleanup(gw.Close)
 
-	get := func(path string, headers map[string]string) *http.Response {
-		req, err := http.NewRequest(http.MethodGet, gw.URL+path, nil)
+	do := func(
+		method, path string, headers map[string]string,
+	) *http.Response {
+		req, err := http.NewRequest(method, gw.URL+path, nil)
 		require.NoError(t, err)
 		req.Header.Set("CF-Connecting-IP", "203.0.113.9")
 		req.Header.Set("X-Origin-Verify", "edge-proof")
@@ -151,6 +155,46 @@ func TestFeedsEndToEnd(t *testing.T) {
 		require.NoError(t, err)
 		return resp
 	}
+	get := func(path string, headers map[string]string) *http.Response {
+		return do(http.MethodGet, path, headers)
+	}
+
+	// Either coding declares its length and sends that many bytes, under
+	// one weak validator; HEAD gets the same fields and no content.
+	t.Run("both codings declare their length under one weak tag",
+		func(t *testing.T) {
+			tags := map[string]string{}
+			for _, accept := range []string{"gzip", "identity"} {
+				resp := get("/feeds/google.xml",
+					map[string]string{"Accept-Encoding": accept})
+				body, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+				_ = resp.Body.Close()
+				require.Equal(t, http.StatusOK, resp.StatusCode, accept)
+				assert.Equal(t, strconv.Itoa(len(body)),
+					resp.Header.Get("Content-Length"), accept)
+				assert.Equal(t, "public, max-age=3600",
+					resp.Header.Get("Cache-Control"), accept)
+				tags[accept] = resp.Header.Get("ETag")
+				assert.True(t, strings.HasPrefix(tags[accept], `W/"`), accept)
+
+				head := do(http.MethodHead, "/feeds/google.xml",
+					map[string]string{"Accept-Encoding": accept})
+				headBody, err := io.ReadAll(head.Body)
+				require.NoError(t, err)
+				_ = head.Body.Close()
+				require.Equal(t, http.StatusOK, head.StatusCode, accept)
+				assert.Empty(t, headBody, accept)
+				for _, field := range []string{
+					"Content-Length", "Content-Encoding", "Content-Type",
+					"ETag", "Cache-Control", "Vary",
+				} {
+					assert.Equal(t, resp.Header.Get(field),
+						head.Header.Get(field), accept+" "+field)
+				}
+			}
+			assert.Equal(t, tags["gzip"], tags["identity"])
+		})
 
 	t.Run("meta feed renders all pages", func(t *testing.T) {
 		resp := get("/feeds/meta.xml", map[string]string{"Accept-Encoding": "identity"})
@@ -235,7 +279,8 @@ func TestFeedsEndToEnd(t *testing.T) {
 	})
 
 	// A revalidation reads the metadata and touches the blob, never reads
-	// the blob itself; weak, listed and "*" tags match.
+	// the blob itself; the tag weak or strong (If-None-Match compares
+	// weakly), listed, and "*" match.
 	t.Run("weak and listed etags revalidate without reading the blob",
 		func(t *testing.T) {
 			first := get("/feeds/tiktok.xml",
@@ -245,7 +290,7 @@ func TestFeedsEndToEnd(t *testing.T) {
 			require.NotEmpty(t, etag)
 
 			for _, inm := range []string{
-				"W/" + etag, `"stale", ` + etag, "*",
+				etag, strings.TrimPrefix(etag, "W/"), `"stale", ` + etag, "*",
 			} {
 				rec.start()
 				resp := get("/feeds/tiktok.xml", map[string]string{
@@ -290,6 +335,39 @@ func TestFeedsEndToEnd(t *testing.T) {
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		assert.Contains(t, string(body), "<g:id>6</g:id>")
+	})
+
+	// A blob that is not this feed's gzip is a miss like an evicted one:
+	// it is regenerated, never answered with an error or served broken.
+	t.Run("a blob that is not the feed's gzip is regenerated", func(t *testing.T) {
+		first := get("/feeds/google.xml",
+			map[string]string{"Accept-Encoding": "identity"})
+		_ = first.Body.Close()
+		require.Equal(t, http.StatusOK, first.StatusCode)
+
+		for _, accept := range []string{"gzip", "identity"} {
+			require.NoError(t, rdb.Set(t.Context(), "ag:demostore:feed:rss",
+				"not gzip", 0).Err())
+			resp := get("/feeds/google.xml",
+				map[string]string{"Accept-Encoding": accept})
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode, accept)
+			assert.Equal(t, strconv.Itoa(len(body)),
+				resp.Header.Get("Content-Length"), accept)
+			if accept == "gzip" {
+				zr, err := gzip.NewReader(bytes.NewReader(body))
+				require.NoError(t, err, accept)
+				body, err = io.ReadAll(zr)
+				require.NoError(t, err, accept)
+			}
+			assert.Contains(t, string(body), "<g:id>6</g:id>", accept)
+			assert.Equal(t, first.Header.Get("ETag"),
+				resp.Header.Get("ETag"), accept)
+			assert.NotEqual(t, "not gzip", rdb.Get(t.Context(),
+				"ag:demostore:feed:rss").Val(), accept)
+		}
 	})
 }
 

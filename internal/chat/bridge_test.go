@@ -2,13 +2,16 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -131,4 +134,25 @@ func TestBridgeReportsARefusedCartToken(t *testing.T) {
 	_, mutated := br.cartState()
 	assert.False(t, mutated)
 	assert.True(t, tok.Refused())
+}
+
+// failingTransport is a client transport whose connection cannot be
+// opened.
+type failingTransport struct{}
+
+func (failingTransport) Connect(context.Context) (mcp.Connection, error) {
+	return nil, errors.New("no connection")
+}
+
+// A bridge whose client cannot connect leaves no server session behind:
+// nothing else would ever close it.
+func TestBridgeClosesTheServerSessionWhenTheClientCannotConnect(
+	t *testing.T,
+) {
+	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test"})
+	serverT, _ := mcp.NewInMemoryTransports()
+	_, err := connectBridge(context.Background(), server, serverT,
+		failingTransport{})
+	require.ErrorContains(t, err, "no connection")
+	assert.Empty(t, slices.Collect(server.Sessions()))
 }

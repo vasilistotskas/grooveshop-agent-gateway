@@ -65,12 +65,27 @@ type bridge struct {
 // transports. ctx must carry the tenant — it becomes the server session's
 // base context, exactly like the HTTP transport path.
 func newBridge(ctx context.Context, server *mcp.Server) (*bridge, error) {
+	serverT, clientT := mcp.NewInMemoryTransports()
+	return connectBridge(ctx, server, serverT, clientT)
+}
+
+// connectBridge connects server over serverT and the bridge's client over
+// clientT. Until the bridge is returned, the server session is closed on
+// the way out: a client that never connected would not end it.
+func connectBridge(
+	ctx context.Context, server *mcp.Server, serverT, clientT mcp.Transport,
+) (_ *bridge, err error) {
 	activity := &mcpsrv.CartActivity{}
 	ctx = mcpsrv.WithCartActivity(ctx, activity)
-	serverT, clientT := mcp.NewInMemoryTransports()
-	if _, err := server.Connect(ctx, serverT, nil); err != nil {
+	ss, err := server.Connect(ctx, serverT, nil)
+	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if err != nil {
+			_ = ss.Close()
+		}
+	}()
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "grooveshop-chat",
 		Version: "internal",
