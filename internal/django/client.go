@@ -114,8 +114,9 @@ func (c *Client) ResolveTenant(ctx context.Context, domain string) (*TenantConfi
 
 // get performs a GET with bounded retries (retryable). Only GETs are
 // retried — mutations are not idempotent at the transport level; checkout
-// idempotency lives in the checkout package. A caller whose context has
-// ended is never retried.
+// idempotency lives in the checkout package. Nothing is retried once the
+// context has ended: a caller that hung up gets callerGone, a spent
+// budget the last failure.
 func (c *Client) get(ctx context.Context, req request) error {
 	req.method = http.MethodGet
 
@@ -126,7 +127,10 @@ func (c *Client) get(ctx context.Context, req request) error {
 				time.Duration(rand.IntN(100))*time.Millisecond
 			select {
 			case <-ctx.Done():
-				return callerGone(ctx, req)
+				if hungUp(ctx.Err()) {
+					return callerGone(req)
+				}
+				return lastErr
 			case <-time.After(delay):
 			}
 		}
@@ -202,28 +206,23 @@ func (c *Client) do(ctx context.Context, r request) error {
 	resp, err := c.hc.Do(req)
 	elapsed := time.Since(start)
 
+	gone := err != nil && hungUp(ctx.Err())
 	code := "error"
 	switch {
 	case resp != nil:
 		code = strconv.Itoa(resp.StatusCode)
-	case ctx.Err() != nil:
+	case gone:
 		code = "canceled"
 	}
 	if c.metrics != nil {
 		c.metrics.UpstreamRequests.WithLabelValues(r.path, r.method, code).Inc()
 		c.metrics.UpstreamDuration.WithLabelValues(r.path).Observe(elapsed.Seconds())
 	}
-	if err != nil && ctx.Err() != nil {
-		return callerGone(ctx, r)
+	if gone {
+		return callerGone(r)
 	}
 	if err != nil {
-		err = withoutQuery(err)
-		c.log.WarnContext(ctx, "django request failed",
-			slog.String("upstream", r.path),
-			slog.String("error", err.Error()),
-			slog.Int64("upstream_ms", elapsed.Milliseconds()),
-		)
-		return fmt.Errorf("%w: %w", ErrUpstreamDown, err)
+		return c.unavailable(ctx, r, withoutQuery(err), start)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -234,25 +233,69 @@ func (c *Client) do(ctx context.Context, r request) error {
 		return c.redirected(ctx, r, resp)
 	}
 	if r.out == nil {
+		// The status is the whole answer here (Ping, a deleted cart
+		// line): a body cut after it changes nothing the caller reads.
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
-	dec := json.NewDecoder(resp.Body)
+	// The read error is kept apart from the decode error: json turns a
+	// cut body into io.ErrUnexpectedEOF, as it does a short document.
+	rb := &bodyReader{r: resp.Body}
+	dec := json.NewDecoder(rb)
 	dec.UseNumber()
 	if err := dec.Decode(r.out); err != nil {
-		if ctx.Err() != nil {
-			return callerGone(ctx, r)
+		switch {
+		case rb.err != nil && hungUp(ctx.Err()):
+			return callerGone(r)
+		case rb.err != nil:
+			return c.unavailable(ctx, r, rb.err, start)
 		}
 		return fmt.Errorf("django: decode %s: %w", r.path, err)
 	}
 	return nil
 }
 
-// callerGone is the error of a call whose caller's context ended: it
-// wraps ctx.Err() and is never ErrUpstreamDown, since Django did not
+// bodyReader keeps the error that ended a response body early.
+type bodyReader struct {
+	r   io.Reader
+	err error
+}
+
+func (b *bodyReader) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err != nil && err != io.EOF {
+		b.err = err
+	}
+	return n, err
+}
+
+// unavailable is a call Django gave no usable answer to: the connection
+// failed or timed out before the headers or while the body was read.
+// The chain is kept, so retryable judges both the same way.
+func (c *Client) unavailable(
+	ctx context.Context, r request, err error, start time.Time,
+) error {
+	c.log.WarnContext(ctx, "django request failed",
+		slog.String("upstream", r.path),
+		slog.String("error", err.Error()),
+		slog.Int64("upstream_ms", time.Since(start).Milliseconds()),
+	)
+	return fmt.Errorf("%w: %w", ErrUpstreamDown, err)
+}
+
+// hungUp reports whether a context's end is its caller hanging up (a
+// cancel, a shutdown included). A deadline is one of the gateway's own
+// budgets running out while Django had not answered: an upstream
+// failure.
+func hungUp(ctxErr error) bool {
+	return errors.Is(ctxErr, context.Canceled)
+}
+
+// callerGone is the error of a call whose caller hung up: it wraps
+// context.Canceled and is never ErrUpstreamDown, since Django did not
 // fail. It is neither logged nor retried.
-func callerGone(ctx context.Context, r request) error {
-	return fmt.Errorf("django: %s %s: %w", r.method, r.path, ctx.Err())
+func callerGone(r request) error {
+	return fmt.Errorf("django: %s %s: %w", r.method, r.path, context.Canceled)
 }
 
 // redirected turns a 3xx into ErrUpstreamDown, never retried: Django
@@ -264,7 +307,7 @@ func (c *Client) redirected(
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBody))
 	location := resp.Header.Get("Location")
 	if u, err := url.Parse(location); err == nil {
-		u.RawQuery, u.ForceQuery, u.Fragment = "", false, ""
+		u.User, u.RawQuery, u.ForceQuery, u.Fragment = nil, "", false, ""
 		location = u.String()
 	} else {
 		location = "(unparsable)"
@@ -338,14 +381,20 @@ func fieldMessages(path string, v any) []string {
 	return out
 }
 
-// retryable: a 5xx, or a connection that failed before Django answered
-// (refused, reset, closed). Not a call cut by the client's timeout: a
-// Django that hangs would get the same call twice more while it hangs,
-// and the caller would wait three timeouts instead of one. Not a
-// redirect either.
+// retryable: a 5xx, or a connection that failed (refused, reset,
+// closed), before the headers or in the body. Not a call cut by the
+// client's timeout: a Django that hangs would get the same call twice
+// more while it hangs, and the caller would wait three timeouts instead
+// of one. Not a redirect, and not a body that is not valid JSON.
 func retryable(err error) bool {
 	if apiErr, ok := errors.AsType[*APIError](err); ok {
 		return apiErr.Status >= 500
+	}
+	if !errors.Is(err, ErrUpstreamDown) {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
 	}
 	netErr, ok := errors.AsType[net.Error](err)
 	return ok && !netErr.Timeout()

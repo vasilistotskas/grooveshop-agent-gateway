@@ -132,17 +132,22 @@ passes.
   deliberately ignored; spoofing it must never switch tenants).
 - `internal/django` — typed API client. Every tenant-scoped call sends
   `X-Forwarded-Host: <tenant domain>` + `X-Forwarded-Proto: https` (+
-  `X-Language`). A GET is retried twice on a 5xx or a connection that
-  failed before Django answered (refused, reset); never on a call cut by
-  `UPSTREAM_TIMEOUT` (a hung Django would get it three times), never once
-  the caller's context has ended. Mutations and the `/readyz` ping are
-  sent once. A redirect is never followed: it is `ErrUpstreamDown`, not
-  retried, as in `internal/ucp/fetch.go`. Errors unwrap to sentinels
-  (`ErrNotFound`, `ErrConflict`, `ErrThrottled`, `ErrValidation`,
-  `ErrUpstreamDown`) — branch with `errors.Is`, never on status literals.
-  A call whose caller's context ended wraps `ctx.Err()` and is not
-  `ErrUpstreamDown`: it is not logged, and its metric code is
-  `canceled`. Django never refuses a cart an
+  `X-Language`). A GET is retried twice on a 5xx or a lost connection
+  (refused, reset, closed, before the headers or in the body); never on a
+  call cut by `UPSTREAM_TIMEOUT` (a hung Django would get it three
+  times), never once its context has ended. Mutations and the `/readyz`
+  ping are sent once. A redirect is never followed: it is
+  `ErrUpstreamDown`, not retried, as in `internal/ucp/fetch.go`. Errors
+  unwrap to sentinels (`ErrNotFound`, `ErrConflict`, `ErrThrottled`,
+  `ErrValidation`, `ErrUpstreamDown`) — branch with `errors.Is`, never on
+  status literals. A failure while reading the body is `ErrUpstreamDown`
+  like one before the headers; a complete body that is not the JSON
+  expected is a decode error. A context deadline is one of the gateway's
+  own budgets, so a call it cuts is `ErrUpstreamDown`, logged. A caller
+  that hung up (a cancelled context, shutdown included) gets an error
+  wrapping `context.Canceled` only, not logged; on the request metric it
+  is code `canceled` if it hung up before the headers, and the status if
+  after. Django never refuses a cart an
   anonymous caller cannot reach (a signed-in shopper's, or a guest cart
   since deleted): it answers 200/201 with a new guest cart and acts on
   that one. Every cart call that names a cart therefore checks the cart

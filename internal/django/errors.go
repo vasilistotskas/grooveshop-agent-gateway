@@ -17,11 +17,12 @@ var (
 	ErrConflict   = errors.New("django: conflict")
 	ErrValidation = errors.New("django: invalid request")
 	ErrThrottled  = errors.New("django: throttled")
-	// ErrUpstreamDown: Django gave no usable answer (unreachable, timed
-	// out, a 5xx or a redirect). A call whose caller's context ended is
-	// not this: it wraps context.Canceled or context.DeadlineExceeded.
-	// A Django timeout matches context.DeadlineExceeded too (net/http
-	// makes it so), so test ErrUpstreamDown first.
+	// ErrUpstreamDown: Django gave no usable answer: unreachable, a
+	// connection lost or timed out before the headers or in the body, a
+	// 5xx or a redirect. A context deadline (the gateway's own budget)
+	// that passes before Django answers is this too, and so matches
+	// context.DeadlineExceeded as well. A caller that hung up (a
+	// cancelled context) is not: that error wraps context.Canceled only.
 	ErrUpstreamDown = errors.New("django: upstream unavailable")
 	// ErrUnauthorized: the bearer token is missing, invalid, or expired.
 	ErrUnauthorized = errors.New("django: unauthorized")
