@@ -89,7 +89,7 @@ func (s *Service) parseRequest(
 		http.MaxBytesReader(w, r.Body, 64<<10),
 	).Decode(&req); err != nil {
 		fail(msgBadRequest)
-		return nil, req, lang, nil, false
+		return r, req, lang, nil, false
 	}
 	if req.Locale != "" && t.Serves(req.Locale) {
 		lang = req.Locale
@@ -100,24 +100,24 @@ func (s *Service) parseRequest(
 	req.Message = strings.TrimSpace(req.Message)
 	if req.Message == "" {
 		fail(msgMessageEmpty)
-		return nil, req, lang, nil, false
+		return r, req, lang, nil, false
 	}
 	if utf8.RuneCountInString(req.Message) > s.cfg.ChatMaxMessageLen {
 		fail(msgMessageTooLong)
-		return nil, req, lang, nil, false
+		return r, req, lang, nil, false
 	}
 	// The cart id lands in the system prompt, so it must be exactly what
 	// the widget sends — a cart UUID — and never free text carrying
 	// instructions at system-role authority.
 	if req.CartID != "" && uuid.Validate(req.CartID) != nil {
 		fail(msgBadRequest)
-		return nil, req, lang, nil, false
+		return r, req, lang, nil, false
 	}
 	if req.TurnID == "" {
 		req.TurnID = uuid.NewString()
 	} else if uuid.Validate(req.TurnID) != nil {
 		fail(msgBadRequest)
-		return nil, req, lang, nil, false
+		return r, req, lang, nil, false
 	}
 	// Tool handlers reach the turn through the bridge's base context.
 	r = r.WithContext(mcpsrv.WithTurn(r.Context(), mcpsrv.NewTurn(req.TurnID)))
@@ -125,7 +125,7 @@ func (s *Service) parseRequest(
 		var err error
 		if cartToken, err = django.ParseCartToken(*req.CartToken); err != nil {
 			fail(msgBadRequest)
-			return nil, req, lang, nil, false
+			return r, req, lang, nil, false
 		}
 		// Every cart call of the turn acts on the token's cart; tool
 		// handlers reach it through the bridge's base context.
