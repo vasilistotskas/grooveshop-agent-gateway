@@ -316,9 +316,12 @@ passes.
     placed until `Flow.CompletionDeadline`. Past it the outcome was
     never recorded and stays so until the session expires: 502
     `order_outcome_unknown`, no `Retry-After`.
-  - A completed or canceled session refuses update and cancel with
-    405 and an `Allow` header, and so does a canceled one complete. A
-    complete of a completed session answers 200 with the session.
+  - A session that is not open refuses update and cancel
+    (`refuseChange`): 405 and an `Allow` header once it is completed,
+    canceled or awaiting its payment, the in-flight answer while its
+    order is being placed. A canceled one refuses complete with 405. A
+    complete of a session whose order is placed (completed, or awaiting
+    payment) answers 200 with the session.
   - A create stores the response it sent (status and body) with its
     key (`createScope`, versioned with that record); a replay with the
     same body answers those bytes for the record's 24 hours, whether
@@ -431,23 +434,32 @@ passes.
   - A session that may have an order takes no update and no cancel, on
     either surface (`acp.refuseChange`, `mcpsrv.closedTo`): neither
     would touch the order. It is kept `terminalTTL` like a terminal
-    one, capped a day after `PlacedAt` (`Session.ttl`): while it is
-    held a caller is told what became of the checkout and a payment
-    event finds it.
-  - A missing session is not "nothing happened". The gateway cannot
-    tell an id that expired unplaced from one that was placed and lost
-    its record (expiry, eviction, a deploy that moved the session key)
-    or one that never existed. `errCheckoutGone` (UCP) and
-    `msgSessionGone` (ACP's 404) say so, and say to look for an order
-    before another checkout; every "no session" answer goes through
-    them.
-  - An update whose cart cannot be reached reads the session again
-    (`cartFailed`, both surfaces): a completion that ran meanwhile took
-    the cart with its order, and the update is answered as one of a
-    placed session, never as a cart to replace with a new checkout.
+    one (`Session.ttl`): a placed one ends a day after `PlacedAt`, one
+    in progress, which has none, a day after it was marked. While it
+    is held a caller is told what became of the checkout and a payment
+    event finds it; afterwards its id is only "no session" (above).
+  - A complete of one answers what it is, before any lookup: the
+    session when its order is placed (completed, or awaiting payment,
+    on ACP too), in flight while it is being placed, canceled when it
+    is. A session being placed is "in flight" only until
+    `Flow.CompletionDeadline`; past it, both surfaces say the outcome
+    was never recorded (ACP `order_outcome_unknown`, UCP
+    `errOutcomeUnknown`, which says what a person can do), and that
+    holds for a read whose render fails too (`renderBody`,
+    `checkoutResult`). It is offered no link back to its cart.
+  - Django's answer about a cart is not the session's truth once the
+    lock may have lapsed. A complete that `Flow.admit` refuses reads
+    the session again (`Flow.refusal`): stored by another request
+    since, it answers `ErrSessionChanged` (that request's order emptied
+    the cart or took the stock); no longer stored, `ErrNotFound`;
+    unreadable, that error. An update whose cart cannot be reached does
+    the same (`cartFailed`, both surfaces), and answers "the cart is
+    gone" only for a session it read again and found open.
   - An order event records the order on a session that does not name
-    one (`Flow.ApplyOrderEvent`, read from Django for its id): a
-    session is never completed without its order.
+    one (`Flow.ApplyOrderEvent`, read from Django for its id and its
+    creation time, which is `PlacedAt`): a session is never completed
+    without its order. An order Django no longer has is logged and the
+    event answered as handled.
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before
