@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -480,6 +481,57 @@ func TestAThrottledVerificationIsPassedOn(t *testing.T) {
 
 	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
 	assert.Equal(t, "17", rec.Header().Get("Retry-After"))
+}
+
+// toolServers records the server named by every "tool call" line.
+type toolServers struct {
+	mu      sync.Mutex
+	servers []string
+}
+
+func (l *toolServers) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+func (l *toolServers) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != "tool call" {
+		return nil
+	}
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "server" {
+			l.mu.Lock()
+			l.servers = append(l.servers, a.Value.String())
+			l.mu.Unlock()
+		}
+		return true
+	})
+	return nil
+}
+
+func (l *toolServers) WithAttrs([]slog.Attr) slog.Handler { return l }
+func (l *toolServers) WithGroup(string) slog.Handler      { return l }
+
+// A staff tool call's log line names /mcp/admin: /mcp has a get_order
+// too.
+func TestAToolCallIsLoggedAsTheAdminServers(t *testing.T) {
+	f := &fakeDjango{granted: ReadScopes}
+	dj := f.serve(t)
+	lines := &toolServers{}
+	inner := RequireStaff(NewVerifier(dj, quietLog()), quietLog())(
+		Handler(Deps{Django: dj, Log: slog.New(lines), Version: "test"}))
+	session := connect(t, http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			inner.ServeHTTP(w, r.WithContext(
+				tenant.NewContext(r.Context(), acme())))
+		}))
+
+	_, err := session.CallTool(t.Context(),
+		&mcp.CallToolParams{Name: "whoami"})
+	require.NoError(t, err)
+
+	lines.mu.Lock()
+	defer lines.mu.Unlock()
+	assert.Equal(t, []string{"mcp_admin"}, lines.servers)
 }
 
 // errorLines counts the records logged at error level.

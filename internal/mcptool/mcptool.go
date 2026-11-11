@@ -80,11 +80,13 @@ func MarkUntrusted(source, s string) *Untrusted {
 	return &Untrusted{Untrusted: true, Source: source, Text: s}
 }
 
-// Add registers a tool with a log line per call: the tool, the store, the
-// outcome and how long it took. Never its arguments or result, which carry
-// customer data.
+// Add registers a tool on srv with an info line per call: server (which
+// MCP server srv is, since two may carry a tool of one name), the tool,
+// the store, the outcome (ok, the ToolError's code, or error) and how
+// long it took. Never its arguments or result, which carry customer
+// data.
 func Add[In, Out any](
-	srv *mcp.Server, log *slog.Logger, def *mcp.Tool,
+	srv *mcp.Server, log *slog.Logger, server string, def *mcp.Tool,
 	h mcp.ToolHandlerFor[In, Out],
 ) {
 	mcp.AddTool(srv, def, func(
@@ -95,12 +97,12 @@ func Add[In, Out any](
 		outcome := "ok"
 		if err != nil {
 			outcome = "error"
-			var te *ToolError
-			if errors.As(err, &te) {
+			if te, ok := errors.AsType[*ToolError](err); ok {
 				outcome = te.Code
 			}
 		}
-		log.InfoContext(ctx, "staff tool call",
+		log.InfoContext(ctx, "tool call",
+			slog.String("server", server),
 			slog.String("tool", def.Name),
 			slog.String("outcome", outcome),
 			slog.Int64("duration_ms", time.Since(start).Milliseconds()))

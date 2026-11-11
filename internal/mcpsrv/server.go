@@ -17,6 +17,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
@@ -76,7 +77,7 @@ func newServer(
 	})
 	for _, t := range toolset(&handlers{deps: d, surface: s}) {
 		if t.offeredTo(features) && t.servedOn(s) {
-			t.register(srv, s)
+			t.register(srv, s, d.Log)
 		}
 	}
 	return srv
@@ -90,6 +91,14 @@ const (
 	mcpSurface surface = iota
 	chatSurface
 )
+
+// label names the surface on each tool call's log line.
+func (s surface) label() string {
+	if s == chatSurface {
+		return "chat"
+	}
+	return "mcp"
+}
 
 // EveryFeature is the feature set the chat server carries tools for.
 var EveryFeature = django.StoreFeatures{
@@ -108,8 +117,10 @@ var EveryFeature = django.StoreFeatures{
 // handler bound to it (which a plain slice of *mcp.Tool cannot carry,
 // as every handler has its own argument and result types).
 type tool struct {
-	def      *mcp.Tool
-	register func(*mcp.Server, surface)
+	def *mcp.Tool
+	// register adds the tool to a server for a surface, logging each call
+	// (mcptool.Add).
+	register func(*mcp.Server, surface, *slog.Logger)
 	// offered, when set, is the store feature the tool serves: a store
 	// with it off is not served the tool.
 	offered func(django.StoreFeatures) bool
@@ -156,8 +167,10 @@ func loyaltyOn(f django.StoreFeatures) bool    { return f.Loyalty }
 func promotionsOn(f django.StoreFeatures) bool { return f.Cart && f.Promotions }
 
 func toolOf[In, Out any](def *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) tool {
-	return tool{def: def, register: func(srv *mcp.Server, _ surface) {
-		mcp.AddTool(srv, def, h)
+	return tool{def: def, register: func(
+		srv *mcp.Server, s surface, log *slog.Logger,
+	) {
+		mcptool.Add(srv, log, s.label(), def, h)
 	}}
 }
 
@@ -169,9 +182,11 @@ func toolOf[In, Out any](def *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) tool {
 func cartToolOf[In, Out any](
 	def *mcp.Tool, h mcp.ToolHandlerFor[In, Out],
 ) tool {
-	return tool{def: def, register: func(srv *mcp.Server, s surface) {
+	return tool{def: def, register: func(
+		srv *mcp.Server, s surface, log *slog.Logger,
+	) {
 		if s != chatSurface {
-			mcp.AddTool(srv, def, h)
+			mcptool.Add(srv, log, s.label(), def, h)
 			return
 		}
 		schema, err := jsonschema.For[In](&jsonschema.ForOptions{})
@@ -182,7 +197,7 @@ func cartToolOf[In, Out any](
 			func(p string) bool { return p == "cartId" })
 		chat := *def
 		chat.InputSchema = schema
-		mcp.AddTool(srv, &chat, h)
+		mcptool.Add(srv, log, s.label(), &chat, h)
 	}}
 }
 

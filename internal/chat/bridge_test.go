@@ -74,7 +74,7 @@ func TestBridgeReportsAFailedCartToolAsAFailure(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
 	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test",
 		Django: django.New(srv.URL+"/api/v1", "api.example.test", "secret",
-			5*time.Second, log, obs.NewMetrics())})
+			5*time.Second, log, obs.NewMetrics()), Log: log})
 	ctx := tenant.NewContext(context.Background(), testTenant())
 	br, err := newBridge(ctx, server)
 	require.NoError(t, err)
@@ -110,7 +110,7 @@ func TestBridgeReportsARefusedCartToken(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
 	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test",
 		Django: django.New(srv.URL+"/api/v1", "api.example.test", "secret",
-			5*time.Second, log, obs.NewMetrics())})
+			5*time.Second, log, obs.NewMetrics()), Log: log})
 	tok, err := django.ParseCartToken("Zk3n_Q8vX2-rT5yLmW9aB4cD7eF0gH1iJ6k")
 	require.NoError(t, err)
 	ctx := django.WithCartToken(
