@@ -244,6 +244,7 @@ func TestLoadValidatesBaseURLs(t *testing.T) {
 		"//backend-service/api/v1",
 		"ftp://backend-service/api/v1",
 		"http:///api/v1",
+		"http://:8080/api/v1",
 		"http://user:pw@backend-service/api/v1",
 		"http://backend-service/api/v1?x=1",
 		"http://backend-service/api/v1#frag",

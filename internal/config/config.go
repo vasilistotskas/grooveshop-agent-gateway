@@ -374,7 +374,8 @@ func checkBaseURL(name, value string) error {
 }
 
 func isHTTPURL(u *url.URL) bool {
-	return (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" &&
+	return (u.Scheme == "http" || u.Scheme == "https") &&
+		u.Hostname() != "" &&
 		u.User == nil
 }
 
