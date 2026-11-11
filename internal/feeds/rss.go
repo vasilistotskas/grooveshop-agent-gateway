@@ -28,9 +28,11 @@ import (
 //   - text limits are the strictest of the three so one document serves
 //     them all. Google's product data specification
 //     (support.google.com/merchants/answer/7052112) is the strictest
-//     for every field below; Meta's catalog reference allows title 200,
-//     description 9999, brand 100, and TikTok's catalog guide title 150,
-//     description 20000.
+//     for every field below; Meta's catalog reference
+//     (developers.facebook.com/docs/marketing-api/catalog/reference)
+//     allows title 200, description 9999, brand 100, and TikTok's
+//     (ads.tiktok.com/help/article/best-practices-for-a-high-quality-catalog)
+//     title 150, description 20000.
 const (
 	feedTitleMax       = 150
 	feedDescriptionMax = 5000
@@ -109,6 +111,9 @@ type feedItem struct {
 	// Highlights are the store's selling points, within Google's bounds.
 	Highlights []string
 	Currency   string
+	// OverCap reports that images, variant options, details or
+	// highlights past a target's count limit were left out.
+	OverCap bool
 }
 
 type variantOption struct {
@@ -149,8 +154,12 @@ func newFeedItem(p *django.ProductFeed, ctx *feedContext) (*feedItem, error) {
 		}
 	}
 
+	// Options and details go out in the store's order up to their caps;
+	// the variant options stop at the first that does not fit, so the
+	// ones sent are always the leading ones.
 	var options, details []variantOption
 	var optionRunes int
+	var optionsFull, overCap bool
 	for _, a := range p.Attributes {
 		if a.AttributeName == "" || a.Value == "" {
 			continue
@@ -161,20 +170,27 @@ func newFeedItem(p *django.ProductFeed, ctx *feedContext) (*feedItem, error) {
 				Value: text.Runes(a.Value, feedVariantOptionPartMax),
 			}
 			n := utf8.RuneCountInString(o.Name) + utf8.RuneCountInString(o.Value)
-			if len(options) < feedVariantOptionsMax &&
-				optionRunes+n <= feedVariantOptionsTotalMax {
-				options = append(options, o)
-				optionRunes += n
+			optionsFull = optionsFull || len(options) == feedVariantOptionsMax ||
+				optionRunes+n > feedVariantOptionsTotalMax
+			if optionsFull {
+				overCap = true
+				continue
 			}
+			options = append(options, o)
+			optionRunes += n
 			continue
 		}
-		if len(details) < feedDetailsMax {
-			details = append(details, variantOption{
-				Name:  text.Runes(a.AttributeName, feedDetailNameMax),
-				Value: text.Runes(a.Value, feedDetailValueMax),
-			})
+		if len(details) == feedDetailsMax {
+			overCap = true
+			continue
 		}
+		details = append(details, variantOption{
+			Name:  text.Runes(a.AttributeName, feedDetailNameMax),
+			Value: text.Runes(a.Value, feedDetailValueMax),
+		})
 	}
+	highlights := feedHighlights(p.Highlights)
+	overCap = overCap || len(p.Highlights) > feedHighlightsMax
 	var groupTitle string
 	if p.VariantGroup != nil && p.VariantGroupTitle != nil {
 		groupTitle = text.Runes(*p.VariantGroupTitle, feedItemGroupTitleMax)
@@ -186,6 +202,7 @@ func newFeedItem(p *django.ProductFeed, ctx *feedContext) (*feedItem, error) {
 			continue
 		}
 		if len(additional) == feedAdditionalImagesMax {
+			overCap = true
 			break
 		}
 		additional = append(additional, media.ImageURL(ctx.ImageURLTemplate,
@@ -223,8 +240,9 @@ func newFeedItem(p *django.ProductFeed, ctx *feedContext) (*feedItem, error) {
 		ItemGroupTitle:       groupTitle,
 		VariantOptions:       options,
 		Details:              details,
-		Highlights:           feedHighlights(p.Highlights),
+		Highlights:           highlights,
 		Currency:             ctx.Currency,
+		OverCap:              overCap,
 	}, nil
 }
 
@@ -388,30 +406,45 @@ var blockTags = map[atom.Atom]bool{
 	atom.Blockquote: true, atom.Hr: true,
 }
 
+// rawTextTags are the elements the tokenizer reads as raw text, up to
+// their end tag (readStartTag in x/net/html/token.go): their content is
+// code, a title or a fallback, never the element's text, and markup in
+// it comes back as text. TestRawTextTagsMatchTheTokenizer pins the set
+// to the tokenizer's behaviour.
+var rawTextTags = map[atom.Atom]bool{
+	atom.Iframe: true, atom.Noembed: true, atom.Noframes: true,
+	atom.Noscript: true, atom.Plaintext: true, atom.Script: true,
+	atom.Style: true, atom.Textarea: true, atom.Title: true, atom.Xmp: true,
+}
+
 // plainText turns a rich-text description into one line of plain text:
 // the text tokens of the HTML tokenizer, so a ">" inside an attribute
-// value is never mistaken for a tag's end, and the contents of a script
-// or style are dropped. Block tags become spaces so "a<br>b" or
+// value is never mistaken for a tag's end, and the content of a
+// raw-text element is dropped. Block tags become spaces so "a<br>b" or
 // "</li><li>" keep their words apart. The tokenizer decodes entities
 // once, so an encoded "&lt;b&gt;" stays text, and escapeXML encodes the
 // result exactly once.
 func plainText(v string) string {
 	var b strings.Builder
-	var hidden bool
+	var raw atom.Atom
 	z := html.NewTokenizer(strings.NewReader(v))
 	for {
 		switch tt := z.Next(); tt {
 		case html.ErrorToken:
 			return strings.Join(strings.Fields(b.String()), " ")
 		case html.TextToken:
-			if !hidden {
+			if raw == 0 {
 				b.Write(z.Text())
 			}
 		case html.StartTagToken, html.EndTagToken, html.SelfClosingTagToken:
 			name, _ := z.TagName()
 			tag := atom.Lookup(name)
-			hidden = tt == html.StartTagToken &&
-				(tag == atom.Script || tag == atom.Style)
+			switch {
+			case tt == html.StartTagToken && rawTextTags[tag]:
+				raw = tag
+			case tt == html.EndTagToken && tag == raw:
+				raw = 0
+			}
 			if blockTags[tag] {
 				b.WriteByte(' ')
 			}

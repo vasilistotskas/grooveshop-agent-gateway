@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/net/html"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
@@ -403,6 +404,51 @@ func TestFeedItemFieldLimits(t *testing.T) {
 	it, err = newFeedItem(&p, ctx)
 	require.NoError(t, err)
 	assert.Len(t, it.VariantOptions, feedVariantOptionsMax)
+	assert.True(t, it.OverCap)
+
+	// The options sent are the leading ones: one that does not fit ends
+	// them, and a shorter one after it is not sent in its place.
+	p.Attributes = nil
+	for i, n := range []int{240, 240, 240, 240, 240, 240, 240, 240, 240,
+		240, 240, 240, 240, 240, 240, 240, 240, 240, 240, 240, 250, 1} {
+		p.Attributes = append(p.Attributes, django.ProductAttribute{
+			AttributeName: fmt.Sprintf("Ά%02d", i), Value: long(n),
+			IsVariant: true,
+		})
+	}
+	it, err = newFeedItem(&p, ctx)
+	require.NoError(t, err)
+	require.Len(t, it.VariantOptions, 20)
+	for i, o := range it.VariantOptions {
+		assert.Equal(t, fmt.Sprintf("Ά%02d", i), o.Name)
+	}
+	assert.True(t, it.OverCap)
+
+	within, err := newFeedItem(&fixtureProducts()[1], ctx)
+	require.NoError(t, err)
+	assert.False(t, within.OverCap)
+}
+
+// The raw-text elements plainText skips are the ones the tokenizer
+// reads as raw text, and no other.
+func TestRawTextTagsMatchTheTokenizer(t *testing.T) {
+	raw := func(name string) bool {
+		z := html.NewTokenizer(strings.NewReader("<" + name + "><b>x"))
+		require.Equal(t, html.StartTagToken, z.Next(), name)
+		return z.Next() == html.TextToken
+	}
+	for tag := range rawTextTags {
+		assert.True(t, raw(tag.String()), tag.String())
+	}
+	for _, name := range []string{
+		"a", "abbr", "b", "blockquote", "br", "caption", "code", "col",
+		"colgroup", "details", "div", "em", "h1", "h6", "hr", "i", "img",
+		"li", "ol", "p", "pre", "s", "section", "span", "strong", "sub",
+		"summary", "sup", "table", "tbody", "td", "tfoot", "th", "thead",
+		"tr", "u", "ul", "template", "svg", "math", "object", "noindex",
+	} {
+		assert.False(t, raw(name), name)
+	}
 }
 
 func TestPlainText(t *testing.T) {
@@ -419,6 +465,19 @@ func TestPlainText(t *testing.T) {
 		"a<script>var x = '<p>';</script>b":     "ab",
 		"a<style>p > b { color: red }</style>b": "ab",
 		"<!-- note -->text":                     "text",
+		// Every raw-text element's content is dropped, markup and all.
+		"a<noscript><p>fallback</p></noscript>b":              "ab",
+		`a<iframe src="https://x"><p>no frames</p></iframe>b`: "ab",
+		"a<title>T</title>b":                                  "ab",
+		"a<textarea><b>t</b></textarea>b":                     "ab",
+		"a<xmp><i>x</i></xmp>b":                               "ab",
+		"a<noembed>e</noembed><noframes>f</noframes>b":        "ab",
+		"a<plaintext><p>rest":                                 "a",
+		// A literal "<" reaches the gateway as Django stores it: nh3
+		// writes "&lt;" (and drops "<y" as a tag on save).
+		"a &lt; b": "a < b",
+		"x&lt;y z": "x<y z",
+		"1 &gt; 0": "1 > 0",
 	} {
 		assert.Equal(t, want, plainText(in), in)
 	}

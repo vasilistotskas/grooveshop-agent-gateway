@@ -153,8 +153,7 @@ func publicDocument(
 		etag := `"` + hex.EncodeToString(sum[:16]) + `"`
 		h.Set("ETag", etag)
 		h.Set("Cache-Control", "public, max-age=3600")
-		ifNoneMatch := strings.Join(r.Header.Values("If-None-Match"), ",")
-		if httphdr.ETagMatches(ifNoneMatch, etag) {
+		if httphdr.ETagMatches(r.Header.Values("If-None-Match"), etag) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}

@@ -41,6 +41,13 @@ func RelayCaller(next http.Handler) http.Handler {
 	})
 }
 
+// WithoutCaller returns ctx naming no caller, for the gateway's own work
+// started by a request but not done for its caller (a feed sweep): the
+// calls keep the request's id, and spend no visitor's throttle.
+func WithoutCaller(ctx context.Context) context.Context {
+	return context.WithValue(ctx, callerKey{}, caller{})
+}
+
 // setCaller adds ctx's caller to an outgoing Django request.
 func setCaller(ctx context.Context, h http.Header) {
 	c, ok := ctx.Value(callerKey{}).(caller)

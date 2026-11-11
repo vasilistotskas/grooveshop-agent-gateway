@@ -208,8 +208,13 @@ passes.
   (`gateway_feed_generation_failures_total`) and marked
   (`ag:{schema}:feed:failed`, `failureBackoff`): until the mark expires
   or an invalidation drops it, a stale feed is served without a refresh
-  and a missing one answers 503 without a sweep. A revalidation reads
-  the meta key only. Field limits are the strictest of Google, Meta and
+  and a missing one answers 503 without a sweep; a failure an
+  invalidation overtook is not marked. A revalidation reads the meta key
+  and only checks the blob exists (Redis evicts keys one by one): an
+  entry without its blob is a miss and regenerates. The sweep is
+  detached from the request (`context.WithoutCancel`) and names no
+  caller to Django (`django.WithoutCaller`): it is the store's work, not
+  the crawler's. Field limits are the strictest of Google, Meta and
   TikTok, named at the top of `rss.go`. `internal/httphdr` parses
   `If-None-Match` and `Accept-Encoding` for the feeds and the Server
   Card alike.

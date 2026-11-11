@@ -239,6 +239,70 @@ func TestFailedFeedRefreshIsNotRetriedByEveryRequest(t *testing.T) {
 		"an invalidation lifts the backoff")
 }
 
+// Redis evicts keys one by one (allkeys-lru), and a revalidation reads
+// the meta key alone, so the blob is the colder one. An entry whose blob
+// is gone is a miss: it regenerates at once, whether Meta finds it gone
+// or Body does after Meta found it.
+func TestFeedWithItsBlobEvictedRegenerates(t *testing.T) {
+	g := newGatedDjango(t)
+	g.armed.Store(false)
+	srv := httptest.NewServer(g)
+	t.Cleanup(srv.Close)
+	rdb := startRedis(t)
+	svc := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Hour, obs.NewMetrics())
+	ten := feedTenant()
+	ctx := context.Background()
+
+	first, err := svc.Meta(ctx, ten, feeds.KindGoogle)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, g.sweeps.Load())
+
+	require.NoError(t, rdb.Unlink(ctx, "ag:demostore:feed:rss").Err())
+	meta, err := svc.Meta(ctx, ten, feeds.KindGoogle)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, g.sweeps.Load(), "Meta saw the blob gone")
+	assert.Equal(t, first.ETag, meta.ETag)
+
+	require.NoError(t, rdb.Unlink(ctx, "ag:demostore:feed:rss").Err())
+	gz, meta, err := svc.Body(ctx, ten, feeds.KindGoogle)
+	require.NoError(t, err)
+	assert.NotEmpty(t, gz)
+	assert.Equal(t, first.ETag, meta.ETag)
+	assert.EqualValues(t, 3, g.sweeps.Load(), "Body regenerated the miss")
+}
+
+// A sweep an invalidation overtook does not mark its failure: the
+// invalidation may be the fix, and it has just emptied the feed.
+func TestFailedSweepOvertakenByAnInvalidationIsNotMarked(t *testing.T) {
+	g := newGatedDjango(t)
+	g.broken.Store(true)
+	srv := httptest.NewServer(g)
+	t.Cleanup(srv.Close)
+	rdb := startRedis(t)
+	metrics := obs.NewMetrics()
+	svc := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Hour, metrics)
+	ten := feedTenant()
+	ctx := context.Background()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.Meta(ctx, ten, feeds.KindGoogle)
+		done <- err
+	}()
+	<-g.entered
+	_, err := svc.Invalidate(ctx, ten.SchemaName)
+	require.NoError(t, err)
+	g.release()
+	require.Error(t, <-done)
+	assert.InDelta(t, 1, failures(t, metrics), 0, "still counted")
+	assert.Zero(t, rdb.Exists(ctx, "ag:demostore:feed:failed").Val())
+
+	g.broken.Store(false)
+	_, err = svc.Meta(ctx, ten, feeds.KindGoogle)
+	require.NoError(t, err, "the next request sweeps again at once")
+	assert.EqualValues(t, 2, g.sweeps.Load())
+}
+
 // A missing feed whose generation failed answers at once while the
 // backoff runs, without another sweep.
 func TestFailedFeedGenerationBacksOffAMiss(t *testing.T) {
