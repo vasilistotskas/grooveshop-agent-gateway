@@ -95,9 +95,6 @@ func (c *serverCache) forRequest(r *http.Request) *mcp.Server {
 	return srv
 }
 
-// serverLabel names this server on each tool call's log line.
-const serverLabel = "mcp_admin"
-
 // readOnly are the annotations of every tool here: they read the store
 // and nothing else, so hosts may run them without asking each time.
 func readOnly(title string) *mcp.ToolAnnotations {
@@ -130,7 +127,7 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 	})
 	h := &handlers{deps: d}
 
-	mcptool.Add(srv, d.Log, serverLabel, &mcp.Tool{
+	mcptool.Add(srv, d.Log, mcptool.ServerAdmin, &mcp.Tool{
 		Name:        "whoami",
 		Annotations: readOnly("Who is connected"),
 		Description: "Which store this connection reads, as whom (email " +
@@ -138,7 +135,7 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 			"and whether the role allows it. Call it first when a tool is " +
 			"refused.",
 	}, h.whoami)
-	mcptool.Add(srv, d.Log, serverLabel, &mcp.Tool{
+	mcptool.Add(srv, d.Log, mcptool.ServerAdmin, &mcp.Tool{
 		Name:        "list_orders",
 		Annotations: readOnly("List orders"),
 		Description: "The store's orders, newest first: status, payment " +
@@ -149,7 +146,7 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 			"the order id, customer email or name." +
 			untrustedNote,
 	}, h.listOrders)
-	mcptool.Add(srv, d.Log, serverLabel, &mcp.Tool{
+	mcptool.Add(srv, d.Log, mcptool.ServerAdmin, &mcp.Tool{
 		Name:        "get_order",
 		Annotations: readOnly("Get an order"),
 		Description: "One order in full: lines, totals, payment and " +
@@ -157,7 +154,7 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 			"and country (never the street or phone), and the customer's " +
 			"note." + untrustedNote,
 	}, h.getOrder)
-	mcptool.Add(srv, d.Log, serverLabel, &mcp.Tool{
+	mcptool.Add(srv, d.Log, mcptool.ServerAdmin, &mcp.Tool{
 		Name:        "sales_report",
 		Annotations: readOnly("Sales and turnover"),
 		Description: "The store's turnover as its admin report computes " +
@@ -168,7 +165,7 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 			"(day, week, month, quarter) for one row per period. Amounts " +
 			"are decimal strings in the report's currency.",
 	}, h.salesReport)
-	mcptool.Add(srv, d.Log, serverLabel, &mcp.Tool{
+	mcptool.Add(srv, d.Log, mcptool.ServerAdmin, &mcp.Tool{
 		Name:        "profit_report",
 		Annotations: readOnly("Profit"),
 		Description: "The store's profit as its owner's admin report " +
@@ -178,7 +175,7 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 			"payments a fee (coverage, percent). The store's owner only. " +
 			"Same range and bucket as sales_report.",
 	}, h.profitReport)
-	mcptool.Add(srv, d.Log, serverLabel, &mcp.Tool{
+	mcptool.Add(srv, d.Log, mcptool.ServerAdmin, &mcp.Tool{
 		Name:        "list_products",
 		Annotations: readOnly("Products and stock"),
 		Description: "Products with SKU, price, final price, stock and " +
@@ -186,7 +183,7 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 			"lowStock lists only products at or under their low-stock " +
 			"threshold, lowest first.",
 	}, h.listProducts)
-	mcptool.Add(srv, d.Log, serverLabel, &mcp.Tool{
+	mcptool.Add(srv, d.Log, mcptool.ServerAdmin, &mcp.Tool{
 		Name:        "find_customers",
 		Annotations: readOnly("Find customers"),
 		Description: "The store's customers, newest first: name, email, " +
@@ -194,14 +191,14 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 			"placed. Search by email or name. No addresses or phones." +
 			untrustedNote,
 	}, h.findCustomers)
-	mcptool.Add(srv, d.Log, serverLabel, &mcp.Tool{
+	mcptool.Add(srv, d.Log, mcptool.ServerAdmin, &mcp.Tool{
 		Name:        "list_reviews",
 		Annotations: readOnly("Product reviews"),
 		Description: "Product reviews, newest first, with their rating " +
 			"(1–10) and status: NEW waits for approval, TRUE is approved, " +
 			"FALSE rejected." + untrustedNote,
 	}, h.listReviews)
-	mcptool.Add(srv, d.Log, serverLabel, &mcp.Tool{
+	mcptool.Add(srv, d.Log, mcptool.ServerAdmin, &mcp.Tool{
 		Name:        "list_messages",
 		Annotations: readOnly("Contact messages"),
 		Description: "Messages sent through the store's contact form, " +

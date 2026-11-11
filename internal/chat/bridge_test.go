@@ -52,6 +52,28 @@ func TestBridgeOffersOnlyTheStoreTools(t *testing.T) {
 	assert.Len(t, offered, len(every)-1)
 }
 
+// A tool handler that panics reaches the model as a failed call, and the
+// process lives on: the SDK runs a handler on a goroutine of its own, out
+// of reach of any HTTP recover. Here the store's client is missing, so
+// the first call to it dereferences nil.
+func TestBridgeReportsAPanickingToolAsAFailure(t *testing.T) {
+	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test",
+		Log: slog.New(slog.DiscardHandler)})
+	ctx := tenant.NewContext(context.Background(), testTenant())
+	br, err := newBridge(ctx, server)
+	require.NoError(t, err)
+	t.Cleanup(br.close)
+	_, err = br.tools(ctx, mcpsrv.EveryFeature)
+	require.NoError(t, err)
+
+	text, _, failed, err := br.call(ctx, "list_categories", map[string]any{})
+
+	require.NoError(t, err)
+	assert.True(t, failed)
+	assert.True(t, strings.HasPrefix(text, "ERROR: "), text)
+	assert.Contains(t, text, `"code":"unavailable"`)
+}
+
 // A cart tool that fails reaches the model as a failure, with the cause
 // the tool knows, and the turn does not tell the widget the cart
 // changed: the assistant had claimed adds the shopper's cart never got.

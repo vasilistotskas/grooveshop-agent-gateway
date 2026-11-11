@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
 // ToolError is a failed tool call's answer, rendered as JSON text so an
@@ -80,11 +82,38 @@ func MarkUntrusted(source, s string) *Untrusted {
 	return &Untrusted{Untrusted: true, Source: source, Text: s}
 }
 
-// Add registers a tool on srv with an info line per call: server (which
-// MCP server srv is, since two may carry a tool of one name), the tool,
-// the store, the outcome (ok, the ToolError's code, or error) and how
-// long it took. Never its arguments or result, which carry customer
-// data.
+// KeyServer is the log key naming which surface served a call, with one
+// of the Server values: two of them carry a tool of one name.
+const KeyServer = "server"
+
+// The surfaces, as KeyServer names them.
+const (
+	ServerMCP   = "mcp"
+	ServerChat  = "chat"
+	ServerAdmin = "mcp_admin"
+)
+
+// OutcomePanic is the outcome of a call whose handler panicked.
+const OutcomePanic = "panic"
+
+// errPanicked answers a call whose handler panicked. The hint holds on
+// every surface: it names neither the store's backend nor who asked.
+var errPanicked = &ToolError{Code: CodeUnavailable,
+	RetryAfter: UnavailableRetryAfter,
+	Hint: "the tool failed unexpectedly; retry once, then try again " +
+		"later"}
+
+// Add registers a tool on srv. Each call that reaches the handler logs
+// one info line, "tool call", with KeyServer (server), the tool, the
+// outcome (ok, the ToolError's code, error, or OutcomePanic) and
+// duration_ms; the logger's context handler adds the request id and the
+// store. The arguments and the result are never logged: they carry
+// customer data. A call the SDK refuses before the handler, an unknown
+// tool or arguments that fail the input schema, logs no line.
+//
+// The SDK runs a handler on a goroutine of its own, which no recover
+// covers, so a panic would end the process. It is recovered here
+// (obs.Recover logs it with its stack) and answered as unavailable.
 func Add[In, Out any](
 	srv *mcp.Server, log *slog.Logger, server string, def *mcp.Tool,
 	h mcp.ToolHandlerFor[In, Out],
@@ -93,19 +122,33 @@ func Add[In, Out any](
 		ctx context.Context, req *mcp.CallToolRequest, in In,
 	) (*mcp.CallToolResult, Out, error) {
 		start := time.Now()
-		res, out, err := h(ctx, req, in)
+		res, out, err, panicked := run(ctx, log, def.Name, h, req, in)
 		outcome := "ok"
-		if err != nil {
+		switch {
+		case panicked:
+			outcome, err = OutcomePanic, errPanicked
+		case err != nil:
 			outcome = "error"
 			if te, ok := errors.AsType[*ToolError](err); ok {
 				outcome = te.Code
 			}
 		}
 		log.InfoContext(ctx, "tool call",
-			slog.String("server", server),
+			slog.String(KeyServer, server),
 			slog.String("tool", def.Name),
 			slog.String("outcome", outcome),
 			slog.Int64("duration_ms", time.Since(start).Milliseconds()))
 		return res, out, err
 	})
+}
+
+// run calls h, reporting whether it panicked; obs.Recover logs the panic.
+func run[In, Out any](
+	ctx context.Context, log *slog.Logger, tool string,
+	h mcp.ToolHandlerFor[In, Out], req *mcp.CallToolRequest, in In,
+) (res *mcp.CallToolResult, out Out, err error, panicked bool) {
+	defer obs.Recover(ctx, log, "mcp tool "+tool, &err)
+	panicked = true
+	res, out, err = h(ctx, req, in)
+	return res, out, err, false
 }

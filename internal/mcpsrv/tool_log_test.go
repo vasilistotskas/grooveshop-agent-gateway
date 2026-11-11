@@ -11,10 +11,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// toolLines keeps the server and tool of every "tool call" line.
+// toolLines keeps the server and tool, and the outcome, of every "tool
+// call" line.
 type toolLines struct {
-	mu    sync.Mutex
-	lines [][2]string
+	mu       sync.Mutex
+	lines    [][2]string
+	outcomes []string
 }
 
 func (l *toolLines) Enabled(context.Context, slog.Level) bool { return true }
@@ -24,17 +26,21 @@ func (l *toolLines) Handle(_ context.Context, r slog.Record) error {
 		return nil
 	}
 	var line [2]string
+	var outcome string
 	r.Attrs(func(a slog.Attr) bool {
 		switch a.Key {
 		case "server":
 			line[0] = a.Value.String()
 		case "tool":
 			line[1] = a.Value.String()
+		case "outcome":
+			outcome = a.Value.String()
 		}
 		return true
 	})
 	l.mu.Lock()
 	l.lines = append(l.lines, line)
+	l.outcomes = append(l.outcomes, outcome)
 	l.mu.Unlock()
 	return nil
 }

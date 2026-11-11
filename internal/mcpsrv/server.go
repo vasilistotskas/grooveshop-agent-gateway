@@ -95,9 +95,9 @@ const (
 // label names the surface on each tool call's log line.
 func (s surface) label() string {
 	if s == chatSurface {
-		return "chat"
+		return mcptool.ServerChat
 	}
-	return "mcp"
+	return mcptool.ServerMCP
 }
 
 // EveryFeature is the feature set the chat server carries tools for.
