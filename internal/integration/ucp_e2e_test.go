@@ -204,6 +204,12 @@ type checkoutFaults struct {
 	payWayLookup atomic.Bool
 	// orderRead makes reading a placed order answer 502.
 	orderRead atomic.Bool
+	// orderGone makes reading a placed order answer 404: Django no
+	// longer has it.
+	orderGone atomic.Bool
+	// orderCreatedAt is when the placed order reads as created; unset,
+	// the fixture's time, which is long past.
+	orderCreatedAt atomic.Pointer[time.Time]
 	// cartWrites counts the writes the cart received: its lines and its
 	// coupon.
 	cartWrites atomic.Int32
@@ -229,7 +235,28 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
-			inner.ServeHTTP(w, r)
+			if faults.orderGone.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(
+					`{"detail": "Not found.", "code": "not_found"}`))
+				return
+			}
+			createdAt := faults.orderCreatedAt.Load()
+			if createdAt == nil {
+				inner.ServeHTTP(w, r)
+				return
+			}
+			raw, err := os.ReadFile(fixturePath("order_by_uuid.json"))
+			var order map[string]any
+			if !assert.NoError(t, err) ||
+				!assert.NoError(t, json.Unmarshal(raw, &order)) {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			order["createdAt"] = createdAt.Format(time.RFC3339Nano)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(order)
 		})
 	outer.HandleFunc("GET /api/v1/cart",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -291,6 +318,16 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	outer.HandleFunc("POST /api/v1/cart/reserve-stock",
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
+			if faults.cartDeletedOnOrder.Load() &&
+				faults.ordersPlaced.Load() > 0 {
+				// The cart went with its order, so Django reserves for
+				// the new, empty cart it makes for the id
+				// (src/cart/views/cart.py reserve_stock).
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"detail": "Cart is empty. Cannot ` +
+					`reserve stock for empty cart.", "code": "cart_empty"}`))
+				return
+			}
 			if faults.stockShort.Load() {
 				w.WriteHeader(http.StatusConflict)
 				_, _ = w.Write([]byte(`{"detail": "Not enough stock.",

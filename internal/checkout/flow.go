@@ -122,7 +122,7 @@ func (f *Flow) Complete(
 		// Nothing is stored for a session that was not admitted. A
 		// snapshot that reads in progress is another attempt's, and
 		// saving it would overwrite that attempt's session.
-		return NothingPlaced, err
+		return NothingPlaced, f.refusal(ctx, s, err)
 	}
 	// No order exists yet, so a call whose context has already ended
 	// (a caller that left, a server shutting down) gets none.
@@ -166,6 +166,35 @@ func (f *Flow) Complete(
 		}
 	}
 	return placement, err
+}
+
+// refusal is what a completion that admit refused answers. admit asks
+// Django about the cart, and this call may have outlived its lock by
+// then: another completion may have placed the order, which takes the
+// cart with it (Django answers "cart is empty") or the last of the stock
+// ("not enough stock"). Told that, the caller would correct a checkout
+// that has an order. So the session is read again, and admit's answer
+// stands only for the session this call loaded:
+//   - another request stored it since: ErrSessionChanged, as for a lost
+//     save, and the retry reads what it is now;
+//   - it is no longer stored: ErrNotFound;
+//   - it cannot be read: that error, which every caller answers as
+//     unavailable. Never admit's, which may be the other request's doing.
+//
+// The two refusals that are about the session's own state need no read.
+func (f *Flow) refusal(ctx context.Context, s *Session, admitErr error) error {
+	if errors.Is(admitErr, ErrCompletionInProgress) ||
+		errors.Is(admitErr, ErrNotReady) {
+		return admitErr
+	}
+	stored, err := f.st.Load(ctx, s.Schema, s.ID)
+	switch {
+	case err != nil:
+		return err
+	case stored.Revision != s.Revision:
+		return ErrSessionChanged
+	}
+	return admitErr
 }
 
 // CompletionDeadline is the latest a completion of s can still run, for a
@@ -366,13 +395,30 @@ func (f *Flow) ApplyOrderEvent(
 		return nil
 	}
 	if s.OrderUUID == "" {
-		// An event names no language, and only the order's id is read.
+		// An event names no language, and only the order's id and
+		// creation time are read.
 		order, err := f.dj.PlacedOrder(ctx, s.Domain, "", orderUUID)
+		if errors.Is(err, django.ErrNotFound) {
+			// Django no longer has the order the event was for: no
+			// retry brings it back, and the session is left as it is.
+			f.log.WarnContext(ctx,
+				"checkout: order event for an order that is gone",
+				slog.String("session", s.ID),
+				slog.String("order", orderUUID))
+			return nil
+		}
 		if err != nil {
 			return err
 		}
+		// The session ends terminalTTL after its order was placed,
+		// which is when Django created it, not when this event came.
+		placed, err := time.Parse(time.RFC3339Nano, order.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("checkout: order %s created at %q: %w",
+				order.UUID, order.CreatedAt, err)
+		}
 		s.OrderID, s.OrderUUID = order.ID, order.UUID
-		s.PlacedAt = time.Now().UTC()
+		s.PlacedAt = placed.UTC()
 	}
 	s.Status = StatusCompleted
 	return f.st.Save(ctx, s)

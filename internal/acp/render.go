@@ -89,9 +89,14 @@ func Render(
 		// browser and finishes checkout there (card payment included).
 		ContinueURL: links.CartClaim(s.CartID),
 	}
+	switch {
 	// A placed order has no cart left to claim: the buyer goes to the order.
-	if s.OrderUUID != "" {
+	case s.OrderUUID != "":
 		out.ContinueURL = links.OrderSuccess(s.OrderUUID)
+	// An order that is being placed, or was never confirmed, may exist:
+	// claiming the cart would start a second purchase, so no link.
+	case s.MayHaveOrder():
+		out.ContinueURL = ""
 	}
 
 	if s.Buyer != (checkout.Buyer{}) {

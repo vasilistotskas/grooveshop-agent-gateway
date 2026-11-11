@@ -803,8 +803,13 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
+	// Decided by what the session is, before any lookup. One that placed
+	// its order is answered with the session: completed, or awaiting the
+	// payment its continue_url leads to (a session placed over UCP with
+	// a hosted pay way is driven here too). The order is what a complete
+	// asks for, and it exists; nothing is written.
 	switch s.Status {
-	case checkout.StatusCompleted:
+	case checkout.StatusCompleted, checkout.StatusRequiresEscalation:
 		h.render(w, r, t, s)
 		return
 	case checkout.StatusCompleteInProgress:
@@ -1045,8 +1050,15 @@ func (h *Handler) cartFailed(
 	s *checkout.Session, err error,
 ) {
 	if errors.Is(err, django.ErrCartUnreachable) {
+		// The cart is "gone" only for a session that was read again and
+		// is still open. One that cannot be read is answered as that:
+		// missing (its order may exist), or unavailable.
 		now, loadErr := h.store.Load(r.Context(), t.SchemaName, s.ID)
-		if loadErr == nil && h.refuseChange(w, now, updateAllow, "change") {
+		if loadErr != nil {
+			h.sessionError(w, loadErr)
+			return
+		}
+		if h.refuseChange(w, now, updateAllow, "change") {
 			return
 		}
 	}
@@ -1153,10 +1165,16 @@ func (h *Handler) renderBody(
 	}
 	h.log.ErrorContext(r.Context(), "acp render failed",
 		slog.String("session", s.ID), slog.String("error", err.Error()))
-	if s.OrderUUID != "" {
+	switch {
+	case s.OrderUUID != "":
 		writePlacedUnrendered(w, s)
-		return nil, false
+	case s.MayHaveOrder():
+		// Being placed, or never confirmed: its cart may have gone with
+		// the order, so it is answered as what it is, not as a session
+		// to read again until it renders.
+		h.writeCompletionPending(w, s)
+	default:
+		writeUnavailable(w, "The session cannot be rendered right now.")
 	}
-	writeUnavailable(w, "The session cannot be rendered right now.")
 	return nil, false
 }

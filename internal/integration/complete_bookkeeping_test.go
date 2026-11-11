@@ -55,6 +55,8 @@ type completionSurface struct {
 	updateLines func(ctx context.Context, id string) surfaceAnswer
 	// abandon is cancel with the whole answer. It asserts nothing.
 	abandon func(ctx context.Context, id string) surfaceAnswer
+	// read reads the checkout. It asserts nothing.
+	read func(ctx context.Context, id string) surfaceAnswer
 	// keyName is where the surface keeps that key's state in Redis.
 	keyName func(id, key string) string
 	// cancel abandons the checkout.
@@ -74,8 +76,9 @@ type surfaceAnswer struct {
 	errorBody []byte
 }
 
-// acpAnswer sends an ACP request and reads its answer. It asserts
-// nothing, so it runs on any goroutine.
+// acpAnswer sends an ACP request and reads its answer: a POST under key,
+// or a GET when key is empty. It asserts nothing, so it runs on any
+// goroutine.
 func acpAnswer(
 	ctx context.Context, url, key string, body map[string]any,
 ) surfaceAnswer {
@@ -83,7 +86,11 @@ func acpAnswer(
 	if err != nil {
 		return surfaceAnswer{refusal: err.Error()}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url,
+	method := http.MethodPost
+	if key == "" {
+		method = http.MethodGet
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url,
 		bytes.NewReader(raw))
 	if err != nil {
 		return surfaceAnswer{refusal: err.Error()}
@@ -190,6 +197,9 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			return acpAnswer(ctx, base+"/"+id+"/cancel", uuid.NewString(),
 				nil)
 		},
+		read: func(ctx context.Context, id string) surfaceAnswer {
+			return acpAnswer(ctx, base+"/"+id, "", nil)
+		},
 		keyName: func(id, key string) string {
 			return "ag:demostore:acp:idem:complete:" + id + ":" + key
 		},
@@ -277,6 +287,10 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 		abandon: func(ctx context.Context, id string) surfaceAnswer {
 			return mcpAnswer(ctx, session, "cancel_checkout",
 				map[string]any{"meta": meta(uuid.NewString()), "id": id})
+		},
+		read: func(ctx context.Context, id string) surfaceAnswer {
+			return mcpAnswer(ctx, session, "get_checkout",
+				map[string]any{"meta": meta(""), "id": id})
 		},
 		keyName: func(id, key string) string {
 			return "ag:demostore:idem:" + id + ":" + key
@@ -828,7 +842,9 @@ func TestCompleteLeavesAClosedSessionAsItIs(t *testing.T) {
 			ctx, id, uuid.NewString(), changeBy("ucp")))
 		before := stack.storedBytes(t, id)
 
-		require.Empty(t, surfaces["acp"].complete(
+		// The order a complete asks for exists: the session is answered
+		// as it is, and what the call submitted is not stored.
+		require.Equal(t, "requires_escalation", surfaces["acp"].complete(
 			ctx, id, uuid.NewString(), changeBy("acp")))
 
 		assert.Equal(t, before, stack.storedBytes(t, id))

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -205,7 +206,7 @@ func (h *handlers) updateCheckout(
 	}
 	defer release()
 
-	if err := closedTo(s, "updated"); err != nil {
+	if err := h.closedTo(s, "updated"); err != nil {
 		return nil, zero, err
 	}
 	// line_items is full-state on update: the submitted list replaces
@@ -283,8 +284,8 @@ func (h *handlers) completeCheckout(
 	switch s.Status {
 	case checkout.StatusCompleted:
 		return h.checkoutResult(ctx, t, s, neg)
-	case checkout.StatusCompleteInProgress:
-		return nil, zero, checkout.ErrCompletionInProgress
+	case checkout.StatusCompleteInProgress, checkout.StatusCanceled:
+		return nil, zero, h.closedTo(s, "completed")
 	case checkout.StatusRequiresEscalation:
 		// The escalation resolves through the order event, never through
 		// a second complete — except to retry a payment link that could
@@ -360,10 +361,9 @@ func (h *handlers) completeCheckout(
 		}
 		return h.checkoutResult(ctx, t, s, neg)
 	case errors.Is(err, checkout.ErrOrderOutcomeUnknown):
-		return nil, zero, errors.New(
-			"the store did not confirm whether the order was placed; do " +
-				"not retry or start a new checkout — the buyer receives " +
-				"a confirmation email if it was, and track_order finds it")
+		return nil, zero, errOutcomeUnknown
+	case errors.Is(err, checkout.ErrNotFound):
+		return nil, zero, errCheckoutGone
 	case errors.Is(err, checkout.ErrPaymentSessionFailed):
 		return nil, zero, paymentLinkErr(s)
 	case errors.Is(err, checkout.ErrSessionNotSaved):
@@ -451,12 +451,12 @@ func saveFailed(err error) error {
 // of a checkout that takes neither, and is nil for one that is open: an
 // order that is being placed, a canceled checkout, and one that placed
 // an order, which canceling or changing the checkout would not touch.
-func closedTo(s *checkout.Session, action string) error {
+func (h *handlers) closedTo(s *checkout.Session, action string) error {
 	switch {
 	case s.Open():
 		return nil
 	case s.Status == checkout.StatusCompleteInProgress:
-		return checkout.ErrCompletionInProgress
+		return h.pending(s)
 	case s.Status == checkout.StatusCanceled:
 		return fmt.Errorf("checkout %s is canceled and cannot be %s",
 			s.ID, action)
@@ -477,14 +477,45 @@ func (h *handlers) cartFailed(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session, err error,
 ) error {
 	if errors.Is(err, django.ErrCartUnreachable) {
+		// The cart is "gone" only for a checkout that was read again
+		// and is still open. One that cannot be read is answered as
+		// that: missing (its order may exist), or unavailable.
 		now, loadErr := h.deps.Checkout.Load(ctx, t.SchemaName, s.ID)
-		if loadErr == nil {
-			if closed := closedTo(now, "updated"); closed != nil {
-				return closed
-			}
+		switch {
+		case errors.Is(loadErr, checkout.ErrNotFound):
+			return errCheckoutGone
+		case loadErr != nil:
+			return errCheckoutUnavailable
+		}
+		if closed := h.closedTo(now, "updated"); closed != nil {
+			return closed
 		}
 	}
 	return withHint(upstreamErr(err, cartGone), checkoutNotUpdated)
+}
+
+// errOutcomeUnknown answers a checkout whose order the store never
+// confirmed or denied, once its completion can no longer be running: the
+// session stays so until it expires, and no call changes that. It tells
+// the agent what a person can do, because nothing the agent can call
+// will find out.
+var errOutcomeUnknown = errors.New(
+	"the store never confirmed whether this checkout's order was " +
+		"placed, and that will not change: do not complete it again, " +
+		"do not keep checking it, and do not start another checkout. " +
+		"Ask the shopper to look for the store's order confirmation " +
+		"email, or to ask the store; start a new checkout only if " +
+		"they find that no order was placed")
+
+// pending answers a call that finds the checkout's order being placed:
+// while the completion can still run, to check again shortly; past that
+// (Flow.CompletionDeadline, as ACP judges it), that its outcome was
+// never recorded.
+func (h *handlers) pending(s *checkout.Session) error {
+	if time.Until(h.deps.Flow.CompletionDeadline(s)) > 0 {
+		return checkout.ErrCompletionInProgress
+	}
+	return errOutcomeUnknown
 }
 
 // errCheckoutGone answers a checkout id no session is stored for. The id
@@ -592,8 +623,14 @@ func (h *handlers) checkoutResult(
 	payload, err := h.deps.UCP.BuildCheckout(ctx, t, s,
 		neg.Declaration(ucp.CapabilityCheckout))
 	if err != nil {
-		if s.OrderUUID != "" {
+		switch {
+		case s.OrderUUID != "":
 			return nil, zero, unrenderedErr(s)
+		case s.MayHaveOrder():
+			// Being placed, or never confirmed: its cart may have gone
+			// with the order, so it is answered as what it is, not as a
+			// checkout to read again until it renders.
+			return nil, zero, h.pending(s)
 		}
 		return nil, zero, upstreamErr(err,
 			"checkout state could not be rendered; retry")
@@ -719,7 +756,7 @@ func (h *handlers) cancelCheckout(
 	// completed), canceling the checkout would not cancel the order: the
 	// buyer could still pay it, and the session would read canceled over
 	// a paid order.
-	if err := closedTo(s, "canceled"); err != nil {
+	if err := h.closedTo(s, "canceled"); err != nil {
 		return nil, zero, err
 	}
 	s.Status = checkout.StatusCanceled

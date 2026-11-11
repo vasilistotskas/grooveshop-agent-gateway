@@ -388,6 +388,9 @@ func TestOrderEventRecordsTheOrderItsSessionNeverSaved(t *testing.T) {
 		fixtureOrderUUID, "PENDING"))
 	assert.Equal(t, unsaved, f.stored(t, s))
 
+	// The order was placed an hour ago, whenever its event comes.
+	placed := time.Now().Add(-time.Hour)
+	f.faults.orderCreatedAt.Store(&placed)
 	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
 		fixtureOrderUUID, django.PaymentStatusCompleted))
 
@@ -395,8 +398,30 @@ func TestOrderEventRecordsTheOrderItsSessionNeverSaved(t *testing.T) {
 	assert.Equal(t, checkout.StatusCompleted, stored.Status)
 	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
 	assert.EqualValues(t, 684, stored.OrderID, "the fixture order's id")
-	assert.WithinDuration(t, time.Now(), stored.PlacedAt, time.Minute)
+	assert.WithinDuration(t, placed, stored.PlacedAt, time.Second)
+	// So the session ends a day after the order, not after the event.
+	ttl, err := f.rdb.PTTL(ctx, sessionRedisKey(s.ID)).Result()
+	require.NoError(t, err)
+	assert.InDelta(t, (23 * time.Hour).Seconds(), ttl.Seconds(), 5)
 	assert.EqualValues(t, 1, f.faults.orderCreates.Load())
+}
+
+// An event can come long after its order: a payment made days later, or
+// Django pushing again. The session's day counts from the order, so one
+// recorded by such an event has already ended.
+func TestOrderEventForAnOldOrderDoesNotKeepItsSession(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	ctx := context.Background()
+	s := f.readySession(t)
+	s.Status = checkout.StatusCompleteInProgress
+	require.NoError(t, f.store.Save(ctx, s))
+
+	// The fixture order was created months ago.
+	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
+		fixtureOrderUUID, django.PaymentStatusCompleted))
+
+	_, err := f.store.Load(ctx, s.Schema, s.ID)
+	assert.ErrorIs(t, err, checkout.ErrNotFound)
 }
 
 // A session in progress can still be stored by something else before the
