@@ -436,10 +436,13 @@ passes.
   reason as the code) and the checkout store down
   (`errCheckoutUnavailable`, one value, `retryAfterSeconds` as an
   upstream outage). A cart tool's failure goes through `handlers.cartErr`,
-  or `handlers.cartGoneErr` for a call on the cart itself, whose 404 is
-  the cart gone (a line's or a product's 404 stays theirs): a cart the
-  store no longer serves (`django.ErrCartUnreachable`, or that 404) is
-  `not_found` on `/mcp`, whose agent owns its cart id and is told to
+  or `handlers.cartGoneErr` for a call on the cart itself (a line's or a
+  product's 404 stays theirs). There a 404 with Django's code
+  `cart_not_found` (`django.CodeCartNotFound`) or a 403 is the cart
+  gone; a bare 404 is a feature gate's, answered `not_found` with
+  `featureOff` on both surfaces. A cart the store no longer serves
+  (`django.ErrCartUnreachable`, or the cart gone) is `not_found` on
+  `/mcp`, whose agent owns its cart id and is told to
   create another with `create_cart`. In the chat it is the shopper's
   own browser cart, which a cart the model created would never replace
   and which the chat serves no `create_cart` for, so it is
