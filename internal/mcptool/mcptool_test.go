@@ -131,7 +131,8 @@ func TestAddLogsAndCountsOneLinePerCall(t *testing.T) {
 	}
 	session := serve(t, func(srv *mcp.Server) {
 		for name, failure := range failures {
-			Add(srv, rec, &mcp.Tool{Name: name}, func(
+			Add(srv, rec, &mcp.Tool{Name: name,
+				Annotations: ReadOnly(name)}, func(
 				_ context.Context, _ *mcp.CallToolRequest, in secretIn,
 			) (*mcp.CallToolResult, secretOut, error) {
 				return nil, secretOut{Echo: resultValue + in.Secret}, failure
@@ -184,7 +185,8 @@ func TestAddRecoversAPanickingHandler(t *testing.T) {
 	rec := Recorder{Server: ServerMCP,
 		Log: slog.New(slog.NewJSONHandler(out, nil)), Metrics: metrics}
 	session := serve(t, func(srv *mcp.Server) {
-		Add(srv, rec, &mcp.Tool{Name: "explodes"}, func(
+		Add(srv, rec, &mcp.Tool{Name: "explodes",
+			Annotations: ReadOnly("Explodes")}, func(
 			context.Context, *mcp.CallToolRequest, secretIn,
 		) (*mcp.CallToolResult, secretOut, error) {
 			var nothing *secretOut

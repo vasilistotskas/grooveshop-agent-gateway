@@ -165,10 +165,17 @@ passes.
   - An unknown tool, and arguments that fail the input schema, are
     refused by the SDK before the handler, neither logged nor counted.
   - A handler panic is recovered there (see `internal/httpmw`).
-  - Every tool has a `Title` and annotations (`mcptool.ReadOnly`, `Adds`,
-    `Changes`), none open-world. `mcptool.Cacheable` lets a client keep
-    `tools/list` for `TENANT_CACHE_TTL`: public on /mcp, private on
-    /mcp/admin.
+  - Every tool's annotations are `mcptool.ReadOnly`, `Adds` or
+    `Changes`, none open-world, each with the tool's title, which `Add`
+    also sets as `Tool.Title` (a 2025-03-26 client, which the transport
+    assumes for a request naming no version, reads only
+    `annotations.title`).
+  - `mcptool.Cacheable` lets a client keep `tools/list` for
+    `TENANT_CACHE_TTL`: public on /mcp, private on /mcp/admin. A pod may
+    serve a store's features up to about two TTLs old (a Redis hit gets
+    a fresh memory TTL), so a client can list a switched feature's tools
+    for about three TTLs. A call is still gated on the server: by the
+    pod's copy of the store's features, then by Django's own gates.
 
   How a Django failure maps to a code is each server's own `upstreamErr`.
 - `internal/adminmcp` — `/mcp/admin`, a separate MCP server with its own

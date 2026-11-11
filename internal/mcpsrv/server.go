@@ -80,8 +80,9 @@ func newServer(
 		Capabilities: &mcp.ServerCapabilities{
 			Tools: &mcp.ToolCapabilities{},
 		},
-		// The list is the store's: its features and its identity, which
-		// the gateway itself keeps as long.
+		// The list is the store's (its features and its identity), the
+		// same for every caller. A client may list a switched feature's
+		// tools for about three TTLs (CLAUDE.md, internal/mcptool).
 		SetCacheable: mcptool.Cacheable(d.ListTTL, mcptool.CachePublic),
 	})
 	rec := mcptool.Recorder{Server: s.label(), Log: d.Log,
@@ -300,8 +301,7 @@ func toolset(h *handlers) []tool {
 	return []tool{
 		onlyWith(catalogueOn, toolOf(&mcp.Tool{
 			Name:        "search_products",
-			Title:       "Search products",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("Search products"),
 			Description: "Search the store's product catalog by free text " +
 				"with optional category and price filters. Greek and English " +
 				"queries both work (Greeklish is expanded server-side). " +
@@ -311,8 +311,7 @@ func toolset(h *handlers) []tool {
 
 		onlyWith(catalogueOn, toolOf(&mcp.Tool{
 			Name:        "get_product",
-			Title:       "Get a product",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("Get a product"),
 			Description: "Fetch one product by id: localized name and " +
 				"description, VAT-inclusive price, live stock, rating " +
 				"(1–10, when the store has reviews), page URL, image and " +
@@ -321,8 +320,7 @@ func toolset(h *handlers) []tool {
 
 		onlyWith(catalogueOn, toolOf(&mcp.Tool{
 			Name:        "list_categories",
-			Title:       "Product categories",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("Product categories"),
 			Description: "List the store's product category tree (ids and " +
 				"localized names). Category ids can be passed to " +
 				"search_products to narrow a search.",
@@ -330,8 +328,7 @@ func toolset(h *handlers) []tool {
 
 		onlyWith(catalogueOn, toolOf(&mcp.Tool{
 			Name:        "get_trending_searches",
-			Title:       "Trending searches",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("Trending searches"),
 			Description: "Popular search queries in this store over the last " +
 				"24 hours — useful to discover what shoppers are looking at. " +
 				"Feed a query into search_products to see the products.",
@@ -339,8 +336,7 @@ func toolset(h *handlers) []tool {
 
 		onlyWith(reviewsOn, toolOf(&mcp.Tool{
 			Name:        "get_product_reviews",
-			Title:       "Product reviews",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("Product reviews"),
 			Description: "Customer reviews for a product: overall rating and " +
 				"each review's rating (both 1–10) and recent " +
 				"verified-purchase comments.",
@@ -348,8 +344,7 @@ func toolset(h *handlers) []tool {
 
 		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:        "get_shipping_options",
-			Title:       "Delivery options",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("Delivery options"),
 			Description: "Available delivery methods for a destination " +
 				"country with prices and free-shipping thresholds. Kinds: " +
 				"home_delivery and pickup_point (lockers/shops). When " +
@@ -359,8 +354,7 @@ func toolset(h *handlers) []tool {
 
 		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:        "find_pickup_points",
-			Title:       "Find pickup points",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("Find pickup points"),
 			Description: "Find parcel pickup points near a postal code, " +
 				"searching only the pickup carriers this store delivers " +
 				"with to that country (ACS Smartpoint lockers/shops, BOX " +
@@ -371,8 +365,7 @@ func toolset(h *handlers) []tool {
 
 		onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:        "get_payment_methods",
-			Title:       "Payment methods",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("Payment methods"),
 			Description: "Payment methods this store accepts (e.g. card via " +
 				"Viva/Stripe, cash on delivery), with any extra cost and " +
 				"free thresholds. Optionally filter by the shipping " +
@@ -383,8 +376,7 @@ func toolset(h *handlers) []tool {
 		// orders already placed.
 		toolOf(&mcp.Tool{
 			Name:        "get_store_policies",
-			Title:       "Return policy",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("Return policy"),
 			Description: "The store's return terms as it states them: " +
 				"the return window in days after delivery, who pays " +
 				"return shipping, and the link to its return-policy " +
@@ -397,8 +389,7 @@ func toolset(h *handlers) []tool {
 		// widget sent one would never reach the shopper.
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:        "create_cart",
-			Title:       "Create a cart",
-			Annotations: mcptool.Adds(),
+			Annotations: mcptool.Adds("Create a cart"),
 			Description: "Create an empty shopping cart. Persist the returned " +
 				"cartId — every cart and checkout tool needs it. add_to_cart " +
 				"also creates a cart implicitly when called without one.",
@@ -406,8 +397,7 @@ func toolset(h *handlers) []tool {
 
 		onlyWith(cartOn, cartToolOf(&mcp.Tool{
 			Name:        "get_cart",
-			Title:       "Get the cart",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("Get the cart"),
 			Description: "Fetch a cart's current lines and totals by cartId, " +
 				"including any applied coupon, promotion discount and " +
 				"promotional free shipping.",
@@ -415,8 +405,7 @@ func toolset(h *handlers) []tool {
 
 		changesCart(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:        "add_to_cart",
-			Title:       "Add to cart",
-			Annotations: mcptool.Adds(),
+			Annotations: mcptool.Adds("Add to cart"),
 			Description: "Add a product to the cart (increments the line if " +
 				"already present). Omit cartId on the first call to create " +
 				"the cart implicitly; persist the returned cartId.",
@@ -424,22 +413,19 @@ func toolset(h *handlers) []tool {
 
 		changesCart(onlyWith(cartOn, cartToolOf(&mcp.Tool{
 			Name:        "update_cart_item",
-			Title:       "Change a quantity",
-			Annotations: mcptool.Changes(),
+			Annotations: mcptool.Changes("Change a quantity"),
 			Description: "Change a cart line's quantity.",
 		}, h.updateCartItem))),
 
 		changesCart(onlyWith(cartOn, cartToolOf(&mcp.Tool{
 			Name:        "remove_cart_item",
-			Title:       "Remove from the cart",
-			Annotations: mcptool.Changes(),
+			Annotations: mcptool.Changes("Remove from the cart"),
 			Description: "Remove a line from the cart.",
 		}, h.removeCartItem))),
 
 		onlyWith(cartOn, cartToolOf(&mcp.Tool{
 			Name:        "get_checkout_link",
-			Title:       "Checkout link",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("Checkout link"),
 			Description: "Get the URL where the shopper completes checkout in " +
 				"their browser — reviewing the cart, choosing delivery and " +
 				"paying (card via the store's payment provider, or cash on " +
@@ -451,8 +437,7 @@ func toolset(h *handlers) []tool {
 		// shopper's cart; /mcp agents apply codes through checkout.
 		changesCart(chatOnly(onlyWith(promotionsOn, toolOf(&mcp.Tool{
 			Name:        "apply_coupon",
-			Title:       "Apply a coupon",
-			Annotations: mcptool.Changes(),
+			Annotations: mcptool.Changes("Apply a coupon"),
 			Description: "Apply a coupon code the shopper gave you to their " +
 				"cart (one coupon per cart: a new code replaces the " +
 				"previous one). Returns the cart with its new totals; a " +
@@ -461,16 +446,14 @@ func toolset(h *handlers) []tool {
 
 		changesCart(chatOnly(onlyWith(promotionsOn, toolOf(&mcp.Tool{
 			Name:        "remove_coupon",
-			Title:       "Remove the coupon",
-			Annotations: mcptool.Changes(),
+			Annotations: mcptool.Changes("Remove the coupon"),
 			Description: "Remove the coupon applied to the shopper's cart. " +
 				"Returns the cart with its new totals.",
 		}, h.removeCoupon)))),
 
 		toolOf(&mcp.Tool{
 			Name:        "track_order",
-			Title:       "Track an order",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("Track an order"),
 			Description: "Track an existing order by its UUID (found in the " +
 				"confirmation email): fulfilment status, payment status and " +
 				"the carrier tracking link once shipped.",
@@ -478,8 +461,7 @@ func toolset(h *handlers) []tool {
 
 		onlyWith(productAlertsOn, toolOf(&mcp.Tool{
 			Name:        "subscribe_product_alert",
-			Title:       "Product alert",
-			Annotations: mcptool.Adds(),
+			Annotations: mcptool.Adds("Product alert"),
 			Description: "Subscribe an email address to a product alert: " +
 				"restock (back in stock) or price_drop (price falls to a " +
 				"target). Useful when a product is out of stock or too " +
@@ -494,8 +476,7 @@ func toolset(h *handlers) []tool {
 		// anonymous call is challenged for the scopes (RequireLinkedAccount).
 		account("orders:read", toolOf(&mcp.Tool{
 			Name:        "my_orders",
-			Title:       "My orders",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("My orders"),
 			Description: "The linked shopper's recent orders (requires a " +
 				"connected account with the orders:read scope). Returns " +
 				"status, payment state and totals; use track_order with an " +
@@ -504,8 +485,7 @@ func toolset(h *handlers) []tool {
 
 		account("loyalty:read", onlyWith(loyaltyOn, toolOf(&mcp.Tool{
 			Name:        "my_loyalty_points",
-			Title:       "My loyalty points",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("My loyalty points"),
 			Description: "The linked shopper's loyalty summary — spendable " +
 				"points, level and tier (requires a connected account with " +
 				"the loyalty:read scope).",
@@ -513,8 +493,7 @@ func toolset(h *handlers) []tool {
 
 		account("favourites:read", onlyWith(favouritesOn, toolOf(&mcp.Tool{
 			Name:        "my_favourites",
-			Title:       "My favourites",
-			Annotations: mcptool.ReadOnly(),
+			Annotations: mcptool.ReadOnly("My favourites"),
 			Description: "The linked shopper's favourite products — the " +
 				"basis for personalised recommendations (requires a " +
 				"connected account with the favourites:read scope).",
@@ -533,8 +512,7 @@ func toolset(h *handlers) []tool {
 		// assistant hands the shopper a checkout link instead.
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "create_checkout",
-			Title:        "Start a checkout",
-			Annotations:  mcptool.Adds(),
+			Annotations:  mcptool.Adds("Start a checkout"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: start a checkout session. Send " +
 				"checkout.line_items (or cart_id for a cart built with the " +
@@ -545,8 +523,7 @@ func toolset(h *handlers) []tool {
 
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "get_checkout",
-			Title:        "Get a checkout",
-			Annotations:  mcptool.ReadOnly(),
+			Annotations:  mcptool.ReadOnly("Get a checkout"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: read the current state of a checkout " +
 				"session, including its totals, messages and the payment " +
@@ -556,8 +533,7 @@ func toolset(h *handlers) []tool {
 
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "update_checkout",
-			Title:        "Update a checkout",
-			Annotations:  mcptool.Changes(),
+			Annotations:  mcptool.Changes("Update a checkout"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: add or change buyer details, delivery " +
 				"(address or ACS/BOX NOW pickup point), payment and " +
@@ -567,8 +543,7 @@ func toolset(h *handlers) []tool {
 
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "complete_checkout",
-			Title:        "Place the order",
-			Annotations:  mcptool.Changes(),
+			Annotations:  mcptool.Changes("Place the order"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: place the order. Send " +
 				"checkout.payment.instruments naming one instrument the " +
@@ -583,8 +558,7 @@ func toolset(h *handlers) []tool {
 		// binding. Its conformance section requires exactly this tool.
 		mcpOnly(toolOf(&mcp.Tool{
 			Name:         "get_order",
-			Title:        "Get an order",
-			Annotations:  mcptool.ReadOnly(),
+			Annotations:  mcptool.ReadOnly("Get an order"),
 			OutputSchema: orderResultSchema,
 			Description: "UCP: the current state of an order placed through " +
 				"this surface — line items with per-line fulfilment status, " +
@@ -595,8 +569,7 @@ func toolset(h *handlers) []tool {
 
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "cancel_checkout",
-			Title:        "Cancel a checkout",
-			Annotations:  mcptool.Changes(),
+			Annotations:  mcptool.Changes("Cancel a checkout"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: abandon a checkout session the buyer is no " +
 				"longer pursuing. Already-canceled sessions succeed " +

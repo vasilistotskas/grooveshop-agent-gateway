@@ -125,8 +125,7 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 
 	mcptool.Add(srv, rec, &mcp.Tool{
 		Name:        "whoami",
-		Title:       "Who is connected",
-		Annotations: mcptool.ReadOnly(),
+		Annotations: mcptool.ReadOnly("Who is connected"),
 		Description: "Which store this connection reads, as whom (email " +
 			"and role), and for each area whether the app was granted it " +
 			"and whether the role allows it. Call it first when a tool is " +
@@ -134,8 +133,7 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 	}, h.whoami)
 	mcptool.Add(srv, rec, &mcp.Tool{
 		Name:        "list_orders",
-		Title:       "List orders",
-		Annotations: mcptool.ReadOnly(),
+		Annotations: mcptool.ReadOnly("List orders"),
 		Description: "The store's orders, newest first: status, payment " +
 			"status, customer name and email, total. Filter by status " +
 			"(PENDING, PROCESSING, SHIPPED, DELIVERED, COMPLETED, CANCELED, " +
@@ -146,8 +144,7 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 	}, h.listOrders)
 	mcptool.Add(srv, rec, &mcp.Tool{
 		Name:        "get_order",
-		Title:       "Get an order",
-		Annotations: mcptool.ReadOnly(),
+		Annotations: mcptool.ReadOnly("Get an order"),
 		Description: "One order in full: lines, totals, payment and " +
 			"shipping, tracking number, the customer's name, email, city " +
 			"and country (never the street or phone), and the customer's " +
@@ -155,8 +152,7 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 	}, h.getOrder)
 	mcptool.Add(srv, rec, &mcp.Tool{
 		Name:        "sales_report",
-		Title:       "Sales and turnover",
-		Annotations: mcptool.ReadOnly(),
+		Annotations: mcptool.ReadOnly("Sales and turnover"),
 		Description: "The store's turnover as its admin report computes " +
 			"it: goods, shipping and fees net of VAT, counted when an " +
 			"order shipped, less returns; with orders, units, VAT and the " +
@@ -167,8 +163,7 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 	}, h.salesReport)
 	mcptool.Add(srv, rec, &mcp.Tool{
 		Name:        "profit_report",
-		Title:       "Profit",
-		Annotations: mcptool.ReadOnly(),
+		Annotations: mcptool.ReadOnly("Profit"),
 		Description: "The store's profit as its owner's admin report " +
 			"computes it: revenue, cost of goods, payment and delivery " +
 			"costs, other expenses, gross and operating profit, with how " +
@@ -178,8 +173,7 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 	}, h.profitReport)
 	mcptool.Add(srv, rec, &mcp.Tool{
 		Name:        "list_products",
-		Title:       "Products and stock",
-		Annotations: mcptool.ReadOnly(),
+		Annotations: mcptool.ReadOnly("Products and stock"),
 		Description: "Products with SKU, price, final price, stock and " +
 			"whether they are published. Search by name, SKU or id; " +
 			"lowStock lists only products at or under their low-stock " +
@@ -187,8 +181,7 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 	}, h.listProducts)
 	mcptool.Add(srv, rec, &mcp.Tool{
 		Name:        "find_customers",
-		Title:       "Find customers",
-		Annotations: mcptool.ReadOnly(),
+		Annotations: mcptool.ReadOnly("Find customers"),
 		Description: "The store's customers, newest first: name, email, " +
 			"when they joined, how many orders and when the last one was " +
 			"placed. Search by email or name. No addresses or phones." +
@@ -196,16 +189,14 @@ func newServer(d Deps, id serverIdentity) *mcp.Server {
 	}, h.findCustomers)
 	mcptool.Add(srv, rec, &mcp.Tool{
 		Name:        "list_reviews",
-		Title:       "Product reviews",
-		Annotations: mcptool.ReadOnly(),
+		Annotations: mcptool.ReadOnly("Product reviews"),
 		Description: "Product reviews, newest first, with their rating " +
 			"(1–10) and status: NEW waits for approval, TRUE is approved, " +
 			"FALSE rejected." + untrustedNote,
 	}, h.listReviews)
 	mcptool.Add(srv, rec, &mcp.Tool{
 		Name:        "list_messages",
-		Title:       "Contact messages",
-		Annotations: mcptool.ReadOnly(),
+		Annotations: mcptool.ReadOnly("Contact messages"),
 		Description: "Messages sent through the store's contact form, " +
 			"newest first: sender, email, subject and message." +
 			untrustedNote,

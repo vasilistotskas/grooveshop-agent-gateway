@@ -95,6 +95,8 @@ func TestEveryToolIsAnnotatedAndTheListCacheable(t *testing.T) {
 				assert.NotEmpty(t, tool.Title, tool.Name)
 				a := tool.Annotations
 				require.NotNil(t, a, tool.Name)
+				// A 2025-03-26 client reads only annotations.title.
+				assert.Equal(t, tool.Title, a.Title, tool.Name)
 				require.NotNil(t, a.DestructiveHint, tool.Name)
 				require.NotNil(t, a.OpenWorldHint, tool.Name)
 				assert.False(t, *a.OpenWorldHint, tool.Name)

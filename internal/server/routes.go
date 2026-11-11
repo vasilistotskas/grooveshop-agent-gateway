@@ -96,7 +96,8 @@ func New(d Deps) http.Handler {
 		Log:                d.Log,
 		Metrics:            d.Metrics,
 		// A store's tool list follows its features and identity, which
-		// the gateway keeps for the tenant cache's TTL.
+		// the gateway caches per TTL tier (worst case: CLAUDE.md,
+		// internal/mcptool).
 		ListTTL: d.Cfg.TenantCacheTTL,
 		Version: d.Version,
 	}

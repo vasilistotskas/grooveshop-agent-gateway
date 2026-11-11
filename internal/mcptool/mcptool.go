@@ -143,11 +143,16 @@ type Recorder struct {
 // The SDK runs a handler on a goroutine of its own, which no recover
 // covers, so a panic would end the process. It is recovered here
 // (obs.Recover logs it with its stack) and answered as unavailable.
+//
+// def's annotations are one of ReadOnly, Adds or Changes; their title is
+// the tool's Title too.
 func Add[In, Out any](
 	srv *mcp.Server, rec Recorder, def *mcp.Tool,
 	h mcp.ToolHandlerFor[In, Out],
 ) {
-	mcp.AddTool(srv, def, func(
+	titled := *def
+	titled.Title = def.Annotations.Title
+	mcp.AddTool(srv, &titled, func(
 		ctx context.Context, req *mcp.CallToolRequest, in In,
 	) (*mcp.CallToolResult, Out, error) {
 		start := time.Now()
@@ -186,30 +191,33 @@ func counted(outcome string) string {
 	return OutcomeRefused
 }
 
-// The effect a tool has on the store, as the hints of its annotations.
-// None reaches past the store, so none is open-world. An absent hint
-// means destructive and open-world, and a host may then ask the person
-// before every call.
+// The effect a tool has on the store, as the hints of its annotations,
+// with its title. None reaches past the store, so none is open-world. An
+// absent hint means destructive and open-world, and a host may then ask
+// the person before every call. Add also sets the tool's own Title from
+// the annotations' one: a client on protocol 2025-03-26, which the
+// streamable transport assumes for a request naming no version, knows
+// only annotations.title.
 
 // ReadOnly is a tool that reads the store and changes nothing.
-func ReadOnly() *mcp.ToolAnnotations {
-	return &mcp.ToolAnnotations{ReadOnlyHint: true,
+func ReadOnly(title string) *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{Title: title, ReadOnlyHint: true,
 		DestructiveHint: new(false), IdempotentHint: true,
 		OpenWorldHint: new(false)}
 }
 
 // Adds is a tool that adds to the store (a cart, a cart line, an alert,
 // a checkout) and adds again when called again.
-func Adds() *mcp.ToolAnnotations {
-	return &mcp.ToolAnnotations{DestructiveHint: new(false),
+func Adds(title string) *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{Title: title, DestructiveHint: new(false),
 		OpenWorldHint: new(false)}
 }
 
 // Changes is a tool that replaces or removes what the store holds (a
 // quantity, a line, a coupon, a checkout's state, an order placed), and
 // changes nothing more when called again with the same arguments.
-func Changes() *mcp.ToolAnnotations {
-	return &mcp.ToolAnnotations{DestructiveHint: new(true),
+func Changes(title string) *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{Title: title, DestructiveHint: new(true),
 		IdempotentHint: true, OpenWorldHint: new(false)}
 }
 

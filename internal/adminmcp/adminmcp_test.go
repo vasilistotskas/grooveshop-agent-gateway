@@ -277,6 +277,8 @@ func TestEveryToolOnlyReads(t *testing.T) {
 		names = append(names, tool.Name)
 		assert.NotEmpty(t, tool.Title, tool.Name)
 		require.NotNil(t, tool.Annotations, tool.Name)
+		// A 2025-03-26 client reads only annotations.title.
+		assert.Equal(t, tool.Title, tool.Annotations.Title, tool.Name)
 		assert.True(t, tool.Annotations.ReadOnlyHint, tool.Name)
 		require.NotNil(t, tool.Annotations.DestructiveHint, tool.Name)
 		assert.False(t, *tool.Annotations.DestructiveHint, tool.Name)
