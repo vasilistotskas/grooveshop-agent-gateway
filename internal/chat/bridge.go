@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
@@ -43,6 +42,11 @@ var checkoutTools = map[string]bool{
 // bridge is a per-turn in-process MCP client over the shared tool server.
 // The model's tool definitions are derived from the server's own schemas,
 // so the chatbot and external MCP agents can never drift apart.
+//
+// A bridge is one turn's and is used from that turn's goroutine only:
+// its tool calls run one after another (runToolCalls), and its state is
+// read once they are done. The server's tool handlers reach only
+// activity, which is atomic.
 type bridge struct {
 	session *mcp.ClientSession
 	// offered is the set of tools advertised to the model; call refuses
@@ -51,7 +55,6 @@ type bridge struct {
 	// a review or search result, can still name one.
 	offered map[string]bool
 
-	mu       sync.Mutex
 	cartID   string
 	activity *mcpsrv.CartActivity
 	// productsSent dedupes product cards across the turn's tool calls.
@@ -86,9 +89,9 @@ func (b *bridge) close() {
 // tools converts every MCP tool the store is served into an
 // OpenAI-protocol function tool. The shared server carries every tool, so
 // a tool whose feature the store switched off is left out here
-// (mcpsrv.Offered). The MCP input schema is already draft-07-compatible
-// JSON Schema, which is what the chat-completions `parameters` field
-// expects.
+// (mcpsrv.Offered). The MCP input schema is JSON Schema (draft 2020-12,
+// as the SDK infers it) and is passed as the chat-completions
+// `parameters` object unchanged.
 func (b *bridge) tools(
 	ctx context.Context, features django.StoreFeatures,
 ) ([]openai.ChatCompletionToolUnionParam, error) {
@@ -180,8 +183,6 @@ func (b *bridge) recordCartState(tool string, structured []byte) {
 	if !cartTools[tool] {
 		return
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	var payload struct {
 		CartID string `json:"cartId"`
 	}
@@ -192,7 +193,5 @@ func (b *bridge) recordCartState(tool string, structured []byte) {
 }
 
 func (b *bridge) cartState() (cartID string, mutated bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	return b.cartID, b.activity.Mutated()
 }

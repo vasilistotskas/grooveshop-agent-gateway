@@ -84,8 +84,6 @@ func (b *bridge) recordProducts(
 		return nil
 	}
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.productsSent == nil {
 		b.productsSent = map[int64]bool{}
 	}

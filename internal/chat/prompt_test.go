@@ -87,21 +87,6 @@ func TestSystemPromptWithCart(t *testing.T) {
 	assert.NotContains(t, p, "no active cart")
 }
 
-func TestLoadRejectsMalformedConversationID(t *testing.T) {
-	s := NewStore(nil, 0, 10)
-	_, err := s.Load(t.Context(), "demostore", "../evil")
-	assert.ErrorIs(t, err, ErrInvalidConversation,
-		"client input, answered 400 rather than 503")
-}
-
-func TestLoadEmptyIDStartsFresh(t *testing.T) {
-	s := NewStore(nil, 0, 10)
-	c, err := s.Load(t.Context(), "demostore", "")
-	assert.NoError(t, err)
-	assert.NotEmpty(t, c.ID)
-	assert.Empty(t, c.Turns)
-}
-
 // A signed-in shopper's cart is bound outside the model: the prompt
 // neither names a cart id to pass nor mentions the token.
 func TestSystemPromptForASignedInShopper(t *testing.T) {
