@@ -29,8 +29,8 @@ var errUnrecognised = errors.New(
 	"tenant: Django did not recognise the gateway's internal token")
 
 // errNoCredentials wraps the cause of a credential caller's remembered
-// failure. The resolver logged that cause once, when it decided the
-// answer (logTopUp), so the middleware does not log it again.
+// failure. The resolver logs that cause once, for the first credential
+// caller to receive it (logTopUp), so the middleware does not log it.
 var errNoCredentials = errors.New("tenant: credentials unavailable")
 
 // errAnotherStore is a top-up that answered for a store other than the
@@ -70,7 +70,11 @@ type topUp struct {
 	tenant *Tenant
 	err    error
 	until  time.Time
-	schema string // the store it was decided for, for its log line
+	// For its one log line: the store it was decided for, Django's
+	// failure, and whether a credential caller has received it already.
+	schema   string
+	cause    error
+	reported bool
 }
 
 // Resolver maps inbound hosts to tenants with two cache tiers. Layering:
@@ -191,7 +195,10 @@ func (r *Resolver) fromDjango(
 		r.mu.Lock()
 		r.storeLocked(domain, memEntry{tenant: t, expires: now.Add(r.ttl)})
 		if !recognised {
-			a = r.rememberLocked(domain, now, errUnrecognised)
+			r.rememberLocked(domain, now, errUnrecognised)
+			if needSecrets {
+				a = r.receiveLocked(domain)
+			}
 		}
 		r.mu.Unlock()
 		r.storeRedis(ctx, domain, cfg)
@@ -204,11 +211,11 @@ func (r *Resolver) fromDjango(
 			slog.String(obs.KeyTenant, cfg.SchemaName),
 			slog.String("host", domain),
 		)
-		r.logTopUp(ctx, domain, errUnrecognised, a)
 		if !needSecrets {
 			r.count("miss")
 			return t, nil
 		}
+		r.logTopUp(ctx, domain, a)
 		r.countAnswer("stale", a.tenant, a.err)
 		return a.tenant, a.err
 
@@ -233,6 +240,10 @@ func (r *Resolver) fromDjango(
 // re-probes a Django that may be hanging rather than refusing, paying a
 // full upstream timeout before getting this answer. An entry another
 // flight made live meanwhile is newer and is answered instead.
+//
+// The credential answer is decided here too (rememberLocked), so that a
+// credential request costs no second Django call, but it is not logged
+// here: no caller of this resolve asked for credentials.
 func (r *Resolver) serveStale(
 	ctx context.Context, domain string, cause error,
 ) (*Tenant, error) {
@@ -256,7 +267,7 @@ func (r *Resolver) serveStale(
 	stale.TenantConfig = publicConfig(&stale.TenantConfig)
 	stale.SecretsLoaded = false
 	r.storeLocked(domain, memEntry{tenant: &stale, expires: now.Add(r.negTTL)})
-	a := r.rememberLocked(domain, now, cause)
+	r.rememberLocked(domain, now, cause)
 	r.mu.Unlock()
 	r.count("stale")
 	r.log.WarnContext(ctx, "serving stale tenant config",
@@ -264,7 +275,6 @@ func (r *Resolver) serveStale(
 		slog.String("host", domain),
 		slog.String("error", cause.Error()),
 	)
-	r.logTopUp(ctx, domain, cause, a)
 	return &stale, nil
 }
 
@@ -277,19 +287,20 @@ func (r *Resolver) answerSecrets(
 ) (*Tenant, error) {
 	now := time.Now()
 	r.mu.Lock()
-	e, ok := r.mem[domain]
-	if t, err, live := e.secretsAnswer(now); ok && live {
+	if a, live := r.secretsAnswerLocked(domain, now); live {
 		r.mu.Unlock()
-		r.countAnswer("hit", t, err)
-		return t, err
+		r.logTopUp(ctx, domain, a)
+		r.countAnswer("hit", a.tenant, a.err)
+		return a.tenant, a.err
 	}
-	if !ok || e.negative {
+	if e, ok := r.mem[domain]; !ok || e.negative {
 		r.mu.Unlock()
 		return nil, cause
 	}
-	a := r.rememberLocked(domain, now, cause)
+	r.rememberLocked(domain, now, cause)
+	a := r.receiveLocked(domain)
 	r.mu.Unlock()
-	r.logTopUp(ctx, domain, cause, a)
+	r.logTopUp(ctx, domain, a)
 	r.countAnswer("stale", a.tenant, a.err)
 	return a.tenant, a.err
 }
@@ -300,16 +311,15 @@ func (r *Resolver) answerSecrets(
 // entry's current config with the held credentials, marked Stale, or the
 // failure, wrapped in errNoCredentials. It never replaces the entry's
 // tenant, which stays the freshest config the pod knows. The entry must
-// hold a tenant; the caller holds r.mu and then logs the answer once
-// (logTopUp).
-func (r *Resolver) rememberLocked(
-	domain string, now time.Time, cause error,
-) topUp {
+// hold a tenant; the caller holds r.mu. Nothing is logged here: the first
+// credential caller to receive the answer logs it (receiveLocked).
+func (r *Resolver) rememberLocked(domain string, now time.Time, cause error) {
 	e := r.mem[domain]
 	a := topUp{
 		err:    fmt.Errorf("%w: %w", errNoCredentials, cause),
 		until:  now.Add(r.negTTL),
 		schema: e.tenant.SchemaName,
+		cause:  cause,
 	}
 	if e.held != nil {
 		if until := r.secretsUntil(e.held); now.Before(until) {
@@ -327,42 +337,61 @@ func (r *Resolver) rememberLocked(
 	}
 	e.topUp = a
 	r.mem[domain] = e
+}
+
+// receiveLocked hands the host's remembered top-up to a credential caller
+// and marks it reported. The copy it returns says whether it was reported
+// before, so only the first caller to receive it logs it (logTopUp): once
+// per remembered answer, and never for a resolve no credential caller
+// made. The caller holds r.mu.
+func (r *Resolver) receiveLocked(domain string) topUp {
+	e := r.mem[domain]
+	a := e.topUp
+	e.topUp.reported = true
+	r.mem[domain] = e
 	return a
 }
 
-// logTopUp writes the one line of a credential answer rememberLocked
-// decided: a warning for held credentials served stale, an error for the
-// failure, unless its cause was logged already (errUnrecognised).
-func (r *Resolver) logTopUp(
-	ctx context.Context, domain string, cause error, a topUp,
-) {
+// logTopUp writes the one line of a remembered credential answer, for the
+// first credential caller to receive it: a warning for held credentials
+// served stale, an error for the failure, unless its cause was logged
+// already (errUnrecognised). An answer reported before logs nothing.
+func (r *Resolver) logTopUp(ctx context.Context, domain string, a topUp) {
+	if a.reported {
+		return
+	}
 	attrs := []any{
 		slog.String(obs.KeyTenant, a.schema),
 		slog.String("host", domain),
-		slog.String("error", cause.Error()),
+		slog.String("error", a.cause.Error()),
 	}
 	switch {
 	case a.tenant != nil:
 		r.log.WarnContext(ctx, "serving stale tenant credentials", attrs...)
-	case !errors.Is(cause, errUnrecognised):
+	case !errors.Is(a.cause, errUnrecognised):
 		r.log.ErrorContext(ctx, "tenant credentials unavailable", attrs...)
 	}
 }
 
-// secretsAnswer is what a credential caller gets from the entry without
-// asking Django, and whether there is such an answer: the store is gone,
-// a live tenant with its credentials, or the remembered top-up.
-func (e memEntry) secretsAnswer(now time.Time) (*Tenant, error, bool) {
-	live := now.Before(e.expires)
+// secretsAnswerLocked is what a credential caller gets for the host
+// without asking Django, and whether there is such an answer: the store
+// is gone, a live tenant with its credentials (neither is logged), or the
+// remembered top-up, which it receives (receiveLocked). The caller holds
+// r.mu.
+func (r *Resolver) secretsAnswerLocked(
+	domain string, now time.Time,
+) (topUp, bool) {
+	e, ok := r.mem[domain]
+	live := ok && now.Before(e.expires)
 	switch {
 	case live && e.negative:
-		return nil, ErrUnknownTenant, true
+		return topUp{err: ErrUnknownTenant, reported: true}, true
 	case live && e.tenant.SecretsLoaded:
-		return e.tenant, nil, true
+		return topUp{tenant: e.tenant, reported: true}, true
 	case now.Before(e.topUp.until):
-		return e.topUp.tenant, e.topUp.err, true
+		return r.receiveLocked(domain), true
 	}
-	return nil, nil, false
+	return topUp{}, false
 }
 
 // secretsUntil is when the credentials of t may no longer be served: one
@@ -608,12 +637,13 @@ func (r *Resolver) EnsureSecrets(
 		func(ctx context.Context) (any, error) {
 			// Memory may answer: another flight may have filled it since
 			// the caller resolved t, or a top-up is remembered.
-			r.mu.RLock()
-			e, ok := r.mem[t.Domain]
-			r.mu.RUnlock()
-			if cur, err, live := e.secretsAnswer(time.Now()); ok && live {
-				r.countAnswer("hit", cur, err)
-				return cur, err
+			r.mu.Lock()
+			a, live := r.secretsAnswerLocked(t.Domain, time.Now())
+			r.mu.Unlock()
+			if live {
+				r.logTopUp(ctx, t.Domain, a)
+				r.countAnswer("hit", a.tenant, a.err)
+				return a.tenant, a.err
 			}
 			return r.fromDjango(ctx, t.Domain, true)
 		})

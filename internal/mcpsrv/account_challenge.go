@@ -95,6 +95,10 @@ func RequireLinkedAccount(next http.Handler) http.Handler {
 // calledTools names the tools a request body calls, read exactly as the
 // MCP SDK's streamable HTTP handler reads it, so that no body the SDK
 // would run an account tool from passes unchallenged:
+//   - a body nested deeper than sdkMaxDepth is not decoded (decodeAsSDK;
+//     jsonrpc.DecodeMessage applies the same bound) and calls nothing
+//     here. It is passed on, and the SDK refuses it whole, with a 400,
+//     before it reads any message in it, so no tool in it runs;
 //   - a JSON array is a batch of messages, anything else one message
 //     (the SDK's readBatch);
 //   - each message is decoded by the SDK's own jsonrpc.DecodeMessage;
@@ -102,10 +106,10 @@ func RequireLinkedAccount(next http.Handler) http.Handler {
 //     with the decoder and options the SDK uses: segmentio/encoding with
 //     case-sensitive field names, so `Name` is not `name`.
 //
-// The SDK refuses a batch on protocol 2025-06-18 and later, and a body
-// nested more than 1000 deep; such a body is still read here, and
-// challenging one the SDK would refuse costs nothing. A body that is not
-// JSON-RPC calls nothing: the MCP handler refuses it.
+// The SDK refuses a batch on protocol 2025-06-18 and later; such a body is
+// still read here, and challenging one the SDK would refuse costs
+// nothing. A body that is not JSON-RPC calls nothing: the MCP handler
+// refuses it.
 func calledTools(body []byte) []string {
 	var batch []json.RawMessage
 	raws := []json.RawMessage{body}
@@ -130,8 +134,59 @@ func calledTools(body []byte) []string {
 	return names
 }
 
-// decodeAsSDK decodes data into v as the MCP SDK's internal/json does.
+// sdkMaxDepth is the nesting the MCP SDK reads a JSON body to:
+// defaultMaxDepth in go-sdk v1.8.0 internal/json/json.go, which its
+// Unmarshal checks (checkMaxDepth) before it decodes anything.
+// TestTheChallengeReaderAppliesTheSDKsNestingBound keeps the two equal.
+const sdkMaxDepth = 1000
+
+// errTooDeep is a body nested deeper than sdkMaxDepth.
+var errTooDeep = errors.New("mcpsrv: nested deeper than the MCP SDK reads")
+
+// withinSDKDepth reports whether data nests no deeper than sdkMaxDepth,
+// scanned byte for byte as the SDK's checkMaxDepth scans it: outside a
+// string '{' and '[' open a level and '}' and ']' close one, never below
+// zero; a string runs from '"' to the next '"' a backslash does not
+// escape. It does not validate JSON: the decoder does.
+func withinSDKDepth(data []byte) bool {
+	depth, inString, escaped := 0, false, false
+	for _, b := range data {
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case b == '\\':
+				escaped = true
+			case b == '"':
+				inString = false
+			}
+			continue
+		}
+		switch b {
+		case '"':
+			inString = true
+		case '{', '[':
+			depth++
+			if depth > sdkMaxDepth {
+				return false
+			}
+		case '}', ']':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return true
+}
+
+// decodeAsSDK decodes data into v as the MCP SDK's internal/json Unmarshal
+// does: data nested deeper than sdkMaxDepth is refused before any of it is
+// decoded, the rest is decoded by segmentio/encoding with case-sensitive
+// field names.
 func decodeAsSDK(data []byte, v any) error {
+	if !withinSDKDepth(data) {
+		return errTooDeep
+	}
 	dec := sdkjson.NewDecoder(bytes.NewReader(data))
 	dec.DontMatchCaseInsensitiveStructFields()
 	return dec.Decode(v)
