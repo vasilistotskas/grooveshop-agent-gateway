@@ -37,19 +37,15 @@ func middleware(
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			t, err := r.Resolve(req.Context(), req.Host)
-			switch {
-			case errors.Is(err, ErrUnknownTenant):
-				httpmw.WriteJSONError(w, http.StatusNotFound, "unknown store")
-				return
-			case err != nil:
-				unavailable(w, req, log, "tenant resolution failed", err)
+			if err != nil {
+				writeResolveError(w, req, log, "tenant resolution failed", err)
 				return
 			}
 			if needSecrets {
-				full, secErr := r.EnsureSecrets(req.Context(), t)
-				if secErr != nil {
-					unavailable(w, req, log, "tenant secret refresh failed",
-						secErr)
+				full, err := r.EnsureSecrets(req.Context(), t)
+				if err != nil {
+					writeResolveError(w, req, log,
+						"tenant secret refresh failed", err)
 					return
 				}
 				t = full
@@ -60,13 +56,19 @@ func middleware(
 	}
 }
 
-// unavailable answers 503 for a store that could not be resolved, and
-// logs why as msg, unless the caller hung up.
-func unavailable(
+// writeResolveError answers a failed resolve or top-up: 404 for a store
+// Django does not know, 503 for anything else, logged as msg unless the
+// caller hung up or the resolver logged the cause already
+// (errNoCredentials).
+func writeResolveError(
 	w http.ResponseWriter, req *http.Request, log *slog.Logger,
 	msg string, err error,
 ) {
-	if !errors.Is(err, context.Canceled) {
+	if errors.Is(err, ErrUnknownTenant) {
+		httpmw.WriteJSONError(w, http.StatusNotFound, "unknown store")
+		return
+	}
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, errNoCredentials) {
 		log.ErrorContext(req.Context(), msg,
 			slog.String("host", req.Host),
 			slog.String("error", err.Error()),

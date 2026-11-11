@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -32,8 +33,10 @@ const demostoreJSON = `{
 const (
 	// testTTL is the memory (and Redis) TTL of the resolvers the tests
 	// build.
-	testTTL            = time.Minute
-	testNegTTL         = 50 * time.Millisecond
+	testTTL = time.Minute
+	// testNegTTL is long enough that no test sees it pass by itself:
+	// expireMemory ends it.
+	testNegTTL         = 30 * time.Second
 	testInternalSecret = "test-secret"
 	// The credentials Django adds for a caller that sends the internal
 	// token.
@@ -41,14 +44,22 @@ const (
 	testACPBearer = "acp-test-do-not-cache"
 )
 
-// withSecrets adds the credential fields to a tenant/resolve body.
-func withSecrets(body string) string {
+// resolveBody is demostoreJSON with the fields of set replaced and, for a
+// caller Django recognised, the credential fields added.
+func resolveBody(
+	set map[string]any, secrets bool, chatKey, acpBearer string,
+) string {
 	var m map[string]any
-	if err := json.Unmarshal([]byte(body), &m); err != nil {
+	if err := json.Unmarshal([]byte(demostoreJSON), &m); err != nil {
 		panic(err)
 	}
-	m["chatApiKey"] = testChatKey
-	m["acpBearerToken"] = testACPBearer
+	for k, v := range set {
+		m[k] = v
+	}
+	if secrets {
+		m["chatApiKey"] = chatKey
+		m["acpBearerToken"] = acpBearer
+	}
 	out, err := json.Marshal(m)
 	if err != nil {
 		panic(err)
@@ -77,14 +88,22 @@ func unreachableRedis() *redis.Client {
 	})
 }
 
-// fakeDjango serves tenant/resolve for one known domain and counts calls.
-// Like Django it answers with the secret fields only to a caller that
-// sends the internal token.
+// fakeDjango serves tenant/resolve for one known domain and counts calls,
+// as Django's tenant_resolve view does (tenant/views.py): the credential
+// keys are added, possibly empty, only for a caller whose X-Internal-Token
+// matches the secret it holds; any other caller gets 200 and the public
+// body without them.
 type fakeDjango struct {
 	calls atomic.Int32
 	mu    sync.Mutex
 	fail  bool
 	gone  bool
+	// The credentials it serves, until rotate changes them.
+	chatKey, acpBearer string
+	// token is the internal secret it holds, until rotateToken.
+	token string
+	// public replaces fields of the public body, until set changes them.
+	public map[string]any
 	// hold, when set, parks every call until it is closed.
 	hold chan struct{}
 	srv  *httptest.Server
@@ -92,12 +111,17 @@ type fakeDjango struct {
 
 func newFakeDjango(t *testing.T) *fakeDjango {
 	t.Helper()
-	f := &fakeDjango{}
+	f := &fakeDjango{
+		chatKey: testChatKey, acpBearer: testACPBearer,
+		token: testInternalSecret, public: map[string]any{},
+	}
 	f.srv = httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			f.calls.Add(1)
 			f.mu.Lock()
 			failing, gone, hold := f.fail, f.gone, f.hold
+			chatKey, acpBearer, token := f.chatKey, f.acpBearer, f.token
+			public := maps.Clone(f.public)
 			f.mu.Unlock()
 			if hold != nil {
 				<-hold
@@ -108,15 +132,15 @@ func newFakeDjango(t *testing.T) *fakeDjango {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			if !gone && r.URL.Query().Get("domain") == "shop.example.test" {
-				body := demostoreJSON
-				if r.Header.Get("X-Internal-Token") == testInternalSecret {
-					body = withSecrets(demostoreJSON)
-				}
+				body := resolveBody(public,
+					r.Header.Get("X-Internal-Token") == token,
+					chatKey, acpBearer)
 				_, _ = w.Write([]byte(body))
 				return
 			}
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"detail": "Store not found."}`))
+			_, _ = w.Write([]byte(
+				`{"detail": "Store not found.", "code": "store_not_found"}`))
 		}))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -139,6 +163,36 @@ func (f *fakeDjango) comeUp() {
 func (f *fakeDjango) deactivate() {
 	f.mu.Lock()
 	f.gone = true
+	f.mu.Unlock()
+}
+
+// reactivate makes the store known again.
+func (f *fakeDjango) reactivate() {
+	f.mu.Lock()
+	f.gone = false
+	f.mu.Unlock()
+}
+
+// set changes a field of the store's public config in Django: its name, a
+// feature, or schemaName, which gives the host to another store.
+func (f *fakeDjango) set(field string, value any) {
+	f.mu.Lock()
+	f.public[field] = value
+	f.mu.Unlock()
+}
+
+// rotateToken changes the internal secret Django holds, as a rotation that
+// reaches Django before the gateway does.
+func (f *fakeDjango) rotateToken(token string) {
+	f.mu.Lock()
+	f.token = token
+	f.mu.Unlock()
+}
+
+// rotate replaces the store's credentials, as the owner does in Django.
+func (f *fakeDjango) rotate(chatKey, acpBearer string) {
+	f.mu.Lock()
+	f.chatKey, f.acpBearer = chatKey, acpBearer
 	f.mu.Unlock()
 }
 

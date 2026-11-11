@@ -331,6 +331,21 @@ func TestPublicConfigClearsEveryUndocumentedField(t *testing.T) {
 	assert.True(t, public.Features.Cart)
 }
 
+// withCredentials puts back every credential publicConfig clears, so a
+// credential answer built from a public config and held credentials is
+// whole. A credential added to publicConfig without withCredentials fails
+// here.
+func TestWithCredentialsRestoresWhatPublicConfigClears(t *testing.T) {
+	var cfg django.TenantConfig
+	fill(t, reflect.ValueOf(&cfg).Elem(), "TenantConfig")
+	public := publicConfig(&cfg)
+
+	whole := withCredentials(public, cfg)
+
+	assert.True(t, marshalString(t, &cfg) == marshalString(t, &whole),
+		"withCredentials leaves a credential publicConfig clears unset")
+}
+
 // The two walkers, on types the guards have to read right.
 type (
 	walkerLeaf struct {
