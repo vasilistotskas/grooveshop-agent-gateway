@@ -1,6 +1,7 @@
 package mcpsrv
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"strconv"
@@ -72,6 +73,7 @@ func (h *handlers) getShippingOptions(
 	if err != nil {
 		return nil, out, upstreamErr(err, "shipping options are unavailable")
 	}
+	out.Options = make([]ShippingOptionOut, 0, len(opts))
 	for _, o := range opts {
 		// Listed upstream so a storefront can explain the greyed-out
 		// option; an agent can only act on options it may choose.
@@ -238,8 +240,10 @@ func (h *handlers) findPickupPoints(
 	// BOX NOW's nearest lookup proxies their live API, which Django calls
 	// only with a full address: city, street and postal code are each
 	// required there, so a call without one is a certain 400. When BOX
-	// NOW declines, the other network's results stand alone.
+	// NOW declines, the other network's results stand alone; with none,
+	// its failure is the answer.
 	note := ""
+	var boxNowErr error
 	if carriers[django.ShippingProviderBoxNow] {
 		if in.City == "" || in.Street == "" {
 			note = " BOX NOW lockers are searched only with the " +
@@ -250,7 +254,9 @@ func (h *handlers) findPickupPoints(
 				City:       in.City,
 				Street:     in.Street,
 				PostalCode: in.PostalCode,
-			}); err == nil {
+			}); err != nil {
+			boxNowErr = err
+		} else {
 			out.Points = append(out.Points, PickupPoint{
 				Provider:   django.ShippingProviderBoxNow,
 				ID:         l.ID,
@@ -270,8 +276,8 @@ func (h *handlers) findPickupPoints(
 			return textResult("No pickup points listed yet.%s", note),
 				out, nil
 		}
-		if acsErr != nil {
-			return nil, out, upstreamErr(acsErr,
+		if err := cmp.Or(acsErr, boxNowErr); err != nil {
+			return nil, out, upstreamErr(err,
 				"pickup point lookup is unavailable")
 		}
 		return nil, out, errors.New(
@@ -324,6 +330,7 @@ func (h *handlers) getPaymentMethods(
 	if err != nil {
 		return nil, out, upstreamErr(err, "payment methods are unavailable")
 	}
+	out.Methods = make([]PaymentMethodOut, 0, len(page.Results))
 	for _, pw := range page.Results {
 		if !pw.Active {
 			continue

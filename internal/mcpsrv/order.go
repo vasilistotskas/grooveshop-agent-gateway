@@ -83,6 +83,7 @@ func (h *handlers) trackOrder(
 	out.LoyaltyDiscount = posNum(o.PricingBreakdown.LoyaltyDiscount)
 	out.GiftCardAmount = posNum(o.PricingBreakdown.GiftCardAmount)
 	out.Currency = o.PricingBreakdown.Currency
+	out.Items = make([]TrackOrderItem, 0, len(o.Items))
 	for _, it := range o.Items {
 		out.Items = append(out.Items, TrackOrderItem{
 			Name:     it.ProductName,
@@ -151,12 +152,7 @@ func (h *handlers) getOrder(
 	order, err := h.deps.Django.OrderByUUID(
 		ctx, t.Domain, lang, in.ID)
 	if err != nil {
-		if errors.Is(err, django.ErrNotFound) ||
-			errors.Is(err, django.ErrForbidden) {
-			return nil, zero, errors.New(orderNotOpened)
-		}
-		return nil, zero, upstreamErr(err,
-			"the order service is unavailable")
+		return nil, zero, upstreamErr(err, orderNotOpened)
 	}
 
 	link, err := h.deps.Checkout.OrderLinkFor(ctx, t.SchemaName, in.ID)
@@ -167,8 +163,7 @@ func (h *handlers) getOrder(
 					"it has no checkout to reconcile against; use "+
 					"track_order for its status", in.ID)
 		}
-		return nil, zero, errors.New(
-			"the order index is temporarily unavailable; retry shortly")
+		return nil, zero, errCheckoutUnavailable
 	}
 
 	out, err := ucp.BuildOrder(t, h.linksFor(ctx, t), order,

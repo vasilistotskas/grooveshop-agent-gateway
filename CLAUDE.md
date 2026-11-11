@@ -218,6 +218,12 @@ passes.
   refusal, `retryAfterSeconds` for a throttle, and a `hint`. A 403 is
   reported as `not_found`, and a 5xx or network failure only as
   `unavailable`: no upstream text beyond what Django wrote for a client.
+  The other failures an agent acts on by their kind are `ToolError`s
+  too: no linked account (`unauthorized`), a token without the tool's
+  scope (`missing_scope`), a refused coupon (its reason as the code) and
+  the checkout store down (`errCheckoutUnavailable`, one value). A list
+  with nothing in it is `[]`, never `null`
+  (`TestToolOutputsListNothingAsEmptyArrays`).
   Returning a plain Go error from a typed tool handler is fine — the
   SDK wraps it into exactly that; only a `*jsonrpc.Error` becomes a
   protocol error, so never return one for a business condition. The single exception is UCP discovery: a platform

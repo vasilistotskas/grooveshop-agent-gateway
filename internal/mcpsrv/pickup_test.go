@@ -200,6 +200,58 @@ func TestPickupPointsReportARefusedCartToken(t *testing.T) {
 	assert.Empty(t, seen[nearestPath])
 }
 
+// A BOX NOW lookup that failed is an outage, not "no pickup points": with
+// nothing else found the agent hears it is one. Points another network
+// found still stand.
+func TestPickupPointsReportABoxNowOutage(t *testing.T) {
+	for name, tc := range map[string]struct {
+		rows       []string
+		acs        string
+		wantPoints bool
+	}{
+		"BOX NOW only":        {[]string{boxnowBox}, "[]", false},
+		"ACS found none":      {[]string{acsLocker, boxnowBox}, "[]", false},
+		"ACS found its point": {[]string{acsLocker, boxnowBox}, "", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stations, err := os.ReadFile(filepath.Join("..", "..",
+				"testdata", "fixtures", "django", "acs_stations_nearest.json"))
+			require.NoError(t, err)
+			if tc.acs != "" {
+				stations = []byte(tc.acs)
+			}
+			srv := httptest.NewServer(http.HandlerFunc(
+				func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					switch r.URL.Path {
+					case optionsPath:
+						_, _ = w.Write([]byte("[" +
+							strings.Join(tc.rows, ",") + "]"))
+					case acsPath:
+						_, _ = w.Write(stations)
+					default:
+						w.WriteHeader(http.StatusBadGateway)
+					}
+				}))
+			t.Cleanup(srv.Close)
+			h := &handlers{deps: Deps{Site: testSite, Django: django.New(
+				srv.URL+"/api/v1", "api.example.test", "secret",
+				5*time.Second, slog.New(slog.DiscardHandler), nil)}}
+
+			_, out, err := h.findPickupPoints(storeContext(), nil, athens)
+
+			if tc.wantPoints {
+				require.NoError(t, err)
+				assert.NotEmpty(t, out.Points)
+				return
+			}
+			var got *ToolError
+			require.ErrorAs(t, err, &got)
+			assert.Equal(t, "unavailable", got.Code)
+		})
+	}
+}
+
 func providers(out PickupPointsOut) []string {
 	var p []string
 	for _, pt := range out.Points {

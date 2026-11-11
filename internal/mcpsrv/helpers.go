@@ -76,6 +76,7 @@ const (
 	codeNotFound        = "not_found"
 	codeCartUnreachable = "cart_unreachable"
 	codeUnauthorized    = "unauthorized"
+	codeMissingScope    = "missing_scope"
 	codeThrottled       = "throttled"
 	codeConflict        = "conflict"
 	codeInvalid         = "invalid"

@@ -48,7 +48,10 @@ wins over this page.
   a payload without one decodes as OFF, and the `*On()` accessors
   encode the subordination to agent commerce. A gated `pay_way_id` is
   REFUSED, never ignored: ignoring would complete against a stale
-  selection. These five tools are withheld from the
+  selection. `create_checkout` and `update_checkout` settle every
+  lookup and refusal (region, payment) before their first cart write,
+  creating the cart included, so a refused call leaves the cart as the
+  stored session knows it. These five tools are withheld from the
   chatbot (`internal/chat/bridge.go`) — their shapes target a platform
   generating calls, and chat hands over a checkout link instead.
 - The service `schema` (OpenRPC) URL may appear ONLY while every method it

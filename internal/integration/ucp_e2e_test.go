@@ -196,8 +196,11 @@ type checkoutFaults struct {
 	payWayLookup atomic.Bool
 	// orderRead makes reading a placed order answer 502.
 	orderRead atomic.Bool
-	// cartWrites counts the line writes the cart received.
+	// cartWrites counts the writes the cart received: its lines and its
+	// coupon.
 	cartWrites atomic.Int32
+	// cartCreates counts the carts created: a cart read naming none.
+	cartCreates atomic.Int32
 	// agentProtocol is the attribution the last order create carried.
 	agentProtocol atomic.Value
 }
@@ -218,6 +221,9 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 		})
 	outer.HandleFunc("GET /api/v1/cart",
 		func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("X-Cart-Id") == "" {
+				faults.cartCreates.Add(1)
+			}
 			if faults.cartDeletedOnOrder.Load() &&
 				faults.orderCreates.Load() > 0 {
 				w.Header().Set("Content-Type", "application/json")
@@ -243,10 +249,25 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			}
 			inner.ServeHTTP(w, r)
 		})
-	outer.HandleFunc("POST /api/v1/cart/item",
-		func(w http.ResponseWriter, r *http.Request) {
+	for _, write := range []string{
+		"POST /api/v1/cart/item", "PUT /api/v1/cart/item/{id}",
+		"DELETE /api/v1/cart/item/{id}",
+	} {
+		outer.HandleFunc(write,
+			func(w http.ResponseWriter, r *http.Request) {
+				faults.cartWrites.Add(1)
+				inner.ServeHTTP(w, r)
+			})
+	}
+	outer.HandleFunc("POST /api/v1/cart/coupon",
+		func(w http.ResponseWriter, _ *http.Request) {
 			faults.cartWrites.Add(1)
-			inner.ServeHTTP(w, r)
+			serveFixture(t, w, "cart_with_coupon.json")
+		})
+	outer.HandleFunc("DELETE /api/v1/cart/coupon",
+		func(w http.ResponseWriter, _ *http.Request) {
+			faults.cartWrites.Add(1)
+			serveFixture(t, w, "cart_with_items.json")
 		})
 	outer.HandleFunc("POST /api/v1/cart/reserve-stock",
 		func(w http.ResponseWriter, _ *http.Request) {
@@ -601,6 +622,62 @@ func TestRegionLookupFailureLeavesTheCartAlone(t *testing.T) {
 			}, uuid.NewString())
 		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 		assert.Equal(t, writes, stack.faults.cartWrites.Load())
+	})
+}
+
+// A payment the store refuses is refused before the cart is written: an
+// update leaves the cart as the stored session knows it, with the error
+// the agent reads, and a create leaves no cart behind.
+func TestRefusedPaymentLeavesTheCartAlone(t *testing.T) {
+	stack := startUCPGateway(t)
+	platform := httptest.NewServer(newWebhookSink().handler())
+	t.Cleanup(platform.Close)
+	session := connectMCP(t, stack.gw.URL)
+	meta := map[string]any{"ucp-agent": map[string]any{
+		"profile": servePlatformProfile(t, platform.URL+"/ucp/orders", nil),
+	}}
+	refused := map[string]any{
+		"line_items": []any{map[string]any{
+			"item": map[string]any{"id": "2"}, "quantity": 1,
+		}},
+		"discounts": map[string]any{"codes": []any{"SAVE10"}},
+		"payment": map[string]any{"instruments": []any{map[string]any{
+			"handler_id": "com.example.elsewhere",
+			"type":       ucp.InstrumentCashOnDelivery,
+		}}},
+	}
+	untouched := func(t *testing.T, res *mcp.CallToolResult,
+		writes, creates int32) {
+		t.Helper()
+		require.True(t, res.IsError)
+		assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
+			"unknown payment handler_id")
+		assert.Equal(t, writes, stack.faults.cartWrites.Load())
+		assert.Equal(t, creates, stack.faults.cartCreates.Load())
+	}
+
+	t.Run("update", func(t *testing.T) {
+		res := callTool(t, session, "create_checkout", map[string]any{
+			"meta": meta, "cart_id": fixtureCartID,
+			"checkout": map[string]any{},
+		})
+		require.False(t, res.IsError)
+		writes := stack.faults.cartWrites.Load()
+		creates := stack.faults.cartCreates.Load()
+
+		untouched(t, callTool(t, session, "update_checkout", map[string]any{
+			"meta": meta, "id": structured(t, res)["id"],
+			"checkout": refused,
+		}), writes, creates)
+	})
+
+	t.Run("create", func(t *testing.T) {
+		writes := stack.faults.cartWrites.Load()
+		creates := stack.faults.cartCreates.Load()
+
+		untouched(t, callTool(t, session, "create_checkout", map[string]any{
+			"meta": meta, "checkout": refused,
+		}), writes, creates)
 	})
 }
 

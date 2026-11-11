@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"slices"
@@ -60,9 +61,14 @@ func RequireLinkedAccount(next http.Handler) http.Handler {
 		}
 		body, err := io.ReadAll(
 			http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
-		if err != nil {
+		if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
 			httpmw.WriteJSONError(w, http.StatusRequestEntityTooLarge,
 				"request body too large")
+			return
+		}
+		if err != nil {
+			httpmw.WriteJSONError(w, http.StatusBadRequest,
+				"request body could not be read")
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
