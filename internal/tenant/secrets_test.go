@@ -740,6 +740,8 @@ func TestATokenRotationIsBridgedByHeldCredentials(t *testing.T) {
 	assert.True(t, seen.Stale)
 	assert.Equal(t, testACPBearer, seen.ACPBearerToken)
 	assert.Equal(t, 1, strings.Count(logs.String(), `msg="`+unrecognised))
+	assert.Equal(t, 1, strings.Count(logs.String(),
+		`level=WARN msg="serving stale tenant credentials"`))
 
 	// The held answer does not replace the config Django just sent: the
 	// other routes serve it, fresh.
@@ -898,7 +900,8 @@ func rememberedTopUp(t *testing.T, f *fakeDjango, pod *Resolver) {
 
 // In an outage, a credential request costs what a plain one costs: the
 // resolve's failure decides the credential answer too, so the top-up that
-// follows reads it from memory instead of waiting on Django again.
+// follows reads it from memory instead of waiting on Django again. Only
+// the credential request logs the answer it is served.
 func TestACredentialRequestAsksDjangoOnceInAnOutage(t *testing.T) {
 	attempts := map[bool]int32{}
 	for _, credential := range []bool{false, true} {
@@ -917,8 +920,13 @@ func TestACredentialRequestAsksDjangoOnceInAnOutage(t *testing.T) {
 		rec, _ := serve(mw)
 		assert.Equal(t, http.StatusNoContent, rec.Code)
 		attempts[credential] = f.calls.Load() - before
-		assert.Equal(t, 1, strings.Count(logs.String(),
-			"serving stale tenant credentials"), "decided once")
+		assertTopUpTTL(t, pod, testNegTTL)
+		served := 0
+		if credential {
+			served = 1
+		}
+		assert.Equal(t, served, strings.Count(logs.String(),
+			"serving stale tenant credentials"))
 	}
 	assert.Positive(t, attempts[false])
 	assert.Equal(t, attempts[false], attempts[true])
@@ -948,6 +956,163 @@ func TestARememberedFailureIsLoggedOnce(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(logs.String(),
 		`msg="tenant credentials unavailable"`))
 	assert.NotContains(t, logs.String(), "tenant secret refresh failed")
+}
+
+// levelLines returns the lines logs holds at level (slog's text form).
+func levelLines(logs *capturedLog, level string) []string {
+	var lines []string
+	for line := range strings.Lines(logs.String()) {
+		if strings.Contains(line, "level="+level+" ") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// outageWithNothingHeld returns a pod that read the store from Redis, so it
+// holds no credentials, once its memory entry and the Redis entry have
+// expired and Django is down. It logs to logs.
+func outageWithNothingHeld(t *testing.T, logs *capturedLog) *Resolver {
+	t.Helper()
+	pod, _ := outageWithNothingHeldIn(t, logs)
+	return pod
+}
+
+// outageWithNothingHeldIn is outageWithNothingHeld, with the Django it
+// meets.
+func outageWithNothingHeldIn(
+	t *testing.T, logs *capturedLog,
+) (*Resolver, *fakeDjango) {
+	t.Helper()
+	f := newFakeDjango(t)
+	rd := newFakeRedis(t)
+	_, err := newPod(t, f, rd.client()).Resolve(t.Context(), secretsHost)
+	require.NoError(t, err)
+	pod := newPodLogging(t, f, rd.client(), logs.logger())
+	got, err := pod.Resolve(t.Context(), secretsHost)
+	require.NoError(t, err)
+	require.False(t, got.SecretsLoaded, "read from Redis")
+	expireMemory(t, pod, secretsHost)
+	rd.expire(redisKey(secretsHost))
+	f.goDown()
+	return pod, f
+}
+
+// assertOneCredentialError checks that logs holds exactly one error line,
+// the credential failure, naming the store and Django's failure.
+func assertOneCredentialError(t *testing.T, logs *capturedLog) {
+	t.Helper()
+	errs := levelLines(logs, "ERROR")
+	require.Len(t, errs, 1, logs.String())
+	assert.Contains(t, errs[0], `msg="tenant credentials unavailable"`)
+	assert.Contains(t, errs[0], "tenant=demostore")
+	assert.Contains(t, errs[0], `error="django: status 500`)
+}
+
+// A Django failure on a route that needs no credential is the stale
+// config's warning alone: no caller asked for credentials, and the store
+// may have none. The credential failure the resolve decided is logged by
+// the first credential request that receives it, once.
+func TestAStaleResolveLogsNoCredentialError(t *testing.T) {
+	var logs capturedLog
+	pod := outageWithNothingHeld(t, &logs)
+
+	got, err := pod.Resolve(t.Context(), secretsHost)
+	require.NoError(t, err)
+	assert.True(t, got.Stale)
+	assert.Len(t, levelLines(&logs, "WARN"), 1, logs.String())
+	assert.Contains(t, logs.String(),
+		`level=WARN msg="serving stale tenant config"`)
+	assert.Empty(t, levelLines(&logs, "ERROR"), logs.String())
+	rec, _ := serve(Middleware(pod, logs.logger()))
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Empty(t, levelLines(&logs, "ERROR"), logs.String())
+
+	for range 2 {
+		rec, seen := serve(MiddlewareWithSecrets(pod, logs.logger()))
+		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		assert.Nil(t, seen)
+	}
+	assertOneCredentialError(t, &logs)
+}
+
+// A credential request that meets the outage first logs the failure once,
+// whether its resolve decided it or its top-up did.
+func TestACredentialRequestLogsTheFailureOnce(t *testing.T) {
+	t.Run("its resolve meets the outage", func(t *testing.T) {
+		var logs capturedLog
+		pod := outageWithNothingHeld(t, &logs)
+		for range 2 {
+			rec, _ := serve(MiddlewareWithSecrets(pod, logs.logger()))
+			assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		}
+		assertOneCredentialError(t, &logs)
+	})
+
+	t.Run("its top-up meets the outage", func(t *testing.T) {
+		f := newFakeDjango(t)
+		rd := newFakeRedis(t)
+		_, err := newPod(t, f, rd.client()).Resolve(t.Context(), secretsHost)
+		require.NoError(t, err)
+		var logs capturedLog
+		pod := newPodLogging(t, f, rd.client(), logs.logger())
+		fromRedis, err := pod.Resolve(t.Context(), secretsHost)
+		require.NoError(t, err)
+		f.goDown()
+		for range 2 {
+			_, err := pod.EnsureSecrets(t.Context(), fromRedis)
+			require.ErrorIs(t, err, django.ErrUpstreamDown)
+		}
+		assertOneCredentialError(t, &logs)
+		assert.Empty(t, levelLines(&logs, "WARN"), logs.String())
+	})
+
+	// The top-up asked Django while a plain resolve, on its own flight,
+	// met the failure and decided the answer: the top-up's caller is the
+	// first to receive it, and logs it.
+	t.Run("a resolve decided it meanwhile", func(t *testing.T) {
+		var logs capturedLog
+		pod, f := outageWithNothingHeldIn(t, &logs)
+		_, _, cause := f.client(t).ResolveTenant(t.Context(), secretsHost)
+		require.Error(t, cause)
+
+		_, err := pod.serveStale(t.Context(), secretsHost, cause)
+		require.NoError(t, err)
+		assert.Empty(t, levelLines(&logs, "ERROR"), logs.String())
+		for range 2 {
+			_, err = pod.answerSecrets(t.Context(), secretsHost, cause)
+			require.ErrorIs(t, err, errNoCredentials)
+		}
+		assertOneCredentialError(t, &logs)
+	})
+}
+
+// Held credentials served stale are logged by the first credential request
+// that is served them, never by a resolve for another route.
+func TestStaleCredentialsAreLoggedWhenServed(t *testing.T) {
+	f := newFakeDjango(t)
+	rd := newFakeRedis(t)
+	var logs capturedLog
+	pod := newPodLogging(t, f, rd.client(), logs.logger())
+	_, err := pod.Resolve(t.Context(), secretsHost)
+	require.NoError(t, err)
+	expireMemory(t, pod, secretsHost)
+	rd.expire(redisKey(secretsHost))
+	f.goDown()
+
+	rec, _ := serve(Middleware(pod, logs.logger()))
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	assert.NotContains(t, logs.String(), "serving stale tenant credentials")
+
+	for range 2 {
+		rec, seen := serve(MiddlewareWithSecrets(pod, logs.logger()))
+		require.Equal(t, http.StatusNoContent, rec.Code)
+		require.NotNil(t, seen)
+		assert.True(t, seen.Stale)
+	}
+	assert.Equal(t, 1, strings.Count(logs.String(),
+		`level=WARN msg="serving stale tenant credentials"`))
+	assert.Empty(t, levelLines(&logs, "ERROR"), logs.String())
 }
 
 // A fresh answer from Django ends the remembered one, even while it is live:
@@ -1045,11 +1210,13 @@ func TestARememberedTopUpDoesNotFollowAHost(t *testing.T) {
 
 // The held answer is the config the pod knows now with the credentials it
 // held: a newer name, and a feature switched off, reach the credential
-// routes as they reach the others.
+// routes as they reach the others. The plain resolve decided it; the
+// credential request it is served to logs it.
 func TestTheHeldAnswerCarriesTheCurrentConfig(t *testing.T) {
 	f := newFakeDjango(t)
 	f.set("agentCommerceEnabled", true)
-	pod := newPod(t, f, unreachableRedis())
+	var logs capturedLog
+	pod := newPodLogging(t, f, unreachableRedis(), logs.logger())
 	_, err := pod.Resolve(t.Context(), secretsHost)
 	require.NoError(t, err)
 
@@ -1061,7 +1228,10 @@ func TestTheHeldAnswerCarriesTheCurrentConfig(t *testing.T) {
 	_, plain := serve(Middleware(pod, testLogger()))
 	require.NotNil(t, plain)
 	assert.Equal(t, "New Name", plain.StoreName)
+	const served = `level=WARN msg="serving stale tenant credentials"`
+	assert.NotContains(t, logs.String(), served)
 	rec, cred := serve(MiddlewareWithSecrets(pod, testLogger()))
+	assert.Equal(t, 1, strings.Count(logs.String(), served))
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 	require.NotNil(t, cred)
 	assert.True(t, cred.Stale)

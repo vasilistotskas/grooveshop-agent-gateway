@@ -80,9 +80,10 @@ reading the whole tree.
   store, token or server must never answer for another.
 - A bearer that does not verify is answered by `identity.Refuse` on both
   servers. Flag a middleware that maps Django's 404 or 429 itself.
-- `RequireLinkedAccount` must read a body as the MCP SDK does
-  (`calledTools`: batch, case-sensitive keys, first value). Flag a reader
-  that decodes it any other way.
+- `RequireLinkedAccount` must read exactly the bodies the MCP SDK reads,
+  with the SDK's bounds (`calledTools`: the SDK's nesting bound before
+  any decoding, batch, case-sensitive keys, first value). Flag a reader
+  that decodes it any other way, or decodes before applying the bound.
 
 ### 4. Error handling
 - Errors unwrap to the sentinels (`ErrNotFound`, `ErrConflict`, `ErrThrottled`,

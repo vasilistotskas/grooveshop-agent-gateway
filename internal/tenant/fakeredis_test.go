@@ -67,6 +67,16 @@ func (f *fakeRedis) raw(key string) (string, bool) {
 	return e.val, true
 }
 
+// expire ends the TTL of a stored key, as Redis does when it runs out.
+func (f *fakeRedis) expire(key string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e, ok := f.kv[key]
+	require.True(f.t, ok, "fakeRedis: no key %s to expire", key)
+	e.expires = time.Now().Add(-time.Second)
+	f.kv[key] = e
+}
+
 // set returns the value and the expiry the key was last set with, live or
 // not, so a short TTL is checked without racing it.
 func (f *fakeRedis) set(key string) (string, time.Duration, bool) {

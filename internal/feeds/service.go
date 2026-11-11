@@ -94,8 +94,10 @@ type Meta struct {
 	// another build is not served: the cache outlives a release by up to
 	// FEED_STALE_TTL, and a release that changes what a feed says (new
 	// attributes, a fixed URL) reached Google, Meta and TikTok only once
-	// that ran out. During a rollout the old and the new pods may each
-	// regenerate once; after it, one build writes and reads.
+	// that ran out. During a rollout the old and the new pods share the
+	// keys and each reads the other's feed as a miss, so they overwrite
+	// each other on every alternation until the rollout ends; after it,
+	// one build writes and reads.
 	Generator string `json:"generator"`
 	// record is the stored metadata as read, which names the generation
 	// that wrote the blob read with it (see dropBlob).
