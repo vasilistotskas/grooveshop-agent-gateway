@@ -33,6 +33,11 @@ type memEntry struct {
 	tenant   *Tenant
 	expires  time.Time
 	negative bool
+	// held is the last tenant this pod got from Django for the host, the
+	// credentials included. It outlives the tenant a Redis hit puts in
+	// its place, so EnsureSecrets can serve it stale while Django cannot
+	// be asked. storeLocked keeps it; a negative entry drops it.
+	held *Tenant
 }
 
 // Resolver maps inbound hosts to tenants with two cache tiers. Layering:
@@ -123,6 +128,16 @@ func (r *Resolver) resolveSlow(ctx context.Context, domain string) (*Tenant, err
 		return t, err
 	}
 
+	return r.fromDjango(ctx, domain, false)
+}
+
+// fromDjango asks Django for the host and caches its answer: the tenant,
+// credentials included, in memory and its public config in Redis; or, for a
+// store Django does not know, the negative entry in both, returned as
+// ErrUnknownTenant. Every other failure is answered by serveStale.
+func (r *Resolver) fromDjango(
+	ctx context.Context, domain string, needSecrets bool,
+) (*Tenant, error) {
 	cfg, err := r.django.ResolveTenant(ctx, domain)
 	switch {
 	case err == nil:
@@ -142,29 +157,68 @@ func (r *Resolver) resolveSlow(ctx context.Context, domain string) (*Tenant, err
 		r.storeRedisNegative(ctx, domain)
 		r.count("negative")
 		return nil, ErrUnknownTenant
-
-	default:
-		// Django unreachable: serve the last known config past its TTL
-		// rather than 503ing every agent — tenant config is near-static.
-		if t, ok, memErr := r.fromMemory(domain, true); ok && memErr == nil {
-			stale := *t
-			stale.Stale = true
-			// Re-cache for the negative TTL: otherwise every request
-			// re-probes a Django that may be hanging rather than refusing,
-			// paying a full upstream timeout before getting this answer.
-			r.storeMemory(domain, memEntry{
-				tenant: &stale, expires: time.Now().Add(r.negTTL),
-			})
-			r.count("stale")
-			r.log.WarnContext(ctx, "serving stale tenant config",
-				slog.String(obs.KeyTenant, stale.SchemaName),
-				slog.String("host", domain),
-				slog.String("error", err.Error()),
-			)
-			return &stale, nil
-		}
-		return nil, err
 	}
+	return r.serveStale(ctx, domain, err, needSecrets)
+}
+
+// serveStale answers a Django failure (cause) with what this pod last held
+// for the host, marked Stale, rather than 503ing every agent: tenant config
+// is near-static. needSecrets serves the last tenant with its credentials
+// (memEntry.held), otherwise the last tenant of any kind. The credentials
+// are served only until secretsUntil: past it a tenant goes without them,
+// and a caller that needs them gets cause. Without an answer it returns
+// cause.
+//
+// The answer is cached for the negative TTL: otherwise every request
+// re-probes a Django that may be hanging rather than refusing, paying a
+// full upstream timeout before getting this answer.
+func (r *Resolver) serveStale(
+	ctx context.Context, domain string, cause error, needSecrets bool,
+) (*Tenant, error) {
+	r.mu.RLock()
+	e := r.mem[domain]
+	r.mu.RUnlock()
+	last := e.tenant
+	if needSecrets {
+		last = e.held
+	}
+	if last == nil {
+		return nil, cause
+	}
+	stale := *last
+	stale.Stale = true
+	expires := time.Now().Add(r.negTTL)
+	if stale.SecretsLoaded {
+		until := r.secretsUntil(&stale)
+		switch {
+		case time.Now().Before(until):
+			if until.Before(expires) {
+				expires = until
+			}
+		case needSecrets:
+			return nil, cause
+		default:
+			stale.TenantConfig = publicConfig(&stale.TenantConfig)
+			stale.SecretsLoaded = false
+		}
+	}
+	r.storeMemory(domain, memEntry{tenant: &stale, expires: expires})
+	r.count("stale")
+	r.log.WarnContext(ctx, "serving stale tenant config",
+		slog.String(obs.KeyTenant, stale.SchemaName),
+		slog.String("host", domain),
+		slog.Bool("credentials", stale.SecretsLoaded),
+		slog.String("error", cause.Error()),
+	)
+	return &stale, nil
+}
+
+// secretsUntil is when the credentials of t may no longer be served: one
+// TTL after they went stale, two after this pod got them from Django. A
+// credential rotated in Django while Django cannot be asked is then
+// refused after that, never accepted for the whole outage.
+func (r *Resolver) secretsUntil(t *Tenant) time.Time {
+	return t.ResolvedAt.Add(2 * r.ttl)
 }
 
 // fromMemory returns the cached entry when found: a tenant, or
@@ -201,22 +255,27 @@ func (r *Resolver) fromRedis(ctx context.Context, domain string) (*Tenant, bool,
 		}
 		return nil, false, nil
 	}
-	if raw == negativeSentinel {
-		r.storeMemory(domain, memEntry{negative: true, expires: time.Now().Add(r.negTTL)})
+	e := memEntry{negative: true, expires: time.Now().Add(r.negTTL)}
+	if raw != negativeSentinel {
+		var cfg django.TenantConfig
+		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+			r.log.WarnContext(ctx, "tenant redis entry corrupt",
+				slog.String("error", err.Error()))
+			return nil, false, nil
+		}
+		// SecretsLoaded stays false: storeRedis strips the credential fields.
+		e = memEntry{
+			tenant:  &Tenant{TenantConfig: cfg, Domain: domain, ResolvedAt: time.Now()},
+			expires: time.Now().Add(r.ttl),
+		}
+	}
+	e = r.fill(domain, e)
+	if e.negative {
 		r.count("negative")
 		return nil, true, ErrUnknownTenant
 	}
-	var cfg django.TenantConfig
-	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-		r.log.WarnContext(ctx, "tenant redis entry corrupt",
-			slog.String("error", err.Error()))
-		return nil, false, nil
-	}
-	// SecretsLoaded stays false: storeRedis strips the credential fields.
-	t := &Tenant{TenantConfig: cfg, Domain: domain, ResolvedAt: time.Now()}
-	r.storeMemory(domain, memEntry{tenant: t, expires: time.Now().Add(r.ttl)})
 	r.count("redis_hit")
-	return t, true, nil
+	return e.tenant, true, nil
 }
 
 func (r *Resolver) storeRedis(ctx context.Context, domain string, cfg *django.TenantConfig) {
@@ -264,6 +323,35 @@ func (r *Resolver) storeRedisNegative(ctx context.Context, domain string) {
 func (r *Resolver) storeMemory(domain string, e memEntry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.storeLocked(domain, e)
+}
+
+// fill stores e unless the host has a live entry already, and returns the
+// entry in effect. A Redis read races the flights that ask Django (a
+// resolve's and a top-up's run under different keys): what one of them
+// stored meanwhile is Django's newer answer and must stay.
+func (r *Resolver) fill(domain string, e memEntry) memEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if live, ok := r.mem[domain]; ok && time.Now().Before(live.expires) {
+		return live
+	}
+	r.storeLocked(domain, e)
+	return e
+}
+
+// storeLocked stores e, setting what it holds: a tenant fresh from Django
+// with its credentials is held itself, a store that is gone holds nothing,
+// and anything else keeps what the host's entry held.
+func (r *Resolver) storeLocked(domain string, e memEntry) {
+	switch {
+	case e.negative:
+		e.held = nil
+	case e.tenant.SecretsLoaded && !e.tenant.Stale:
+		e.held = e.tenant
+	default:
+		e.held = r.mem[domain].held
+	}
 	if len(r.mem) >= maxMemEntries {
 		r.evictLocked()
 	}
@@ -328,8 +416,12 @@ func NormalizeHost(host string) string {
 // exactly like a tenant that never configured the feature: a localized
 // 404 from chat, a 401 from ACP.
 //
-// A refresh costs one Django call and repopulates the memory tier, so
-// the cost lands at most once per pod per TTL, on two low-volume routes.
+// A refresh is the resolve's own Django call (fromDjango), so it caches
+// what the resolve caches, and the cost lands at most once per pod per
+// TTL, on two low-volume routes. A store Django no longer knows is
+// ErrUnknownTenant, cached as the resolve caches it; while Django cannot
+// be asked, the credentials this pod last held are served stale until
+// secretsUntil (serveStale).
 func (r *Resolver) EnsureSecrets(
 	ctx context.Context, t *Tenant,
 ) (*Tenant, error) {
@@ -338,21 +430,13 @@ func (r *Resolver) EnsureSecrets(
 	}
 	v, err := r.shared(ctx, t.Domain+"|secrets",
 		func(ctx context.Context) (any, error) {
-			cfg, err := r.django.ResolveTenant(ctx, t.Domain)
-			if err != nil {
-				return nil, err
+			// Another flight may have filled memory since the caller
+			// resolved t.
+			if cur, ok, err := r.fromMemory(t.Domain, false); ok &&
+				(err != nil || cur.SecretsLoaded) {
+				return cur, err
 			}
-			full := &Tenant{
-				TenantConfig:  *cfg,
-				Domain:        t.Domain,
-				ResolvedAt:    time.Now(),
-				SecretsLoaded: true,
-			}
-			r.storeMemory(t.Domain, memEntry{
-				tenant:  full,
-				expires: time.Now().Add(r.ttl),
-			})
-			return full, nil
+			return r.fromDjango(ctx, t.Domain, true)
 		})
 	if err != nil {
 		return nil, err

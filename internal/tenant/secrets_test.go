@@ -1,6 +1,7 @@
 package tenant
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -49,10 +50,6 @@ func twoPods(
 	require.Equal(t, int32(1), f.calls.Load(), "pod B must read Redis")
 	return a, b, fromRedis
 }
-
-// pinned is the failure message of an assertion that records what the code
-// does today, not what it must do.
-const pinned = "pinned present behaviour, see #123; not a requirement"
 
 func TestSecretsStayOutOfRedisAndAreToppedUp(t *testing.T) {
 	f := newFakeDjango(t)
@@ -241,49 +238,82 @@ func TestEnsureSecretsCollapsesConcurrentTopUps(t *testing.T) {
 		"overlapping top-ups must share one Django call")
 }
 
-// The store was switched off after the caches were filled. Django answers
-// 404 for it. Until the cached entries expire, three answers exist for the
-// routes that need the credentials, by what the pod holds:
-//   - the pod that resolved the store itself holds the credentials in
-//     memory and answers 204 with them, with no Django call;
-//   - a pod whose entry came from Redis holds none, asks Django on every
-//     request, gets the 404 and answers 503, the outage answer;
-//   - a pod with no cache of the store gets the 404 from Django at the
-//     resolve and answers 404.
-//
-// This pins what the code does today; it is under review (issue #123):
-// EnsureSecrets could treat django.ErrNotFound as ErrUnknownTenant, as
-// resolveSlow does.
-func TestEnsureSecretsForADeactivatedStore(t *testing.T) {
+// assertNoCredentialInRedis fails when any value the shared Redis was given
+// holds one of the test credentials or one of more.
+func assertNoCredentialInRedis(t *testing.T, rd *fakeRedis, more ...string) {
+	t.Helper()
+	creds := append([]string{testChatKey, testACPBearer}, more...)
+	for _, v := range rd.values() {
+		for _, c := range creds {
+			assert.NotContains(t, v, c, "a credential reached Redis")
+		}
+	}
+}
+
+// ageCredentials moves the time this pod fetched the store's credentials
+// from Django back by age, in every place the pod holds them.
+func ageCredentials(t *testing.T, r *Resolver, host string, age time.Duration) {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.mem[host]
+	require.True(t, ok, "no memory entry for %s to age", host)
+	older := func(tn *Tenant) *Tenant {
+		if tn == nil || !tn.SecretsLoaded {
+			return tn
+		}
+		aged := *tn
+		aged.ResolvedAt = aged.ResolvedAt.Add(-age)
+		return &aged
+	}
+	e.tenant = older(e.tenant)
+	e.held = older(e.held)
+	r.mem[host] = e
+}
+
+const unknownStore = `{"error":"unknown store"}`
+
+// The store was switched off after the caches were filled, and Django
+// answers 404 for it.
+//   - The pod that resolved the store itself holds a live entry with the
+//     credentials and serves it until the entry's TTL ends, with no Django
+//     call, as it does on every route: the TTL is how long any change to a
+//     store takes to reach a pod.
+//   - A pod whose entry came from Redis asks Django for the credentials,
+//     hears the store is gone and caches that, as the resolve does: 404 on
+//     every route, without asking Django again, and a pod reading Redis
+//     next hears it from there.
+//   - A pod with no cache of the store hears it at the resolve: 404.
+func TestADeactivatedStoreIsUnknownOnTheCredentialRoutes(t *testing.T) {
 	f := newFakeDjango(t)
-	podA, podB, b := twoPods(t, f, newFakeRedis(t))
+	rd := newFakeRedis(t)
+	podA, podB, _ := twoPods(t, f, rd)
 	f.deactivate()
 	before := f.calls.Load()
 
 	rec, seen := serve(MiddlewareWithSecrets(podA, testLogger()))
-	assert.Equal(t, http.StatusNoContent, rec.Code, pinned)
-	require.NotNil(t, seen, pinned)
-	assert.Equal(t, testChatKey, seen.ChatAPIKey, pinned)
-	assert.Equal(t, before, f.calls.Load(), pinned)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotNil(t, seen)
+	assert.Equal(t, testChatKey, seen.ChatAPIKey)
+	assert.Equal(t, before, f.calls.Load())
 
-	_, err := podB.EnsureSecrets(t.Context(), b)
-	require.ErrorIs(t, err, django.ErrNotFound, pinned)
-	assert.NotErrorIs(t, err, ErrUnknownTenant, pinned)
-
-	// Nothing marks the store unknown: Django is asked again each time.
-	before = f.calls.Load()
-	for range 2 {
-		rec, seen := serve(MiddlewareWithSecrets(podB, testLogger()))
-		assert.Equal(t, http.StatusServiceUnavailable, rec.Code, pinned)
-		assert.Nil(t, seen, pinned)
+	for _, mw := range []func(http.Handler) http.Handler{
+		MiddlewareWithSecrets(podB, testLogger()),
+		MiddlewareWithSecrets(podB, testLogger()),
+		Middleware(podB, testLogger()),
+	} {
+		rec, seen := serve(mw)
+		assert.Equal(t, http.StatusNotFound, rec.Code)
+		assert.JSONEq(t, unknownStore, rec.Body.String())
+		assert.Nil(t, seen)
 	}
-	assert.Equal(t, before+2, f.calls.Load(), pinned)
+	assert.Equal(t, before+1, f.calls.Load(),
+		"Django's 404 is cached: it is asked once")
 
-	// Routes that need no credential serve it from the cache.
-	rec, seen = serve(Middleware(podB, testLogger()))
-	assert.Equal(t, http.StatusNoContent, rec.Code, pinned)
-	require.NotNil(t, seen, pinned)
-	assert.Equal(t, "demostore", seen.SchemaName, pinned)
+	podC := newPod(t, f, rd.client())
+	_, err := podC.Resolve(t.Context(), secretsHost)
+	require.ErrorIs(t, err, ErrUnknownTenant)
+	assert.Equal(t, before+1, f.calls.Load(), "pod C must read Redis")
 
 	cold := newPod(t, f, newFakeRedis(t).client())
 	for _, mw := range []func(http.Handler) http.Handler{
@@ -291,52 +321,271 @@ func TestEnsureSecretsForADeactivatedStore(t *testing.T) {
 		MiddlewareWithSecrets(cold, testLogger()),
 	} {
 		rec, seen := serve(mw)
-		assert.Equal(t, http.StatusNotFound, rec.Code, pinned)
-		assert.Nil(t, seen, pinned)
+		assert.Equal(t, http.StatusNotFound, rec.Code)
+		assert.Nil(t, seen)
+	}
+	assertNoCredentialInRedis(t, rd)
+}
+
+// Credentials a pod held before Django said the store was gone are never
+// served again, even stale, even once the store is back.
+func TestAGoneStoreDropsTheHeldCredentials(t *testing.T) {
+	f := newFakeDjango(t)
+	rd := newFakeRedis(t)
+	pod := newPod(t, f, rd.client())
+	_, err := pod.Resolve(t.Context(), secretsHost)
+	require.NoError(t, err)
+	f.deactivate()
+	expireMemory(t, pod, secretsHost)
+	rec, _ := serve(MiddlewareWithSecrets(pod, testLogger()))
+	require.Equal(t, http.StatusNotFound, rec.Code)
+
+	// The store comes back, another pod writes its config to Redis, and
+	// Django goes down before this pod asks it again.
+	f.reactivate()
+	cfg, err := f.client(t).ResolveTenant(t.Context(), secretsHost)
+	require.NoError(t, err)
+	newPod(t, f, rd.client()).storeRedis(t.Context(), secretsHost, cfg)
+	f.goDown()
+	expireMemory(t, pod, secretsHost)
+
+	rec, seen := serve(MiddlewareWithSecrets(pod, testLogger()))
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Nil(t, seen)
+	assertNoCredentialInRedis(t, rd)
+}
+
+// "Django says this store does not exist" is one code path: the top-up
+// caches it exactly as the resolve does, in memory and in Redis.
+func TestTheTopUpCachesAGoneStoreAsTheResolveDoes(t *testing.T) {
+	f := newFakeDjango(t)
+	viaTopUp := newFakeRedis(t)
+	_, podB, b := twoPods(t, f, viaTopUp)
+	f.deactivate()
+	_, err := podB.EnsureSecrets(t.Context(), b)
+	require.ErrorIs(t, err, ErrUnknownTenant)
+
+	viaResolve := newFakeRedis(t)
+	cold := newPod(t, f, viaResolve.client())
+	_, err = cold.Resolve(t.Context(), secretsHost)
+	require.ErrorIs(t, err, ErrUnknownTenant)
+
+	for name, pod := range map[string]*Resolver{
+		"top-up": podB, "resolve": cold,
+	} {
+		pod.mu.RLock()
+		e := pod.mem[secretsHost]
+		pod.mu.RUnlock()
+		assert.True(t, e.negative, name)
+		assert.Nil(t, e.tenant, name)
+		assertMemoryTTL(t, pod, secretsHost, testNegTTL)
+	}
+	for name, rd := range map[string]*fakeRedis{
+		"top-up": viaTopUp, "resolve": viaResolve,
+	} {
+		val, ttl, ok := rd.set(redisKey(secretsHost))
+		require.True(t, ok, name)
+		assert.Equal(t, negativeSentinel, val, name)
+		assert.Equal(t, testNegTTL, ttl, name)
 	}
 }
 
-// When a pod's memory entry expires while Redis still holds the config
-// (another pod, or this one, wrote it within the TTL), fromRedis replaces
-// the entry, which had the credentials, with one that has none. The next
-// /chat or /acp request tops it up: one Django call, which a pod with no
-// Redis tier would have made too.
-//
-// While Django is down the two differ. With no Redis tier the pod serves
-// its expired entry as stale, credentials included. With one, the Redis
-// hit stands in for the stale answer and the top-up has no stale
-// fallback, so /chat and /acp answer 503.
-//
-// This pins what the code does today; it is under review (issue #123).
-func TestRedisHitReplacesAnExpiredEntryThatHadSecrets(t *testing.T) {
+// Django goes down after a pod's memory entry expired while Redis still
+// holds the store's public config. The Redis hit must not cost the pod the
+// credentials it held: it serves them stale, as a pod without Redis serves
+// its expired entry, until the bound, and then no longer.
+func TestCredentialsOutliveARedisHitThroughAnOutage(t *testing.T) {
 	f := newFakeDjango(t)
-	withRedis := newPod(t, f, newFakeRedis(t).client())
+	rd := newFakeRedis(t)
+	withRedis := newPod(t, f, rd.client())
 	noRedis := newPod(t, f, unreachableRedis())
-	for _, r := range []*Resolver{withRedis, noRedis} {
+	pods := map[string]*Resolver{"with Redis": withRedis, "no Redis": noRedis}
+	for _, r := range pods {
 		got, err := r.Resolve(t.Context(), secretsHost)
 		require.NoError(t, err)
 		require.True(t, got.SecretsLoaded)
+		expireMemory(t, r, secretsHost)
 	}
 	require.Equal(t, int32(2), f.calls.Load())
 
-	expireMemory(t, withRedis, secretsHost)
-	expireMemory(t, noRedis, secretsHost)
-
+	// The Redis hit spends no Django call and carries no credential.
 	got, err := withRedis.Resolve(t.Context(), secretsHost)
 	require.NoError(t, err)
-	assert.False(t, got.SecretsLoaded, pinned)
-	assert.Empty(t, got.ChatAPIKey, pinned)
-	assert.Equal(t, int32(2), f.calls.Load(), pinned)
+	assert.False(t, got.SecretsLoaded)
+	assert.Empty(t, got.ChatAPIKey)
+	assert.Equal(t, int32(2), f.calls.Load())
 
 	f.goDown()
+	for name, r := range pods {
+		rec, seen := serve(MiddlewareWithSecrets(r, testLogger()))
+		assert.Equal(t, http.StatusNoContent, rec.Code, name)
+		require.NotNil(t, seen, name)
+		assert.True(t, seen.Stale, name)
+		assert.True(t, seen.SecretsLoaded, name)
+		assert.Equal(t, testChatKey, seen.ChatAPIKey, name)
+		assert.Equal(t, testACPBearer, seen.ACPBearerToken, name)
+		// Cached for the negative TTL, as a stale config is, so a hanging
+		// Django is not asked by every request.
+		assertMemoryTTL(t, r, secretsHost, testNegTTL)
+	}
 
-	rec, seen := serve(MiddlewareWithSecrets(withRedis, testLogger()))
-	assert.Equal(t, http.StatusServiceUnavailable, rec.Code, pinned)
-	assert.Nil(t, seen, pinned)
+	// The bound is one TTL after the credentials went stale, two after
+	// the pod got them: half a TTL before it they are still served.
+	for name, r := range pods {
+		ageCredentials(t, r, secretsHost, testTTL+testTTL/2)
+		expireMemory(t, r, secretsHost)
+		rec, seen := serve(MiddlewareWithSecrets(r, testLogger()))
+		assert.Equal(t, http.StatusNoContent, rec.Code, name)
+		require.NotNil(t, seen, name)
+		assert.Equal(t, testACPBearer, seen.ACPBearerToken, name)
+	}
 
-	rec, seen = serve(MiddlewareWithSecrets(noRedis, testLogger()))
-	assert.Equal(t, http.StatusNoContent, rec.Code, pinned)
-	require.NotNil(t, seen, pinned)
-	assert.True(t, seen.Stale, pinned)
-	assert.Equal(t, testChatKey, seen.ChatAPIKey, pinned)
+	// Past the bound the credentials are not served: the credential
+	// routes answer 503, the others keep serving the config.
+	for name, r := range pods {
+		ageCredentials(t, r, secretsHost, testTTL)
+		expireMemory(t, r, secretsHost)
+		rec, seen := serve(MiddlewareWithSecrets(r, testLogger()))
+		assert.Equal(t, http.StatusServiceUnavailable, rec.Code, name)
+		assert.Nil(t, seen, name)
+
+		rec, seen = serve(Middleware(r, testLogger()))
+		assert.Equal(t, http.StatusNoContent, rec.Code, name)
+		require.NotNil(t, seen, name)
+		assert.Equal(t, "demostore", seen.SchemaName, name)
+		assert.False(t, seen.SecretsLoaded, name)
+		assert.Empty(t, seen.ChatAPIKey, name)
+		assert.Empty(t, seen.ACPBearerToken, name)
+	}
+	assertNoCredentialInRedis(t, rd)
+}
+
+// A stale answer with credentials is cached for the negative TTL, but never
+// past the credentials' bound.
+func TestStaleCredentialsAreCachedNoLongerThanTheirBound(t *testing.T) {
+	f := newFakeDjango(t)
+	longNegTTL := 10 * testTTL
+	pod := NewResolver(f.client(t), newFakeRedis(t).client(), testTTL,
+		longNegTTL, testLogger(), nil)
+	_, err := pod.Resolve(t.Context(), secretsHost)
+	require.NoError(t, err)
+	ageCredentials(t, pod, secretsHost, testTTL+testTTL/2)
+	expireMemory(t, pod, secretsHost)
+	f.goDown()
+
+	rec, seen := serve(MiddlewareWithSecrets(pod, testLogger()))
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotNil(t, seen)
+	assert.True(t, seen.Stale)
+	assertMemoryTTL(t, pod, secretsHost, testTTL/2)
+}
+
+// A credential rotated in Django replaces the one a pod holds as soon as
+// Django is asked: at the first top-up after the entry expired when Django
+// is up, at the first one after the stale answer's negative TTL when it was
+// down.
+func TestARotatedCredentialReplacesTheHeldOne(t *testing.T) {
+	const newChat, newACP = "sk-rotated-do-not-cache", "acp-rotated-do-not-cache"
+	assertRotated := func(t *testing.T, r *Resolver) {
+		t.Helper()
+		rec, seen := serve(MiddlewareWithSecrets(r, testLogger()))
+		assert.Equal(t, http.StatusNoContent, rec.Code)
+		require.NotNil(t, seen)
+		assert.False(t, seen.Stale)
+		assert.Equal(t, newChat, seen.ChatAPIKey)
+		assert.Equal(t, newACP, seen.ACPBearerToken)
+	}
+
+	t.Run("Django up", func(t *testing.T) {
+		f := newFakeDjango(t)
+		rd := newFakeRedis(t)
+		pod := newPod(t, f, rd.client())
+		_, err := pod.Resolve(t.Context(), secretsHost)
+		require.NoError(t, err)
+		f.rotate(newChat, newACP)
+		expireMemory(t, pod, secretsHost)
+
+		assertRotated(t, pod)
+		assertNoCredentialInRedis(t, rd, newChat, newACP)
+	})
+
+	t.Run("after an outage", func(t *testing.T) {
+		f := newFakeDjango(t)
+		rd := newFakeRedis(t)
+		pod := newPod(t, f, rd.client())
+		_, err := pod.Resolve(t.Context(), secretsHost)
+		require.NoError(t, err)
+		expireMemory(t, pod, secretsHost)
+		f.goDown()
+		rec, seen := serve(MiddlewareWithSecrets(pod, testLogger()))
+		require.Equal(t, http.StatusNoContent, rec.Code)
+		require.NotNil(t, seen)
+		assert.Equal(t, testACPBearer, seen.ACPBearerToken)
+
+		f.rotate(newChat, newACP)
+		f.comeUp()
+		expireMemory(t, pod, secretsHost)
+		assertRotated(t, pod)
+		assertNoCredentialInRedis(t, rd, newChat, newACP)
+	})
+}
+
+// A resolve that read Redis while a top-up asked Django must not replace
+// the tenant the top-up stored with the public config it read.
+func TestARedisReadDoesNotOverwriteATopUp(t *testing.T) {
+	f := newFakeDjango(t)
+	rd := newFakeRedis(t)
+	_, podB, b := twoPods(t, f, rd)
+	expireMemory(t, podB, secretsHost)
+
+	entered, release := rd.parkNextGet()
+	type result struct {
+		t   *Tenant
+		err error
+	}
+	resolved := make(chan result, 1)
+	go func() {
+		got, err := podB.Resolve(context.Background(), secretsHost)
+		resolved <- result{got, err}
+	}()
+	<-entered
+	full, err := podB.EnsureSecrets(t.Context(), b)
+	require.NoError(t, err)
+	release()
+	res := <-resolved
+	require.NoError(t, res.err)
+	assert.Same(t, full, res.t, "the resolve must answer the topped-up tenant")
+
+	before := f.calls.Load()
+	again, err := podB.Resolve(t.Context(), secretsHost)
+	require.NoError(t, err)
+	assert.Same(t, full, again)
+	assert.Equal(t, before, f.calls.Load())
+	assertNoCredentialInRedis(t, rd)
+}
+
+// A caller that resolved before another request filled the memory tier
+// still holds the old tenant; its top-up reads memory before asking Django.
+func TestEnsureSecretsReadsMemoryInsideItsFlight(t *testing.T) {
+	f := newFakeDjango(t)
+	_, podB, b := twoPods(t, f, newFakeRedis(t))
+
+	full, err := podB.EnsureSecrets(t.Context(), b)
+	require.NoError(t, err)
+	before := f.calls.Load()
+	again, err := podB.EnsureSecrets(t.Context(), b)
+	require.NoError(t, err)
+	assert.Same(t, full, again)
+	assert.Equal(t, before, f.calls.Load())
+
+	// And a store found gone meanwhile is gone for it too.
+	gone := newFakeDjango(t)
+	_, podC, c := twoPods(t, gone, newFakeRedis(t))
+	gone.deactivate()
+	_, err = podC.EnsureSecrets(t.Context(), c)
+	require.ErrorIs(t, err, ErrUnknownTenant)
+	before = gone.calls.Load()
+	_, err = podC.EnsureSecrets(t.Context(), c)
+	require.ErrorIs(t, err, ErrUnknownTenant)
+	assert.Equal(t, before, gone.calls.Load())
 }

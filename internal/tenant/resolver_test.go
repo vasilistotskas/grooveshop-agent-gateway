@@ -42,13 +42,13 @@ const (
 )
 
 // withSecrets adds the credential fields to a tenant/resolve body.
-func withSecrets(body string) string {
+func withSecrets(body, chatKey, acpBearer string) string {
 	var m map[string]any
 	if err := json.Unmarshal([]byte(body), &m); err != nil {
 		panic(err)
 	}
-	m["chatApiKey"] = testChatKey
-	m["acpBearerToken"] = testACPBearer
+	m["chatApiKey"] = chatKey
+	m["acpBearerToken"] = acpBearer
 	out, err := json.Marshal(m)
 	if err != nil {
 		panic(err)
@@ -85,6 +85,8 @@ type fakeDjango struct {
 	mu    sync.Mutex
 	fail  bool
 	gone  bool
+	// The credentials it serves, until rotate changes them.
+	chatKey, acpBearer string
 	// hold, when set, parks every call until it is closed.
 	hold chan struct{}
 	srv  *httptest.Server
@@ -92,12 +94,13 @@ type fakeDjango struct {
 
 func newFakeDjango(t *testing.T) *fakeDjango {
 	t.Helper()
-	f := &fakeDjango{}
+	f := &fakeDjango{chatKey: testChatKey, acpBearer: testACPBearer}
 	f.srv = httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			f.calls.Add(1)
 			f.mu.Lock()
 			failing, gone, hold := f.fail, f.gone, f.hold
+			chatKey, acpBearer := f.chatKey, f.acpBearer
 			f.mu.Unlock()
 			if hold != nil {
 				<-hold
@@ -110,7 +113,7 @@ func newFakeDjango(t *testing.T) *fakeDjango {
 			if !gone && r.URL.Query().Get("domain") == "shop.example.test" {
 				body := demostoreJSON
 				if r.Header.Get("X-Internal-Token") == testInternalSecret {
-					body = withSecrets(demostoreJSON)
+					body = withSecrets(demostoreJSON, chatKey, acpBearer)
 				}
 				_, _ = w.Write([]byte(body))
 				return
@@ -139,6 +142,20 @@ func (f *fakeDjango) comeUp() {
 func (f *fakeDjango) deactivate() {
 	f.mu.Lock()
 	f.gone = true
+	f.mu.Unlock()
+}
+
+// reactivate makes the store known again.
+func (f *fakeDjango) reactivate() {
+	f.mu.Lock()
+	f.gone = false
+	f.mu.Unlock()
+}
+
+// rotate replaces the store's credentials, as the owner does in Django.
+func (f *fakeDjango) rotate(chatKey, acpBearer string) {
+	f.mu.Lock()
+	f.chatKey, f.acpBearer = chatKey, acpBearer
 	f.mu.Unlock()
 }
 

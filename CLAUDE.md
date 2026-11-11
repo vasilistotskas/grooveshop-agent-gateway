@@ -130,6 +130,21 @@ passes.
   → Django; singleflight; 60s negative cache; stale-if-error) + middleware
   (tenant from the **real Host header only** — inbound X-Forwarded-Host is
   deliberately ignored; spoofing it must never switch tenants).
+  Credentials (`chatApiKey`, `acpBearerToken`) live in process memory
+  only: Redis holds the public config, so `/chat` and `/acp/*`
+  (`MiddlewareWithSecrets`) top a Redis-tier tenant up with
+  `EnsureSecrets`, which asks Django through the resolve's own path
+  (`fromDjango`): a store Django answers 404 for is a 404 there too and
+  is cached as the negative entry in memory and Redis. A memory entry
+  keeps the last tenant this pod got from Django (`memEntry.held`)
+  through a Redis hit, so while Django cannot be asked the credential
+  routes serve those credentials marked `Stale`, cached for the negative
+  TTL like a stale config, but only until two `TENANT_CACHE_TTL`s after
+  the pod fetched them (`secretsUntil`); after that they answer 503 and
+  the other routes keep the config without credentials. So an ACP
+  bearer rotated in Django is refused by a pod within one TTL while
+  Django answers, and within two while it cannot; the chat key the same.
+  A store Django called gone drops what the pod held.
 - `internal/django` — typed API client. Every tenant-scoped call sends
   `X-Forwarded-Host: <tenant domain>` + `X-Forwarded-Proto: https` (+
   `X-Language`). A GET is retried twice on a 5xx or a lost connection

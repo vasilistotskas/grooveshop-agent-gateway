@@ -22,10 +22,17 @@ type fakeRedis struct {
 	t  *testing.T
 	mu sync.Mutex
 	kv map[string]fakeEntry
+	// park, when set, holds the next GET (see parkNextGet).
+	park *getGate
+}
+
+type getGate struct {
+	entered, release chan struct{}
 }
 
 type fakeEntry struct {
 	val     string
+	ttl     time.Duration
 	expires time.Time
 }
 
@@ -60,6 +67,41 @@ func (f *fakeRedis) raw(key string) (string, bool) {
 	return e.val, true
 }
 
+// set returns the value and the expiry the key was last set with, live or
+// not, so a short TTL is checked without racing it.
+func (f *fakeRedis) set(key string) (string, time.Duration, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e, ok := f.kv[key]
+	return e.val, e.ttl, ok
+}
+
+// values returns every stored value, expired or not.
+func (f *fakeRedis) values() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.kv))
+	for _, e := range f.kv {
+		out = append(out, e.val)
+	}
+	return out
+}
+
+// parkNextGet holds the next GET once it has reached the store: entered is
+// closed then, and the GET reads the store only after release. The release
+// also runs at cleanup, so a failing test never leaves it parked.
+func (f *fakeRedis) parkNextGet() (entered <-chan struct{}, release func()) {
+	g := &getGate{
+		entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	f.mu.Lock()
+	f.park = g
+	f.mu.Unlock()
+	release = sync.OnceFunc(func() { close(g.release) })
+	f.t.Cleanup(release)
+	return g.entered, release
+}
+
 func (f *fakeRedis) DialHook(next redis.DialHook) redis.DialHook { return next }
 
 func (f *fakeRedis) ProcessPipelineHook(
@@ -77,6 +119,14 @@ func (f *fakeRedis) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 			key, isKey := args[1].(string)
 			if !ok || !isKey {
 				return f.refuse("GET of %T with key %T", cmd, args[1])
+			}
+			f.mu.Lock()
+			g := f.park
+			f.park = nil
+			f.mu.Unlock()
+			if g != nil {
+				close(g.entered)
+				<-g.release
 			}
 			v, found := f.raw(key)
 			if !found {
@@ -107,7 +157,9 @@ func (f *fakeRedis) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 				return f.refuse("SET option %v", args[3])
 			}
 			f.mu.Lock()
-			f.kv[key] = fakeEntry{val: val, expires: time.Now().Add(ttl)}
+			f.kv[key] = fakeEntry{
+				val: val, ttl: ttl, expires: time.Now().Add(ttl),
+			}
 			f.mu.Unlock()
 			c.SetVal("OK")
 			return nil
