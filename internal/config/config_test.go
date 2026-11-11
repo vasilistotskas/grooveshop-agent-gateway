@@ -344,6 +344,22 @@ func TestLoadValidatesImageURLTemplates(t *testing.T) {
 				require.NoError(t, err)
 			})
 		}
+		// A port in the template and one in the host cannot both hold.
+		t.Run(name+" with a port twice", func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("ASSETS_HOST", "assets.example.com:8443")
+			t.Setenv(name, "http://{assets_host}:8080/x/{path}")
+			_, err := Load()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), name)
+		})
+		t.Run(name+" with the host's port", func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("ASSETS_HOST", "assets.example.com:8443")
+			t.Setenv(name, "https://{assets_host}/x/{path}")
+			_, err := Load()
+			require.NoError(t, err)
+		})
 	}
 }
 

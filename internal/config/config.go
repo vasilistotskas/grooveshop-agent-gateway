@@ -339,7 +339,8 @@ func Load() (Config, error) {
 		{"MEDIA_IMAGE_URL_TEMPLATE", cfg.MediaURLTemplate},
 		{"FEED_IMAGE_URL_TEMPLATE", cfg.FeedImageURLTemplate},
 	} {
-		if err := checkImageURLTemplate(t.name, t.value); err != nil {
+		if err := checkImageURLTemplate(
+			t.name, t.value, cfg.AssetsHost); err != nil {
 			return Config{}, err
 		}
 	}
@@ -379,32 +380,28 @@ func isHTTPURL(u *url.URL) bool {
 		u.User == nil
 }
 
-// imagePlaceholders are what media.ImageURL substitutes, each with a
-// stand-in that makes the expanded template parse as a URL.
-var imagePlaceholders = map[string]string{
-	"{assets_host}": "assets.invalid",
-	"{schema}":      "schema",
-	"{path}":        "path",
-}
-
 // checkImageURLTemplate refuses a template whose URLs would be wrong for
 // every product: without {path} each names one image, without
 // {assets_host} a tenant's own assets host is ignored, and a misspelt
-// placeholder is published as it is.
-func checkImageURLTemplate(name, value string) error {
-	expanded := value
-	for p, standIn := range imagePlaceholders {
-		expanded = strings.ReplaceAll(expanded, p, standIn)
-	}
+// placeholder is published as it is. It is expanded as media.ImageURL
+// expands it, with the platform's assets host, so a template that
+// cannot take that host (a port after one that has its own) is refused.
+func checkImageURLTemplate(name, value, assetsHost string) error {
+	expanded := strings.NewReplacer(
+		"{assets_host}", assetsHost,
+		"{schema}", "schema",
+		"{path}", "path",
+	).Replace(value)
 	u, err := url.Parse(expanded)
 	if !strings.Contains(value, "{assets_host}") ||
 		!strings.Contains(value, "{path}") ||
 		strings.ContainsAny(expanded, "{}") ||
 		err != nil || !isHTTPURL(u) {
 		return fmt.Errorf(
-			"config: %s must be an absolute http or https URL without "+
-				"user info that contains {assets_host} and {path}, and no "+
-				"placeholder but those and {schema} (got %q)", name, value)
+			"config: %s must expand, with ASSETS_HOST, to an absolute "+
+				"http or https URL without user info; it must contain "+
+				"{assets_host} and {path}, and no placeholder but those "+
+				"and {schema} (got %q)", name, value)
 	}
 	return nil
 }
