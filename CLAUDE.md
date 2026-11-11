@@ -114,7 +114,12 @@ passes.
     `Verifier[*django.AgentProfile]` for /mcp and
     `Verifier[*django.StaffProfile]` for /mcp/admin.
   - Concurrent calls with one uncached token share one probe
-    (singleflight). The probe is detached from the caller who started it.
+    (singleflight). A caller whose context has already ended starts
+    none. The probe is detached from its callers, as the tenant
+    resolver's is, so it runs on when its last waiter leaves and its
+    verdict is cached. It is bounded by the Django client: at most three
+    attempts of `UPSTREAM_TIMEOUT` each, so it ends within
+    3 × `UPSTREAM_TIMEOUT` + 0.5 s.
   - `Refuse` is the one answer, on both servers, to a bearer that did not
     verify:
     - invalid: a 401 and the RFC 9728 `WWW-Authenticate` challenge

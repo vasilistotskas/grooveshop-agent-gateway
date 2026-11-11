@@ -164,6 +164,25 @@ func TestVerifierCallerHangingUpFailsNoOther(t *testing.T) {
 	})
 }
 
+// A caller that has already hung up starts no probe: it gets its own
+// context's error, Django is not asked, and nothing is cached. The bubble
+// lets every goroutine the call started finish before the count is read.
+func TestVerifierCallerGoneBeforehandStartsNoProbe(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var calls atomic.Int32
+		v := NewVerifier(countingProbe(&calls), testLogger())
+		ctx, hangUp := context.WithCancel(t.Context())
+		hangUp()
+
+		_, err := v.Verify(ctx, store("acme"), "token")
+		synctest.Wait()
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Zero(t, calls.Load())
+		assert.Empty(t, v.cache)
+	})
+}
+
 // pairs are distinct (store, token) pairs: one token at two stores, two
 // tokens at one store, and two pairs whose store and token run together
 // into the same text.

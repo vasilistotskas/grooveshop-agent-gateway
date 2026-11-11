@@ -101,11 +101,20 @@ func (v *Verifier[P]) Verify(
 }
 
 // entry is the cached verdict for key, probed when it has none or it has
-// expired. Concurrent callers for one key share one probe. The probe is
-// detached from the caller who started it, so that caller hanging up
-// fails none of the others, and stays bounded by the Django client's
-// timeout; each caller still stops waiting when its own context ends. A
-// panic in the probe is logged and returned as an error (obs.Recover).
+// expired. Concurrent callers for one key share one probe. Each caller
+// stops waiting when its own context ends, and one that has ended before
+// starts no probe. A panic in the probe is logged and returned as an
+// error (obs.Recover).
+//
+// The probe is detached from its callers, as the tenant resolver's is:
+// the caller who started it hanging up fails none of the others, and a
+// verdict already paid for is cached for the next call. It is not
+// cancelled when its last waiter leaves; its lifetime is bounded by the
+// Django client instead. A probe is one GET of at most three attempts.
+// Each attempt is bounded by the client's Timeout (UPSTREAM_TIMEOUT). A
+// timed-out attempt is not retried; a 5xx or a dropped connection is,
+// after 100–200 ms and then 200–300 ms. So a probe ends within
+// 3 × Timeout + 0.5 s.
 func (v *Verifier[P]) entry(
 	ctx context.Context, key string, t *tenant.Tenant, token string,
 ) (cacheEntry[P], error) {
@@ -114,6 +123,10 @@ func (v *Verifier[P]) entry(
 	v.mu.Unlock()
 	if hit && time.Now().Before(entry.expires) {
 		return entry, nil
+	}
+	// A caller that has already hung up starts no probe and joins none.
+	if err := ctx.Err(); err != nil {
+		return cacheEntry[P]{}, err
 	}
 	detached := context.WithoutCancel(ctx)
 	select {
