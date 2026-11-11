@@ -558,8 +558,10 @@ passes.
     the key spent, and does not wrap `ErrSessionChanged`. A save Redis
     failed is `ErrUnavailable`, answered "the checkout records are
     unavailable" (`errCheckoutUnavailable`, ACP 503), never with
-    Django's wording; the save after the order call gets one more
-    attempt.
+    Django's wording. The in-progress save and the save after the
+    order call each get one more attempt when Redis fails them, with
+    the same write: a first that was stored and lost only its reply is
+    recognised as this call's.
   - **The lock only orders requests** (`Store.Lock`, `ErrLocked`). It
     lasts `lockSteps` upstream timeouts: what a completion does under
     it when Django answers every call just inside its timeout. A
@@ -654,12 +656,15 @@ passes.
   - **Order events** (`Flow.ApplyOrderEvent`), by the session the
     order's link leads to:
     - terminal: nothing;
-    - naming no order: any event records the order, from the record
-      `Flow.place` writes beside the session as soon as Django returns
-      it (`Store.IndexOrder`: `ag:{schema}:cs:v2:{id}:order`, with the
-      id, the uuid and the placement time). Without that record the
-      session is left as it is and a warning is logged: a session is
-      never completed without its order;
+    - naming no order: any event records the order, read from Django
+      by the event's own uuid, which the order link vouches is this
+      checkout's: its id, and its creation time, from which the
+      session's day counts. An order Django no longer has is logged at
+      warn and answered 204, and the session is left as it is: a
+      session is never completed without its order. The record
+      `Flow.place` writes beside the session (`Store.IndexOrder`:
+      `ag:{schema}:cs:v2:{id}:order`, the order's uuid) is for calls on
+      the session, not events: Redis may evict it;
     - a payment-completed event also sets `completed`. No other event
       changes a status.
 

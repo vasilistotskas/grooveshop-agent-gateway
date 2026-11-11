@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -187,10 +188,11 @@ func TestACompleteThatCannotMarkItsSessionSaysRecordsAreUnavailable(
 			id := surface.ready(t)
 			key := uuid.NewString()
 			creates := stack.faults.orderCreates.Load()
-			var failed atomic.Bool
+			// Both attempts at the mark fail, and nothing after them.
+			var failures atomic.Int32
 			stack.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
 				if savesKey(cmd, sessionRedisKey(id)) &&
-					failed.CompareAndSwap(false, true) {
+					failures.Add(1) <= 2 {
 					return errRedisDown
 				}
 				return nil
@@ -392,6 +394,9 @@ func TestAnOrderItsSessionNeverSavedIsStillKnown(t *testing.T) {
 	t.Run("any event records the order, the payment completes it",
 		func(t *testing.T) {
 			id := placedUnsaved(t)
+			placed := time.Now()
+			stack.faults.orderCreatedAt.Store(&placed)
+			t.Cleanup(func() { stack.faults.orderCreatedAt.Store(nil) })
 			require.Equal(t, http.StatusNoContent,
 				stack.pushOrderEvent(t, "PENDING"))
 			named := stack.storedSession(t, id)
@@ -406,20 +411,22 @@ func TestAnOrderItsSessionNeverSavedIsStillKnown(t *testing.T) {
 				stack.storedSession(t, id).Status)
 		})
 
-	// Without the record beside the session the gateway does not know
-	// the order's id: the session is left as it is, never completed
-	// without its order, and the event is not asked for again.
+	// The record beside the session is a key Redis can evict. The event
+	// does not need it: it names its order, and the order link vouches
+	// that the order is this checkout's.
 	t.Run("an event without the placed order's record", func(t *testing.T) {
 		id := placedUnsaved(t)
 		stack.lapse(t, sessionRedisKey(id)+":order")
-		before := stack.storedBytes(t, id)
+		placed := time.Now()
+		stack.faults.orderCreatedAt.Store(&placed)
+		t.Cleanup(func() { stack.faults.orderCreatedAt.Store(nil) })
 
 		assert.Equal(t, http.StatusNoContent,
 			stack.pushOrderEvent(t, "COMPLETED"))
 
-		assert.Equal(t, before, stack.storedBytes(t, id))
-		assert.NotEmpty(t,
-			stack.logs.with("no placed order", "session="+id))
+		stored := stack.storedSession(t, id)
+		assert.Equal(t, checkout.StatusCompleted, stored.Status)
+		assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
 	})
 }
 
@@ -435,6 +442,9 @@ func TestAnOrderEventDuringItsCompletionCostsNeitherTheirResult(t *testing.T) {
 	stack := startUCPGateway(t)
 	surface := surfacesByName(t, stack)["ucp"]
 	id := surface.ready(t)
+	// The event reads its order, placed a moment ago.
+	placed := time.Now()
+	stack.faults.orderCreatedAt.Store(&placed)
 	held := stack.hold(t,
 		"POST /api/v1/order/684/create_checkout_session", 1)[0]
 	completed := make(chan surfaceAnswer, 1)

@@ -204,6 +204,12 @@ type checkoutFaults struct {
 	payWayLookup atomic.Bool
 	// orderRead makes reading a placed order answer 502.
 	orderRead atomic.Bool
+	// orderGone makes reading a placed order answer 404: Django no
+	// longer has it.
+	orderGone atomic.Bool
+	// orderCreatedAt is when the placed order reads as created; unset,
+	// the fixture's time, which is long past.
+	orderCreatedAt atomic.Pointer[time.Time]
 	// lineShort makes a cart line write answer 400 insufficient_stock:
 	// the stock went to an order.
 	lineShort atomic.Bool
@@ -232,7 +238,28 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
-			inner.ServeHTTP(w, r)
+			if faults.orderGone.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(
+					`{"detail": "Not found.", "code": "not_found"}`))
+				return
+			}
+			createdAt := faults.orderCreatedAt.Load()
+			if createdAt == nil {
+				inner.ServeHTTP(w, r)
+				return
+			}
+			raw, err := os.ReadFile(fixturePath("order_by_uuid.json"))
+			var order map[string]any
+			if !assert.NoError(t, err) ||
+				!assert.NoError(t, json.Unmarshal(raw, &order)) {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			order["createdAt"] = createdAt.Format(time.RFC3339Nano)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(order)
 		})
 	outer.HandleFunc("GET /api/v1/cart",
 		func(w http.ResponseWriter, r *http.Request) {

@@ -469,6 +469,29 @@ func TestAPlacedOrdersSaveWhoseReplyWasLostIsItsOwn(t *testing.T) {
 	assert.Equal(t, s.Revision, stored.Revision)
 }
 
+// The mark that guards the order can be stored and lose only its reply.
+// Taken for a failure, it would leave a session that reads as being
+// placed, then as an order whose outcome was never recorded, while no
+// order was sent. The second attempt sends the same write, finds its
+// own, and the order is placed once.
+func TestAMarkWhoseReplyWasLostPlacesTheOrder(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	s := f.readySession(t)
+	var lost atomic.Bool
+	f.rdb.AddHook(replyLost(func(cmd redis.Cmder) bool {
+		return savesKey(cmd, sessionRedisKey(s.ID)) &&
+			lost.CompareAndSwap(false, true)
+	}))
+
+	placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+
+	require.True(t, lost.Load(), "the mark's reply was lost")
+	require.NoError(t, err)
+	assert.Equal(t, checkout.OrderMayExist, placement)
+	assert.Equal(t, checkout.StatusCompleted, f.stored(t, s).Status)
+	assert.EqualValues(t, 1, f.faults.orderCreates.Load())
+}
+
 // An order call that went unanswered leaves an order that may exist.
 // The save that says so, and keeps the session a day, gets the same
 // second attempt when Redis fails it.
@@ -506,14 +529,16 @@ func TestCompleteStoresItsOutcomeOverAnOrderEvent(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
 	ctx := context.Background()
 	s := f.readySession(t)
+	placed := time.Now()
+	f.faults.orderCreatedAt.Store(&placed)
 	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
 		if !setsKey(cmd, ":orderlink:") {
 			return nil
 		}
-		// The order exists and is recorded beside the session: its
-		// payment event lands before the completion's last save.
+		// The order exists and its link is being written: its payment
+		// event lands before the completion's last save.
 		return f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
-			django.PaymentStatusCompleted)
+			fixtureOrderUUID, django.PaymentStatusCompleted)
 	}))
 
 	placement, err := f.flow.Complete(ctx, f.tenant, s)
@@ -524,6 +549,77 @@ func TestCompleteStoresItsOutcomeOverAnOrderEvent(t *testing.T) {
 	assert.Equal(t, checkout.StatusCompleted, stored.Status)
 	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
 	assert.EqualValues(t, 1, f.faults.orderCreates.Load())
+}
+
+// A completion that placed its order and could not save leaves a session
+// in progress that does not name the order. An order event finds it
+// through the order link and records the order, read from Django by the
+// event's uuid: its id, and its creation time, from which the session's
+// day counts. A payment event then completes it.
+func TestOrderEventRecordsTheOrderItsSessionNeverSaved(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	ctx := context.Background()
+	s := f.readySession(t)
+	redisDown := errors.New("redis is down")
+	var linked, down atomic.Bool
+	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+		switch {
+		case setsKey(cmd, ":orderlink:"):
+			linked.Store(true)
+			down.Store(true)
+		case linked.Load() && down.Load() &&
+			setsKey(cmd, sessionRedisKey(s.ID)):
+			return redisDown
+		}
+		return nil
+	}))
+	_, err := f.flow.Complete(ctx, f.tenant, s)
+	require.ErrorIs(t, err, checkout.ErrSessionNotSaved)
+	down.Store(false)
+	unsaved := f.stored(t, s)
+	require.Equal(t, checkout.StatusCompleteInProgress, unsaved.Status)
+	require.Empty(t, unsaved.OrderUUID)
+	// The record beside the session is not what the event reads.
+	require.NoError(t, f.rdb.Del(ctx, sessionRedisKey(s.ID)+":order").Err())
+
+	// The order was placed an hour ago, whenever its event comes.
+	placed := time.Now().Add(-time.Hour)
+	f.faults.orderCreatedAt.Store(&placed)
+	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
+		fixtureOrderUUID, "PENDING"))
+
+	named := f.stored(t, s)
+	assert.Equal(t, checkout.StatusCompleteInProgress, named.Status)
+	assert.Equal(t, fixtureOrderUUID, named.OrderUUID)
+	assert.EqualValues(t, 684, named.OrderID, "the fixture order's id")
+	assert.WithinDuration(t, placed, named.PlacedAt, time.Second)
+	// So the session ends a day after the order, not after the event.
+	ttl, err := f.rdb.PTTL(ctx, sessionRedisKey(s.ID)).Result()
+	require.NoError(t, err)
+	assert.InDelta(t, (23 * time.Hour).Seconds(), ttl.Seconds(), 5)
+
+	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
+		fixtureOrderUUID, django.PaymentStatusCompleted))
+	assert.Equal(t, checkout.StatusCompleted, f.stored(t, s).Status)
+	assert.EqualValues(t, 1, f.faults.orderCreates.Load())
+}
+
+// An event can come long after its order: a payment made days later, or
+// Django pushing again. The session's day counts from the order, so one
+// recorded by such an event has already ended.
+func TestOrderEventForAnOldOrderDoesNotKeepItsSession(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	ctx := context.Background()
+	s := f.readySession(t)
+	s.Status = checkout.StatusCompleteInProgress
+	require.NoError(t, f.store.Save(ctx, s))
+
+	// The fixture order was created months ago.
+	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
+		fixtureOrderUUID, django.PaymentStatusCompleted))
+
+	_, err := f.store.Load(ctx, s.Schema, s.ID)
+	assert.ErrorIs(t, err, checkout.ErrNotFound)
 }
 
 // A session that is gone before its completion's last save cannot be
@@ -558,12 +654,13 @@ func TestCompleteSendsNoOrderWithoutTheInProgressSave(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
 	s := f.readySession(t)
 	redisDown := errors.New("redis is down")
-	writes := 0
+	// The revision each session write would store (the script's ARGV[2]).
+	var revisions []any
 	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
-		if !setsKey(cmd, sessionRedisKey(s.ID)) {
+		if !savesKey(cmd, sessionRedisKey(s.ID)) {
 			return nil
 		}
-		writes++
+		revisions = append(revisions, cmd.Args()[5])
 		return redisDown
 	}))
 
@@ -571,7 +668,10 @@ func TestCompleteSendsNoOrderWithoutTheInProgressSave(t *testing.T) {
 
 	require.ErrorIs(t, err, redisDown)
 	assert.Equal(t, checkout.NothingPlaced, placement)
-	assert.Equal(t, 1, writes, "refused once, and not written again")
+	// The mark and its second attempt, one write sent twice, and no
+	// write after them.
+	require.Len(t, revisions, 2)
+	assert.Equal(t, revisions[0], revisions[1])
 	assert.Zero(t, f.faults.orderCreates.Load())
 	assert.Equal(t, checkout.StatusReadyForComplete, s.Status)
 	assert.Equal(t, checkout.StatusReadyForComplete, f.stored(t, s).Status)

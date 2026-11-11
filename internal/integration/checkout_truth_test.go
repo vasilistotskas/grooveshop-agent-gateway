@@ -288,3 +288,28 @@ func TestCompleteOfACanceledCheckoutSaysItIsCanceled(t *testing.T) {
 	assert.Equal(t, "405 conflict",
 		surfaces["acp"].answer(ctx, id, uuid.NewString(), nil).refusal)
 }
+
+// A session that never saved its order learns of it from the order
+// event, which reads the order from Django. An order Django no longer
+// has cannot be recorded, and no push will change that: the event is
+// answered as handled, not asked for again.
+func TestAPaymentEventForAnOrderThatIsGoneIsNotAskedForAgain(t *testing.T) {
+	stack := startUCPGateway(t)
+	surfaces := surfacesByName(t, stack)
+	id := awaitingPayment(t, surfaces["ucp"])
+	// The session forgets its order, as after a lost last save.
+	stored := stack.storedSession(t, id)
+	stored.Status = checkout.StatusCompleteInProgress
+	stored.OrderID, stored.OrderUUID = 0, ""
+	raw, err := json.Marshal(stored)
+	require.NoError(t, err)
+	require.NoError(t, stack.rdb.Set(context.Background(),
+		sessionRedisKey(id), raw, redis.KeepTTL).Err())
+	before := stack.storedBytes(t, id)
+	stack.faults.orderGone.Store(true)
+
+	assert.Equal(t, http.StatusNoContent, stack.pushOrderEvent(t, "COMPLETED"))
+
+	assert.Equal(t, before, stack.storedBytes(t, id))
+	assert.NotEmpty(t, stack.logs.with("order that is gone", "session="+id))
+}

@@ -139,7 +139,18 @@ func (f *Flow) Complete(
 	// lets a single one through here. A later complete then loads a
 	// completion in flight, not a ready session to place a second time.
 	s.Status = StatusCompleteInProgress
-	if err := f.st.Save(ctx, s); err != nil {
+	fence := newWrite()
+	err = f.st.put(ctx, s, s.Revision, fence)
+	if err != nil && !errors.Is(err, ErrSessionChanged) {
+		// Redis failed it, and the write may still have been stored with
+		// only its reply lost: the session would then read as being
+		// placed while no order was sent. One more attempt sends the same
+		// write, so a first that was stored is recognised as this call's
+		// and the order is placed; one that was not is written now, over
+		// the session this call loaded only.
+		err = f.st.put(ctx, s, s.Revision, fence)
+	}
+	if err != nil {
 		// The write that guards the order was refused, by Redis failing
 		// or by a session that has moved on (ErrSessionChanged): no
 		// order is sent, and the session is not written again.
@@ -391,7 +402,7 @@ func (f *Flow) PlacedOrder(ctx context.Context, s *Session) string {
 			slog.String("error", err.Error()))
 		return ""
 	}
-	return placed.OrderUUID
+	return placed
 }
 
 // ApplyOrderEvent folds a Django order/payment event into the checkout
@@ -408,14 +419,15 @@ func (f *Flow) PlacedOrder(ctx context.Context, s *Session) string {
 //
 // What an event does, by the session it finds:
 //   - a terminal session: nothing;
-//   - a session that names no order: any event records the order the
-//     completion placed (its id, uuid and time, from the record beside
-//     the session). Without that record the gateway does not know the
-//     order's id, and the session is left as it is;
+//   - a session that names no order: any event records its order, read
+//     from Django by the event's uuid (orderUUID, which the order's link
+//     to this checkout vouches for): its id, and its creation time, from
+//     which the session's day counts. An order Django no longer has is
+//     left unrecorded and not asked for again;
 //   - a payment-completed event also completes a session that names its
 //     order. No other event changes a status.
 func (f *Flow) ApplyOrderEvent(
-	ctx context.Context, schema, checkoutID, paymentStatus string,
+	ctx context.Context, schema, checkoutID, orderUUID, paymentStatus string,
 ) error {
 	s, err := f.st.Load(ctx, schema, checkoutID)
 	if errors.Is(err, ErrNotFound) {
@@ -429,18 +441,28 @@ func (f *Flow) ApplyOrderEvent(
 	}
 	changed := false
 	if s.OrderUUID == "" {
-		placed, err := f.st.placedOrder(ctx, schema, checkoutID)
+		// An event names no language, and only the order's id and
+		// creation time are read.
+		order, err := f.dj.PlacedOrder(ctx, s.Domain, "", orderUUID)
+		if errors.Is(err, django.ErrNotFound) {
+			// Django no longer has the order the event was for: no
+			// retry brings it back, and the session is left as it is.
+			f.log.WarnContext(ctx,
+				"checkout: order event for an order that is gone",
+				slog.String("session", s.ID),
+				slog.String("order", orderUUID))
+			return nil
+		}
 		if err != nil {
 			return err
 		}
-		if placed.OrderUUID == "" {
-			f.log.WarnContext(ctx,
-				"checkout: order event for a session with no placed order",
-				slog.String("session", s.ID))
-			return nil
+		placed, err := time.Parse(time.RFC3339Nano, order.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("checkout: order %s created at %q: %w",
+				order.UUID, order.CreatedAt, err)
 		}
-		s.OrderID, s.OrderUUID = placed.OrderID, placed.OrderUUID
-		s.PlacedAt = placed.PlacedAt
+		s.OrderID, s.OrderUUID = order.ID, order.UUID
+		s.PlacedAt = placed.UTC()
 		changed = true
 	}
 	if paymentStatus == django.PaymentStatusCompleted {

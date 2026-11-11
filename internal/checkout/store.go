@@ -302,23 +302,19 @@ type OrderLink struct {
 	WebhookURL string `json:"webhookUrl,omitempty"`
 }
 
-// placedOrder is the order a completion placed, recorded beside its
-// session the moment Django returned it. The session itself learns of
-// the order only with the completion's last save, which can fail: this
-// record is then how later calls and order events know the order.
-type placedOrder struct {
-	OrderID   int64     `json:"orderId"`
-	OrderUUID string    `json:"orderUuid"`
-	PlacedAt  time.Time `json:"placedAt"`
-}
-
+// placedKey holds the uuid of the order a completion placed, recorded
+// beside its session the moment Django returned it. The session itself
+// learns of the order only with the completion's last save, which can
+// fail: this record is then how later calls on the session name the
+// order (Flow.PlacedOrder). An order event needs none: it names its
+// order, and the order link vouches that it is this checkout's.
 func placedKey(schema, id string) string {
 	return sessionKey(schema, id) + ":order"
 }
 
 // IndexOrder records the order the session's completion placed, both
-// ways and together: the order's link to its checkout, and the placed
-// order beside the session, kept as long as a placed session is.
+// ways: the order's link to its checkout, and the order's uuid beside
+// the session, kept as long as a placed session is.
 func (st *Store) IndexOrder(ctx context.Context, s *Session) error {
 	link, err := json.Marshal(OrderLink{
 		CheckoutID: s.ID, Domain: s.Domain, WebhookURL: s.WebhookURL,
@@ -326,15 +322,7 @@ func (st *Store) IndexOrder(ctx context.Context, s *Session) error {
 	if err != nil {
 		return fmt.Errorf("checkout: encode order link: %w", err)
 	}
-	placed, err := json.Marshal(placedOrder{
-		OrderID: s.OrderID, OrderUUID: s.OrderUUID, PlacedAt: s.PlacedAt,
-	})
-	if err != nil {
-		return fmt.Errorf("checkout: encode placed order: %w", err)
-	}
-	// The placed order first: an event finds the session through the
-	// link, and must then find the order beside it.
-	if err := st.rdb.Set(ctx, placedKey(s.Schema, s.ID), placed,
+	if err := st.rdb.Set(ctx, placedKey(s.Schema, s.ID), s.OrderUUID,
 		terminalTTL).Err(); err != nil {
 		return err
 	}
@@ -342,24 +330,19 @@ func (st *Store) IndexOrder(ctx context.Context, s *Session) error {
 		orderLinkTTL).Err()
 }
 
-// placedOrder reads the order recorded beside a session; the zero value
+// placedOrder reads the uuid of the order recorded beside a session; ""
 // when none is.
 func (st *Store) placedOrder(
 	ctx context.Context, schema, id string,
-) (placedOrder, error) {
-	var placed placedOrder
-	raw, err := st.rdb.Get(ctx, placedKey(schema, id)).Result()
+) (string, error) {
+	uuid, err := st.rdb.Get(ctx, placedKey(schema, id)).Result()
 	if errors.Is(err, redis.Nil) {
-		return placed, nil
+		return "", nil
 	}
 	if err != nil {
-		return placed, fmt.Errorf("%w: placed order: %w", ErrUnavailable, err)
+		return "", fmt.Errorf("%w: placed order: %w", ErrUnavailable, err)
 	}
-	if err := json.Unmarshal([]byte(raw), &placed); err != nil {
-		return placed, fmt.Errorf("%w: corrupt placed order: %w",
-			ErrUnavailable, err)
-	}
-	return placed, nil
+	return uuid, nil
 }
 
 // OrderLinkFor resolves the link for an order, without loading the
