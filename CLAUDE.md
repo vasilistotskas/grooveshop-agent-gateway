@@ -136,10 +136,13 @@ passes.
   - Anonymous requests pass through, except a call to an account tool.
     That gets the challenge naming the scopes of every account tool the
     store serves (`mcpsrv.RequireLinkedAccount`), because a client starts
-    OAuth on a 401 and on nothing else. The middleware reads the body as
-    the MCP SDK's handler does (`calledTools`): a batch, case-sensitive
-    keys, the first JSON value only. It challenges when any message
-    calls an account tool.
+    OAuth on a 401 and on nothing else. The middleware reads exactly the
+    bodies the MCP SDK's handler reads, with the SDK's bounds
+    (`calledTools`): the SDK's nesting bound before any decoding
+    (`sdkMaxDepth`, mirroring go-sdk's `internal/json`), a batch,
+    case-sensitive keys, the first JSON value only. A body nested deeper
+    is passed on undecoded and the SDK refuses it whole. It challenges
+    when any message calls an account tool.
   - Account tools forward the bearer — Django enforces scopes.
 - `internal/mcptool` — what the tools of both MCP servers answer with:
   `ToolError` and every code the gateway mints, the `Untrusted` marker
@@ -206,14 +209,23 @@ passes.
       otherwise it is the failure, wrapped in `errNoCredentials`, and
       the route answers 503.
     - It is remembered on the entry (`memEntry.topUp`) for the negative
-      TTL, capped at the bound, and logged once there (`logTopUp`). The
+      TTL, capped at the bound. It is logged once, by the first
+      credential caller that receives it (`receiveLocked`, `logTopUp`),
+      never by a plain resolve: a Django failure on a route that needs
+      no credential logs only the stale config's warning. The
       middleware does not log a remembered failure again. The result is
-      one Django call and one error line per host per pod per negative
-      TTL.
+      one Django call and at most one error line per decision. A resolve
+      and a top-up each decide at most once per host per pod per negative
+      TTL, and a resolve that meets the outage while a top-up's answer
+      is remembered decides again.
     - It never replaces the entry's tenant, which stays the freshest
       config Django, Redis or the stale-if-error path gave. The other
-      routes serve that config, without credentials, and its features
-      gate the credential routes too.
+      routes serve that config, without credentials. The held answer
+      carries the config the entry had when the answer was decided, so
+      its features gate the credential routes as they gate the others
+      then; a Redis refill that replaces the entry's config meanwhile
+      reaches the credential routes only when the remembered answer
+      ends, within one negative TTL.
     - A fresh recognised answer ends what was remembered.
     - `EnsureSecrets` serves credentials only for the store the
       caller's request resolved (`errAnotherStore`), so a caller that
