@@ -3,6 +3,7 @@ package feeds
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"strings"
 	"unicode/utf8"
 
@@ -258,27 +259,34 @@ func feedHighlights(highlights []string) []string {
 	return kept
 }
 
-// rssWriter accumulates the RSS-dialect feed google.xml, meta.xml and
-// tiktok.xml all serve.
+// rssWriter writes the RSS-dialect feed google.xml, meta.xml and
+// tiktok.xml all serve to out, one item at a time, so the document is
+// never held whole: pending holds only the part being written.
 type rssWriter struct {
-	buf bytes.Buffer
+	out     io.Writer
+	pending bytes.Buffer
 }
 
-func newRSSWriter(ctx *feedContext) *rssWriter {
-	w := &rssWriter{}
-	w.buf.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
-	w.buf.WriteString(
+// newRSSWriter writes the document's head to out.
+func newRSSWriter(ctx *feedContext, out io.Writer) (*rssWriter, error) {
+	w := &rssWriter{out: out}
+	w.pending.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
+	w.pending.WriteString(
 		`<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">` + "\n")
-	w.buf.WriteString("  <channel>\n")
-	fmt.Fprintf(&w.buf, "    <title>%s</title>\n", escapeXML(ctx.StoreName))
-	fmt.Fprintf(&w.buf, "    <link>%s</link>\n",
-		escapeXML(storefront.Origin(ctx.Domain)))
-	fmt.Fprintf(&w.buf, "    <description>%s</description>\n",
+	w.pending.WriteString("  <channel>\n")
+	fmt.Fprintf(&w.pending, "    <title>%s</title>\n",
 		escapeXML(ctx.StoreName))
-	return w
+	fmt.Fprintf(&w.pending, "    <link>%s</link>\n",
+		escapeXML(storefront.Origin(ctx.Domain)))
+	fmt.Fprintf(&w.pending, "    <description>%s</description>\n",
+		escapeXML(ctx.StoreName))
+	if err := w.flush(); err != nil {
+		return nil, err
+	}
+	return w, nil
 }
 
-func (w *rssWriter) Item(it *feedItem) {
+func (w *rssWriter) Item(it *feedItem) error {
 	fields := make([]string, 0, 12)
 	fields = append(fields,
 		fmt.Sprintf("<g:id>%d</g:id>", it.ID),
@@ -347,15 +355,22 @@ func (w *rssWriter) Item(it *feedItem) {
 				"<g:attribute_value>%s</g:attribute_value></g:product_detail>",
 			escapeXML(d.Name), escapeXML(d.Value)))
 	}
-	w.buf.WriteString("    <item>\n      ")
-	w.buf.WriteString(strings.Join(fields, "\n      "))
-	w.buf.WriteString("\n    </item>\n")
+	w.pending.WriteString("    <item>\n      ")
+	w.pending.WriteString(strings.Join(fields, "\n      "))
+	w.pending.WriteString("\n    </item>\n")
+	return w.flush()
 }
 
-func (w *rssWriter) Bytes() []byte {
-	out := make([]byte, w.buf.Len(), w.buf.Len()+32)
-	copy(out, w.buf.Bytes())
-	return append(out, "  </channel>\n</rss>\n"...)
+// Close writes the document's end. It does not close out.
+func (w *rssWriter) Close() error {
+	w.pending.WriteString("  </channel>\n</rss>\n")
+	return w.flush()
+}
+
+func (w *rssWriter) flush() error {
+	_, err := w.out.Write(w.pending.Bytes())
+	w.pending.Reset()
+	return err
 }
 
 func availability(inStock bool) string {

@@ -137,31 +137,55 @@ func fixtureCatalogue() []django.Product {
 	}
 }
 
-func TestRSSWriterGolden(t *testing.T) {
-	ctx := testFeedContext()
-	w := newRSSWriter(ctx)
+// rssDocument is the RSS document of items.
+func rssDocument(t *testing.T, ctx *feedContext, items ...*feedItem) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	w, err := newRSSWriter(ctx, &out)
+	require.NoError(t, err)
+	for _, it := range items {
+		require.NoError(t, w.Item(it))
+	}
+	require.NoError(t, w.Close())
+	return out.Bytes()
+}
+
+// acpDocument is the ACP document of items.
+func acpDocument(t *testing.T, items ...*feedItem) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	w, err := newACPWriter(&out)
+	require.NoError(t, err)
+	for _, it := range items {
+		require.NoError(t, w.Item(it))
+	}
+	require.NoError(t, w.Close())
+	return out.Bytes()
+}
+
+// fixtureItems are the fixture products a feed lists.
+func fixtureItems(t *testing.T, ctx *feedContext) []*feedItem {
+	t.Helper()
+	var items []*feedItem
 	for _, p := range fixtureProducts() {
 		it, err := newFeedItem(&p, ctx)
 		require.NoError(t, err)
 		if it != nil {
-			w.Item(it)
+			items = append(items, it)
 		}
 	}
-	goldenCompare(t, "feed_rss.xml", w.Bytes())
+	return items
+}
+
+func TestRSSWriterGolden(t *testing.T) {
+	ctx := testFeedContext()
+	goldenCompare(t, "feed_rss.xml",
+		rssDocument(t, ctx, fixtureItems(t, ctx)...))
 }
 
 func TestACPWriterGolden(t *testing.T) {
 	ctx := testFeedContext()
-	w := newACPWriter()
-	for _, p := range fixtureProducts() {
-		it, err := newFeedItem(&p, ctx)
-		require.NoError(t, err)
-		if it != nil {
-			w.Item(it)
-		}
-	}
-	got, err := w.Bytes()
-	require.NoError(t, err)
+	got := acpDocument(t, fixtureItems(t, ctx)...)
 	// The feed is served compact; the golden file is indented to read.
 	var indented bytes.Buffer
 	require.NoError(t, json.Indent(&indented, got, "", " "))
@@ -211,10 +235,9 @@ func TestRSSItemRules(t *testing.T) {
 	it, err := newFeedItem(&identified, ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "Φορτιστής USB-C 20W", it.Title)
-	w := newRSSWriter(ctx)
-	w.Item(it)
-	assert.Contains(t, string(w.Bytes()), "<g:gtin>5901234123457</g:gtin>")
-	assert.Contains(t, string(w.Bytes()), "<g:mpn>WS-20</g:mpn>")
+	doc := string(rssDocument(t, ctx, it))
+	assert.Contains(t, doc, "<g:gtin>5901234123457</g:gtin>")
+	assert.Contains(t, doc, "<g:mpn>WS-20</g:mpn>")
 
 	// Highlights go out only within Google's bounds: one is too few.
 	identified.Highlights = []string{"Μόνο ένα"}
@@ -224,9 +247,7 @@ func TestRSSItemRules(t *testing.T) {
 	identified.Highlights = []string{"Χωράει στην τσέπη", "Φορτίζει χωρίς καλώδιο"}
 	it, err = newFeedItem(&identified, ctx)
 	require.NoError(t, err)
-	w = newRSSWriter(ctx)
-	w.Item(it)
-	assert.Contains(t, string(w.Bytes()),
+	assert.Contains(t, string(rssDocument(t, ctx, it)),
 		"<g:product_highlight>Χωράει στην τσέπη</g:product_highlight>")
 	identified.Highlights = make([]string, feedHighlightsMax+1)
 	it, err = newFeedItem(&identified, ctx)
@@ -315,15 +336,13 @@ func TestFeedPricingFollowsOmnibus(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, it)
 
-			rss := newRSSWriter(ctx)
-			rss.Item(it)
 			var doc struct {
 				Items []struct {
 					Price     string  `xml:"http://base.google.com/ns/1.0 price"`
 					SalePrice *string `xml:"http://base.google.com/ns/1.0 sale_price"`
 				} `xml:"channel>item"`
 			}
-			require.NoError(t, xml.Unmarshal(rss.Bytes(), &doc))
+			require.NoError(t, xml.Unmarshal(rssDocument(t, ctx, it), &doc))
 			require.Len(t, doc.Items, 1)
 			assert.Equal(t, tc.price, doc.Items[0].Price)
 			if tc.salePrice == "" {
@@ -333,9 +352,7 @@ func TestFeedPricingFollowsOmnibus(t *testing.T) {
 				assert.Equal(t, tc.salePrice, *doc.Items[0].SalePrice)
 			}
 
-			acp := newACPWriter()
-			acp.Item(it)
-			v := acp.feed.Products[0].Variants[0]
+			v := acpProductOf(it).Variants[0]
 			assert.Equal(t, tc.acpPrice, v.Price.Amount)
 			if tc.acpList == 0 {
 				assert.Nil(t, v.ListPrice)
@@ -345,6 +362,60 @@ func TestFeedPricingFollowsOmnibus(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The writers hand each part of a document to their writer as it is
+// written, never holding the document until it ends.
+func TestWritersStreamEachItem(t *testing.T) {
+	ctx := testFeedContext()
+	items := fixtureItems(t, ctx)
+	require.GreaterOrEqual(t, len(items), 2)
+
+	var rssOut bytes.Buffer
+	rss, err := newRSSWriter(ctx, &rssOut)
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(rssOut.String(), "</description>\n"),
+		"the channel's head")
+	for i, it := range items {
+		require.NoError(t, rss.Item(it))
+		assert.Equal(t, i+1, strings.Count(rssOut.String(), "</item>"))
+		assert.True(t, strings.HasSuffix(rssOut.String(), "</item>\n"))
+	}
+	require.NoError(t, rss.Close())
+	assert.True(t, strings.HasSuffix(rssOut.String(), "</channel>\n</rss>\n"))
+
+	var acpOut bytes.Buffer
+	acp, err := newACPWriter(&acpOut)
+	require.NoError(t, err)
+	assert.Equal(t, `{"products":[`, acpOut.String())
+	require.NoError(t, acp.Item(items[0]))
+	first, err := json.Marshal(acpProductOf(items[0]))
+	require.NoError(t, err)
+	assert.Equal(t, `{"products":[`+string(first), acpOut.String())
+	require.NoError(t, acp.Item(items[1]))
+	second, err := json.Marshal(acpProductOf(items[1]))
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(acpOut.String(), ","+string(second)))
+	require.NoError(t, acp.Close())
+	assert.True(t, strings.HasSuffix(acpOut.String(), "]}"))
+}
+
+// A store with nothing to list still serves whole documents: a channel
+// with no items, and an empty products list the schema accepts.
+func TestEmptyCatalogueDocuments(t *testing.T) {
+	var rss struct {
+		Title string     `xml:"channel>title"`
+		Items []struct{} `xml:"channel>item"`
+	}
+	require.NoError(t, xml.Unmarshal(rssDocument(t, testFeedContext()), &rss))
+	assert.NotEmpty(t, rss.Title)
+	assert.Empty(t, rss.Items)
+
+	raw := acpDocument(t)
+	assert.Equal(t, `{"products":[]}`, string(raw))
+	var doc any
+	require.NoError(t, json.Unmarshal(raw, &doc))
+	require.NoError(t, validateACP(t, "ProductsResponse", doc))
 }
 
 func TestACPGoldenValidatesAgainstSchema(t *testing.T) {
@@ -565,9 +636,6 @@ func TestRSSDocumentParsesWithHostileText(t *testing.T) {
 	}}
 	it, err := newFeedItem(&p, ctx)
 	require.NoError(t, err)
-	w := newRSSWriter(ctx)
-	w.Item(it)
-
 	var doc struct {
 		Title string `xml:"channel>title"`
 		Items []struct {
@@ -575,7 +643,7 @@ func TestRSSDocumentParsesWithHostileText(t *testing.T) {
 			Description string `xml:"description"`
 		} `xml:"channel>item"`
 	}
-	require.NoError(t, xml.Unmarshal(w.Bytes(), &doc))
+	require.NoError(t, xml.Unmarshal(rssDocument(t, ctx, it), &doc))
 	assert.Equal(t, "DemoStore", doc.Title)
 	require.Len(t, doc.Items, 1)
 	assert.Equal(t, "Formfeed ", doc.Items[0].Title)
@@ -599,9 +667,7 @@ func TestRSSItemWithoutCategory(t *testing.T) {
 	require.NotNil(t, it)
 	assert.Empty(t, it.CategoryName)
 
-	w := newRSSWriter(ctx)
-	w.Item(it)
-	assert.NotContains(t, string(w.Bytes()), "<g:product_type>")
+	assert.NotContains(t, string(rssDocument(t, ctx, it)), "<g:product_type>")
 
 	categorised, err := newFeedItem(&fixtureProducts()[0], ctx)
 	require.NoError(t, err)

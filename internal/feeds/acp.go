@@ -2,14 +2,15 @@ package feeds
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"strconv"
 )
 
 // ACP feed types mirror testdata/schemas/acp/2026-04-17/schema.feed.json.
 // Prices are integer ISO 4217 minor units. Each catalog row becomes one
 // Product with a single self-Variant: the RSS feeds carry item_group_id
-// for the platforms that use it. The writer holds every product until
-// Bytes encodes the document.
+// for the platforms that use it.
 
 type acpPrice struct {
 	Amount   int64  `json:"amount"`
@@ -53,19 +54,43 @@ type acpProduct struct {
 	Variants    []acpVariant    `json:"variants"`
 }
 
-type acpFeed struct {
-	Products []acpProduct `json:"products"`
-}
-
+// acpWriter writes the feed to out one product at a time, so the
+// document is never held whole. A product is encoded as encoding/json
+// encodes an element of a slice, so the document is byte for byte the
+// one marshalling {"products": [...]} at once gives.
 type acpWriter struct {
-	feed acpFeed
+	out    io.Writer
+	listed bool
 }
 
-func newACPWriter() *acpWriter {
-	return &acpWriter{feed: acpFeed{Products: []acpProduct{}}}
+// newACPWriter writes the document's head to out.
+func newACPWriter(out io.Writer) (*acpWriter, error) {
+	if _, err := io.WriteString(out, `{"products":[`); err != nil {
+		return nil, err
+	}
+	return &acpWriter{out: out}, nil
 }
 
-func (w *acpWriter) Item(it *feedItem) {
+func (w *acpWriter) Item(it *feedItem) error {
+	row, err := json.Marshal(acpProductOf(it))
+	if err != nil {
+		return fmt.Errorf("feeds: acp encode: %w", err)
+	}
+	if w.listed {
+		row = append([]byte{','}, row...)
+	}
+	w.listed = true
+	_, err = w.out.Write(row)
+	return err
+}
+
+// Close writes the document's end. It does not close out.
+func (w *acpWriter) Close() error {
+	_, err := io.WriteString(w.out, "]}")
+	return err
+}
+
+func acpProductOf(it *feedItem) acpProduct {
 	id := strconv.FormatInt(it.ID, 10)
 	status := "out_of_stock"
 	if it.InStock {
@@ -82,7 +107,7 @@ func (w *acpWriter) Item(it *feedItem) {
 	if it.PriorMinor > 0 {
 		listPrice = &acpPrice{Amount: it.PriorMinor, Currency: it.Currency}
 	}
-	w.feed.Products = append(w.feed.Products, acpProduct{
+	return acpProduct{
 		ID:          id,
 		Title:       it.Title,
 		Description: desc,
@@ -102,9 +127,5 @@ func (w *acpWriter) Item(it *feedItem) {
 			Condition: []string{"new"},
 			Media:     media,
 		}},
-	})
-}
-
-func (w *acpWriter) Bytes() ([]byte, error) {
-	return json.Marshal(w.feed)
+	}
 }
