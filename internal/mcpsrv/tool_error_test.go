@@ -18,6 +18,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
@@ -28,32 +29,32 @@ func TestUpstreamErrCarriesTheStoresCodeAndDetail(t *testing.T) {
 	cases := []struct {
 		name string
 		err  *django.APIError
-		want *ToolError
+		want *mcptool.ToolError
 	}{
 		{
 			name: "conflict",
 			err: &django.APIError{Status: 409, Code: "insufficient_stock",
 				Detail: "Μόνο 2 διαθέσιμα."},
-			want: &ToolError{Code: "insufficient_stock",
+			want: &mcptool.ToolError{Code: "insufficient_stock",
 				Detail: "Μόνο 2 διαθέσιμα."},
 		},
 		{
 			name: "validation",
 			err: &django.APIError{Status: 400, Code: "max_value",
 				Detail: "quantity: Ensure this value is less than 999."},
-			want: &ToolError{Code: "max_value",
+			want: &mcptool.ToolError{Code: "max_value",
 				Detail: "quantity: Ensure this value is less than 999."},
 		},
 		{
 			name: "validation without a code",
 			err:  &django.APIError{Status: 400},
-			want: &ToolError{Code: "invalid"},
+			want: &mcptool.ToolError{Code: "invalid"},
 		},
 		{
 			name: "throttled",
 			err: &django.APIError{Status: 429, Code: "throttled",
 				Detail: "Request was throttled.", RetryAfter: 42 * time.Second},
-			want: &ToolError{Code: "throttled",
+			want: &mcptool.ToolError{Code: "throttled",
 				Detail: "Request was throttled.", RetryAfter: 42},
 		},
 	}
@@ -61,7 +62,7 @@ func TestUpstreamErrCarriesTheStoresCodeAndDetail(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			err := upstreamErr(fmt.Errorf("add: %w", tc.err), "not found")
 
-			var got *ToolError
+			var got *mcptool.ToolError
 			require.ErrorAs(t, err, &got)
 			assert.Equal(t, tc.want.Code, got.Code)
 			assert.Equal(t, tc.want.Detail, got.Detail)
@@ -76,12 +77,12 @@ func TestUpstreamErrCarriesTheStoresCodeAndDetail(t *testing.T) {
 func TestUpstreamErrLeaksNothingTheAgentMayNotSee(t *testing.T) {
 	forbidden := upstreamErr(&django.APIError{Status: 403,
 		Code: "permission_denied", Detail: "Not your order."}, "no such order")
-	assert.Equal(t, &ToolError{Code: "not_found", Hint: "no such order"},
+	assert.Equal(t, &mcptool.ToolError{Code: "not_found", Hint: "no such order"},
 		forbidden)
 
 	down := upstreamErr(&django.APIError{Status: 500, Code: "error",
 		Detail: "relation \"cart\" does not exist"}, "not found")
-	var got *ToolError
+	var got *mcptool.ToolError
 	require.ErrorAs(t, down, &got)
 	assert.Equal(t, "unavailable", got.Code)
 	assert.Empty(t, got.Detail)
@@ -123,13 +124,13 @@ func TestWithHintAddsWhatTheCallLeftBehind(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			base := upstreamErr(cause, cartGone)
-			before, ok := errors.AsType[*ToolError](base)
+			before, ok := errors.AsType[*mcptool.ToolError](base)
 			require.True(t, ok)
 			want := *before
 
 			got := withHint(base, checkoutNotUpdated)
 
-			var te *ToolError
+			var te *mcptool.ToolError
 			require.ErrorAs(t, got, &te)
 			assert.Equal(t, want.Code, te.Code)
 			assert.Equal(t, want.Detail, te.Detail)
@@ -140,17 +141,6 @@ func TestWithHintAddsWhatTheCallLeftBehind(t *testing.T) {
 	shared := *errCheckoutUnavailable
 	_ = withHint(errCheckoutUnavailable, checkoutNotCreated)
 	assert.Equal(t, shared, *errCheckoutUnavailable, "a shared value is copied")
-}
-
-// The tool result is JSON an agent can read field by field, Greek
-// unescaped.
-func TestToolErrorRendersAsJSON(t *testing.T) {
-	err := &ToolError{Code: "insufficient_stock", Detail: "Μόνο 2 <διαθέσιμα>",
-		Hint: "explain"}
-
-	assert.JSONEq(t, `{"code":"insufficient_stock",`+
-		`"detail":"Μόνο 2 <διαθέσιμα>","hint":"explain"}`, err.Error())
-	assert.Contains(t, err.Error(), "Μόνο 2 <διαθέσιμα>")
 }
 
 // addDjango answers POST /cart/item with addStatus (the item, or a
@@ -268,7 +258,7 @@ func TestAddToCartToAGoneCartSaysToCreateANewOne(t *testing.T) {
 		CartID: "6f1c1f3e-2d6a-4b0f-9a3e-2f6d6c1b9a10", ProductID: 1,
 	})
 
-	var got *ToolError
+	var got *mcptool.ToolError
 	require.ErrorAs(t, err, &got)
 	assert.Equal(t, "not_found", got.Code)
 	assert.Contains(t, got.Hint, "create_cart")

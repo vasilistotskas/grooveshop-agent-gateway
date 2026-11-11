@@ -14,6 +14,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/identity"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -28,7 +29,7 @@ func TestAccountToolsSayWhatTheLinkLacks(t *testing.T) {
 		})
 		_, _, err := h.myOrders(store, nil, struct{}{})
 
-		var got *ToolError
+		var got *mcptool.ToolError
 		require.ErrorAs(t, err, &got)
 		assert.Equal(t, "unauthorized", got.Code)
 		assert.Contains(t, got.Hint, "https://shop.example.test/"+
@@ -51,7 +52,7 @@ func TestAccountToolsSayWhatTheLinkLacks(t *testing.T) {
 
 		_, _, err := h.myLoyaltyPoints(linked, nil, struct{}{})
 
-		var got *ToolError
+		var got *mcptool.ToolError
 		require.ErrorAs(t, err, &got)
 		assert.Equal(t, "not_granted", got.Code)
 		assert.Contains(t, got.Hint, "loyalty:read")

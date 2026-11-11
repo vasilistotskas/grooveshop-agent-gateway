@@ -10,6 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 )
 
 type StorePoliciesIn struct{}
@@ -89,9 +90,10 @@ func returnFees(s *django.PublicSettings) (string, error) {
 // unreadableTerms reports a return setting Django did not serve as it
 // declares it.
 func unreadableTerms(name string) error {
-	return &ToolError{Code: codeUnavailable, Hint: "the store's " + name +
-		" could not be read; tell the shopper its return terms cannot " +
-		"be read right now, and never state terms of your own"}
+	return &mcptool.ToolError{Code: mcptool.CodeUnavailable,
+		Hint: "the store's " + name + " could not be read; tell the " +
+			"shopper its return terms cannot be read right now, and " +
+			"never state terms of your own"}
 }
 
 func policiesSummary(out StorePoliciesOut) string {

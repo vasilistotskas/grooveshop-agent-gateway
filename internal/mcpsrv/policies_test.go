@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 )
 
 const (
@@ -103,7 +104,7 @@ func TestStorePoliciesRefuseUnreadableTerms(t *testing.T) {
 				StorePoliciesIn{})
 
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), codeUnavailable)
+			assert.Contains(t, err.Error(), mcptool.CodeUnavailable)
 		})
 	}
 }
@@ -118,5 +119,5 @@ func TestStorePoliciesReportAPageOutage(t *testing.T) {
 	_, _, err := h.getStorePolicies(storeContext(), nil, StorePoliciesIn{})
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), codeUnavailable)
+	assert.Contains(t, err.Error(), mcptool.CodeUnavailable)
 }

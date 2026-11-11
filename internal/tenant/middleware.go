@@ -1,6 +1,7 @@
 package tenant
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -41,24 +42,14 @@ func middleware(
 				httpmw.WriteJSONError(w, http.StatusNotFound, "unknown store")
 				return
 			case err != nil:
-				log.ErrorContext(req.Context(), "tenant resolution failed",
-					slog.String("host", req.Host),
-					slog.String("error", err.Error()),
-				)
-				httpmw.WriteJSONError(w, http.StatusServiceUnavailable,
-					"store temporarily unavailable")
+				unavailable(w, req, log, "tenant resolution failed", err)
 				return
 			}
 			if needSecrets {
 				full, secErr := r.EnsureSecrets(req.Context(), t)
 				if secErr != nil {
-					log.ErrorContext(req.Context(),
-						"tenant secret refresh failed",
-						slog.String("host", req.Host),
-						slog.String("error", secErr.Error()),
-					)
-					httpmw.WriteJSONError(w, http.StatusServiceUnavailable,
-						"store temporarily unavailable")
+					unavailable(w, req, log, "tenant secret refresh failed",
+						secErr)
 					return
 				}
 				t = full
@@ -67,6 +58,22 @@ func middleware(
 			next.ServeHTTP(w, req.WithContext(NewContext(req.Context(), t)))
 		})
 	}
+}
+
+// unavailable answers 503 for a store that could not be resolved, and
+// logs why as msg, unless the caller hung up.
+func unavailable(
+	w http.ResponseWriter, req *http.Request, log *slog.Logger,
+	msg string, err error,
+) {
+	if !errors.Is(err, context.Canceled) {
+		log.ErrorContext(req.Context(), msg,
+			slog.String("host", req.Host),
+			slog.String("error", err.Error()),
+		)
+	}
+	httpmw.WriteJSONError(w, http.StatusServiceUnavailable,
+		"store temporarily unavailable")
 }
 
 // RequireAgentCommerce 404s the agent-commerce surfaces (MCP, UCP,

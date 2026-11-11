@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -108,7 +109,7 @@ func TestChatCartToolsNeverAnswerAGoneCartWithCreateCart(t *testing.T) {
 
 			err := call(h, ctx)
 
-			var got *ToolError
+			var got *mcptool.ToolError
 			require.ErrorAs(t, err, &got)
 			assert.NotContains(t, got.Hint, "create_cart")
 			assert.False(t, activity.Mutated())
@@ -118,7 +119,7 @@ func TestChatCartToolsNeverAnswerAGoneCartWithCreateCart(t *testing.T) {
 				assert.Contains(t, got.Hint, "get_cart")
 				return
 			}
-			assert.Equal(t, &ToolError{Code: codeCartUnreachable,
+			assert.Equal(t, &mcptool.ToolError{Code: mcptool.CodeCartUnreachable,
 				Hint: shopperCartUnreachable}, got)
 			assert.Contains(t, got.Hint, "reload the page")
 		})
@@ -141,9 +142,9 @@ func TestMCPCartToolsAnswerAGoneCartWithCreateCart(t *testing.T) {
 
 			err := call(h, ctx)
 
-			var got *ToolError
+			var got *mcptool.ToolError
 			require.ErrorAs(t, err, &got)
-			assert.Equal(t, codeNotFound, got.Code)
+			assert.Equal(t, mcptool.CodeNotFound, got.Code)
 			assert.Contains(t, got.Hint, "create_cart")
 		})
 	}
