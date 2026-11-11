@@ -7,17 +7,43 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/acp"
 )
 
-// acpCall hits the ACP REST surface the way an agentic platform does.
-func acpCall(
+// acpErrorSchema is the vendored spec's Error, which every 4xx and 5xx
+// body of the ACP surface must match.
+var acpErrorSchema = sync.OnceValues(func() (*jsonschema.Schema, error) {
+	f, err := os.Open(filepath.Join("..", "..", "testdata", "schemas",
+		"acp", acp.Version, "schema.agentic_checkout.json"))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	raw, err := jsonschema.UnmarshalJSON(f)
+	if err != nil {
+		return nil, err
+	}
+	c := jsonschema.NewCompiler()
+	if err := c.AddResource("acp-checkout.json", raw); err != nil {
+		return nil, err
+	}
+	return c.Compile("acp-checkout.json#/$defs/Error")
+})
+
+// acpRequest builds a request the way an agentic platform sends it.
+func acpRequest(
 	t *testing.T, method, url string, body any, idemKey string,
-) (*http.Response, map[string]any) {
+) *http.Request {
 	t.Helper()
 	var reader io.Reader
 	if body != nil {
@@ -29,15 +55,87 @@ func acpCall(
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+acpBearerToken)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("API-Version", acp.Version)
 	if idemKey != "" {
 		req.Header.Set("Idempotency-Key", idemKey)
 	}
+	return req
+}
+
+// acpDo sends req and decodes the answer, which must be a spec Error
+// whenever it is not a success.
+func acpDo(
+	t *testing.T, req *http.Request,
+) (*http.Response, map[string]any) {
+	t.Helper()
+	resp, raw := acpRaw(t, req)
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(raw, &decoded), "%s", raw)
+	return resp, decoded
+}
+
+// acpRaw sends req and returns the answer's bytes, which must be a spec
+// Error whenever it is not a success.
+func acpRaw(t *testing.T, req *http.Request) (*http.Response, []byte) {
+	t.Helper()
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
-	var decoded map[string]any
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&decoded))
-	return resp, decoded
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	if resp.StatusCode >= http.StatusBadRequest {
+		schema, err := acpErrorSchema()
+		require.NoError(t, err)
+		doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+		require.NoError(t, err, "%s", raw)
+		require.NoError(t, schema.Validate(doc), "%s", raw)
+	}
+	return resp, raw
+}
+
+// acpCall hits the ACP REST surface the way an agentic platform does.
+func acpCall(
+	t *testing.T, method, url string, body any, idemKey string,
+) (*http.Response, map[string]any) {
+	t.Helper()
+	return acpDo(t, acpRequest(t, method, url, body, idemKey))
+}
+
+// acpReady returns the id of an ACP session at base that is ready to
+// complete with cash on delivery.
+func acpReady(t *testing.T, base string) string {
+	t.Helper()
+	resp, created := acpCall(t, http.MethodPost, base, map[string]any{
+		"line_items":   []map[string]any{{"id": "1", "quantity": 2}},
+		"currency":     "EUR",
+		"capabilities": map[string]any{},
+		"buyer": map[string]any{
+			"first_name": "Μαρία", "last_name": "Παπαδοπούλου",
+			"email":        "maria@example.test",
+			"phone_number": "+306912345678",
+		},
+		"fulfillment_details": map[string]any{
+			"name": "Μαρία Παπαδοπούλου",
+			"address": map[string]any{
+				"name":     "Μαρία Παπαδοπούλου",
+				"line_one": "Πανεπιστημίου 12", "city": "Αθήνα",
+				"state": "GR-14", "country": "GR",
+				"postal_code": "10431",
+			},
+		},
+	}, uuid.NewString())
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	id := created["id"].(string)
+	resp, updated := acpCall(t, http.MethodPost, base+"/"+id,
+		map[string]any{
+			"selected_fulfillment_options": []map[string]any{{
+				"type": "shipping", "option_id": "acs:home_delivery",
+				"item_ids": []string{"410"},
+			}},
+		}, uuid.NewString())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "ready_for_payment", updated["status"])
+	return id
 }
 
 // Django deletes the cart with the order, so a completed session renders

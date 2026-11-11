@@ -296,7 +296,7 @@ tool cancel_checkout "{\"meta\":$(ucp_meta "$(uuid)"),\"id\":\"$(j 't.id' <<<"$R
 
 ## 5. ACP
 
-ACP needs the tenant's `acp_bearer_token`, on staging as on local, and every POST needs an `Idempotency-Key`. Without the token, every call gets 401:
+ACP needs the tenant's `acp_bearer_token`, on staging as on local, every call an `API-Version` (the `acp` helper sends it; without it the answer is 400 `missing_api_version`), and every POST an `Idempotency-Key`. Without the token, every call gets 401:
 
 ```bash
 export ACP_TOKEN="<the demo tenant's acp_bearer_token>"
@@ -354,7 +354,7 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | `add_to_cart`, UCP or ACP create on an out-of-stock product | Refused: `insufficient_stock`, in the store's words |
 | Quantity above 999 | Refused: `quantity_too_large` |
 | Stock gone between ready and complete, UCP | Refused, naming the product. The session stays `ready_for_complete`, and a retry succeeds once stock returns |
-| Stock gone, ACP | 409 `out_of_stock` |
+| Stock gone, ACP | 400 `out_of_stock`, naming the product |
 
 ### Idempotency
 
@@ -365,7 +365,9 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | UCP complete again with a new key, after completing | Same order, none added |
 | ACP POST with no key | 400 `idempotency_key_required` |
 | ACP create replayed, same key and body | 201 with `Idempotent-Replayed: true` |
-| ACP same key, different body | 422 `idempotency_conflict` |
+| ACP same key, different body | 422 `idempotency_conflict`, except a complete of an already completed session, which answers 200 with the session whatever the body (#128) |
+| ACP create replayed after its session expired, same key and body | 201 with the original body and `Idempotent-Replayed: true` |
+| ACP call while another holds the session (lock busy) | 409 `idempotency_in_flight` with `Retry-After` |
 
 ### Invalid input
 
@@ -398,6 +400,7 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | Update or cancel a completed checkout | Refused, naming the order |
 | Update a cancelled checkout | Refused |
 | Cancel an ACP session twice | 405 |
+| Update a completed or cancelled ACP session | 405 `conflict`, `Allow: GET, HEAD` |
 
 ## 7. Store-admin connector (`/mcp/admin`)
 

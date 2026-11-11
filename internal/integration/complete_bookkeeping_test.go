@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/acp"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
@@ -59,41 +60,11 @@ func codPayment() map[string]any {
 func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 	t.Helper()
 	base := stack.gw.URL + "/acp/checkout_sessions"
-	acp := completionSurface{
+	acpSurface := completionSurface{
 		name: "acp",
 		ready: func(t *testing.T) string {
 			t.Helper()
-			resp, created := acpCall(t, http.MethodPost, base, map[string]any{
-				"line_items":   []map[string]any{{"id": "1", "quantity": 2}},
-				"currency":     "EUR",
-				"capabilities": map[string]any{},
-				"buyer": map[string]any{
-					"first_name": "Μαρία", "last_name": "Παπαδοπούλου",
-					"email":        "maria@example.test",
-					"phone_number": "+306912345678",
-				},
-				"fulfillment_details": map[string]any{
-					"name": "Μαρία Παπαδοπούλου",
-					"address": map[string]any{
-						"name":     "Μαρία Παπαδοπούλου",
-						"line_one": "Πανεπιστημίου 12", "city": "Αθήνα",
-						"state": "GR-14", "country": "GR",
-						"postal_code": "10431",
-					},
-				},
-			}, uuid.NewString())
-			require.Equal(t, http.StatusCreated, resp.StatusCode)
-			id := created["id"].(string)
-			resp, updated := acpCall(t, http.MethodPost, base+"/"+id,
-				map[string]any{
-					"selected_fulfillment_options": []map[string]any{{
-						"type": "shipping", "option_id": "acs:home_delivery",
-						"item_ids": []string{"410"},
-					}},
-				}, uuid.NewString())
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-			require.Equal(t, "ready_for_payment", updated["status"])
-			return id
+			return acpReady(t, base)
 		},
 		complete: func(
 			ctx context.Context, id, key string, submit map[string]any,
@@ -113,6 +84,7 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			}
 			req.Header.Set("Authorization", "Bearer "+acpBearerToken)
 			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("API-Version", acp.Version)
 			req.Header.Set("Idempotency-Key", key)
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -216,7 +188,7 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			require.False(t, res.IsError, "%v", res.Content)
 		},
 	}
-	return []completionSurface{acp, mcpSurface}
+	return []completionSurface{acpSurface, mcpSurface}
 }
 
 // The states a completion leaves an idempotency key in.
@@ -446,13 +418,13 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 func TestACPCompleteAnswersAPlatformThatOnlyLooksGone(t *testing.T) {
 	watch := new(requestWatch)
 	stack := startUCPGatewayBehind(t, watch.front)
-	var acp completionSurface
+	var acpSurface completionSurface
 	for _, surface := range completionSurfaces(t, stack) {
 		if surface.name == "acp" {
-			acp = surface
+			acpSurface = surface
 		}
 	}
-	id := acp.ready(t)
+	id := acpSurface.ready(t)
 	reached, answer := make(chan struct{}), make(chan struct{})
 	release := sync.OnceFunc(func() { close(answer) })
 	defer release()
@@ -470,9 +442,10 @@ func TestACPCompleteAnswersAPlatformThatOnlyLooksGone(t *testing.T) {
 	const body = `{"payment_data": {}}`
 	_, err = fmt.Fprintf(conn, "POST /acp/checkout_sessions/%s/complete "+
 		"HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\n"+
-		"Content-Type: application/json\r\nIdempotency-Key: %s\r\n"+
-		"Content-Length: %d\r\n\r\n%s",
-		id, host, acpBearerToken, uuid.NewString(), len(body), body)
+		"Content-Type: application/json\r\nAPI-Version: %s\r\n"+
+		"Idempotency-Key: %s\r\nContent-Length: %d\r\n\r\n%s",
+		id, host, acpBearerToken, acp.Version, uuid.NewString(), len(body),
+		body)
 	require.NoError(t, err)
 
 	const wait = ucpUpstreamTimeout / 2
@@ -634,10 +607,10 @@ func TestRefusedCompleteKeepsWhatItSubmitted(t *testing.T) {
 func TestACPCompleteKeepsTheBuyerItCouldNotOrderFor(t *testing.T) {
 	stack := startUCPGateway(t)
 	ctx := context.Background()
-	var acp completionSurface
+	var acpSurface completionSurface
 	for _, surface := range completionSurfaces(t, stack) {
 		if surface.name == "acp" {
-			acp = surface
+			acpSurface = surface
 		}
 	}
 
@@ -652,32 +625,32 @@ func TestACPCompleteKeepsTheBuyerItCouldNotOrderFor(t *testing.T) {
 		id := created["id"].(string)
 
 		key := uuid.NewString()
-		require.Empty(t, acp.complete(ctx, id, key, otherBuyer()))
+		require.Empty(t, acpSurface.complete(ctx, id, key, otherBuyer()))
 
 		assert.Equal(t, bookkeeping{
 			Session: checkout.StatusIncomplete, Key: keyReleased,
-		}, stack.bookkeeping(t, id, acp.keyName(id, key)))
+		}, stack.bookkeeping(t, id, acpSurface.keyName(id, key)))
 		assert.Equal(t, otherBuyerEmail,
 			stack.storedSession(t, id).Buyer.Email)
 	})
 
 	t.Run("pay ways that cannot be read", func(t *testing.T) {
-		id := acp.ready(t)
+		id := acpSurface.ready(t)
 		creates := stack.faults.orderCreates.Load()
 
 		stack.faults.payWayLookup.Store(true)
 		t.Cleanup(func() { stack.faults.payWayLookup.Store(false) })
 		key := uuid.NewString()
-		require.Empty(t, acp.complete(ctx, id, key, otherBuyer()))
+		require.Empty(t, acpSurface.complete(ctx, id, key, otherBuyer()))
 		stack.faults.payWayLookup.Store(false)
 
 		assert.Equal(t, bookkeeping{
 			Session: checkout.StatusReadyForComplete, Key: keyReleased,
-		}, stack.bookkeeping(t, id, acp.keyName(id, key)))
+		}, stack.bookkeeping(t, id, acpSurface.keyName(id, key)))
 		assert.Equal(t, otherBuyerEmail,
 			stack.storedSession(t, id).Buyer.Email)
 
-		require.NotEmpty(t, acp.complete(ctx, id, uuid.NewString(), nil))
+		require.NotEmpty(t, acpSurface.complete(ctx, id, uuid.NewString(), nil))
 		require.Equal(t, creates+1, stack.faults.orderCreates.Load())
 		assert.Equal(t, otherBuyerEmail,
 			(*stack.faults.lastOrder.Load())["email"])

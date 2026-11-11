@@ -180,6 +180,9 @@ type checkoutFaults struct {
 	orderCreates atomic.Int32
 	// orderRefuse makes order creation answer 400: nothing is created.
 	orderRefuse atomic.Bool
+	// orderConflict makes order creation answer a 409 that is not a
+	// stock shortfall: nothing is created.
+	orderConflict atomic.Bool
 	// orderHold runs inside an accepted order creation, before it
 	// answers.
 	orderHold atomic.Pointer[func(*http.Request)]
@@ -201,6 +204,10 @@ type checkoutFaults struct {
 	cartWrites atomic.Int32
 	// cartCreates counts the carts created: a cart read naming none.
 	cartCreates atomic.Int32
+	// namedCartReads counts the reads of a named cart; from the read
+	// numbered namedCartReadsFailFrom on (when set), they answer 502.
+	namedCartReads         atomic.Int32
+	namedCartReadsFailFrom atomic.Int32
 	// agentProtocol is the attribution the last order create carried.
 	agentProtocol atomic.Value
 }
@@ -223,6 +230,13 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 		func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("X-Cart-Id") == "" {
 				faults.cartCreates.Add(1)
+			} else {
+				n := faults.namedCartReads.Add(1)
+				from := faults.namedCartReadsFailFrom.Load()
+				if from > 0 && n >= from {
+					w.WriteHeader(http.StatusBadGateway)
+					return
+				}
 			}
 			if faults.cartDeletedOnOrder.Load() &&
 				faults.orderCreates.Load() > 0 {
@@ -294,6 +308,13 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(
 					`{"detail": "The cart can no longer be ordered."}`))
+				return
+			}
+			if faults.orderConflict.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(
+					`{"detail": "The cart changed while it was ordered."}`))
 				return
 			}
 			// The cart rides the header, never the body.

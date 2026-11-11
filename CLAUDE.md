@@ -234,6 +234,39 @@ passes.
   profile that cannot be fetched, validated or version-matched is the
   spec's transport error `-32001`, and a spent discovery budget is its
   retryable `-32000` (`mcpsrv.negotiate`).
+- **ACP errors are the spec's** (`internal/acp/handler.go`): every
+  error written by `internal/acp` is checked against the vendored
+  `Error` schema, which requires `type`, `code` and `message`. Answers
+  the middleware writes before the handler (tenant, rate limit,
+  recover, the mux's own 404/405) are not.
+  - A request whose `API-Version` is not `acp.Version` gets 400
+    `missing_api_version` or `unsupported_api_version` with
+    `supported_versions`.
+  - 409 is only `idempotency_in_flight`, with `Retry-After`: a key or
+    the session lock in use, or an order being placed until
+    `Flow.CompletionDeadline`. Past it the outcome was never recorded
+    and stays so until the session expires: 502
+    `order_outcome_unknown`, no `Retry-After`.
+  - A completed or canceled session refuses update and cancel with
+    405 and an `Allow` header, and so does a canceled one complete. A
+    complete of a completed session answers 200 with the session.
+  - A create stores the response it sent (status and body) with its
+    key (`createScope`, versioned with that record); a replay with the
+    same body answers those bytes for the record's 24 hours, whether
+    or not the session lives. Update, complete and cancel replays
+    render the session as it is now. `Idempotent-Replayed` is set only
+    on a replay's own answer.
+  - So the buyer data a create carried (name, email, phone, address)
+    is kept in Redis for 24 hours under
+    `ag:{schema}:acp:idem:create.v2:{key}`, while the session itself
+    lives 30 minutes: the spec requires a key's response to be kept at
+    least 24 hours (§6.6). Nothing else reads it.
+  - A create is rendered before it is saved, and a 4xx or 5xx releases
+    its key: a create that failed leaves no session and no record.
+  - `completeError` answers every `checkout` and `django` sentinel
+    deliberately (`TestCompleteErrorMapsEverySentinel` walks them): a
+    refusal is a 4xx, and an order that exists or may is never
+    answered as a failure.
 - **A completion finishes without its caller.** `checkout.Flow.Complete`
   runs on the caller's context only until the order is about to be
   created. From the in-progress save on it is detached
