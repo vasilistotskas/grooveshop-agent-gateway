@@ -164,7 +164,7 @@ func New(d Deps) http.Handler {
 	acp.NewHandler(d.Django, checkoutStore, checkoutFlow, d.Redis,
 		site, d.Log).Register(mux, acpMW)
 
-	feedSvc := feeds.NewService(d.Django, d.Redis, d.Log,
+	feedSvc := feeds.NewService(d.Django, d.Redis, d.Log, d.Metrics,
 		d.Cfg.FeedImageURLTemplate, d.Cfg.AssetsHost,
 		d.Cfg.FeedFreshTTL, d.Cfg.FeedStaleTTL, d.Version, site)
 	feedMW := func(h http.Handler) http.Handler {

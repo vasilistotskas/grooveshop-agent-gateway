@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -32,6 +33,8 @@ type gatedDjango struct {
 	entered  chan struct{}
 	released chan struct{}
 	once     sync.Once
+	// broken makes every catalog page fail, as a malformed price does.
+	broken atomic.Bool
 }
 
 func newGatedDjango(t *testing.T) *gatedDjango {
@@ -51,6 +54,15 @@ func (g *gatedDjango) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			close(g.entered)
 			<-g.released
 		}
+		if g.broken.Load() {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"links":{"next":null,"previous":null},` +
+				`"count":1,"totalPages":1,"pageSize":1,"page":1,"results":[` +
+				`{"id":1,"translations":{"el":{"name":"Π"}},"slug":"p",` +
+				`"active":true,"stock":1,"mainImagePath":"m.jpg",` +
+				`"effectivePrice":"not-money"}]}`))
+			return
+		}
 	}
 	g.next.ServeHTTP(w, r)
 }
@@ -59,18 +71,20 @@ func (g *gatedDjango) release() { g.once.Do(func() { close(g.released) }) }
 
 func newFeedService(t *testing.T, djangoURL string) *feeds.Service {
 	t.Helper()
-	return feedServiceOf(djangoURL, startRedis(t), "v1.0.0")
+	return feedServiceOf(djangoURL, startRedis(t), "v1.0.0",
+		time.Hour, obs.NewMetrics())
 }
 
 func feedServiceOf(
 	djangoURL string, rdb *redis.Client, generator string,
+	freshTTL time.Duration, metrics *obs.Metrics,
 ) *feeds.Service {
 	log := quietLogger()
 	dj := django.New(djangoURL+"/api/v1", "api.example.test", "test-secret",
 		5*time.Second, log, obs.NewMetrics())
-	return feeds.NewService(dj, rdb, log,
+	return feeds.NewService(dj, rdb, log, metrics,
 		"https://{assets_host}/x/{path}", "assets.platform.test",
-		time.Hour, 24*time.Hour, generator,
+		freshTTL, 24*time.Hour, generator,
 		storefront.NewSite("el"))
 }
 
@@ -85,19 +99,20 @@ func TestFeedFromAnotherBuildIsRegenerated(t *testing.T) {
 	rdb := startRedis(t)
 	ten := feedTenant()
 
-	_, meta, err := feedServiceOf(srv.URL, rdb, "v1.0.0").
-		Get(context.Background(), ten, feeds.KindGoogle)
+	meta, err := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Hour,
+		obs.NewMetrics()).Meta(context.Background(), ten, feeds.KindGoogle)
 	require.NoError(t, err)
 	assert.Equal(t, "v1.0.0", meta.Generator)
 	require.EqualValues(t, 1, g.sweeps.Load())
 
-	next := feedServiceOf(srv.URL, rdb, "v1.1.0")
-	_, meta, err = next.Get(context.Background(), ten, feeds.KindGoogle)
+	next := feedServiceOf(srv.URL, rdb, "v1.1.0", time.Hour,
+		obs.NewMetrics())
+	meta, err = next.Meta(context.Background(), ten, feeds.KindGoogle)
 	require.NoError(t, err)
 	assert.Equal(t, "v1.1.0", meta.Generator)
 	assert.EqualValues(t, 2, g.sweeps.Load(), "the new build swept again")
 
-	_, _, err = next.Get(context.Background(), ten, feeds.KindGoogle)
+	_, err = next.Meta(context.Background(), ten, feeds.KindGoogle)
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, g.sweeps.Load(), "its own feed is served")
 }
@@ -125,7 +140,7 @@ func TestFeedInvalidationDuringSweepIsNotLostToIt(t *testing.T) {
 
 	done := make(chan feeds.Meta, 1)
 	go func() {
-		_, meta, err := svc.Get(ctx, ten, feeds.KindGoogle)
+		meta, err := svc.Meta(ctx, ten, feeds.KindGoogle)
 		assert.NoError(t, err)
 		done <- meta
 	}()
@@ -139,7 +154,7 @@ func TestFeedInvalidationDuringSweepIsNotLostToIt(t *testing.T) {
 		"a sweep overtaken by an invalidation must be stored stale")
 
 	require.Eventually(t, func() bool {
-		_, meta, err := svc.Get(ctx, ten, feeds.KindGoogle)
+		meta, err := svc.Meta(ctx, ten, feeds.KindGoogle)
 		return err == nil && !meta.GeneratedAt.IsZero()
 	}, 10*time.Second, 50*time.Millisecond,
 		"the stale entry must trigger a regeneration")
@@ -158,7 +173,7 @@ func TestFeedSweepOutlivesTheFirstCaller(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	first := make(chan error, 1)
 	go func() {
-		_, _, err := svc.Get(ctx, ten, feeds.KindMeta)
+		_, err := svc.Meta(ctx, ten, feeds.KindMeta)
 		first <- err
 	}()
 	<-g.entered
@@ -167,9 +182,237 @@ func TestFeedSweepOutlivesTheFirstCaller(t *testing.T) {
 	g.release()
 
 	require.Eventually(t, func() bool {
-		_, meta, err := svc.Get(context.Background(), ten, feeds.KindACP)
+		meta, err := svc.Meta(context.Background(), ten, feeds.KindACP)
 		return err == nil && !meta.GeneratedAt.IsZero()
 	}, 10*time.Second, 50*time.Millisecond)
 	assert.EqualValues(t, 1, g.sweeps.Load(),
 		"the abandoned sweep filled the cache; no second sweep ran")
+}
+
+// A refresh that fails keeps the stale feed served, and holds off the
+// next sweep for the store, on any pod, until the backoff runs out or an
+// invalidation lifts it.
+func TestFailedFeedRefreshIsNotRetriedByEveryRequest(t *testing.T) {
+	g := newGatedDjango(t)
+	g.armed.Store(false)
+	srv := httptest.NewServer(g)
+	t.Cleanup(srv.Close)
+	rdb := startRedis(t)
+	metrics := obs.NewMetrics()
+	// Every entry is stale at once, so every request asks for a refresh.
+	svc := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Nanosecond, metrics)
+	other := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Nanosecond,
+		obs.NewMetrics())
+	ten := feedTenant()
+	ctx := context.Background()
+
+	first, err := svc.Meta(ctx, ten, feeds.KindGoogle)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, g.sweeps.Load())
+
+	g.broken.Store(true)
+	served, err := svc.Meta(ctx, ten, feeds.KindGoogle)
+	require.NoError(t, err)
+	assert.Equal(t, first.ETag, served.ETag, "the stale feed is served")
+	require.Eventually(t, func() bool {
+		return rdb.Exists(ctx, "ag:demostore:feed:failed").Val() == 1
+	}, 10*time.Second, 20*time.Millisecond, "the failure is marked")
+	require.EqualValues(t, 2, g.sweeps.Load())
+	assert.InDelta(t, 1, failures(t, metrics), 0)
+	ttl := rdb.TTL(ctx, "ag:demostore:feed:failed").Val()
+	assert.Positive(t, ttl)
+	assert.LessOrEqual(t, ttl, time.Minute)
+
+	for _, s := range []*feeds.Service{svc, other, svc} {
+		served, err = s.Meta(ctx, ten, feeds.KindMeta)
+		require.NoError(t, err)
+		assert.Equal(t, first.ETag, served.ETag)
+	}
+	assert.EqualValues(t, 2, g.sweeps.Load(),
+		"no request starts a sweep while the backoff runs")
+
+	g.broken.Store(false)
+	_, err = svc.Invalidate(ctx, ten.SchemaName)
+	require.NoError(t, err)
+	_, err = svc.Meta(ctx, ten, feeds.KindGoogle)
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, g.sweeps.Load(),
+		"an invalidation lifts the backoff")
+}
+
+// Redis evicts keys one by one (allkeys-lru), and a revalidation reads
+// the meta key alone, so the blob is the colder one. An entry whose blob
+// is gone is a miss: it regenerates at once, whether Meta finds it gone
+// or Body does after Meta found it.
+func TestFeedWithItsBlobEvictedRegenerates(t *testing.T) {
+	g := newGatedDjango(t)
+	g.armed.Store(false)
+	srv := httptest.NewServer(g)
+	t.Cleanup(srv.Close)
+	rdb := startRedis(t)
+	svc := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Hour, obs.NewMetrics())
+	ten := feedTenant()
+	ctx := context.Background()
+
+	first, err := svc.Meta(ctx, ten, feeds.KindGoogle)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, g.sweeps.Load())
+
+	require.NoError(t, rdb.Unlink(ctx, "ag:demostore:feed:rss").Err())
+	meta, err := svc.Meta(ctx, ten, feeds.KindGoogle)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, g.sweeps.Load(), "Meta saw the blob gone")
+	assert.Equal(t, first.ETag, meta.ETag)
+
+	require.NoError(t, rdb.Unlink(ctx, "ag:demostore:feed:rss").Err())
+	gz, meta, err := svc.Body(ctx, ten, feeds.KindGoogle)
+	require.NoError(t, err)
+	assert.NotEmpty(t, gz)
+	assert.Equal(t, first.ETag, meta.ETag)
+	assert.EqualValues(t, 3, g.sweeps.Load(), "Body regenerated the miss")
+}
+
+// A sweep that succeeds but whose feed is gone again before it is read
+// back (memory pressure) backs off like a failure: without it, every
+// request runs a full sweep and still gets 503.
+func TestFeedNotCachedAfterAGenerationBacksOff(t *testing.T) {
+	g := newGatedDjango(t)
+	g.armed.Store(false)
+	srv := httptest.NewServer(g)
+	t.Cleanup(srv.Close)
+	rdb := startRedis(t)
+	rdb.AddHook(blobAlwaysGone{})
+	svc := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Hour, obs.NewMetrics())
+	ten := feedTenant()
+	ctx := context.Background()
+
+	_, err := svc.Meta(ctx, ten, feeds.KindGoogle)
+	require.Error(t, err)
+	require.EqualValues(t, 1, g.sweeps.Load())
+	assert.EqualValues(t, 1, rdb.Exists(ctx, "ag:demostore:feed:failed").Val())
+
+	_, err = svc.Meta(ctx, ten, feeds.KindACP)
+	require.Error(t, err)
+	_, _, err = svc.Body(ctx, ten, feeds.KindMeta)
+	require.Error(t, err)
+	assert.EqualValues(t, 1, g.sweeps.Load(), "no sweep while it backs off")
+}
+
+// blobAlwaysGone answers every read of a feed blob as if Redis had just
+// evicted it.
+type blobAlwaysGone struct{}
+
+func (blobAlwaysGone) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (blobAlwaysGone) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		err := next(ctx, cmd)
+		evict(cmd)
+		return err
+	}
+}
+
+func (blobAlwaysGone) ProcessPipelineHook(
+	next redis.ProcessPipelineHook,
+) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		err := next(ctx, cmds)
+		for _, cmd := range cmds {
+			evict(cmd)
+		}
+		return err
+	}
+}
+
+func evict(cmd redis.Cmder) {
+	args := cmd.Args()
+	if len(args) < 2 {
+		return
+	}
+	key := fmt.Sprint(args[1])
+	if key != "ag:demostore:feed:rss" && key != "ag:demostore:feed:acp" {
+		return
+	}
+	switch c := cmd.(type) {
+	case *redis.IntCmd:
+		if cmd.Name() == "touch" {
+			c.SetVal(0)
+		}
+	case *redis.SliceCmd:
+		if cmd.Name() == "mget" {
+			vals := c.Val()
+			if len(vals) > 0 {
+				vals[0] = nil
+			}
+		}
+	}
+}
+
+// A sweep an invalidation overtook does not mark its failure: the
+// invalidation may be the fix, and it has just emptied the feed.
+func TestFailedSweepOvertakenByAnInvalidationIsNotMarked(t *testing.T) {
+	g := newGatedDjango(t)
+	g.broken.Store(true)
+	srv := httptest.NewServer(g)
+	t.Cleanup(srv.Close)
+	rdb := startRedis(t)
+	metrics := obs.NewMetrics()
+	svc := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Hour, metrics)
+	ten := feedTenant()
+	ctx := context.Background()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.Meta(ctx, ten, feeds.KindGoogle)
+		done <- err
+	}()
+	<-g.entered
+	_, err := svc.Invalidate(ctx, ten.SchemaName)
+	require.NoError(t, err)
+	g.release()
+	require.Error(t, <-done)
+	assert.InDelta(t, 1, failures(t, metrics), 0, "still counted")
+	assert.Zero(t, rdb.Exists(ctx, "ag:demostore:feed:failed").Val())
+
+	g.broken.Store(false)
+	_, err = svc.Meta(ctx, ten, feeds.KindGoogle)
+	require.NoError(t, err, "the next request sweeps again at once")
+	assert.EqualValues(t, 2, g.sweeps.Load())
+}
+
+// A missing feed whose generation failed answers at once while the
+// backoff runs, without another sweep.
+func TestFailedFeedGenerationBacksOffAMiss(t *testing.T) {
+	g := newGatedDjango(t)
+	g.armed.Store(false)
+	g.broken.Store(true)
+	srv := httptest.NewServer(g)
+	t.Cleanup(srv.Close)
+	metrics := obs.NewMetrics()
+	svc := feedServiceOf(srv.URL, startRedis(t), "v1.0.0", time.Hour,
+		metrics)
+	ten := feedTenant()
+	ctx := context.Background()
+
+	_, err := svc.Meta(ctx, ten, feeds.KindGoogle)
+	require.Error(t, err)
+	_, err = svc.Meta(ctx, ten, feeds.KindACP)
+	require.Error(t, err)
+	assert.EqualValues(t, 1, g.sweeps.Load())
+	assert.InDelta(t, 1, failures(t, metrics), 0)
+}
+
+func failures(t *testing.T, m *obs.Metrics) float64 {
+	t.Helper()
+	families, err := m.Registry.Gather()
+	require.NoError(t, err)
+	for _, f := range families {
+		if f.GetName() == "gateway_feed_generation_failures_total" {
+			return f.GetMetric()[0].GetCounter().GetValue()
+		}
+	}
+	t.Fatal("feed failure counter not registered")
+	return 0
 }

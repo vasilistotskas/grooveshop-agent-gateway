@@ -4,14 +4,17 @@ package integration
 
 import (
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -75,13 +78,29 @@ func feedsFakeDjango(t *testing.T) http.Handler {
 		t.Errorf("feeds fake django: unexpected call %s %s", r.Method, r.URL)
 		w.WriteHeader(http.StatusNotFound)
 	})
-	return mux
+	// A sweep is the gateway's own work for the store: it names no
+	// visitor, whoever's request started it.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/product/") {
+			for _, h := range []string{
+				"X-Real-IP", "X-Forwarded-For", "X-Origin-Verify",
+			} {
+				assert.Empty(t, r.Header.Get(h), "sweep sent %s", h)
+			}
+			assert.NotEqual(t, crawlerAgent, r.Header.Get("User-Agent"))
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
+
+const crawlerAgent = "Feedfetcher-test"
 
 func TestFeedsEndToEnd(t *testing.T) {
 	djangoSrv := httptest.NewServer(feedsFakeDjango(t))
 	t.Cleanup(djangoSrv.Close)
 	rdb := startRedis(t)
+	rec := &commandRecorder{}
+	rdb.AddHook(rec)
 
 	log := quietLogger()
 	metrics := obs.NewMetrics()
@@ -120,6 +139,9 @@ func TestFeedsEndToEnd(t *testing.T) {
 	get := func(path string, headers map[string]string) *http.Response {
 		req, err := http.NewRequest(http.MethodGet, gw.URL+path, nil)
 		require.NoError(t, err)
+		req.Header.Set("CF-Connecting-IP", "203.0.113.9")
+		req.Header.Set("X-Origin-Verify", "edge-proof")
+		req.Header.Set("User-Agent", crawlerAgent)
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
@@ -178,6 +200,170 @@ func TestFeedsEndToEnd(t *testing.T) {
 		assert.Contains(t, resp.Header.Get("Content-Type"), "application/json")
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
-		assert.Contains(t, string(body), `"amount": 1240`)
+		assert.Contains(t, string(body), `"amount":1240`)
 	})
+
+	t.Run("gzip refused with q=0 gets identity", func(t *testing.T) {
+		resp := get("/feeds/google.xml",
+			map[string]string{"Accept-Encoding": "gzip;q=0, br"})
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Empty(t, resp.Header.Get("Content-Encoding"))
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.True(t, strings.HasPrefix(string(body), `<?xml`))
+	})
+
+	// Unlisted identity weighs nothing against gzip at any weight.
+	t.Run("gzip at a low weight is still gzip", func(t *testing.T) {
+		resp := get("/feeds/google.xml",
+			map[string]string{"Accept-Encoding": "gzip;q=0.5"})
+		_ = resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
+	})
+
+	t.Run("no acceptable coding still gets identity", func(t *testing.T) {
+		resp := get("/feeds/google.xml",
+			map[string]string{"Accept-Encoding": "br, identity;q=0, *;q=0"})
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Empty(t, resp.Header.Get("Content-Encoding"))
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.True(t, strings.HasPrefix(string(body), `<?xml`))
+	})
+
+	// A revalidation reads the metadata and touches the blob, never reads
+	// the blob itself; weak, listed and "*" tags match.
+	t.Run("weak and listed etags revalidate without reading the blob",
+		func(t *testing.T) {
+			first := get("/feeds/tiktok.xml",
+				map[string]string{"Accept-Encoding": "gzip"})
+			_ = first.Body.Close()
+			etag := first.Header.Get("ETag")
+			require.NotEmpty(t, etag)
+
+			for _, inm := range []string{
+				"W/" + etag, `"stale", ` + etag, "*",
+			} {
+				rec.start()
+				resp := get("/feeds/tiktok.xml", map[string]string{
+					"Accept-Encoding": "gzip", "If-None-Match": inm,
+				})
+				_ = resp.Body.Close()
+				assert.Equal(t, http.StatusNotModified, resp.StatusCode, inm)
+				assert.Equal(t, etag, resp.Header.Get("ETag"), inm)
+				assert.Equal(t, "Accept-Encoding", resp.Header.Get("Vary"), inm)
+				assert.Empty(t, rec.readsOf("ag:demostore:feed:rss"), inm)
+				// TOUCH, not EXISTS: the blob's LRU clock moves with the
+				// meta key's, so allkeys-lru does not evict it first.
+				assert.True(t, rec.touched("ag:demostore:feed:rss"), inm)
+			}
+		})
+
+	// Redis evicts keys one by one: a meta key whose blob is gone is a
+	// miss, regenerated at once, never a 503 until the entry goes stale.
+	t.Run("an evicted blob is regenerated", func(t *testing.T) {
+		first := get("/feeds/tiktok.xml",
+			map[string]string{"Accept-Encoding": "gzip"})
+		_ = first.Body.Close()
+		etag := first.Header.Get("ETag")
+
+		require.NoError(t, rdb.Unlink(t.Context(),
+			"ag:demostore:feed:rss").Err())
+		resp := get("/feeds/tiktok.xml", map[string]string{
+			"Accept-Encoding": "identity", "If-None-Match": etag,
+		})
+		_ = resp.Body.Close()
+		assert.Equal(t, http.StatusNotModified, resp.StatusCode)
+		assert.EqualValues(t, 1,
+			rdb.Exists(t.Context(), "ag:demostore:feed:rss").Val(),
+			"the revalidation regenerated the blob")
+
+		require.NoError(t, rdb.Unlink(t.Context(),
+			"ag:demostore:feed:rss").Err())
+		resp = get("/feeds/tiktok.xml",
+			map[string]string{"Accept-Encoding": "identity"})
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Contains(t, string(body), "<g:id>6</g:id>")
+	})
+}
+
+// commandRecorder records the keys each Redis command named while on.
+type commandRecorder struct {
+	mu   sync.Mutex
+	on   bool
+	cmds [][]any
+}
+
+func (c *commandRecorder) start() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.on, c.cmds = true, nil
+}
+
+// touched reports whether a TOUCH named key.
+func (c *commandRecorder) touched(key string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, args := range c.cmds {
+		if fmt.Sprint(args[0]) == "touch" && fmt.Sprint(args[1]) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// readsOf returns the commands that named key, other than TOUCH, which
+// returns no value.
+func (c *commandRecorder) readsOf(key string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var reads []string
+	for _, args := range c.cmds {
+		if fmt.Sprint(args[0]) == "touch" {
+			continue
+		}
+		for _, a := range args[1:] {
+			if fmt.Sprint(a) == key {
+				reads = append(reads, fmt.Sprint(args...))
+			}
+		}
+	}
+	return reads
+}
+
+func (c *commandRecorder) record(cmds ...redis.Cmder) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.on {
+		return
+	}
+	for _, cmd := range cmds {
+		c.cmds = append(c.cmds, cmd.Args())
+	}
+}
+
+func (c *commandRecorder) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (c *commandRecorder) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		c.record(cmd)
+		return next(ctx, cmd)
+	}
+}
+
+func (c *commandRecorder) ProcessPipelineHook(
+	next redis.ProcessPipelineHook,
+) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		c.record(cmds...)
+		return next(ctx, cmds)
+	}
 }

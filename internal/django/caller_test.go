@@ -16,6 +16,36 @@ import (
 // the headers Django received.
 func callerHeaders(t *testing.T, inbound http.Header) http.Header {
 	t.Helper()
+	return callerHeadersVia(t, inbound,
+		func(ctx context.Context) context.Context { return ctx })
+}
+
+// Work a request starts for the store, not for its caller, names no
+// caller to Django, but keeps the request's correlation id.
+func TestWithoutCallerNamesNoCaller(t *testing.T) {
+	inbound := http.Header{
+		"Cf-Connecting-Ip": {"203.0.113.7"},
+		"X-Forwarded-For":  {"203.0.113.7, 172.70.1.1"},
+		"X-Origin-Verify":  {"edge-proof"},
+		"User-Agent":       {"Mozilla/5.0 crawler"},
+	}
+	got := callerHeadersVia(t, inbound,
+		func(ctx context.Context) context.Context {
+			return WithoutCaller(obs.WithRequestID(ctx, "req-sweep"))
+		})
+
+	assert.Empty(t, got.Get("X-Real-IP"))
+	assert.Empty(t, got.Get("X-Forwarded-For"))
+	assert.Empty(t, got.Get("X-Origin-Verify"))
+	assert.NotEqual(t, "Mozilla/5.0 crawler", got.Get("User-Agent"))
+	assert.Equal(t, "req-sweep", got.Get("X-Correlation-ID"))
+}
+
+func callerHeadersVia(
+	t *testing.T, inbound http.Header,
+	derive func(context.Context) context.Context,
+) http.Header {
+	t.Helper()
 	var got http.Header
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
@@ -28,8 +58,8 @@ func callerHeaders(t *testing.T, inbound http.Header) http.Header {
 
 	h := RelayCaller(http.HandlerFunc(
 		func(_ http.ResponseWriter, r *http.Request) {
-			_, err := c.GetCart(r.Context(), "shop.example.test", "el",
-				fixtureCartID)
+			_, err := c.GetCart(derive(r.Context()), "shop.example.test",
+				"el", fixtureCartID)
 			require.NoError(t, err)
 		}))
 	req := httptest.NewRequest(http.MethodPost, "/chat", nil)

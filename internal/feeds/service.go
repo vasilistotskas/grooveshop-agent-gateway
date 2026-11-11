@@ -57,6 +57,30 @@ const generationTimeout = 5 * time.Minute
 // invalidations; each retry means another invalidation landed mid-write.
 const storeAttempts = 3
 
+// failureBackoff is how long a failed generation holds off the next one
+// for its store, across every pod. Without it, every request between
+// FEED_FRESH_TTL and FEED_STALE_TTL (18h by default) or on a missing feed
+// starts another full sweep of the catalog while the failure lasts. A
+// stale feed is still served meanwhile; a missing one answers 503 for at
+// most this long, and an invalidation lifts it at once.
+const failureBackoff = time.Minute
+
+// failureMarkTimeout bounds the retries of the failure mark's write, so a
+// Redis outage does not hold the store's singleflight key behind the
+// client's retry backoff. It does not bound one command's socket I/O:
+// go-redis applies a context deadline there only with
+// ContextTimeoutEnabled, which the gateway's client does not set, so a
+// hung command still returns after the client's read timeout.
+const failureMarkTimeout = 2 * time.Second
+
+// noEpoch stands for an epoch a generation never read: Incr starts the
+// real ones at 1, and an absent key reads 0.
+const noEpoch = -1
+
+// errRecentlyFailed answers a missing feed while failureBackoff runs.
+var errRecentlyFailed = errors.New(
+	"feeds: the last generation failed; waiting before the next")
+
 type Meta struct {
 	ETag string `json:"etag"`
 	// GeneratedAt is when the sweep that produced the feed STARTED — the
@@ -74,9 +98,10 @@ type Meta struct {
 }
 
 type Service struct {
-	dj  *django.Client
-	rdb *redis.Client
-	log *slog.Logger
+	dj      *django.Client
+	rdb     *redis.Client
+	log     *slog.Logger
+	metrics *obs.Metrics
 	// imageTpl expands {assets_host}/{schema}/{path}; assetsHost is the
 	// PLATFORM media origin used for tenants that have not opted into
 	// white-label asset URLs (the documented default).
@@ -91,11 +116,12 @@ type Service struct {
 
 func NewService(
 	dj *django.Client, rdb *redis.Client, log *slog.Logger,
+	metrics *obs.Metrics,
 	imageTpl, assetsHost string, freshTTL, staleTTL time.Duration,
 	generator string, site storefront.Site,
 ) *Service {
 	return &Service{
-		dj: dj, rdb: rdb, log: log,
+		dj: dj, rdb: rdb, log: log, metrics: metrics,
 		imageTpl: imageTpl, assetsHost: assetsHost,
 		freshTTL: freshTTL, staleTTL: staleTTL,
 		generator: generator, site: site,
@@ -116,78 +142,240 @@ func epochKey(schema string) string {
 	return "ag:" + schema + ":feed:epoch"
 }
 
-// Get returns the gzipped feed. Fresh cache serves directly; a stale entry
-// serves immediately while a background refresh runs; a miss waits for a
-// generation. One generation pass renders every kind.
-func (s *Service) Get(
+// failedKey marks a store whose last generation failed, for
+// failureBackoff.
+func failedKey(schema string) string {
+	return "ag:" + schema + ":feed:failed"
+}
+
+// Meta returns the metadata of the feed the store serves, without its
+// body, so a revalidation that matches costs no blob read. An entry
+// counts only while its blob is there too (Redis evicts the keys one by
+// one), checked in the same round trip. A fresh entry is returned as it
+// is; a stale one too, while a background refresh runs; a miss waits for
+// a generation. After a failed generation, failureBackoff holds off the
+// next: a stale entry is returned without a refresh and a miss fails at
+// once. One generation renders every kind.
+func (s *Service) Meta(
+	ctx context.Context, t *tenant.Tenant, kind string,
+) (Meta, error) {
+	format := formatOf(kind)
+	meta, ok, failed := s.cachedMeta(ctx, t.SchemaName, format)
+	if ok {
+		if !failed && time.Since(meta.GeneratedAt) >= s.freshTTL {
+			s.refresh(ctx, t)
+		}
+		return meta, nil
+	}
+	epoch, err := s.await(ctx, t, failed)
+	if err != nil {
+		return Meta{}, err
+	}
+	meta, ok, _ = s.cachedMeta(ctx, t.SchemaName, format)
+	if !ok {
+		return Meta{}, s.notCached(ctx, t.SchemaName, epoch)
+	}
+	return meta, nil
+}
+
+// Body returns the gzipped feed with the metadata stored beside it, both
+// read in one step. A blob gone since Meta (evicted, invalidated,
+// rewritten by another build) is a miss like any other: it waits for a
+// generation, under the same failure backoff, and is read again.
+func (s *Service) Body(
 	ctx context.Context, t *tenant.Tenant, kind string,
 ) ([]byte, Meta, error) {
 	format := formatOf(kind)
-	gz, meta, ok := s.fromCache(ctx, t.SchemaName, format)
+	gz, meta, ok, failed := s.fromCache(ctx, t.SchemaName, format)
 	if ok {
-		if time.Since(meta.GeneratedAt) >= s.freshTTL {
-			s.refresh(t)
-		}
 		return gz, meta, nil
 	}
-
-	select {
-	case res := <-s.refresh(t):
-		if res.Err != nil {
-			return nil, Meta{}, res.Err
-		}
-	case <-ctx.Done():
-		return nil, Meta{}, ctx.Err()
+	epoch, err := s.await(ctx, t, failed)
+	if err != nil {
+		return nil, Meta{}, err
 	}
-	gz, meta, ok = s.fromCache(ctx, t.SchemaName, format)
+	gz, meta, ok, _ = s.fromCache(ctx, t.SchemaName, format)
 	if !ok {
-		return nil, Meta{}, errors.New("feeds: generation produced no cache")
+		return nil, Meta{}, s.notCached(ctx, t.SchemaName, epoch)
 	}
 	return gz, meta, nil
 }
 
+var errGenerationNotCached = errors.New("feeds: generation produced no cache")
+
+// await joins the store's generation for a missing feed, or fails at
+// once while a failed one's backoff runs. It returns the epoch the
+// generation read.
+func (s *Service) await(
+	ctx context.Context, t *tenant.Tenant, failed bool,
+) (int64, error) {
+	if failed {
+		return noEpoch, errRecentlyFailed
+	}
+	select {
+	case res := <-s.refresh(ctx, t):
+		epoch, _ := res.Val.(int64)
+		return epoch, res.Err
+	case <-ctx.Done():
+		return noEpoch, ctx.Err()
+	}
+}
+
+// notCached handles a generation that succeeded but whose feed cannot be
+// read back (evicted again at once, under memory pressure): without a
+// mark, every request would run another full sweep and still get 503.
+// An invalidation since the generation's epoch lifts it, as for a
+// failure.
+func (s *Service) notCached(
+	ctx context.Context, schema string, epoch int64,
+) error {
+	s.log.ErrorContext(ctx, "feed generated but gone from the cache")
+	s.mark(ctx, schema, epoch)
+	return errGenerationNotCached
+}
+
 // refresh starts (or joins) the tenant's generation. The sweep is
-// decoupled from any request: on a large catalog it can outlast a
-// crawler's timeout, and tying it to the first caller would cancel it
-// for every waiter and restart it from zero on the next request — a
-// feed that never lands. An abandoned sweep still fills the cache the
-// next crawler reads, and singleflight keeps it to one per tenant. A
-// panic is logged and returned as an error (obs.Recover): here for the
-// whole generation on the singleflight goroutine, and in
-// fetchAllProducts for pages 2..N, fetched on errgroup goroutines.
-func (s *Service) refresh(t *tenant.Tenant) <-chan singleflight.Result {
+// detached from the request that started it: context.WithoutCancel keeps
+// the request's id and tenant for the log lines and Django's correlation
+// id, and django.WithoutCaller drops the visitor, whose throttle and
+// identity a sweep for the store must not spend. On a large catalog it
+// can outlast a crawler's timeout, and tying it to the first caller would
+// cancel it for every waiter and restart it from zero on the next
+// request, a feed that never lands. An abandoned sweep still fills the
+// cache the next crawler reads, and singleflight keeps it to one per
+// tenant. A panic is logged and returned as an error (obs.Recover): here
+// for the whole generation on the singleflight goroutine, and in
+// fetchAllProducts for pages 2..N, fetched on errgroup goroutines. A
+// failure is logged, counted and marked here, whichever caller waits for
+// it or none.
+func (s *Service) refresh(
+	ctx context.Context, t *tenant.Tenant,
+) <-chan singleflight.Result {
+	ctx = django.WithoutCaller(context.WithoutCancel(ctx))
 	return s.sf.DoChan(t.SchemaName, func() (_ any, err error) {
-		ctx, cancel := context.WithTimeout(
-			context.Background(), generationTimeout)
+		gctx, cancel := context.WithTimeout(ctx, generationTimeout)
 		defer cancel()
-		defer obs.Recover(ctx,
-			s.log.With(slog.String(obs.KeyTenant, t.SchemaName)),
-			"feeds: generation", &err)
-		return nil, s.generate(ctx, t)
+		epoch := int64(noEpoch)
+		defer func() { s.failed(ctx, t.SchemaName, epoch, err) }()
+		defer obs.Recover(gctx, s.log, "feeds: generation", &err)
+
+		select {
+		case generationSlots <- struct{}{}:
+		case <-gctx.Done():
+			return nil, gctx.Err()
+		}
+		defer func() { <-generationSlots }()
+		// The epoch is read before the first catalog page, so an
+		// invalidation at any point during the sweep is seen at write
+		// time, and a failure it overtook is not marked.
+		read, err := readEpoch(gctx, s.rdb, t.SchemaName)
+		if err != nil {
+			return nil, fmt.Errorf("feeds: epoch: %w", err)
+		}
+		epoch = read
+		return epoch, s.generate(gctx, t, epoch)
 	})
 }
 
+// failed records a generation that ended in err, after obs.Recover has
+// turned a panic into one, and marks it.
+func (s *Service) failed(
+	ctx context.Context, schema string, epoch int64, err error,
+) {
+	if err == nil {
+		return
+	}
+	s.metrics.FeedFailures.Inc()
+	s.log.ErrorContext(ctx, "feed generation failed",
+		slog.String("error", err.Error()))
+	s.mark(ctx, schema, epoch)
+}
+
+// mark sets the store's failure mark. With the epoch the generation read,
+// only while it is current: an invalidation since may be the fix, and it
+// has just emptied the feed. Without one (the generation failed before
+// reading it: no slot, Redis unreadable), nothing can have overtaken it,
+// and the mark is set as it is.
+func (s *Service) mark(ctx context.Context, schema string, epoch int64) {
+	mctx, cancel := context.WithTimeout(ctx, failureMarkTimeout)
+	defer cancel()
+	var err error
+	if epoch == noEpoch {
+		err = s.rdb.Set(mctx, failedKey(schema), 1, failureBackoff).Err()
+	} else {
+		err = s.rdb.Watch(mctx, func(tx *redis.Tx) error {
+			current, err := readEpoch(mctx, tx, schema)
+			if err != nil || current != epoch {
+				return err
+			}
+			_, err = tx.TxPipelined(mctx, func(p redis.Pipeliner) error {
+				p.Set(mctx, failedKey(schema), 1, failureBackoff)
+				return nil
+			})
+			return err
+		}, epochKey(schema))
+	}
+	if err != nil && !errors.Is(err, redis.TxFailedErr) {
+		s.log.WarnContext(ctx, "feed failure not marked",
+			slog.String("error", err.Error()))
+	}
+}
+
+// cachedMeta reads the feed's metadata, whether its blob is there, and
+// whether a generation failed within failureBackoff, in one round trip
+// that reads no blob. TOUCH, not EXISTS: it refreshes the blob's LRU
+// clock (EXISTS looks it up with LOOKUP_NOTOUCH), so revalidations that
+// keep the meta key warm keep its blob warm too under allkeys-lru.
+func (s *Service) cachedMeta(
+	ctx context.Context, schema, format string,
+) (meta Meta, ok, failed bool) {
+	var vals *redis.SliceCmd
+	var blob *redis.IntCmd
+	if _, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		vals = p.MGet(ctx, metaKey(schema, format), failedKey(schema))
+		blob = p.Touch(ctx, dataKey(schema, format))
+		return nil
+	}); err != nil || len(vals.Val()) != 2 {
+		return Meta{}, false, false
+	}
+	failed = vals.Val()[1] != nil
+	meta, ok = s.decodeMeta(vals.Val()[0])
+	return meta, ok && blob.Val() == 1, failed
+}
+
+// fromCache reads the feed's blob and metadata, and whether a generation
+// failed within failureBackoff, in one step.
 func (s *Service) fromCache(
 	ctx context.Context, schema, format string,
-) ([]byte, Meta, bool) {
-	vals, err := s.rdb.MGet(ctx,
-		dataKey(schema, format), metaKey(schema, format)).Result()
-	if err != nil || len(vals) != 2 || vals[0] == nil || vals[1] == nil {
-		return nil, Meta{}, false
+) (gz []byte, meta Meta, ok, failed bool) {
+	vals, err := s.rdb.MGet(ctx, dataKey(schema, format),
+		metaKey(schema, format), failedKey(schema)).Result()
+	if err != nil || len(vals) != 3 {
+		return nil, Meta{}, false, false
 	}
-	data, ok1 := vals[0].(string)
-	rawMeta, ok2 := vals[1].(string)
-	if !ok1 || !ok2 {
-		return nil, Meta{}, false
+	failed = vals[2] != nil
+	data, isString := vals[0].(string)
+	meta, ok = s.decodeMeta(vals[1])
+	if !isString || !ok {
+		return nil, Meta{}, false, failed
+	}
+	return []byte(data), meta, true, failed
+}
+
+// decodeMeta reads a stored Meta; one from another build is a miss.
+func (s *Service) decodeMeta(v any) (Meta, bool) {
+	raw, ok := v.(string)
+	if !ok {
+		return Meta{}, false
 	}
 	var meta Meta
-	if err := json.Unmarshal([]byte(rawMeta), &meta); err != nil {
-		return nil, Meta{}, false
+	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+		return Meta{}, false
 	}
 	if meta.Generator != s.generator {
-		return nil, Meta{}, false
+		return Meta{}, false
 	}
-	return []byte(data), meta, true
+	return meta, true
 }
 
 // Invalidate drops every cached feed for one tenant so the next request
@@ -207,7 +395,10 @@ func (s *Service) fromCache(
 // regeneration: generating is a Django round trip per tenant, and the
 // next feed request will do it anyway.
 func (s *Service) Invalidate(ctx context.Context, schema string) (int64, error) {
-	keys := make([]string, 0, len(formats)*2)
+	// The failure mark goes too: an invalidation follows a catalogue
+	// change, which may be the fix.
+	keys := make([]string, 0, len(formats)*2+1)
+	keys = append(keys, failedKey(schema))
 	for _, format := range formats {
 		keys = append(keys, dataKey(schema, format), metaKey(schema, format))
 	}
@@ -226,21 +417,11 @@ func (s *Service) Invalidate(ctx context.Context, schema string) (int64, error) 
 }
 
 // generate sweeps the catalog once, rendering every format, and stores
-// them gzipped with the stale TTL as the Redis expiry.
-func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
-	select {
-	case generationSlots <- struct{}{}:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	defer func() { <-generationSlots }()
-
-	// The epoch is read before the first catalog page so an invalidation
-	// at any point during the sweep is visible at write time.
-	epoch, err := readEpoch(ctx, s.rdb, t.SchemaName)
-	if err != nil {
-		return fmt.Errorf("feeds: epoch: %w", err)
-	}
+// them gzipped with the stale TTL as the Redis expiry, unless an
+// invalidation moved the store's epoch past epoch (see store).
+func (s *Service) generate(
+	ctx context.Context, t *tenant.Tenant, epoch int64,
+) error {
 	start := time.Now().UTC()
 	fctx := &feedContext{
 		StoreName:        storeName(t),
@@ -264,12 +445,12 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 	rss := newRSSWriter(fctx)
 	acp := newACPWriter()
 
-	var skipped int
-	count, truncated, err := fetchAllProducts(
-		ctx, s.dj, s.log.With(slog.String(obs.KeyTenant, t.SchemaName)),
-		t.Domain, t.DefaultLocale,
+	var listed, inactive, skipped, overCap int
+	_, truncated, err := fetchAllProducts(
+		ctx, s.dj, s.log, t.Domain, t.DefaultLocale,
 		func(p django.ProductFeed) error {
 			if !p.Active {
+				inactive++
 				return nil
 			}
 			item, err := newFeedItem(&p, fctx)
@@ -282,6 +463,10 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 			}
 			rss.Item(item)
 			acp.Item(item)
+			listed++
+			if item.OverCap {
+				overCap++
+			}
 			return nil
 		})
 	if err != nil {
@@ -290,7 +475,6 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 	if truncated {
 		s.log.WarnContext(ctx,
 			"feed catalog sweep hit the page cap — feed truncated",
-			slog.String(obs.KeyTenant, t.SchemaName),
 			slog.Int("pages", maxPages))
 	}
 
@@ -317,9 +501,10 @@ func (s *Service) generate(ctx context.Context, t *tenant.Tenant) error {
 	}
 
 	s.log.InfoContext(ctx, "feeds generated",
-		slog.String(obs.KeyTenant, t.SchemaName),
-		slog.Int("products", count),
-		slog.Int("skipped_no_name_or_image", skipped),
+		slog.Int("products", listed),
+		slog.Int("inactive", inactive),
+		slog.Int("skipped_no_name_image_or_price", skipped),
+		slog.Int("products_over_a_cap", overCap),
 		slog.Bool("overtaken_by_invalidation", overtaken),
 		slog.Int64("duration_ms", time.Since(start).Milliseconds()),
 	)

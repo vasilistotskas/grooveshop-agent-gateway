@@ -5,12 +5,17 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
@@ -156,7 +161,10 @@ func TestACPWriterGolden(t *testing.T) {
 	}
 	got, err := w.Bytes()
 	require.NoError(t, err)
-	goldenCompare(t, "feed_acp.json", got)
+	// The feed is served compact; the golden file is indented to read.
+	var indented bytes.Buffer
+	require.NoError(t, json.Indent(&indented, got, "", " "))
+	goldenCompare(t, "feed_acp.json", indented.Bytes())
 }
 
 func TestRSSItemRules(t *testing.T) {
@@ -349,6 +357,113 @@ func TestACPGoldenValidatesAgainstSchema(t *testing.T) {
 	require.NoError(t, validateACP(t, "ProductsResponse", doc))
 }
 
+// Every field stays within the strictest limit of the three targets, cut
+// by runes (Greek), and every repeated field within its count.
+func TestFeedItemFieldLimits(t *testing.T) {
+	ctx := testFeedContext()
+	p := fixtureProducts()[1]
+	long := func(n int) string { return strings.Repeat("Ω", n) }
+	p.BrandName = new(long(255))
+	p.VariantGroupTitle = new(long(255))
+	p.Highlights = []string{long(200), long(10)}
+	p.Attributes = nil
+	for i := range 40 {
+		p.Attributes = append(p.Attributes, django.ProductAttribute{
+			AttributeName: fmt.Sprintf("Ά%d", i), Value: long(255),
+			IsVariant: true,
+		})
+	}
+	for i := range 120 {
+		p.Attributes = append(p.Attributes, django.ProductAttribute{
+			AttributeName: fmt.Sprintf("Λ%d", i), Value: "x",
+		})
+	}
+
+	it, err := newFeedItem(&p, ctx)
+	require.NoError(t, err)
+	require.NotNil(t, it)
+	runes := utf8.RuneCountInString
+	assert.Equal(t, feedBrandMax, runes(it.Brand))
+	assert.Equal(t, feedItemGroupTitleMax, runes(it.ItemGroupTitle))
+	assert.Equal(t, feedHighlightMax, runes(it.Highlights[0]))
+	assert.Len(t, it.Details, feedDetailsMax)
+
+	require.NotEmpty(t, it.VariantOptions)
+	assert.LessOrEqual(t, len(it.VariantOptions), feedVariantOptionsMax)
+	var total int
+	for _, o := range it.VariantOptions {
+		assert.LessOrEqual(t, runes(o.Value), feedVariantOptionPartMax)
+		total += runes(o.Name) + runes(o.Value)
+	}
+	assert.LessOrEqual(t, total, feedVariantOptionsTotalMax)
+	assert.True(t, utf8.ValidString(it.VariantOptions[0].Value))
+
+	// The count cap applies on its own when the options are short.
+	for i := range p.Attributes[:40] {
+		p.Attributes[i].Value = "v"
+	}
+	it, err = newFeedItem(&p, ctx)
+	require.NoError(t, err)
+	assert.Len(t, it.VariantOptions, feedVariantOptionsMax)
+	assert.True(t, it.OverCap)
+
+	// The options sent are the leading ones: one that does not fit ends
+	// them, and a shorter one after it is not sent in its place.
+	p.Attributes = nil
+	for i, n := range []int{240, 240, 240, 240, 240, 240, 240, 240, 240,
+		240, 240, 240, 240, 240, 240, 240, 240, 240, 240, 240, 250, 1} {
+		p.Attributes = append(p.Attributes, django.ProductAttribute{
+			AttributeName: fmt.Sprintf("Ά%02d", i), Value: long(n),
+			IsVariant: true,
+		})
+	}
+	it, err = newFeedItem(&p, ctx)
+	require.NoError(t, err)
+	require.Len(t, it.VariantOptions, 20)
+	for i, o := range it.VariantOptions {
+		assert.Equal(t, fmt.Sprintf("Ά%02d", i), o.Name)
+	}
+	assert.True(t, it.OverCap)
+
+	within, err := newFeedItem(&fixtureProducts()[1], ctx)
+	require.NoError(t, err)
+	assert.False(t, within.OverCap)
+}
+
+// The raw-text elements plainText skips are the ones the tokenizer
+// reads as raw text, and no other.
+func TestRawTextTagsMatchTheTokenizer(t *testing.T) {
+	raw := func(name string) bool {
+		z := html.NewTokenizer(strings.NewReader("<" + name + "><b>x"))
+		require.Equal(t, html.StartTagToken, z.Next(), name)
+		return z.Next() == html.TextToken
+	}
+	for tag := range rawTextTags {
+		name := tag.String()
+		assert.True(t, raw(name), name)
+		// A self-closing start tag enters raw text too, and plainText
+		// skips it the same way.
+		z := html.NewTokenizer(strings.NewReader("<" + name + "/><b>x"))
+		require.Equal(t, html.SelfClosingTagToken, z.Next(), name)
+		assert.Equal(t, html.TextToken, z.Next(), name)
+		want := "ab"
+		if tag == atom.Plaintext {
+			want = "a"
+		}
+		assert.Equal(t, want,
+			plainText("a<"+name+"/><p>x</p></"+name+">b"), name)
+	}
+	for _, name := range []string{
+		"a", "abbr", "b", "blockquote", "br", "caption", "code", "col",
+		"colgroup", "details", "div", "em", "h1", "h6", "hr", "i", "img",
+		"li", "ol", "p", "pre", "s", "section", "span", "strong", "sub",
+		"summary", "sup", "table", "tbody", "td", "tfoot", "th", "thead",
+		"tr", "u", "ul", "template", "svg", "math", "object", "noindex",
+	} {
+		assert.False(t, raw(name), name)
+	}
+}
+
 func TestPlainText(t *testing.T) {
 	for in, want := range map[string]string{
 		"a<br>b":                            "a b",
@@ -357,6 +472,25 @@ func TestPlainText(t *testing.T) {
 		"bold <b>USB-C</b>.":                "bold USB-C.",
 		"&lt;b&gt; &amp;amp; &eacute;":      "<b> &amp; é",
 		"  spaced\n\tout  ":                 "spaced out",
+		// An attribute value may hold ">"; it is never text.
+		`<a title="a>b" href="/x">link</a> end`: "link end",
+		`<img alt="1 > 0" src="x.jpg">ok`:       "ok",
+		"a<script>var x = '<p>';</script>b":     "ab",
+		"a<style>p > b { color: red }</style>b": "ab",
+		"<!-- note -->text":                     "text",
+		// Every raw-text element's content is dropped, markup and all.
+		"a<noscript><p>fallback</p></noscript>b":              "ab",
+		`a<iframe src="https://x"><p>no frames</p></iframe>b`: "ab",
+		"a<title>T</title>b":                                  "ab",
+		"a<textarea><b>t</b></textarea>b":                     "ab",
+		"a<xmp><i>x</i></xmp>b":                               "ab",
+		"a<noembed>e</noembed><noframes>f</noframes>b":        "ab",
+		"a<plaintext><p>rest":                                 "a",
+		// A literal "<" reaches the gateway as Django stores it: nh3
+		// writes "&lt;" (and drops "<y" as a tag on save).
+		"a &lt; b": "a < b",
+		"x&lt;y z": "x<y z",
+		"1 &gt; 0": "1 > 0",
 	} {
 		assert.Equal(t, want, plainText(in), in)
 	}

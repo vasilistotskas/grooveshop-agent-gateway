@@ -166,6 +166,11 @@ func TestDiscoveryDocuments(t *testing.T) {
 			assert.Equal(t, http.StatusNotModified, again.Code)
 			assert.Empty(t, again.Body.String())
 
+			// Weak comparison over a list, across header lines.
+			listed := serve(t, tc.handler, cardTenant(), http.MethodGet,
+				http.Header{"If-None-Match": {`"other"`, `"x", W/` + etag}})
+			assert.Equal(t, http.StatusNotModified, listed.Code)
+
 			preflight := serve(t, tc.handler, nil, http.MethodOptions, nil)
 			assert.Equal(t, http.StatusNoContent, preflight.Code)
 			assert.Equal(t, "*",

@@ -10,6 +10,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httphdr"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/text"
@@ -152,23 +153,11 @@ func publicDocument(
 		etag := `"` + hex.EncodeToString(sum[:16]) + `"`
 		h.Set("ETag", etag)
 		h.Set("Cache-Control", "public, max-age=3600")
-		if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		if httphdr.ETagMatches(r.Header.Values("If-None-Match"), etag) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 		h.Set("Content-Type", contentType)
 		_, _ = w.Write(body)
 	})
-}
-
-// etagMatches applies If-None-Match's weak comparison (RFC 9110 13.1.2):
-// a list of tags, W/ prefixes ignored, or "*".
-func etagMatches(header, etag string) bool {
-	for candidate := range strings.SplitSeq(header, ",") {
-		candidate = strings.TrimPrefix(strings.TrimSpace(candidate), "W/")
-		if candidate == "*" || candidate == etag {
-			return true
-		}
-	}
-	return false
 }
