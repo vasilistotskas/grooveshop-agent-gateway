@@ -318,9 +318,11 @@ passes.
   (`Server.ErrorLog` in `serve.go`), with no access line or metric.
   `http.ErrAbortHandler` is passed on to net/http, which aborts the
   response silently. Metrics sits right around Recover and sees the
-  `r.Pattern` the mux sets. An inbound `X-Request-Id` keeps its visible
-  ASCII only, trimmed and cut to 64 bytes (the 64 characters Django keeps
-  of `X-Correlation-ID`), else one is minted.
+  `r.Pattern` the mux sets. Its `method` label is one of net/http's
+  method constants, any other method `other` (`methodLabel`). An
+  inbound `X-Request-Id` keeps its visible ASCII only, trimmed and cut
+  to 64 bytes (the 64 characters Django keeps of `X-Correlation-ID`),
+  else one is minted.
 - `internal/obs` — slog JSON to stdout, Prometheus registry, health.
   The logger's context handler adds `request_id` and `tenant` to every
   line logged with a request's context (`obs.WithRequestID`; the tenant
@@ -819,10 +821,12 @@ not serve. The rule and how to split a change are in
   disabled — every bearer gets 401 from `/acp/*`.
 - Chat spend is bounded in three layers:
   - Traefik's `rate-limit-chat`, per IP.
-  - The gateway's per-pod `(host, IP)` limiter (`CHAT_RATE_LIMIT_*`).
+  - The gateway's per-pod `(host, client)` limiter (`CHAT_RATE_LIMIT_*`).
   - The Redis turn quota in `internal/chat/quota.go`, shared by every pod and counted only for valid turns, before any model call:
     - `CHAT_STORE_TURNS_PER_HOUR` per store per clock hour;
-    - `CHAT_VISITOR_TURNS_PER_DAY` per client IP per store per UTC day.
+    - `CHAT_VISITOR_TURNS_PER_DAY` per client per store per UTC day.
+
+  The gateway's "client" is `httpmw.ClientBucket`, the one key both use: an IPv4 address (IPv4-mapped IPv6 included), or an IPv6 address's /64.
   
   A refused turn spends from neither budget and gets the store's localized `rate_limited` message with a 429 and a `Retry-After` until the full window resets.
 

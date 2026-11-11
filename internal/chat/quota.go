@@ -8,7 +8,8 @@ import (
 )
 
 // Quota caps the turns a store's model key pays for: per store per clock
-// hour, and per visitor (client IP) per store per UTC day. The counters
+// hour, and per visitor (httpmw.ClientBucket: the client's IPv4 address
+// or IPv6 /64) per store per UTC day. The counters
 // live in Redis so every gateway pod spends from the same budget — the
 // per-minute limiter in front of /chat is per pod and per IP, which a
 // caller rotating addresses walks straight past.
