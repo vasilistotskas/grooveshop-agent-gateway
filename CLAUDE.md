@@ -297,11 +297,13 @@ passes.
   (`internal/tenant/resolver.go`) when a field is added, or entries an
   older pod wrote decode it as its zero value.
   `TestCachedShapeMatchesKeyVersion` pins the shape (a golden in
-  `internal/tenant/cacheguard_test.go`) to that version and fails until
-  both are updated. A credential on `TenantConfig` carries
-  `contract:"undocumented"` and `publicConfig` clears it, since the shared
-  Redis never holds one; `TestPublicConfigClearsEveryUndocumentedField`
-  finds every such field by reflection.
+  `internal/tenant/cacheguard_test.go`) to that version: a changed shape
+  fails until the golden is updated, which prompts the bump, and the
+  golden's diff shows a shape change in review. A field Django leaves out
+  of its schema (`contract:"undocumented"`) is one it sends only to the
+  gateway's authenticated call, and none of those is written to the shared
+  Redis entry: `publicConfig` clears each, and
+  `TestPublicConfigClearsEveryUndocumentedField` finds them by reflection.
 - No tenant label on Prometheus metrics (unbounded cardinality) — tenant
   goes in logs.
 - **No fallback/legacy/backward-compat code paths.** Environment differences

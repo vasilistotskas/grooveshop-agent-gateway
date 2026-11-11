@@ -30,6 +30,10 @@ const demostoreJSON = `{
 }`
 
 const (
+	// testTTL is the memory (and Redis) TTL of the resolvers the tests
+	// build.
+	testTTL            = time.Minute
+	testNegTTL         = 50 * time.Millisecond
 	testInternalSecret = "test-secret"
 	// The credentials Django adds for a caller that sends the internal
 	// token.
@@ -146,8 +150,8 @@ func (f *fakeDjango) client(t *testing.T) *django.Client {
 
 func newTestResolver(t *testing.T, f *fakeDjango) *Resolver {
 	t.Helper()
-	return NewResolver(f.client(t), unreachableRedis(), time.Minute,
-		50*time.Millisecond,
+	return NewResolver(f.client(t), unreachableRedis(), testTTL,
+		testNegTTL,
 		testLogger(), nil)
 }
 
@@ -166,6 +170,22 @@ func TestResolveCachesInMemory(t *testing.T) {
 	assert.Equal(t, "demostore", second.SchemaName)
 	assert.Equal(t, int32(1), f.calls.Load(),
 		"second resolve must be served from memory")
+	assertMemoryTTL(t, r, "shop.example.test", testTTL)
+}
+
+// assertMemoryTTL checks that the memory entry for host expires ttl from
+// now: expireMemory stands in for waiting, so nothing else shows the TTL
+// is the configured one.
+func assertMemoryTTL(
+	t *testing.T, r *Resolver, host string, ttl time.Duration,
+) {
+	t.Helper()
+	r.mu.RLock()
+	e, ok := r.mem[host]
+	r.mu.RUnlock()
+	require.True(t, ok, "no memory entry for %s", host)
+	assert.WithinDuration(t, time.Now().Add(ttl), e.expires, time.Second,
+		"the memory entry must expire after the configured TTL")
 }
 
 func TestResolveUnknownDomainNegativeCache(t *testing.T) {
@@ -179,6 +199,14 @@ func TestResolveUnknownDomainNegativeCache(t *testing.T) {
 	assert.ErrorIs(t, err, ErrUnknownTenant)
 	assert.Equal(t, int32(1), f.calls.Load(),
 		"negative result must be cached")
+	assertMemoryTTL(t, r, "nope.example.test", testNegTTL)
+
+	// A negative entry ends with its TTL: a store created since resolves.
+	expireMemory(t, r, "nope.example.test")
+	_, err = r.Resolve(context.Background(), "nope.example.test")
+	assert.ErrorIs(t, err, ErrUnknownTenant)
+	assert.Equal(t, int32(2), f.calls.Load(),
+		"an expired negative entry must be resolved again")
 }
 
 func TestResolveSingleflightCollapsesConcurrentMisses(t *testing.T) {
@@ -204,7 +232,7 @@ func TestResolveServesStaleWhenDjangoDown(t *testing.T) {
 	_, err := r.Resolve(context.Background(), "shop.example.test")
 	require.NoError(t, err)
 
-	expireMemory(r)
+	expireMemory(t, r, "shop.example.test")
 	f.goDown()
 
 	got, err := r.Resolve(context.Background(), "shop.example.test")
@@ -221,7 +249,7 @@ func TestResolveStaleAnswerBacksOffDjango(t *testing.T) {
 
 	_, err := r.Resolve(context.Background(), "shop.example.test")
 	require.NoError(t, err)
-	expireMemory(r)
+	expireMemory(t, r, "shop.example.test")
 	f.goDown()
 
 	_, err = r.Resolve(context.Background(), "shop.example.test")
@@ -253,7 +281,7 @@ func TestResolveLeaderCancellationDoesNotFailFollowers(t *testing.T) {
 	dj := django.New(srv.URL+"/api/v1", "api.example.test", "test-secret",
 		5*time.Second, testLogger(), nil)
 	r := NewResolver(dj, unreachableRedis(), time.Minute,
-		50*time.Millisecond, testLogger(), nil)
+		testNegTTL, testLogger(), nil)
 
 	leaderCtx, cancel := context.WithCancel(context.Background())
 	leader := make(chan error, 1)

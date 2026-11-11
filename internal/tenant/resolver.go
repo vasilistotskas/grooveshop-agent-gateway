@@ -298,8 +298,9 @@ func (r *Resolver) count(result string) {
 // expire (v2: TenantConfig.Features, which would read as every
 // feature off; v3: its cart, catalogue and product alerts; v4:
 // AvailableLocales, which would read as the default language alone).
-// Bump it with every change to the shape; TestCachedShapeMatchesKeyVersion
-// fails until it is.
+// Bump it with every change to the shape. TestCachedShapeMatchesKeyVersion
+// fails on a changed shape until the golden is updated, which prompts the
+// bump; a reviewer sees the golden's diff.
 const redisKeyVersion = "v5"
 
 func redisKey(domain string) string {

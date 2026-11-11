@@ -3,6 +3,7 @@ package tenant
 import (
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -37,27 +38,34 @@ func serve(mw func(http.Handler) http.Handler) (*httptest.ResponseRecorder, *Ten
 // credentials.
 func twoPods(
 	t *testing.T, f *fakeDjango, rd *fakeRedis,
-) (b *Resolver, fromRedis *Tenant) {
+) (a, b *Resolver, fromRedis *Tenant) {
 	t.Helper()
-	a := newPod(t, f, rd.client())
+	a = newPod(t, f, rd.client())
 	_, err := a.Resolve(t.Context(), secretsHost)
 	require.NoError(t, err)
 	b = newPod(t, f, rd.client())
 	fromRedis, err = b.Resolve(t.Context(), secretsHost)
 	require.NoError(t, err)
 	require.Equal(t, int32(1), f.calls.Load(), "pod B must read Redis")
-	return b, fromRedis
+	return a, b, fromRedis
 }
+
+// pinned is the failure message of an assertion that records what the code
+// does today, not what it must do.
+const pinned = "pinned present behaviour, see #123; not a requirement"
 
 func TestSecretsStayOutOfRedisAndAreToppedUp(t *testing.T) {
 	f := newFakeDjango(t)
 	rd := newFakeRedis(t)
-	podA := newPod(t, f, rd.client())
+	var logs capturedLog
+	podA := newPodLogging(t, f, rd.client(), logs.logger())
 
+	// A cold resolve: a Redis miss, then Django.
 	a, err := podA.Resolve(t.Context(), secretsHost)
 	require.NoError(t, err)
 	assert.True(t, a.SecretsLoaded)
 	assert.Equal(t, testChatKey, a.ChatAPIKey)
+	assertMemoryTTL(t, podA, secretsHost, testTTL)
 
 	raw, ok := rd.raw(redisKey(secretsHost))
 	require.True(t, ok, "the config must be cached in Redis")
@@ -65,10 +73,14 @@ func TestSecretsStayOutOfRedisAndAreToppedUp(t *testing.T) {
 	assert.NotContains(t, raw, testChatKey)
 	assert.NotContains(t, raw, testACPBearer)
 
-	podB, b := twoPods(t, f, rd)
+	podB := newPodLogging(t, f, rd.client(), logs.logger())
+	b, err := podB.Resolve(t.Context(), secretsHost)
+	require.NoError(t, err)
+	require.Equal(t, int32(1), f.calls.Load(), "pod B must read Redis")
 	assert.False(t, b.SecretsLoaded)
 	assert.Empty(t, b.ChatAPIKey)
 	assert.Empty(t, b.ACPBearerToken)
+	assertMemoryTTL(t, podB, secretsHost, testTTL)
 
 	full, err := podB.EnsureSecrets(t.Context(), b)
 	require.NoError(t, err)
@@ -78,6 +90,7 @@ func TestSecretsStayOutOfRedisAndAreToppedUp(t *testing.T) {
 	assert.Equal(t, "demostore", full.SchemaName)
 	assert.Equal(t, secretsHost, full.Domain)
 	assert.Equal(t, int32(2), f.calls.Load(), "one Django call per top-up")
+	assertMemoryTTL(t, podB, secretsHost, testTTL)
 
 	// The memory tier now holds the full tenant: neither a resolve nor
 	// a second top-up goes back to Django.
@@ -94,6 +107,10 @@ func TestSecretsStayOutOfRedisAndAreToppedUp(t *testing.T) {
 	require.True(t, ok)
 	assert.NotContains(t, raw, testChatKey)
 	assert.NotContains(t, raw, testACPBearer)
+
+	// A Redis miss and a Redis hit are both silent: neither is the
+	// "entry corrupt" or "read failed" warning.
+	assert.Empty(t, logs.String())
 }
 
 func TestEnsureSecretsWithoutATenantIsANoOp(t *testing.T) {
@@ -108,7 +125,7 @@ func TestEnsureSecretsWithoutATenantIsANoOp(t *testing.T) {
 
 func TestMiddlewareWithSecretsServesTheToppedUpTenant(t *testing.T) {
 	f := newFakeDjango(t)
-	podB, _ := twoPods(t, f, newFakeRedis(t))
+	_, podB, _ := twoPods(t, f, newFakeRedis(t))
 
 	// Middleware, for the routes that need no credential, serves a
 	// Redis-tier tenant as it is and spends no Django call.
@@ -132,7 +149,7 @@ func TestMiddlewareWithSecretsServesTheToppedUpTenant(t *testing.T) {
 // again, and the routes that need no credential keep serving.
 func TestEnsureSecretsFailureCachesNothing(t *testing.T) {
 	f := newFakeDjango(t)
-	podB, b := twoPods(t, f, newFakeRedis(t))
+	_, podB, b := twoPods(t, f, newFakeRedis(t))
 	f.goDown()
 	before := f.calls.Load()
 
@@ -166,12 +183,12 @@ func TestEnsureSecretsFailureCachesNothing(t *testing.T) {
 // waitingOnFlight counts the goroutines parked in Resolver.shared's select,
 // which is where a caller sits once it has joined a flight. Nothing else
 // exposes that.
-func waitingOnFlight() int {
+func waitingOnFlight(sharedFrame string) int {
 	buf := make([]byte, 1<<20)
 	buf = buf[:runtime.Stack(buf, true)]
 	n := 0
 	for g := range strings.SplitSeq(string(buf), "\n\n") {
-		if strings.Contains(g, "(*Resolver).shared(") &&
+		if strings.Contains(g, sharedFrame+"(") &&
 			strings.Contains(g, " [select]:") {
 			n++
 		}
@@ -182,13 +199,23 @@ func waitingOnFlight() int {
 // Callers that overlap on one host share one Django call.
 func TestEnsureSecretsCollapsesConcurrentTopUps(t *testing.T) {
 	f := newFakeDjango(t)
-	podB, b := twoPods(t, f, newFakeRedis(t))
+	_, podB, b := twoPods(t, f, newFakeRedis(t))
 
+	// Django answers once released. The release also runs at cleanup,
+	// which comes before the server closes, so a failing test never
+	// leaves a handler parked.
 	hold := make(chan struct{})
+	release := sync.OnceFunc(func() { close(hold) })
+	t.Cleanup(release)
 	f.mu.Lock()
 	f.hold = hold
 	f.mu.Unlock()
 	before := f.calls.Load()
+
+	// The frame is named from the method itself, so a rename cannot
+	// leave the wait looking for text that is gone.
+	sharedFrame := strings.TrimSuffix(runtime.FuncForPC(
+		reflect.ValueOf(podB.shared).Pointer()).Name(), "-fm")
 
 	const callers = 20
 	var done sync.WaitGroup
@@ -201,11 +228,13 @@ func TestEnsureSecretsCollapsesConcurrentTopUps(t *testing.T) {
 		})
 	}
 	// Release Django only once every caller waits on the flight, so a
-	// late one cannot start a second.
-	require.Eventually(t, func() bool {
-		return waitingOnFlight() == callers
+	// late one cannot start a second. A second call means the flight
+	// is not shared: stop waiting and let the assertion below say so.
+	assert.Eventually(t, func() bool {
+		return waitingOnFlight(sharedFrame) == callers ||
+			f.calls.Load()-before > 1
 	}, 5*time.Second, time.Millisecond)
-	close(hold)
+	release()
 	done.Wait()
 
 	assert.Equal(t, int32(1), f.calls.Load()-before,
@@ -213,47 +242,57 @@ func TestEnsureSecretsCollapsesConcurrentTopUps(t *testing.T) {
 }
 
 // The store was switched off after the caches were filled. Django answers
-// 404 for it, so a resolve that reaches Django is a 404 here, but until
-// the cached entry expires a store is still served. The routes that need
-// the credentials do reach Django, and ask it again on every request:
-// they answer 503, the outage answer, not 404.
+// 404 for it. Until the cached entries expire, three answers exist for the
+// routes that need the credentials, by what the pod holds:
+//   - the pod that resolved the store itself holds the credentials in
+//     memory and answers 204 with them, with no Django call;
+//   - a pod whose entry came from Redis holds none, asks Django on every
+//     request, gets the 404 and answers 503, the outage answer;
+//   - a pod with no cache of the store gets the 404 from Django at the
+//     resolve and answers 404.
 //
-// This pins what the code does today. It is under review (issue #91):
+// This pins what the code does today; it is under review (issue #123):
 // EnsureSecrets could treat django.ErrNotFound as ErrUnknownTenant, as
 // resolveSlow does.
 func TestEnsureSecretsForADeactivatedStore(t *testing.T) {
 	f := newFakeDjango(t)
-	podB, b := twoPods(t, f, newFakeRedis(t))
+	podA, podB, b := twoPods(t, f, newFakeRedis(t))
 	f.deactivate()
+	before := f.calls.Load()
+
+	rec, seen := serve(MiddlewareWithSecrets(podA, testLogger()))
+	assert.Equal(t, http.StatusNoContent, rec.Code, pinned)
+	require.NotNil(t, seen, pinned)
+	assert.Equal(t, testChatKey, seen.ChatAPIKey, pinned)
+	assert.Equal(t, before, f.calls.Load(), pinned)
 
 	_, err := podB.EnsureSecrets(t.Context(), b)
-	require.ErrorIs(t, err, django.ErrNotFound)
-	assert.NotErrorIs(t, err, ErrUnknownTenant)
+	require.ErrorIs(t, err, django.ErrNotFound, pinned)
+	assert.NotErrorIs(t, err, ErrUnknownTenant, pinned)
 
 	// Nothing marks the store unknown: Django is asked again each time.
-	before := f.calls.Load()
+	before = f.calls.Load()
 	for range 2 {
 		rec, seen := serve(MiddlewareWithSecrets(podB, testLogger()))
-		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-		assert.Nil(t, seen)
+		assert.Equal(t, http.StatusServiceUnavailable, rec.Code, pinned)
+		assert.Nil(t, seen, pinned)
 	}
-	assert.Equal(t, before+2, f.calls.Load())
+	assert.Equal(t, before+2, f.calls.Load(), pinned)
 
 	// Routes that need no credential serve it from the cache.
-	rec, seen := serve(Middleware(podB, testLogger()))
-	assert.Equal(t, http.StatusNoContent, rec.Code)
-	require.NotNil(t, seen)
-	assert.Equal(t, "demostore", seen.SchemaName)
+	rec, seen = serve(Middleware(podB, testLogger()))
+	assert.Equal(t, http.StatusNoContent, rec.Code, pinned)
+	require.NotNil(t, seen, pinned)
+	assert.Equal(t, "demostore", seen.SchemaName, pinned)
 
-	// A pod with no cache of the store gets the 404 on both.
 	cold := newPod(t, f, newFakeRedis(t).client())
 	for _, mw := range []func(http.Handler) http.Handler{
 		Middleware(cold, testLogger()),
 		MiddlewareWithSecrets(cold, testLogger()),
 	} {
 		rec, seen := serve(mw)
-		assert.Equal(t, http.StatusNotFound, rec.Code)
-		assert.Nil(t, seen)
+		assert.Equal(t, http.StatusNotFound, rec.Code, pinned)
+		assert.Nil(t, seen, pinned)
 	}
 }
 
@@ -268,7 +307,7 @@ func TestEnsureSecretsForADeactivatedStore(t *testing.T) {
 // hit stands in for the stale answer and the top-up has no stale
 // fallback, so /chat and /acp answer 503.
 //
-// This pins what the code does today. It is under review (issue #91).
+// This pins what the code does today; it is under review (issue #123).
 func TestRedisHitReplacesAnExpiredEntryThatHadSecrets(t *testing.T) {
 	f := newFakeDjango(t)
 	withRedis := newPod(t, f, newFakeRedis(t).client())
@@ -280,24 +319,24 @@ func TestRedisHitReplacesAnExpiredEntryThatHadSecrets(t *testing.T) {
 	}
 	require.Equal(t, int32(2), f.calls.Load())
 
-	expireMemory(withRedis)
-	expireMemory(noRedis)
+	expireMemory(t, withRedis, secretsHost)
+	expireMemory(t, noRedis, secretsHost)
 
 	got, err := withRedis.Resolve(t.Context(), secretsHost)
 	require.NoError(t, err)
-	assert.False(t, got.SecretsLoaded, "the Redis hit lost the credentials")
-	assert.Empty(t, got.ChatAPIKey)
-	assert.Equal(t, int32(2), f.calls.Load(), "Redis answered; no Django call")
+	assert.False(t, got.SecretsLoaded, pinned)
+	assert.Empty(t, got.ChatAPIKey, pinned)
+	assert.Equal(t, int32(2), f.calls.Load(), pinned)
 
 	f.goDown()
 
 	rec, seen := serve(MiddlewareWithSecrets(withRedis, testLogger()))
-	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-	assert.Nil(t, seen)
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code, pinned)
+	assert.Nil(t, seen, pinned)
 
 	rec, seen = serve(MiddlewareWithSecrets(noRedis, testLogger()))
-	assert.Equal(t, http.StatusNoContent, rec.Code)
-	require.NotNil(t, seen)
-	assert.True(t, seen.Stale)
-	assert.Equal(t, testChatKey, seen.ChatAPIKey)
+	assert.Equal(t, http.StatusNoContent, rec.Code, pinned)
+	require.NotNil(t, seen, pinned)
+	assert.True(t, seen.Stale, pinned)
+	assert.Equal(t, testChatKey, seen.ChatAPIKey, pinned)
 }

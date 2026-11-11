@@ -1,7 +1,10 @@
 package tenant
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 	"testing"
@@ -70,65 +73,116 @@ func (f *fakeRedis) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 		args := cmd.Args()
 		switch cmd.Name() {
 		case "get":
-			c := cmd.(*redis.StringCmd)
-			if v, ok := f.raw(args[1].(string)); ok {
-				c.SetVal(v)
-			} else {
-				c.SetErr(redis.Nil)
+			c, ok := cmd.(*redis.StringCmd)
+			key, isKey := args[1].(string)
+			if !ok || !isKey {
+				return f.refuse("GET of %T with key %T", cmd, args[1])
 			}
+			v, found := f.raw(key)
+			if !found {
+				// Client.Process sets the hook's return as the
+				// command's error, so a miss is returned, not set.
+				return redis.Nil
+			}
+			c.SetVal(v)
+			return nil
 		case "set":
-			c := cmd.(*redis.StatusCmd)
-			require.Len(f.t, args, 5, "fakeRedis: SET with an expiry only")
+			c, ok := cmd.(*redis.StatusCmd)
+			if !ok || len(args) != 5 {
+				return f.refuse("SET with %d arguments, want an expiry", len(args))
+			}
+			key, isKey := args[1].(string)
+			n, isInt := args[4].(int64)
+			val, isVal := valueOf(args[2])
+			if !isKey || !isInt || !isVal {
+				return f.refuse("SET arguments %T %T %T", args[1], args[2], args[4])
+			}
 			var ttl time.Duration
 			switch args[3] {
 			case "ex":
-				ttl = time.Duration(args[4].(int64)) * time.Second
+				ttl = time.Duration(n) * time.Second
 			case "px":
-				ttl = time.Duration(args[4].(int64)) * time.Millisecond
+				ttl = time.Duration(n) * time.Millisecond
 			default:
-				f.t.Fatalf("fakeRedis: unexpected SET option %v", args[3])
+				return f.refuse("SET option %v", args[3])
 			}
 			f.mu.Lock()
-			f.kv[args[1].(string)] = fakeEntry{
-				val:     valueOf(f.t, args[2]),
-				expires: time.Now().Add(ttl),
-			}
+			f.kv[key] = fakeEntry{val: val, expires: time.Now().Add(ttl)}
 			f.mu.Unlock()
 			c.SetVal("OK")
-		default:
-			f.t.Fatalf("fakeRedis: unexpected command %q", cmd.Name())
+			return nil
 		}
-		return nil
+		return f.refuse("command %q", cmd.Name())
 	}
 }
 
+// refuse fails the test and the command. The hook runs on singleflight's
+// goroutine, where t.Fatal would end the goroutine, the flight would never
+// answer and the test would time out with this message lost.
+func (f *fakeRedis) refuse(format string, args ...any) error {
+	err := fmt.Errorf("fakeRedis: unsupported "+format, args...)
+	f.t.Error(err)
+	return err
+}
+
 // valueOf is the text of a SET value as the resolver passes it.
-func valueOf(t *testing.T, arg any) string {
-	t.Helper()
+func valueOf(arg any) (string, bool) {
 	switch v := arg.(type) {
 	case string:
-		return v
+		return v, true
 	case []byte:
-		return string(v)
+		return string(v), true
 	}
-	t.Fatalf("fakeRedis: unexpected SET value type %T", arg)
-	return ""
+	return "", false
 }
 
 // newPod builds a resolver as another pod of the deployment: its own memory
 // tier, the shared Redis and Django.
 func newPod(t *testing.T, f *fakeDjango, rdb *redis.Client) *Resolver {
 	t.Helper()
-	return NewResolver(f.client(t), rdb, time.Minute, 50*time.Millisecond,
-		testLogger(), nil)
+	return newPodLogging(t, f, rdb, testLogger())
 }
 
-// expireMemory ends the TTL of the memory entry for secretsHost without
-// waiting for it.
-func expireMemory(r *Resolver) {
+func newPodLogging(
+	t *testing.T, f *fakeDjango, rdb *redis.Client, log *slog.Logger,
+) *Resolver {
+	t.Helper()
+	return NewResolver(f.client(t), rdb, testTTL, testNegTTL,
+		log, nil)
+}
+
+// capturedLog is a logger that keeps its warnings and errors.
+type capturedLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *capturedLog) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *capturedLog) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
+}
+
+func (c *capturedLog) logger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(c, &slog.HandlerOptions{
+		Level: slog.LevelWarn,
+	}))
+}
+
+// expireMemory ends the TTL of the memory entry for host without waiting
+// for it. The entry must exist.
+func expireMemory(t *testing.T, r *Resolver, host string) {
+	t.Helper()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	e := r.mem[secretsHost]
+	e, ok := r.mem[host]
+	require.True(t, ok, "no memory entry for %s to expire", host)
 	e.expires = time.Now().Add(-time.Second)
-	r.mem[secretsHost] = e
+	r.mem[host] = e
 }
