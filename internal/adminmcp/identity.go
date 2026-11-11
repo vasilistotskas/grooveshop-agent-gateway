@@ -23,6 +23,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/identity"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -116,7 +117,8 @@ func RequireStaff(
 			}
 			profile, err := v.Verify(r.Context(), t, token)
 			if err != nil {
-				identity.Refuse(w, r, log, ResourceMetadataURL(t), err)
+				identity.Refuse(w, r, log, mcptool.ServerAdmin,
+					ResourceMetadataURL(t), err)
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(withStaff(r.Context(),

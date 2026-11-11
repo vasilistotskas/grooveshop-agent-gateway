@@ -24,6 +24,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -87,8 +88,8 @@ func Middleware(
 
 			profile, err := v.Verify(r.Context(), t, token)
 			if err != nil {
-				Refuse(w, r, log, storefront.OAuthResourceMetadata(t.Domain),
-					err)
+				Refuse(w, r, log, mcptool.ServerMCP,
+					storefront.OAuthResourceMetadata(t.Domain), err)
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(NewContext(r.Context(),

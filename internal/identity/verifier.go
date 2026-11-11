@@ -15,6 +15,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -48,8 +49,12 @@ type cacheEntry[P any] struct {
 }
 
 // Verifier checks bearers with its Probe, with a small in-memory cache of
-// the verdicts. Both MCP servers use one: the shoppers' /mcp with
-// /agent/me, the store team's /mcp/admin with /agent/staff/me.
+// the verdicts. Each MCP server has its own instance, never shared: the
+// shoppers' /mcp a Verifier[*django.AgentProfile] over /agent/me, the
+// store team's /mcp/admin a Verifier[*django.StaffProfile] over
+// /agent/staff/me. The key names no server, so one instance serving both
+// would let a shopper's verdict stand for a staff one; the two types
+// keep them apart.
 type Verifier[P any] struct {
 	probe  Probe[P]
 	log    *slog.Logger
@@ -157,10 +162,11 @@ func (v *Verifier[P]) fetch(
 //     gate answers once it has;
 //   - Django's 429: 429 with its Retry-After;
 //   - a caller that hung up: 503, and no error line;
-//   - anything else: a logged 503.
+//   - anything else: a 503, logged with server (mcptool.ServerMCP or
+//     ServerAdmin).
 func Refuse(
 	w http.ResponseWriter, r *http.Request, log *slog.Logger,
-	metadataURL string, err error,
+	server, metadataURL string, err error,
 ) {
 	switch {
 	case errors.Is(err, ErrInvalidToken):
@@ -181,6 +187,7 @@ func Refuse(
 		return
 	case !errors.Is(err, context.Canceled):
 		log.ErrorContext(r.Context(), "token verification failed",
+			slog.String(mcptool.KeyServer, server),
 			slog.String("error", err.Error()))
 	}
 	httpmw.WriteJSONError(w, http.StatusServiceUnavailable,
