@@ -9,9 +9,14 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	sdkjson "github.com/segmentio/encoding/json"
+
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/identity"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -73,26 +78,61 @@ func RequireLinkedAccount(next http.Handler) http.Handler {
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 
-		var call struct {
-			Method string `json:"method"`
-			Params struct {
-				Name string `json:"name"`
-			} `json:"params"`
-		}
-		// Anything unreadable is the MCP handler's to refuse.
-		if json.Unmarshal(body, &call) != nil ||
-			call.Method != "tools/call" {
+		// Any account tool the body calls, in a batch too. A tool the
+		// store does not serve is unknown, not locked.
+		if !slices.ContainsFunc(calledTools(body), func(name string) bool {
+			return IsAccountTool(name) && Offered(name, t.Features)
+		}) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// A tool the store does not serve is unknown, not locked.
-		if !IsAccountTool(call.Params.Name) ||
-			!Offered(call.Params.Name, t.Features) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		identity.WriteChallenge(w, t.Domain,
+		identity.WriteChallenge(w, storefront.OAuthResourceMetadata(t.Domain),
 			`scope="`+linkScopes(t.Features)+`"`,
 			"this tool needs a linked account")
 	})
+}
+
+// calledTools names the tools a request body calls, read exactly as the
+// MCP SDK's streamable HTTP handler reads it, so that no body the SDK
+// would run an account tool from passes unchallenged:
+//   - a JSON array is a batch of messages, anything else one message
+//     (the SDK's readBatch);
+//   - each message is decoded by the SDK's own jsonrpc.DecodeMessage;
+//   - a tools/call's params are decoded into the SDK's CallToolParamsRaw
+//     with the decoder and options the SDK uses: segmentio/encoding with
+//     case-sensitive field names, so `Name` is not `name`.
+//
+// The SDK refuses a batch on protocol 2025-06-18 and later, and a body
+// nested more than 1000 deep; such a body is still read here, and
+// challenging one the SDK would refuse costs nothing. A body that is not
+// JSON-RPC calls nothing: the MCP handler refuses it.
+func calledTools(body []byte) []string {
+	var batch []json.RawMessage
+	raws := []json.RawMessage{body}
+	if decodeAsSDK(body, &batch) == nil {
+		raws = batch
+	}
+	var names []string
+	for _, raw := range raws {
+		msg, err := jsonrpc.DecodeMessage(raw)
+		if err != nil {
+			return nil
+		}
+		req, ok := msg.(*jsonrpc.Request)
+		if !ok || req.Method != "tools/call" || req.Params == nil {
+			continue
+		}
+		var params mcp.CallToolParamsRaw
+		if decodeAsSDK(req.Params, &params) == nil {
+			names = append(names, params.Name)
+		}
+	}
+	return names
+}
+
+// decodeAsSDK decodes data into v as the MCP SDK's internal/json does.
+func decodeAsSDK(data []byte, v any) error {
+	dec := sdkjson.NewDecoder(bytes.NewReader(data))
+	dec.DontMatchCaseInsensitiveStructFields()
+	return dec.Decode(v)
 }

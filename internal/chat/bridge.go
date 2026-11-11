@@ -147,7 +147,7 @@ func (b *bridge) tools(
 // as the plain text a tool-role message carries, plus the products event
 // for the widget when the result names products; failed reports whether
 // the call failed, for the widget's step state. Business failures come
-// back as "ERROR: …" text (a tool's mcpsrv.ToolError: the store's code,
+// back as "ERROR: …" text (a tool's mcptool.ToolError: the store's code,
 // its words and what to do) so the model can react, and so does a
 // protocol error (an unknown tool, arguments that fail the input
 // schema): those are the model's mistakes, and aborting would throw away

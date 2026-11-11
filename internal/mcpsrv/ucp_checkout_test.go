@@ -19,6 +19,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
@@ -201,10 +202,10 @@ func TestCheckoutStoreOutageIsUnavailable(t *testing.T) {
 			err := call(ctx, ucpHandlers(t, dj), t)
 
 			require.ErrorIs(t, err, errCheckoutUnavailable)
-			var got *ToolError
+			var got *mcptool.ToolError
 			require.ErrorAs(t, err, &got)
 			assert.Equal(t, "unavailable", got.Code)
-			assert.Equal(t, unavailableRetryAfter, got.RetryAfter)
+			assert.Equal(t, mcptool.UnavailableRetryAfter, got.RetryAfter)
 		})
 	}
 }

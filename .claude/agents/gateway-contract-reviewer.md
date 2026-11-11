@@ -53,6 +53,36 @@ reading the whole tree.
   platform profile that cannot be fetched, validated or version-matched, or a
   spent discovery budget, is the spec's transport error (`-32001` / `-32000`)
   and stays a `*jsonrpc.Error`.
+- Both MCP servers answer a failure with `mcptool.ToolError` and its codes,
+  and register every tool through `mcptool.Add`. `Add` logs one line per
+  call, never the arguments or the result, and recovers a handler panic:
+  the SDK runs handlers on a goroutine no other recover covers. Flag a
+  second ToolError type or code list, and a tool registered with a bare
+  `mcp.AddTool`, whose panic would end the process.
+- Each server's `upstreamErr` is its own policy. `/mcp` reports a 403 as
+  `not_found`, and `/mcp/admin` reports it as `not_allowed`. Flag a change
+  that merges them.
+- A list a tool has nothing for is `[]`, never `null`, on `/mcp` and
+  `/mcp/admin` alike. Flag a Django slice passed straight into a tool's
+  output.
+- `internal/adminmcp` must not import `internal/mcpsrv`. What they share
+  lives in `internal/mcptool` and `internal/identity`.
+
+### 3b. Bearer verification
+- `identity.Verifier` is one implementation with one instance per server,
+  never shared. It is keyed by SHA-256(schema, 0, token), and the key
+  names no server, so a shared instance would let a shopper's verdict
+  stand for a staff one. The types keep them apart today:
+  `Verifier[*django.AgentProfile]` for /mcp and
+  `Verifier[*django.StaffProfile]` for /mcp/admin.
+- Flag a key without the schema or the separator, a second cache
+  implementation, or one instance serving both servers: a verdict for one
+  store, token or server must never answer for another.
+- A bearer that does not verify is answered by `identity.Refuse` on both
+  servers. Flag a middleware that maps Django's 404 or 429 itself.
+- `RequireLinkedAccount` must read a body as the MCP SDK does
+  (`calledTools`: batch, case-sensitive keys, first value). Flag a reader
+  that decodes it any other way.
 
 ### 4. Error handling
 - Errors unwrap to the sentinels (`ErrNotFound`, `ErrConflict`, `ErrThrottled`,
