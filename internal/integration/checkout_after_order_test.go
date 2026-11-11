@@ -114,6 +114,20 @@ func TestALostSaveIsNeverAnsweredAsDone(t *testing.T) {
 		})
 	}
 
+	// An update's cart writes are made by the time its save is refused:
+	// the agent is told so.
+	for name, surface := range surfaces {
+		t.Run("an update over "+name, func(t *testing.T) {
+			id := surface.ready(t)
+			stack.storedMeanwhile(t, id)
+
+			assertLostUpdate(t, name, surface.update(ctx, id))
+
+			assert.NotEqual(t, otherBuyerEmail,
+				stack.storedSession(t, id).Buyer.Email)
+		})
+	}
+
 	// The order exists and its payment page could not be opened. The
 	// next complete opens one, and must not answer with a link it could
 	// not store.
@@ -128,8 +142,12 @@ func TestALostSaveIsNeverAnsweredAsDone(t *testing.T) {
 		require.Empty(t, stack.storedSession(t, id).PaymentURL)
 		stack.storedMeanwhile(t, id)
 
-		assertLost(t, "ucp", ucpSurface.answer(ctx, id, uuid.NewString(), nil))
-
+		// The stored checkout still has no link, and that is what the
+		// call is answered with: the order, without a payment page.
+		lost := ucpSurface.answer(ctx, id, uuid.NewString(), nil)
+		assert.Equal(t, "requires_escalation", lost.status, lost.refusal)
+		assert.NotEqual(t, vivaCheckoutURL, lost.continueURL,
+			"answered with a payment link that was not stored")
 		assert.Empty(t, stack.storedSession(t, id).PaymentURL)
 		assert.Equal(t, "requires_escalation",
 			ucpSurface.complete(ctx, id, uuid.NewString(), nil))

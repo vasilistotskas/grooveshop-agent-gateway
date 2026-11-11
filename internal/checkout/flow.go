@@ -122,7 +122,7 @@ func (f *Flow) Complete(
 		// Nothing is stored for a session that was not admitted. A
 		// snapshot that reads in progress is another attempt's, and
 		// saving it would overwrite that attempt's session.
-		return NothingPlaced, f.refusal(ctx, s, err)
+		return NothingPlaced, err
 	}
 	// No order exists yet, so a call whose context has already ended
 	// (a caller that left, a server shutting down) gets none.
@@ -147,12 +147,22 @@ func (f *Flow) Complete(
 		return NothingPlaced, err
 	}
 	placement, err := f.place(ctx, t, s, payWay)
-	if errors.Is(err, ErrOrderOutcomeUnknown) {
-		// Stored in progress, and it stays so.
-		return placement, err
+	// Stored as the order call left it: unconfirmed (still in progress,
+	// and kept as long as a placed one, since an order may exist),
+	// placed, or ready again after Django refused the order.
+	saveErr := f.st.Save(ctx, s)
+	switch {
+	case saveErr == nil:
+	case placement == NothingPlaced:
+		// The refusal is definite, and a session left in progress would
+		// claim an order that cannot exist: one more attempt. If it
+		// fails too, the in-progress session ends with the short
+		// lifetime of an open one (Session.ttl), not a placed one's.
+		saveErr = f.st.Save(ctx, s)
+	case errors.Is(saveErr, ErrSessionChanged):
+		saveErr = f.saveOverEvent(ctx, s)
 	}
-	// Placed, or ready again after Django refused the order.
-	if saveErr := f.st.Save(ctx, s); saveErr != nil {
+	if saveErr != nil {
 		f.log.ErrorContext(ctx, "checkout: session save failed",
 			slog.String("session", s.ID),
 			slog.String("order", s.OrderUUID),
@@ -168,33 +178,23 @@ func (f *Flow) Complete(
 	return placement, err
 }
 
-// refusal is what a completion that admit refused answers. admit asks
-// Django about the cart, and this call may have outlived its lock by
-// then: another completion may have placed the order, which takes the
-// cart with it (Django answers "cart is empty") or the last of the stock
-// ("not enough stock"). Told that, the caller would correct a checkout
-// that has an order. So the session is read again, and admit's answer
-// stands only for the session this call loaded:
-//   - another request stored it since: ErrSessionChanged, as for a lost
-//     save, and the retry reads what it is now;
-//   - it is no longer stored: ErrNotFound;
-//   - it cannot be read: that error, which every caller answers as
-//     unavailable. Never admit's, which may be the other request's doing.
-//
-// The two refusals that are about the session's own state need no read.
-func (f *Flow) refusal(ctx context.Context, s *Session, admitErr error) error {
-	if errors.Is(admitErr, ErrCompletionInProgress) ||
-		errors.Is(admitErr, ErrNotReady) {
-		return admitErr
-	}
+// saveOverEvent stores a completion's outcome over a session that was
+// stored since the completion marked it in progress. Every handler
+// refuses a session in progress, so that other writer is an order event
+// (ApplyOrderEvent), which records the order this completion placed and
+// may complete the session when the payment has landed. The completion
+// knows more (the payment page it opened), so its outcome is stored over
+// the event's, keeping "completed" if the event said the order is paid.
+func (f *Flow) saveOverEvent(ctx context.Context, s *Session) error {
 	stored, err := f.st.Load(ctx, s.Schema, s.ID)
-	switch {
-	case err != nil:
+	if err != nil {
 		return err
-	case stored.Revision != s.Revision:
-		return ErrSessionChanged
 	}
-	return admitErr
+	if stored.Status == StatusCompleted {
+		s.Status = StatusCompleted
+	}
+	s.Revision = stored.Revision
+	return f.st.Save(ctx, s)
 }
 
 // CompletionDeadline is the latest a completion of s can still run, for a
@@ -304,6 +304,7 @@ func (f *Flow) place(
 		})
 	if err != nil {
 		if !refused(err) {
+			s.Unconfirmed = true
 			return OrderMayExist,
 				fmt.Errorf("%w: %w", ErrOrderOutcomeUnknown, err)
 		}
@@ -361,29 +362,48 @@ func (f *Flow) startPayment(
 	return nil
 }
 
-// ApplyOrderEvent folds a Django order/payment event into the checkout
-// that placed the order, if that session still exists — sessions expire
-// long before orders stop changing, and a missing one is not an error.
-// It takes the session lock like every other mutation. A busy session
-// returns ErrLocked, and one another request stored meanwhile
-// ErrSessionChanged, for the caller to retry.
-//
-// orderUUID is the event's order, which the order link tied to this
-// checkout. A session that does not name it never learned of its order:
-// the completion that placed it could not save. The event is then what
-// records the order, read from Django for its id, so the session is
-// never completed without one.
-func (f *Flow) ApplyOrderEvent(
-	ctx context.Context, schema, checkoutID, orderUUID, paymentStatus string,
-) error {
-	if paymentStatus != django.PaymentStatusCompleted {
-		return nil
+// PlacedOrder names the order a completion of s placed, or "" when none
+// is known. A session in progress may not name its order though it was
+// placed: the completion's last save failed. The order was recorded
+// beside the session as soon as Django returned it (Store.IndexOrder),
+// and that record is read here.
+func (f *Flow) PlacedOrder(ctx context.Context, s *Session) string {
+	if s.OrderUUID != "" {
+		return s.OrderUUID
 	}
-	release, err := f.st.Lock(ctx, schema, checkoutID)
+	placed, err := f.st.placedOrder(ctx, s.Schema, s.ID)
 	if err != nil {
-		return err
+		f.log.ErrorContext(ctx, "checkout: placed order read failed",
+			slog.String("session", s.ID),
+			slog.String("error", err.Error()))
+		return ""
 	}
-	defer release()
+	return placed.OrderUUID
+}
+
+// ApplyOrderEvent folds a Django order/payment event into the checkout
+// that placed the order, if that session still exists: sessions expire
+// long before orders stop changing, and a missing one is not an error.
+//
+// It takes no lock: its save is a compare-and-set like every other, and
+// a save that lost returns ErrSessionChanged for the caller to retry. A
+// lock would answer "busy" to every push while a crashed pod's lock
+// lasted, and Django's few retries can all fall inside that. An event
+// that lands while the completion that placed its order is still
+// finishing is stored too: that completion stores its own outcome over
+// it (saveOverEvent).
+//
+// What an event does, by the session it finds:
+//   - a terminal session: nothing;
+//   - a session that names no order: any event records the order the
+//     completion placed (its id, uuid and time, from the record beside
+//     the session). Without that record the gateway does not know the
+//     order's id, and the session is left as it is;
+//   - a payment-completed event also completes a session that names its
+//     order. No other event changes a status.
+func (f *Flow) ApplyOrderEvent(
+	ctx context.Context, schema, checkoutID, paymentStatus string,
+) error {
 	s, err := f.st.Load(ctx, schema, checkoutID)
 	if errors.Is(err, ErrNotFound) {
 		return nil
@@ -394,32 +414,28 @@ func (f *Flow) ApplyOrderEvent(
 	if s.Terminal() {
 		return nil
 	}
+	changed := false
 	if s.OrderUUID == "" {
-		// An event names no language, and only the order's id and
-		// creation time are read.
-		order, err := f.dj.PlacedOrder(ctx, s.Domain, "", orderUUID)
-		if errors.Is(err, django.ErrNotFound) {
-			// Django no longer has the order the event was for: no
-			// retry brings it back, and the session is left as it is.
-			f.log.WarnContext(ctx,
-				"checkout: order event for an order that is gone",
-				slog.String("session", s.ID),
-				slog.String("order", orderUUID))
-			return nil
-		}
+		placed, err := f.st.placedOrder(ctx, schema, checkoutID)
 		if err != nil {
 			return err
 		}
-		// The session ends terminalTTL after its order was placed,
-		// which is when Django created it, not when this event came.
-		placed, err := time.Parse(time.RFC3339Nano, order.CreatedAt)
-		if err != nil {
-			return fmt.Errorf("checkout: order %s created at %q: %w",
-				order.UUID, order.CreatedAt, err)
+		if placed.OrderUUID == "" {
+			f.log.WarnContext(ctx,
+				"checkout: order event for a session with no placed order",
+				slog.String("session", s.ID))
+			return nil
 		}
-		s.OrderID, s.OrderUUID = order.ID, order.UUID
-		s.PlacedAt = placed.UTC()
+		s.OrderID, s.OrderUUID = placed.OrderID, placed.OrderUUID
+		s.PlacedAt = placed.PlacedAt
+		changed = true
 	}
-	s.Status = StatusCompleted
+	if paymentStatus == django.PaymentStatusCompleted {
+		s.Status = StatusCompleted
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
 	return f.st.Save(ctx, s)
 }

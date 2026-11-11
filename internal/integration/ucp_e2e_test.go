@@ -204,12 +204,9 @@ type checkoutFaults struct {
 	payWayLookup atomic.Bool
 	// orderRead makes reading a placed order answer 502.
 	orderRead atomic.Bool
-	// orderGone makes reading a placed order answer 404: Django no
-	// longer has it.
-	orderGone atomic.Bool
-	// orderCreatedAt is when the placed order reads as created; unset,
-	// the fixture's time, which is long past.
-	orderCreatedAt atomic.Pointer[time.Time]
+	// lineShort makes a cart line write answer 400 insufficient_stock:
+	// the stock went to an order.
+	lineShort atomic.Bool
 	// cartWrites counts the writes the cart received: its lines and its
 	// coupon.
 	cartWrites atomic.Int32
@@ -235,28 +232,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
-			if faults.orderGone.Load() {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusNotFound)
-				_, _ = w.Write([]byte(
-					`{"detail": "Not found.", "code": "not_found"}`))
-				return
-			}
-			createdAt := faults.orderCreatedAt.Load()
-			if createdAt == nil {
-				inner.ServeHTTP(w, r)
-				return
-			}
-			raw, err := os.ReadFile(fixturePath("order_by_uuid.json"))
-			var order map[string]any
-			if !assert.NoError(t, err) ||
-				!assert.NoError(t, json.Unmarshal(raw, &order)) {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			order["createdAt"] = createdAt.Format(time.RFC3339Nano)
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(order)
+			inner.ServeHTTP(w, r)
 		})
 	outer.HandleFunc("GET /api/v1/cart",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +278,39 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 		outer.HandleFunc(write,
 			func(w http.ResponseWriter, r *http.Request) {
 				faults.cartWrites.Add(1)
-				inner.ServeHTTP(w, r)
+				refuse := func(status int, body string) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte(body))
+				}
+				switch {
+				// The line went with the order's cart: Django answers a
+				// changed line 404 and a deleted one 403
+				// (src/cart/views/item.py get_object, destroy).
+				case faults.cartDeletedOnOrder.Load() &&
+					faults.ordersPlaced.Load() > 0 &&
+					r.Method == http.MethodPut:
+					refuse(http.StatusNotFound, `{"detail": "No CartItem `+
+						`matches the given query.", "code": "not_found"}`)
+				case faults.cartDeletedOnOrder.Load() &&
+					faults.ordersPlaced.Load() > 0 &&
+					r.Method == http.MethodDelete:
+					refuse(http.StatusForbidden, `{"detail": "You do not `+
+						`have permission to delete this cart item.", `+
+						`"code": "cart_item_forbidden"}`)
+				// The stock went to an order (src/cart/serializers/item.py
+				// validate, through core/api/exception_handler.py).
+				case faults.lineShort.Load() &&
+					r.Method != http.MethodDelete:
+					const msg = "Not enough stock for 'Ζυμαρικά'. " +
+						"Available: 0, Requested: 3"
+					refuse(http.StatusBadRequest, `{"non_field_errors": ["`+
+						msg+`"], "code": "insufficient_stock", "fields": `+
+						`{"non_field_errors": [{"message": "`+msg+
+						`", "code": "insufficient_stock"}]}}`)
+				default:
+					inner.ServeHTTP(w, r)
+				}
 			})
 	}
 	outer.HandleFunc("POST /api/v1/cart/coupon",

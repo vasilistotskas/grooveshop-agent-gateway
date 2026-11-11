@@ -25,7 +25,7 @@ func (stack ucpStack) sessionCount(t *testing.T) int {
 	require.NoError(t, err)
 	n := 0
 	for _, key := range keys {
-		if !strings.HasSuffix(key, ":lock") {
+		if !strings.HasSuffix(key, ":lock") && !strings.HasSuffix(key, ":order") {
 			n++
 		}
 	}

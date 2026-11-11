@@ -16,6 +16,10 @@ var (
 	ErrNotFound = errors.New("checkout: session not found")
 	// ErrLocked marks a session busy with a concurrent mutation.
 	ErrLocked = errors.New("checkout: session is busy, retry shortly")
+	// ErrUnavailable marks checkout records that could not be read or
+	// written: Redis failed, or holds what cannot be decoded. It is the
+	// gateway's own store, not the shop's backend, and callers say so.
+	ErrUnavailable = errors.New("checkout: records unavailable")
 	// ErrSessionChanged marks a save that Redis refused: the stored
 	// session is no longer the one this request read (another request
 	// stored it since, or it expired). Nothing was written, and what the
@@ -124,11 +128,11 @@ func (st *Store) Load(ctx context.Context, schema, id string) (*Session, error) 
 		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("checkout: load: %w", err)
+		return nil, fmt.Errorf("%w: load: %w", ErrUnavailable, err)
 	}
 	var s Session
 	if err := json.Unmarshal([]byte(raw), &s); err != nil {
-		return nil, fmt.Errorf("checkout: corrupt session: %w", err)
+		return nil, fmt.Errorf("%w: corrupt session: %w", ErrUnavailable, err)
 	}
 	return &s, nil
 }
@@ -182,7 +186,7 @@ func (st *Store) put(ctx context.Context, s *Session, stored string) error {
 		// A placed session ends when its lifetime does, whoever wrote it
 		// last.
 		if err := st.rdb.Del(ctx, key).Err(); err != nil {
-			return fmt.Errorf("checkout: save: %w", err)
+			return fmt.Errorf("%w: save: %w", ErrUnavailable, err)
 		}
 		return nil
 	}
@@ -193,7 +197,7 @@ func (st *Store) put(ctx context.Context, s *Session, stored string) error {
 	written, err := saveScript.Run(ctx, st.rdb, []string{key},
 		stored, next.Revision, raw, ttl).Int()
 	if err != nil {
-		return fmt.Errorf("checkout: save: %w", err)
+		return fmt.Errorf("%w: save: %w", ErrUnavailable, err)
 	}
 	if written != 1 {
 		return ErrSessionChanged
@@ -205,7 +209,7 @@ func (st *Store) put(ctx context.Context, s *Session, stored string) error {
 // Discard deletes a session that was created and never answered.
 func (st *Store) Discard(ctx context.Context, s *Session) error {
 	if err := st.rdb.Del(ctx, sessionKey(s.Schema, s.ID)).Err(); err != nil {
-		return fmt.Errorf("checkout: discard: %w", err)
+		return fmt.Errorf("%w: discard: %w", ErrUnavailable, err)
 	}
 	return nil
 }
@@ -265,16 +269,64 @@ type OrderLink struct {
 	WebhookURL string `json:"webhookUrl,omitempty"`
 }
 
-// IndexOrder records the session's order link.
+// placedOrder is the order a completion placed, recorded beside its
+// session the moment Django returned it. The session itself learns of
+// the order only with the completion's last save, which can fail: this
+// record is then how later calls and order events know the order.
+type placedOrder struct {
+	OrderID   int64     `json:"orderId"`
+	OrderUUID string    `json:"orderUuid"`
+	PlacedAt  time.Time `json:"placedAt"`
+}
+
+func placedKey(schema, id string) string {
+	return sessionKey(schema, id) + ":order"
+}
+
+// IndexOrder records the order the session's completion placed, both
+// ways and together: the order's link to its checkout, and the placed
+// order beside the session, kept as long as a placed session is.
 func (st *Store) IndexOrder(ctx context.Context, s *Session) error {
-	raw, err := json.Marshal(OrderLink{
+	link, err := json.Marshal(OrderLink{
 		CheckoutID: s.ID, Domain: s.Domain, WebhookURL: s.WebhookURL,
 	})
 	if err != nil {
 		return fmt.Errorf("checkout: encode order link: %w", err)
 	}
-	return st.rdb.Set(ctx, orderLinkKey(s.Schema, s.OrderUUID), raw,
+	placed, err := json.Marshal(placedOrder{
+		OrderID: s.OrderID, OrderUUID: s.OrderUUID, PlacedAt: s.PlacedAt,
+	})
+	if err != nil {
+		return fmt.Errorf("checkout: encode placed order: %w", err)
+	}
+	// The placed order first: an event finds the session through the
+	// link, and must then find the order beside it.
+	if err := st.rdb.Set(ctx, placedKey(s.Schema, s.ID), placed,
+		terminalTTL).Err(); err != nil {
+		return err
+	}
+	return st.rdb.Set(ctx, orderLinkKey(s.Schema, s.OrderUUID), link,
 		orderLinkTTL).Err()
+}
+
+// placedOrder reads the order recorded beside a session; the zero value
+// when none is.
+func (st *Store) placedOrder(
+	ctx context.Context, schema, id string,
+) (placedOrder, error) {
+	var placed placedOrder
+	raw, err := st.rdb.Get(ctx, placedKey(schema, id)).Result()
+	if errors.Is(err, redis.Nil) {
+		return placed, nil
+	}
+	if err != nil {
+		return placed, fmt.Errorf("%w: placed order: %w", ErrUnavailable, err)
+	}
+	if err := json.Unmarshal([]byte(raw), &placed); err != nil {
+		return placed, fmt.Errorf("%w: corrupt placed order: %w",
+			ErrUnavailable, err)
+	}
+	return placed, nil
 }
 
 // OrderLinkFor resolves the link for an order, without loading the

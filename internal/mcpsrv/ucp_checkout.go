@@ -183,6 +183,78 @@ func (h *handlers) applyPayment(
 	return nil
 }
 
+// toolResult is a checkout tool's answer, made when it is given.
+type toolResult func() (*mcp.CallToolResult, CheckoutResult, error)
+
+// sessionAnswer is how the body of update_checkout, complete_checkout or
+// cancel_checkout ends. A body returns one and nothing else, and only
+// finish turns it into the tool's answer. That is what keeps every way
+// out of those tools behind the check finish makes, a way added later
+// included.
+//
+// What a body holds is a snapshot of the checkout. The lock meant to
+// keep it current can lapse while Django is slow, and another call may
+// have placed the order since: Django then refuses this call for reasons
+// that are the other call's doing (an empty cart, a line that is gone,
+// stock the order took), and the snapshot describes a checkout that no
+// longer exists.
+type sessionAnswer struct {
+	answer toolResult
+	// current: the call's own save of the checkout was just accepted,
+	// which proves its snapshot was the stored checkout.
+	current bool
+}
+
+// fromSnapshot is an answer made from the checkout as the call holds it.
+// finish gives it only while the stored checkout is still that one.
+func fromSnapshot(answer toolResult) sessionAnswer {
+	return sessionAnswer{answer: answer}
+}
+
+// refusedBy is fromSnapshot for a refusal: one decided from the
+// snapshot, or one Django made on its behalf.
+func refusedBy(err error) sessionAnswer {
+	return fromSnapshot(func() (*mcp.CallToolResult, CheckoutResult, error) {
+		return nil, CheckoutResult{}, err
+	})
+}
+
+// afterSave is an answer to a call whose save of the checkout was
+// accepted: an update or cancel that stored, a completion past the
+// in-progress save, whose outcome is its own.
+func afterSave(answer toolResult) sessionAnswer {
+	return sessionAnswer{answer: answer, current: true}
+}
+
+// finish gives a body's answer. One made from the snapshot stands only
+// if the stored checkout is still the revision the call holds. Otherwise
+// the call is answered by what is stored: stored (the operation's own
+// answer for a checkout in that state, or that another request changed
+// it), no longer stored (errCheckoutGone), unreadable
+// (errCheckoutUnavailable).
+func (h *handlers) finish(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	a sessionAnswer, stored func(now *checkout.Session) toolResult,
+) (*mcp.CallToolResult, CheckoutResult, error) {
+	if a.current {
+		return a.answer()
+	}
+	var zero CheckoutResult
+	now, err := h.deps.Checkout.Load(ctx, t.SchemaName, s.ID)
+	switch {
+	case errors.Is(err, checkout.ErrNotFound):
+		return nil, zero, errCheckoutGone
+	case err != nil:
+		return nil, zero, errCheckoutUnavailable
+	case now.Revision == s.Revision:
+		return a.answer()
+	}
+	if answer := stored(now); answer != nil {
+		return answer()
+	}
+	return nil, zero, errCheckoutChanged
+}
+
 func (h *handlers) updateCheckout(
 	ctx context.Context, _ *mcp.CallToolRequest, in UpdateCheckoutIn,
 ) (*mcp.CallToolResult, CheckoutResult, error) {
@@ -206,36 +278,52 @@ func (h *handlers) updateCheckout(
 		return nil, zero, err
 	}
 	defer release()
+	return h.finish(ctx, t, s, h.updateSession(ctx, t, s, in, neg),
+		func(now *checkout.Session) toolResult {
+			if err := h.closedTo(ctx, now, "updated"); err != nil {
+				return refusedBy(err).answer
+			}
+			// Still open: this update's cart writes may be made.
+			return refusedBy(
+				withHint(errCheckoutChanged, checkoutNotUpdated)).answer
+		})
+}
 
-	if err := h.closedTo(s, "updated"); err != nil {
-		return nil, zero, err
+// updateSession is update_checkout once its checkout is loaded.
+func (h *handlers) updateSession(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	in UpdateCheckoutIn, neg ucp.Negotiated,
+) sessionAnswer {
+	if err := h.closedTo(ctx, s, "updated"); err != nil {
+		return refusedBy(err)
 	}
 	// line_items is full-state on update: the submitted list replaces
 	// the cart's lines. Ignoring it would complete the old order.
 	lines, err := in.Checkout.lines()
 	if err != nil {
-		return nil, zero, err
+		return refusedBy(err)
 	}
 	if in.Checkout.LineItems != nil && len(lines) == 0 {
-		return nil, zero, errors.New(
+		return refusedBy(errors.New(
 			"checkout.line_items must not be empty; cancel the " +
-				"checkout to abandon it")
+				"checkout to abandon it"))
 	}
 	// Every lookup and refusal before the first cart write: a refused
 	// update must leave the cart and the stored session agreeing.
 	// Nothing here is saved until the end.
 	in.Checkout.applyTo(s)
 	if err := h.applyRegion(ctx, t, s, &in.Checkout); err != nil {
-		return nil, zero, err
+		return refusedBy(err)
 	}
 	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
-		return nil, zero, err
+		return refusedBy(err)
 	}
 	if in.Checkout.LineItems != nil {
 		if err := checkout.SyncCartLines(
 			ctx, h.deps.Django, t, s.Protocol, s.CartID, lines,
 		); err != nil {
-			return nil, zero, h.cartFailed(ctx, t, s, err)
+			return refusedBy(withHint(upstreamErr(err, cartGone),
+				checkoutNotUpdated))
 		}
 	}
 	codes, hasCodes := in.Checkout.discountCodes()
@@ -243,7 +331,8 @@ func (h *handlers) updateCheckout(
 		if err := checkout.ApplyDiscountCodes(
 			ctx, h.deps.Django, t, s, codes,
 		); err != nil {
-			return nil, zero, h.cartFailed(ctx, t, s, err)
+			return refusedBy(withHint(upstreamErr(err, cartGone),
+				checkoutNotUpdated))
 		}
 	}
 	s.Recompute()
@@ -252,10 +341,12 @@ func (h *handlers) updateCheckout(
 	// snapshot is then not written over it. The cart writes above are
 	// already made.
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
-		return nil, zero, withHint(saveFailed(err), checkoutNotUpdated)
+		return refusedBy(withHint(saveFailed(err), checkoutNotUpdated))
 	}
-	res, out, err := h.checkoutResult(ctx, t, s, neg)
-	return h.discountAnnotated(res, out, err, s, hasCodes)
+	return afterSave(func() (*mcp.CallToolResult, CheckoutResult, error) {
+		res, out, err := h.checkoutResult(ctx, t, s, neg)
+		return h.discountAnnotated(res, out, err, s, hasCodes)
+	})
 }
 
 func (h *handlers) completeCheckout(
@@ -281,23 +372,53 @@ func (h *handlers) completeCheckout(
 		return nil, zero, err
 	}
 	defer release()
+	return h.finish(ctx, t, s, h.completeSession(ctx, t, s, in, neg),
+		func(now *checkout.Session) toolResult {
+			return h.completeClosed(ctx, t, now, neg)
+		})
+}
 
+// completeClosed answers a complete of a checkout that is not open, and
+// is nil for one that is. One that placed its order is answered with
+// the checkout: completed, or awaiting the payment its continue_url
+// leads to. The order is what a complete asks for, and it exists.
+func (h *handlers) completeClosed(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	neg ucp.Negotiated,
+) toolResult {
 	switch s.Status {
-	case checkout.StatusCompleted:
-		return h.checkoutResult(ctx, t, s, neg)
+	case checkout.StatusCompleted, checkout.StatusRequiresEscalation:
+		return func() (*mcp.CallToolResult, CheckoutResult, error) {
+			return h.checkoutResult(ctx, t, s, neg)
+		}
 	case checkout.StatusCompleteInProgress, checkout.StatusCanceled:
-		return nil, zero, h.closedTo(s, "completed")
-	case checkout.StatusRequiresEscalation:
-		// The escalation resolves through the order event, never through
-		// a second complete — except to retry a payment link that could
-		// not be created, for an order that already exists.
+		return refusedBy(h.closedTo(ctx, s, "completed")).answer
+	}
+	return nil
+}
+
+// completeSession is complete_checkout once its checkout is loaded.
+func (h *handlers) completeSession(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	in CompleteCheckoutIn, neg ucp.Negotiated,
+) sessionAnswer {
+	render := func() (*mcp.CallToolResult, CheckoutResult, error) {
+		return h.checkoutResult(ctx, t, s, neg)
+	}
+	// The escalation resolves through the order event, never through a
+	// second complete, except to retry a payment link that could not be
+	// created, for an order that already exists.
+	if s.Status == checkout.StatusRequiresEscalation && s.PaymentURL == "" {
 		if err := h.deps.Flow.ResumePayment(ctx, t, s); err != nil {
-			return nil, zero, paymentLinkErr(s)
+			return refusedBy(paymentLinkErr(s))
 		}
 		if err := h.deps.Checkout.Save(ctx, s); err != nil {
-			return nil, zero, saveFailed(err)
+			return refusedBy(saveFailed(err))
 		}
-		return h.checkoutResult(ctx, t, s, neg)
+		return afterSave(render)
+	}
+	if closed := h.completeClosed(ctx, t, s, neg); closed != nil {
+		return fromSnapshot(closed)
 	}
 
 	// The submitted instrument decides how this order settles. Resolving
@@ -307,12 +428,12 @@ func (h *handlers) completeCheckout(
 	// buyer has no way to pay for.
 	payWay, status := s.PayWayID, s.Status
 	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
-		return nil, zero, err
+		return refusedBy(err)
 	}
 	if s.PayWayID <= 0 {
-		return nil, zero, errors.New(
+		return refusedBy(errors.New(
 			"checkout.payment.instruments is required to complete: " +
-				"submit one of the instruments the checkout advertised")
+				"submit one of the instruments the checkout advertised"))
 	}
 	s.Recompute()
 
@@ -320,34 +441,41 @@ func (h *handlers) completeCheckout(
 		ctx, t.SchemaName, s.ID, in.Meta.IdempotencyKey)
 	if err != nil {
 		if errors.Is(err, checkout.ErrCompletionInProgress) {
-			return nil, zero, err
+			return refusedBy(err)
 		}
-		return nil, zero, errCheckoutUnavailable
+		return refusedBy(errCheckoutUnavailable)
 	}
 	if claim == nil {
-		// A prior attempt finished; render the session's current state.
-		return h.checkoutResult(ctx, t, s, neg)
+		// A prior attempt with this key finished. What it made of the
+		// checkout is what is stored now, which finish answers with:
+		// this call's snapshot may predate it.
+		return fromSnapshot(render)
 	}
 
 	// What this call submitted is the buyer's latest choice whether or
 	// not the call places the order. It is stored now, because a refused
 	// completion stores nothing: a later complete that omits the payment
 	// would otherwise place the order with the choice before this one.
-	//
-	// The payment lookup above can outlast the session lock, and another
-	// call may have placed the order meanwhile: the save is refused
-	// then, and a call whose key already placed one never gets here.
 	if s.Open() && (s.PayWayID != payWay || s.Status != status) {
 		if err := h.deps.Checkout.Save(ctx, s); err != nil {
 			h.settleCompletion(ctx, s, claim, checkout.NothingPlaced)
-			return nil, zero, saveFailed(err)
+			return refusedBy(saveFailed(err))
 		}
 	}
 
 	placement, err := h.deps.Flow.Complete(ctx, t, s)
 	h.settleCompletion(ctx, s, claim, placement)
-	switch {
-	case err == nil:
+	if placement == checkout.NothingPlaced {
+		// Refused before the order was sent, or by Django for the order
+		// itself: either way nothing of this call exists.
+		return refusedBy(completeErr(s, err))
+	}
+	// Past the in-progress save, which only the stored checkout's own
+	// call passes: what follows is this call's own outcome.
+	return afterSave(func() (*mcp.CallToolResult, CheckoutResult, error) {
+		if err != nil {
+			return nil, CheckoutResult{}, completeErr(s, err)
+		}
 		if ctx.Err() != nil {
 			// The call's context has ended: the caller hung up, or the
 			// server is shutting down. Reading the order back on it
@@ -358,40 +486,52 @@ func (h *handlers) completeCheckout(
 				slog.String("session", s.ID),
 				slog.String("order", s.OrderUUID),
 				slog.String("cause", context.Cause(ctx).Error()))
-			return nil, zero, unrenderedErr(s)
+			return nil, CheckoutResult{}, unrenderedErr(s)
 		}
-		return h.checkoutResult(ctx, t, s, neg)
+		return render()
+	})
+}
+
+// completeErr is the tool's answer for an error of Flow.Complete.
+func completeErr(s *checkout.Session, err error) error {
+	switch {
 	case errors.Is(err, checkout.ErrOrderOutcomeUnknown):
-		return nil, zero, errOutcomeUnknown
-	case errors.Is(err, checkout.ErrNotFound):
-		return nil, zero, errCheckoutGone
+		return errOutcomeUnknown
 	case errors.Is(err, checkout.ErrPaymentSessionFailed):
-		return nil, zero, paymentLinkErr(s)
+		return paymentLinkErr(s)
 	case errors.Is(err, checkout.ErrSessionNotSaved):
-		return nil, zero, errors.New(
-			"the order was placed but checkout state could not be saved; " +
-				"track it with track_order using orderUuid " + s.OrderUUID)
+		return placedUnsavedErr(s.OrderUUID)
+	case errors.Is(err, checkout.ErrUnavailable):
+		return errCheckoutUnavailable
 	case errors.As(err, new(*django.StockShortfall)):
-		return nil, zero, stockShortfallErr(err)
+		return stockShortfallErr(err)
 	case errors.Is(err, checkout.ErrSessionChanged):
-		return nil, zero, saveFailed(err)
+		return saveFailed(err)
 	case errors.Is(err, checkout.ErrNotReady),
 		errors.Is(err, checkout.ErrCompletionInProgress):
-		return nil, zero, err
+		return err
 	case errors.Is(err, checkout.ErrPayWayUnavailable):
-		return nil, zero, errors.New(
+		return errors.New(
 			"the selected payment method is not offered for this " +
 				"delivery; submit another advertised instrument")
 	case errors.Is(err, checkout.ErrPaymentMethodUnsupported):
-		return nil, zero, errors.New(
+		return errors.New(
 			"this payment method needs the buyer to pay on the " +
 				"store's checkout; use an offline method (e.g. cash " +
 				"on delivery), Viva card payment, or hand over " +
 				"get_checkout_link instead")
-	default:
-		return nil, zero, upstreamErr(err,
-			"order placement failed; the cart is unchanged")
 	}
+	return upstreamErr(err, "order placement failed; the cart is unchanged")
+}
+
+// placedUnsavedErr answers for an order that is placed while its
+// checkout never recorded it: to the completion whose last save failed,
+// and to every later call, which finds the checkout in progress and the
+// order named beside it.
+func placedUnsavedErr(orderUUID string) error {
+	return errors.New(
+		"the order was placed but checkout state could not be saved; " +
+			"track it with track_order using orderUuid " + orderUUID)
 }
 
 // settleCompletion spends or releases a completion claim by what the
@@ -448,16 +588,19 @@ func saveFailed(err error) error {
 	return errCheckoutUnavailable
 }
 
-// closedTo answers an update or a cancel (action: "updated", "canceled")
-// of a checkout that takes neither, and is nil for one that is open: an
-// order that is being placed, a canceled checkout, and one that placed
-// an order, which canceling or changing the checkout would not touch.
-func (h *handlers) closedTo(s *checkout.Session, action string) error {
+// closedTo answers an update, a cancel or a complete (action: "updated",
+// "canceled", "completed") of a checkout that takes it no more, and is
+// nil for one that is open: an order that is being placed, a canceled
+// checkout, and one that placed an order, which canceling or changing
+// the checkout would not touch.
+func (h *handlers) closedTo(
+	ctx context.Context, s *checkout.Session, action string,
+) error {
 	switch {
 	case s.Open():
 		return nil
 	case s.Status == checkout.StatusCompleteInProgress:
-		return h.pending(s)
+		return h.pending(ctx, s)
 	case s.Status == checkout.StatusCanceled:
 		return fmt.Errorf("checkout %s is canceled and cannot be %s",
 			s.ID, action)
@@ -466,33 +609,6 @@ func (h *handlers) closedTo(s *checkout.Session, action string) error {
 		"checkout %s already placed order %s and cannot be %s here; "+
 			"the order is managed by the store, and get_order or "+
 			"track_order reads it", s.ID, s.OrderUUID, action)
-}
-
-// cartFailed answers an update whose cart call failed. An update can
-// outlast its lock, and a completion may have placed the order
-// meanwhile, which takes the cart with it. So for a cart that cannot be
-// reached the checkout is read again, and one that is no longer open is
-// answered as any update of it is, never as a cart to replace with a new
-// checkout.
-func (h *handlers) cartFailed(
-	ctx context.Context, t *tenant.Tenant, s *checkout.Session, err error,
-) error {
-	if errors.Is(err, django.ErrCartUnreachable) {
-		// The cart is "gone" only for a checkout that was read again
-		// and is still open. One that cannot be read is answered as
-		// that: missing (its order may exist), or unavailable.
-		now, loadErr := h.deps.Checkout.Load(ctx, t.SchemaName, s.ID)
-		switch {
-		case errors.Is(loadErr, checkout.ErrNotFound):
-			return errCheckoutGone
-		case loadErr != nil:
-			return errCheckoutUnavailable
-		}
-		if closed := h.closedTo(now, "updated"); closed != nil {
-			return closed
-		}
-	}
-	return withHint(upstreamErr(err, cartGone), checkoutNotUpdated)
 }
 
 // errOutcomeUnknown answers a checkout whose order the store never
@@ -508,11 +624,16 @@ var errOutcomeUnknown = errors.New(
 		"email, or to ask the store; start a new checkout only if " +
 		"they find that no order was placed")
 
-// pending answers a call that finds the checkout's order being placed:
-// while the completion can still run, to check again shortly; past that
+// pending answers a call that finds the checkout's order being placed.
+// An order the completion placed and could not save is known (the
+// checkout or the store names it): that is the answer. Else, while the
+// completion can still run, to check again shortly; past that
 // (Flow.CompletionDeadline, as ACP judges it), that its outcome was
 // never recorded.
-func (h *handlers) pending(s *checkout.Session) error {
+func (h *handlers) pending(ctx context.Context, s *checkout.Session) error {
+	if order := h.deps.Flow.PlacedOrder(ctx, s); order != "" {
+		return placedUnsavedErr(order)
+	}
 	if time.Until(h.deps.Flow.CompletionDeadline(s)) > 0 {
 		return checkout.ErrCompletionInProgress
 	}
@@ -631,7 +752,7 @@ func (h *handlers) checkoutResult(
 			// Being placed, or never confirmed: its cart may have gone
 			// with the order, so it is answered as what it is, not as a
 			// checkout to read again until it renders.
-			return nil, zero, h.pending(s)
+			return nil, zero, h.pending(ctx, s)
 		}
 		return nil, zero, upstreamErr(err,
 			"checkout state could not be rendered; retry")
@@ -657,6 +778,10 @@ func (h *handlers) checkoutResult(
 		text = fmt.Sprintf(
 			"Order %s is placed and confirmed. Track it with track_order.",
 			s.OrderUUID)
+	case checkout.StatusCompleteInProgress:
+		// The guidance every other tool gives for this state: in flight,
+		// the order it placed, or an outcome that was never recorded.
+		text = h.pending(ctx, s).Error()
 	default:
 		text = fmt.Sprintf("Checkout %s status: %s.", s.ID, s.Status)
 	}
@@ -749,22 +874,48 @@ func (h *handlers) cancelCheckout(
 		return nil, zero, err
 	}
 	defer release()
+	return h.finish(ctx, t, s, h.cancelSession(ctx, t, s, neg),
+		func(now *checkout.Session) toolResult {
+			return h.cancelClosed(ctx, t, now, neg)
+		})
+}
 
+// cancelClosed answers a cancel of a checkout that is not open, and is
+// nil for one that is. A canceled one is rendered: a repeat cancel is
+// not an error. Once an order exists, or may (being placed, awaiting
+// payment, completed), canceling the checkout would not cancel the
+// order: the buyer could still pay it, and the session would read
+// canceled over a paid order.
+func (h *handlers) cancelClosed(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	neg ucp.Negotiated,
+) toolResult {
 	if s.Status == checkout.StatusCanceled {
-		return h.checkoutResult(ctx, t, s, neg)
+		return func() (*mcp.CallToolResult, CheckoutResult, error) {
+			return h.checkoutResult(ctx, t, s, neg)
+		}
 	}
-	// Once an order exists, or may (being placed, awaiting payment,
-	// completed), canceling the checkout would not cancel the order: the
-	// buyer could still pay it, and the session would read canceled over
-	// a paid order.
-	if err := h.closedTo(s, "canceled"); err != nil {
-		return nil, zero, err
+	if err := h.closedTo(ctx, s, "canceled"); err != nil {
+		return refusedBy(err).answer
+	}
+	return nil
+}
+
+// cancelSession is cancel_checkout once its checkout is loaded.
+func (h *handlers) cancelSession(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	neg ucp.Negotiated,
+) sessionAnswer {
+	if closed := h.cancelClosed(ctx, t, s, neg); closed != nil {
+		return fromSnapshot(closed)
 	}
 	s.Status = checkout.StatusCanceled
 	if err := h.deps.Checkout.Save(ctx, s); err != nil {
-		return nil, zero, saveFailed(err)
+		return refusedBy(saveFailed(err))
 	}
-	return h.checkoutResult(ctx, t, s, neg)
+	return afterSave(func() (*mcp.CallToolResult, CheckoutResult, error) {
+		return h.checkoutResult(ctx, t, s, neg)
+	})
 }
 
 // incompatibleCheckout is the negotiation-failure result: the platform

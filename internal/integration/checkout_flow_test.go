@@ -205,6 +205,10 @@ func TestCompleteLeavesAnUnansweredOrderInProgress(t *testing.T) {
 	stored := f.stored(t, s)
 	assert.Equal(t, checkout.StatusCompleteInProgress, stored.Status)
 	assert.Empty(t, stored.OrderUUID)
+	// The order was sent and never answered: it may exist, so the
+	// session is kept as long as a placed one.
+	assert.True(t, stored.Unconfirmed)
+	assert.Greater(t, f.lifetime(t, s), 23*time.Hour)
 }
 
 // A refusal created nothing, so the checkout is stored ready again: left
@@ -356,81 +360,61 @@ func TestCompletesAtOncePlaceOneOrder(t *testing.T) {
 	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
 }
 
-// A completion that placed its order and could not save leaves a session
-// in progress that does not name the order. The payment event finds it
-// through the order link, and is then what records the order: completed
-// without one, the checkout would read as placed and name nothing, and a
-// cancel that looks for an order would have canceled it over a paid one.
-func TestOrderEventRecordsTheOrderItsSessionNeverSaved(t *testing.T) {
-	f := startFlow(t, 5*time.Second)
-	ctx := context.Background()
-	s := f.readySession(t)
-	redisDown := errors.New("redis is down")
-	var linked, down bool
-	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
-		switch {
-		case setsKey(cmd, ":orderlink:"):
-			linked, down = true, true
-		case linked && down && setsKey(cmd, sessionRedisKey(s.ID)):
-			return redisDown
-		}
-		return nil
-	}))
-	_, err := f.flow.Complete(ctx, f.tenant, s)
-	require.ErrorIs(t, err, checkout.ErrSessionNotSaved)
-	down = false
-	unsaved := f.stored(t, s)
-	require.Equal(t, checkout.StatusCompleteInProgress, unsaved.Status)
-	require.Empty(t, unsaved.OrderUUID)
-
-	// An event that is not the payment changes nothing.
-	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
-		fixtureOrderUUID, "PENDING"))
-	assert.Equal(t, unsaved, f.stored(t, s))
-
-	// The order was placed an hour ago, whenever its event comes.
-	placed := time.Now().Add(-time.Hour)
-	f.faults.orderCreatedAt.Store(&placed)
-	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
-		fixtureOrderUUID, django.PaymentStatusCompleted))
-
-	stored := f.stored(t, s)
-	assert.Equal(t, checkout.StatusCompleted, stored.Status)
-	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
-	assert.EqualValues(t, 684, stored.OrderID, "the fixture order's id")
-	assert.WithinDuration(t, placed, stored.PlacedAt, time.Second)
-	// So the session ends a day after the order, not after the event.
-	ttl, err := f.rdb.PTTL(ctx, sessionRedisKey(s.ID)).Result()
+// lifetime is how long Redis still keeps the session.
+func (f flowStack) lifetime(t *testing.T, s *checkout.Session) time.Duration {
+	t.Helper()
+	ttl, err := f.rdb.PTTL(context.Background(),
+		sessionRedisKey(s.ID)).Result()
 	require.NoError(t, err)
-	assert.InDelta(t, (23 * time.Hour).Seconds(), ttl.Seconds(), 5)
-	assert.EqualValues(t, 1, f.faults.orderCreates.Load())
+	return ttl
 }
 
-// An event can come long after its order: a payment made days later, or
-// Django pushing again. The session's day counts from the order, so one
-// recorded by such an event has already ended.
-func TestOrderEventForAnOldOrderDoesNotKeepItsSession(t *testing.T) {
-	f := startFlow(t, 5*time.Second)
-	ctx := context.Background()
-	s := f.readySession(t)
-	s.Status = checkout.StatusCompleteInProgress
-	require.NoError(t, f.store.Save(ctx, s))
+// Django refused the order: none exists, definitely. If the save that
+// says so fails, the stored session still reads in progress. It gets one
+// more attempt, and if that fails too the session keeps the half hour of
+// an open one: it must not claim for a day that an order may exist.
+func TestARefusedOrderDoesNotLeaveASessionClaimingOne(t *testing.T) {
+	for name, tc := range map[string]struct {
+		failures int
+		want     checkout.Status
+	}{
+		"the save fails once":  {1, checkout.StatusReadyForComplete},
+		"the save fails twice": {2, checkout.StatusCompleteInProgress},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := startFlow(t, 5*time.Second)
+			s := f.readySession(t)
+			f.faults.orderRefuse.Store(true)
+			redisDown := errors.New("redis is down")
+			saves := 0
+			f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+				if !savesKey(cmd, sessionRedisKey(s.ID)) {
+					return nil
+				}
+				// The first save marks it in progress.
+				if saves++; saves > 1 && saves <= 1+tc.failures {
+					return redisDown
+				}
+				return nil
+			}))
 
-	// The fixture order was created months ago.
-	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
-		fixtureOrderUUID, django.PaymentStatusCompleted))
+			placement, err := f.flow.Complete(
+				context.Background(), f.tenant, s)
 
-	_, err := f.store.Load(ctx, s.Schema, s.ID)
-	assert.ErrorIs(t, err, checkout.ErrNotFound)
+			require.ErrorIs(t, err, django.ErrValidation)
+			assert.Equal(t, checkout.NothingPlaced, placement)
+			assert.Equal(t, tc.want, f.stored(t, s).Status)
+			assert.LessOrEqual(t, f.lifetime(t, s), 30*time.Minute)
+			assert.EqualValues(t, 1, f.faults.orderCreates.Load())
+		})
+	}
 }
 
-// A session in progress can still be stored by something else before the
-// completion's last save: an order event, for an order that is paid at
-// once. That save then loses, with the order placed. It is reported as a
-// placed order whose session was not saved, with the key spent, and
-// never as a session that changed, which a caller answers "nothing
-// happened, send the request again".
-func TestCompleteReportsAPlacedOrderWhoseSessionMovedOn(t *testing.T) {
+// A session in progress can still be stored before its completion's
+// last save, by the one other writer of such a session: an order event,
+// for an order that is paid at once. The completion stores its outcome
+// over the event's, and what the event said (the order is paid) is kept.
+func TestCompleteStoresItsOutcomeOverAnOrderEvent(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
 	ctx := context.Background()
 	s := f.readySession(t)
@@ -438,14 +422,36 @@ func TestCompleteReportsAPlacedOrderWhoseSessionMovedOn(t *testing.T) {
 		if !setsKey(cmd, ":orderlink:") {
 			return nil
 		}
-		// The order exists, and the session is stored by another writer
-		// before the completion saves it.
-		other, err := f.store.Load(ctx, s.Schema, s.ID)
-		if err != nil {
-			return err
+		// The order exists and is recorded beside the session: its
+		// payment event lands before the completion's last save.
+		return f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
+			django.PaymentStatusCompleted)
+	}))
+
+	placement, err := f.flow.Complete(ctx, f.tenant, s)
+
+	require.NoError(t, err)
+	assert.Equal(t, checkout.OrderMayExist, placement)
+	stored := f.stored(t, s)
+	assert.Equal(t, checkout.StatusCompleted, stored.Status)
+	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
+	assert.EqualValues(t, 1, f.faults.orderCreates.Load())
+}
+
+// A session that is gone before its completion's last save cannot be
+// stored again. The order is placed: that is reported as a placed order
+// whose session was not saved, with the key spent, and never as a
+// session that changed, which a caller answers "nothing happened, send
+// the request again".
+func TestCompleteReportsAPlacedOrderWhoseSessionIsGone(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	ctx := context.Background()
+	s := f.readySession(t)
+	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+		if !setsKey(cmd, ":orderlink:") {
+			return nil
 		}
-		other.Status = checkout.StatusCompleted
-		return f.store.Save(ctx, other)
+		return f.rdb.Del(ctx, sessionRedisKey(s.ID)).Err()
 	}))
 
 	placement, err := f.flow.Complete(ctx, f.tenant, s)

@@ -90,7 +90,7 @@ func TestACompleteRefusedForAnotherCompletesOrderReadsAgain(t *testing.T) {
 			stack.faults.stockShort.Store(true)
 
 			held.open()
-			assertLost(t, name, <-first)
+			assertStored(t, <-first, "requires_escalation")
 			assert.Equal(t, placed, stack.storedBytes(t, id))
 			assert.EqualValues(t, 1, stack.faults.orderCreates.Load())
 		})
@@ -238,6 +238,13 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 			assert.NotContains(t, answer.refusal, "check its status", what)
 		}
 	})
+
+	// A read that renders carries the same guidance beside the status.
+	stack.faults.namedCartReadsFailFrom.Store(0)
+	read := surfaces["ucp"].read(ctx, id)
+	assert.Equal(t, "complete_in_progress", read.status, read.refusal)
+	assert.Contains(t, read.text, "never confirmed")
+	assert.Contains(t, read.text, "order confirmation email")
 	assert.EqualValues(t, 1, stack.faults.orderCreates.Load())
 }
 
@@ -254,29 +261,4 @@ func TestCompleteOfACanceledCheckoutSaysItIsCanceled(t *testing.T) {
 	assert.Contains(t, answer.refusal, "is canceled and cannot be completed")
 	assert.Equal(t, "405 conflict",
 		surfaces["acp"].answer(ctx, id, uuid.NewString(), nil).refusal)
-}
-
-// A session that never saved its order learns of it from the payment
-// event, which reads the order from Django. An order Django no longer
-// has cannot be recorded, and no push will change that: the event is
-// answered as handled, not asked for again.
-func TestAPaymentEventForAnOrderThatIsGoneIsNotAskedForAgain(t *testing.T) {
-	stack := startUCPGateway(t)
-	surfaces := surfacesByName(t, stack)
-	id := awaitingPayment(t, surfaces["ucp"])
-	// The session forgets its order, as after a lost last save.
-	stored := stack.storedSession(t, id)
-	stored.Status = checkout.StatusCompleteInProgress
-	stored.OrderID, stored.OrderUUID = 0, ""
-	raw, err := json.Marshal(stored)
-	require.NoError(t, err)
-	require.NoError(t, stack.rdb.Set(context.Background(),
-		sessionRedisKey(id), raw, redis.KeepTTL).Err())
-	before := stack.storedBytes(t, id)
-	stack.faults.orderGone.Store(true)
-
-	assert.Equal(t, http.StatusNoContent, stack.pushOrderEvent(t, "COMPLETED"))
-
-	assert.Equal(t, before, stack.storedBytes(t, id))
-	assert.NotEmpty(t, stack.logs.with("order that is gone", "session="+id))
 }

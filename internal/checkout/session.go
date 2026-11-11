@@ -136,6 +136,11 @@ type Session struct {
 	PaymentURL string `json:"paymentUrl,omitempty"`
 	// PlacedAt ends the session terminalTTL later, whatever happens to it.
 	PlacedAt time.Time `json:"placedAt,omitzero"`
+	// Unconfirmed marks a session in progress whose order was sent and
+	// never answered: the order may exist. One in progress without it,
+	// and without an order, is a completion that is still running, or
+	// one that ended before it could say what happened.
+	Unconfirmed bool `json:"unconfirmed,omitempty"`
 
 	// WebhookURL is the platform's order-update delivery target,
 	// registered at create time.
@@ -168,18 +173,29 @@ func (s *Session) MayHaveOrder() bool {
 		s.Status == StatusCompleted
 }
 
+// keptLong reports whether the session is kept terminalTTL: it is
+// terminal, or what the gateway knows says an order exists or was sent
+// (it awaits payment, it names its order, or its order went unanswered).
+// A session merely marked in progress is not: nothing has been sent for
+// it yet. If its completion then dies, or Django refuses the order and
+// the save that says so fails, it must not claim an order for a day.
+func (s *Session) keptLong() bool {
+	return s.Terminal() || s.Status == StatusRequiresEscalation ||
+		s.OrderUUID != "" || s.Unconfirmed
+}
+
 // ttl is how long the session may still live. Calls keep an open session
-// alive for activeTTL at a time. One that may have an order, or is
-// canceled, is kept terminalTTL: while it is held, a caller is told
-// what became of the checkout (do not order again, the order, its
-// payment page), and a payment event finds it; once it is gone the id
-// is only "not found". A placed one still ends terminalTTL after it was
-// placed, however often a caller holding its id touches it: it reads
-// its order with the gateway's secret, past the limit on a guest's
-// order uuid.
+// alive for activeTTL at a time, and a session just marked in progress
+// has that long too. One an order exists for, or may (keptLong), is
+// kept terminalTTL: while it is held, a caller is told what became of
+// the checkout (do not order again, the order, its payment page), and a
+// payment event finds it; once it is gone the id is only "no session".
+// A placed one still ends terminalTTL after it was placed, however often
+// a caller holding its id touches it: it reads its order with the
+// gateway's secret, past the limit on a guest's order uuid.
 func (s *Session) ttl(now time.Time) time.Duration {
 	ttl := activeTTL
-	if s.Terminal() || s.MayHaveOrder() {
+	if s.keptLong() {
 		ttl = terminalTTL
 	}
 	if s.PlacedAt.IsZero() {

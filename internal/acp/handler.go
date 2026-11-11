@@ -112,6 +112,11 @@ func writeError(w http.ResponseWriter, status int, e Error) {
 	_ = json.NewEncoder(w).Encode(e)
 }
 
+// msgRecordsUnavailable answers a checkout store (Redis) that could not
+// be read or written: sessions, locks, idempotency keys. It names the
+// gateway's own records, never the store's backend.
+const msgRecordsUnavailable = "Checkout is temporarily unavailable."
+
 // writeUnavailable is the protocol body for a transient gateway-side
 // failure (Redis, rendering); the platform retries.
 func writeUnavailable(w http.ResponseWriter, msg string) {
@@ -268,12 +273,31 @@ func writeInFlight(w http.ResponseWriter, after time.Duration, msg string) {
 	})
 }
 
+// writePlacedUnsaved answers for an order that is placed while its
+// session never recorded it: to the completion whose last save failed,
+// and to every later call, which finds the session in progress and the
+// order named beside it. Not temporary: the session stays as it is.
+func writePlacedUnsaved(w http.ResponseWriter, orderUUID string) {
+	writeError(w, http.StatusInternalServerError, Error{
+		Type: "processing_error", Code: "order_placed",
+		Message: "Order " + orderUUID + " is placed, but its " +
+			"checkout session could not be saved. Do not complete " +
+			"again or start a new checkout.",
+	})
+}
+
 // writeCompletionPending answers a call that finds the session's order
-// being placed: while the completion can still run, retry once it must
-// have ended; past that, its outcome was never recorded.
+// being placed. An order the completion placed and could not save is
+// known (the session or the store names it): that is the answer. Else,
+// while the completion can still run, retry once it must have ended;
+// past that, its outcome was never recorded.
 func (h *Handler) writeCompletionPending(
-	w http.ResponseWriter, s *checkout.Session,
+	w http.ResponseWriter, r *http.Request, s *checkout.Session,
 ) {
+	if order := h.flow.PlacedOrder(r.Context(), s); order != "" {
+		writePlacedUnsaved(w, order)
+		return
+	}
 	if left := time.Until(h.flow.CompletionDeadline(s)); left > 0 {
 		writeInFlight(w, left,
 			"This checkout session's order is being placed.")
@@ -282,56 +306,74 @@ func (h *Handler) writeCompletionPending(
 	writeOutcomeUnknown(w)
 }
 
-// claimIdem implements POST idempotency: the first caller claims the key,
+// claimKey implements POST idempotency: the first caller claims the key,
 // replays return the stored record, concurrent attempts get 409, and a
 // different body under the same key gets 422. It returns the claim when
-// this request holds the key, and the record when an earlier one settled
-// it; with handled, the request is answered.
-func (h *Handler) claimIdem(
-	w http.ResponseWriter, r *http.Request, schema, scope string, raw []byte,
-) (claim *checkout.Claim, prior *idemRecord, handled bool) {
-	key := r.Header.Get("Idempotency-Key")
+// this request holds the key, the record when an earlier one settled
+// it, and otherwise the refusal to answer with.
+func (h *Handler) claimKey(
+	r *http.Request, schema, scope string, raw []byte,
+) (
+	key string, claim *checkout.Claim, prior *idemRecord,
+	refuse func(http.ResponseWriter),
+) {
+	refusal := func(status int, e Error) func(http.ResponseWriter) {
+		return func(w http.ResponseWriter) { writeError(w, status, e) }
+	}
+	key = r.Header.Get("Idempotency-Key")
 	if key == "" {
-		writeError(w, http.StatusBadRequest, Error{
+		return "", nil, nil, refusal(http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "idempotency_key_required",
 			Message: "The Idempotency-Key header is required.",
 		})
-		return nil, nil, true
 	}
 	if len(key) > maxIdempotencyKeyLen {
-		writeError(w, http.StatusBadRequest, Error{
+		return "", nil, nil, refusal(http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "invalid",
 			Param:   "Idempotency-Key",
 			Message: "The Idempotency-Key header exceeds 255 characters.",
 		})
-		return nil, nil, true
+	}
+	inFlight := func(w http.ResponseWriter) {
+		writeInFlight(w, idemRetryAfter, msgKeyInFlight)
 	}
 	claim, settled, err := h.store.Claim(r.Context(),
 		idemRedisKey(schema, scope, key))
 	if err != nil {
-		writeUnavailable(w, "Checkout is temporarily unavailable.")
-		return nil, nil, true
+		return "", nil, nil, func(w http.ResponseWriter) {
+			writeUnavailable(w, msgRecordsUnavailable)
+		}
 	}
 	if claim != nil {
-		w.Header().Set("Idempotency-Key", key)
-		return claim, nil, false
+		return key, claim, nil, nil
 	}
 	// Held by another request, or settled with something that is not a
 	// record: in flight either way.
 	var rec idemRecord
 	if settled == "" || json.Unmarshal([]byte(settled), &rec) != nil {
-		writeInFlight(w, idemRetryAfter, msgKeyInFlight)
-		return nil, nil, true
+		return "", nil, nil, inFlight
 	}
 	if rec.BodyHash != bodyHash(raw) {
-		writeError(w, http.StatusUnprocessableEntity, Error{
+		return "", nil, nil, refusal(http.StatusUnprocessableEntity, Error{
 			Type: "invalid_request", Code: "idempotency_conflict",
 			Message: "This Idempotency-Key was used with a different body.",
 		})
+	}
+	return key, nil, &rec, nil
+}
+
+// claimIdem is claimKey for a handler that holds no session yet: it
+// answers the refusal itself, and echoes a key that was accepted.
+func (h *Handler) claimIdem(
+	w http.ResponseWriter, r *http.Request, schema, scope string, raw []byte,
+) (claim *checkout.Claim, prior *idemRecord, handled bool) {
+	key, claim, prior, refuse := h.claimKey(r, schema, scope, raw)
+	if refuse != nil {
+		refuse(w)
 		return nil, nil, true
 	}
 	w.Header().Set("Idempotency-Key", key)
-	return nil, &rec, false
+	return claim, prior, false
 }
 
 // writeReplay answers a replayed key with what the spec asks of it.
@@ -410,7 +452,7 @@ func saveFailed(w http.ResponseWriter, err error) {
 		writeInFlight(w, idemRetryAfter, msgSessionChanged)
 		return
 	}
-	writeUnavailable(w, "Checkout is temporarily unavailable.")
+	writeUnavailable(w, msgRecordsUnavailable)
 }
 
 // --- Input mapping ---------------------------------------------------------
@@ -671,7 +713,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.store.Create(r.Context(), s); err != nil {
 		h.releaseIdem(r, claim, createScope)
-		writeUnavailable(w, "Checkout is temporarily unavailable.")
+		writeUnavailable(w, msgRecordsUnavailable)
 		return
 	}
 	if !h.storeIdem(r, claim, createScope, idemRecord{
@@ -707,6 +749,66 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, t, s)
 }
 
+// answer is how the body of update, complete or cancel ends. A body has
+// no ResponseWriter: it can only return an answer, and only finish writes
+// one. That is what keeps every way out of a handler behind the check
+// finish makes, a way added later included.
+//
+// What a body holds is a snapshot of the session. The lock meant to keep
+// it current can lapse while Django is slow, and another request may
+// have placed the order since: Django then refuses this request for
+// reasons that are the other request's doing (an empty cart, a line that
+// is gone, stock the order took), and the snapshot describes a session
+// that no longer exists.
+type answer struct {
+	write func(http.ResponseWriter)
+	// current: the request's own save of the session was just accepted,
+	// which proves its snapshot was the stored session.
+	current bool
+}
+
+// fromSnapshot is an answer made from the session as the request holds
+// it, or from what Django said on its behalf. finish gives it only while
+// the stored session is still that one.
+func fromSnapshot(write func(http.ResponseWriter)) answer {
+	return answer{write: write}
+}
+
+// afterSave is an answer to a request whose save of the session was
+// accepted: an update or cancel that stored, a completion past the
+// in-progress save, whose outcome is its own.
+func afterSave(write func(http.ResponseWriter)) answer {
+	return answer{write: write, current: true}
+}
+
+// finish writes a body's answer. One made from the snapshot stands only
+// if the stored session is still the revision the request holds.
+// Otherwise the request is answered by what is stored: stored, by the
+// same function that answers the operation for a session in that state,
+// or as a session another request changed while it is still open; no
+// longer stored, as missing; unreadable, as unavailable.
+func (h *Handler) finish(
+	w http.ResponseWriter, r *http.Request, t *tenant.Tenant,
+	s *checkout.Session, a answer,
+	stored func(http.ResponseWriter, *checkout.Session) bool,
+) {
+	if a.current {
+		a.write(w)
+		return
+	}
+	// The body may be answering a caller that left; the read is short
+	// and its answer goes nowhere then.
+	now, err := h.store.Load(r.Context(), t.SchemaName, s.ID)
+	switch {
+	case err != nil:
+		h.sessionError(w, err)
+	case now.Revision == s.Revision:
+		a.write(w)
+	case !stored(w, now):
+		saveFailed(w, checkout.ErrSessionChanged)
+	}
+}
+
 func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	t, ok := h.tenantOf(w, r)
 	if !ok {
@@ -722,24 +824,42 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	if handled {
 		return
 	}
-	fail := func() {
+	s, release, ok := h.lockSession(w, r, t, r.PathValue("id"))
+	if !ok {
 		if claim != nil {
 			h.releaseIdem(r, claim, scope)
 		}
-	}
-	s, release, ok := h.lockSession(w, r, t, r.PathValue("id"))
-	if !ok {
-		fail()
 		return
 	}
 	defer release()
+	h.finish(w, r, t, s, h.updateSession(r, t, s, claim, scope, req, raw),
+		func(w http.ResponseWriter, now *checkout.Session) bool {
+			return h.refuseChange(w, r, now, updateAllow, "change")
+		})
+}
+
+// updateSession is update once its session is loaded.
+func (h *Handler) updateSession(
+	r *http.Request, t *tenant.Tenant, s *checkout.Session,
+	claim *checkout.Claim, scope string, req UpdateRequest, raw []byte,
+) answer {
 	if claim == nil {
-		h.renderReplay(w, r, t, s)
-		return
+		return fromSnapshot(func(w http.ResponseWriter) {
+			h.renderReplay(w, r, t, s)
+		})
 	}
-	if h.refuseChange(w, s, updateAllow, "change") {
-		fail()
-		return
+	// refused releases the key and answers with Django's refusal.
+	refused := func(err error) answer {
+		h.releaseIdem(r, claim, scope)
+		return fromSnapshot(func(w http.ResponseWriter) {
+			upstreamError(w, err)
+		})
+	}
+	if !s.Open() {
+		h.releaseIdem(r, claim, scope)
+		return fromSnapshot(func(w http.ResponseWriter) {
+			h.refuseChange(w, r, s, updateAllow, "change")
+		})
 	}
 
 	// Before any cart write: a failed lookup must leave the cart and the
@@ -748,42 +868,35 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	applyFulfillment(s, req.FulfillmentDetails,
 		req.SelectedFulfillmentOptions)
 	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
-		fail()
-		upstreamError(w, err)
-		return
+		return refused(err)
 	}
 	if req.LineItems != nil {
 		if err := h.syncCart(r, t, s.CartID, req.LineItems); err != nil {
-			fail()
-			h.cartFailed(w, r, t, s, err)
-			return
+			return refused(err)
 		}
 	}
 	if req.Discounts != nil && req.Discounts.Codes != nil {
 		if err := checkout.ApplyDiscountCodes(
 			r.Context(), h.dj, t, s, req.Discounts.Codes,
 		); err != nil {
-			fail()
-			h.cartFailed(w, r, t, s, err)
-			return
+			return refused(err)
 		}
 	}
 	if err := h.selectPayWay(r, t, s); err != nil {
-		fail()
-		upstreamError(w, err)
-		return
+		return refused(err)
 	}
 	s.Recompute()
 	// The lookups above can outlast the lock, and another request may
 	// have stored the session meanwhile, a completion included: this
 	// snapshot is then not written over it.
 	if err := h.store.Save(r.Context(), s); err != nil {
-		fail()
-		saveFailed(w, err)
-		return
+		h.releaseIdem(r, claim, scope)
+		return fromSnapshot(func(w http.ResponseWriter) {
+			saveFailed(w, err)
+		})
 	}
 	h.storeIdem(r, claim, scope, idemRecord{BodyHash: bodyHash(raw)})
-	h.render(w, r, t, s)
+	return afterSave(func(w http.ResponseWriter) { h.render(w, r, t, s) })
 }
 
 func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
@@ -802,42 +915,79 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	var key string
+	a := h.completeSession(r, t, s, req, raw, &key)
+	if key != "" {
+		w.Header().Set("Idempotency-Key", key)
+	}
+	h.finish(w, r, t, s, a,
+		func(w http.ResponseWriter, now *checkout.Session) bool {
+			return h.completeClosed(w, r, t, now)
+		})
+}
 
-	// Decided by what the session is, before any lookup. One that placed
-	// its order is answered with the session: completed, or awaiting the
-	// payment its continue_url leads to (a session placed over UCP with
-	// a hosted pay way is driven here too). The order is what a complete
-	// asks for, and it exists; nothing is written.
+// completeClosed answers a complete of a session that is not open, and
+// reports whether it did. One that placed its order is answered with
+// the session: completed, or awaiting the payment its continue_url
+// leads to (a session placed over UCP with a hosted pay way is driven
+// here too). The order is what a complete asks for, and it exists.
+func (h *Handler) completeClosed(
+	w http.ResponseWriter, r *http.Request, t *tenant.Tenant,
+	s *checkout.Session,
+) bool {
 	switch s.Status {
 	case checkout.StatusCompleted, checkout.StatusRequiresEscalation:
 		h.render(w, r, t, s)
-		return
 	case checkout.StatusCompleteInProgress:
-		h.writeCompletionPending(w, s)
-		return
+		h.writeCompletionPending(w, r, s)
 	case checkout.StatusCanceled:
 		writeClosed(w, "", "Session is canceled and cannot be completed.")
-		return
+	default:
+		return false
+	}
+	return true
+}
+
+// completeSession is complete once its session is loaded. echo is set to
+// the idempotency key when the request holds it or replays it.
+func (h *Handler) completeSession(
+	r *http.Request, t *tenant.Tenant, s *checkout.Session,
+	req CompleteRequest, raw []byte, echo *string,
+) answer {
+	// Decided by what the session is, before any lookup, and nothing is
+	// written.
+	if !s.Open() {
+		return fromSnapshot(func(w http.ResponseWriter) {
+			h.completeClosed(w, r, t, s)
+		})
 	}
 
 	scope := "complete:" + s.ID
-	claim, _, handled := h.claimIdem(w, r, t.SchemaName, scope, raw)
-	if handled {
-		return
+	key, claim, _, refuse := h.claimKey(r, t.SchemaName, scope, raw)
+	if refuse != nil {
+		return fromSnapshot(refuse)
 	}
+	*echo = key
 	if claim == nil {
-		// A replayed key re-renders whatever the first attempt produced.
-		h.renderReplay(w, r, t, s)
-		return
+		// A replayed key answers the session as it is stored now: what
+		// its first attempt made of it.
+		return fromSnapshot(func(w http.ResponseWriter) {
+			h.renderReplay(w, r, t, s)
+		})
+	}
+	// refused releases the key: nothing was placed.
+	refused := func(write func(http.ResponseWriter)) answer {
+		h.releaseIdem(r, claim, scope)
+		return fromSnapshot(write)
 	}
 
 	if req.PaymentData == nil {
-		h.releaseIdem(r, claim, scope)
-		writeError(w, http.StatusBadRequest, Error{
-			Type: "invalid_request", Code: "missing",
-			Param: "$.payment_data", Message: "payment_data is required.",
+		return refused(func(w http.ResponseWriter) {
+			writeError(w, http.StatusBadRequest, Error{
+				Type: "invalid_request", Code: "missing",
+				Param: "$.payment_data", Message: "payment_data is required.",
+			})
 		})
-		return
 	}
 	// Delegated payment is not implemented: any payment handler or
 	// tokenized instrument (Stripe SPT included) is refused. Card buyers
@@ -846,17 +996,17 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	// works here.
 	if req.PaymentData.HandlerID != "" ||
 		len(req.PaymentData.Instrument) > 0 {
-		h.releaseIdem(r, claim, scope)
-		writeError(w, http.StatusBadRequest, Error{
-			Type: "invalid_request", Code: "unsupported",
-			Message: "Delegated card payment is not supported. To pay " +
-				"by card, send the buyer to continue_url: the store's " +
-				"checkout takes the card on its payment provider's " +
-				"hosted page. To complete here, send empty " +
-				"payment_data and the order is placed with the store's " +
-				"pay-later method, such as cash on delivery.",
+		return refused(func(w http.ResponseWriter) {
+			writeError(w, http.StatusBadRequest, Error{
+				Type: "invalid_request", Code: "unsupported",
+				Message: "Delegated card payment is not supported. To pay " +
+					"by card, send the buyer to continue_url: the store's " +
+					"checkout takes the card on its payment provider's " +
+					"hosted page. To complete here, send empty " +
+					"payment_data and the order is placed with the store's " +
+					"pay-later method, such as cash on delivery.",
+			})
 		})
-		return
 	}
 
 	buyer, status := s.Buyer, s.Status
@@ -869,62 +1019,63 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	// not part of it: it is looked up again on every call.
 	if s.Open() && (s.Buyer != buyer || s.Status != status) {
 		if err := h.store.Save(r.Context(), s); err != nil {
-			h.releaseIdem(r, claim, scope)
-			saveFailed(w, err)
-			return
+			return refused(func(w http.ResponseWriter) { saveFailed(w, err) })
 		}
 	}
 	// Readiness first, and it needs no pay way on ACP. Without a delivery no
 	// pay way can be chosen, which says nothing about what the store offers.
 	if s.Status == checkout.StatusIncomplete {
-		h.releaseIdem(r, claim, scope)
-		h.completeError(w, s, checkout.ErrNotReady)
-		return
+		return refused(func(w http.ResponseWriter) {
+			h.completeError(w, r, s, checkout.ErrNotReady)
+		})
 	}
 	if err := h.selectPayWay(r, t, s); err != nil {
-		h.releaseIdem(r, claim, scope)
-		upstreamError(w, err)
-		return
+		return refused(func(w http.ResponseWriter) { upstreamError(w, err) })
 	}
 	if s.PayWayID == 0 {
-		h.releaseIdem(r, claim, scope)
-		writeError(w, http.StatusBadRequest, Error{
-			Type: "invalid_request", Code: "unsupported",
-			Message: "This store has no agent-completable payment " +
-				"method; send the buyer to continue_url.",
+		return refused(func(w http.ResponseWriter) {
+			writeError(w, http.StatusBadRequest, Error{
+				Type: "invalid_request", Code: "unsupported",
+				Message: "This store has no agent-completable payment " +
+					"method; send the buyer to continue_url.",
+			})
 		})
-		return
 	}
 
-	record := idemRecord{BodyHash: bodyHash(raw)}
 	placement, err := h.flow.Complete(r.Context(), t, s)
 	if placement == checkout.NothingPlaced {
-		h.releaseIdem(r, claim, scope)
-	} else {
-		// A claim that lapsed changes nothing in the answer: what this
-		// call did about the order stands, and the session says so to
-		// whoever holds the key now.
-		h.storeIdem(r, claim, scope, record)
+		// Refused before the order was sent, or by Django for the order
+		// itself: either way nothing of this call exists.
+		return refused(func(w http.ResponseWriter) {
+			h.completeError(w, r, s, err)
+		})
 	}
-	if err != nil {
-		h.completeError(w, s, err)
-		return
-	}
-	if r.Context().Err() != nil {
-		// The request's context has ended: the platform hung up, or the
-		// server is shutting down. Reading the order back on it could
-		// only fail. A platform still connected (a shutdown, or a
-		// half-closed connection, which looks like a hang-up) reads the
-		// answer, so it is the one a failed render gives.
-		h.log.InfoContext(r.Context(),
-			"acp: order placed, session not rendered",
-			slog.String("session", s.ID),
-			slog.String("order", s.OrderUUID),
-			slog.String("cause", context.Cause(r.Context()).Error()))
-		writePlacedUnrendered(w, s)
-		return
-	}
-	h.render(w, r, t, s)
+	// Past the in-progress save, which only the stored session's own
+	// request passes: what follows is this call's own outcome. A claim
+	// that lapsed changes nothing in it, and the session says so to
+	// whoever holds the key now.
+	h.storeIdem(r, claim, scope, idemRecord{BodyHash: bodyHash(raw)})
+	return afterSave(func(w http.ResponseWriter) {
+		if err != nil {
+			h.completeError(w, r, s, err)
+			return
+		}
+		if r.Context().Err() != nil {
+			// The request's context has ended: the platform hung up, or the
+			// server is shutting down. Reading the order back on it could
+			// only fail. A platform still connected (a shutdown, or a
+			// half-closed connection, which looks like a hang-up) reads the
+			// answer, so it is the one a failed render gives.
+			h.log.InfoContext(r.Context(),
+				"acp: order placed, session not rendered",
+				slog.String("session", s.ID),
+				slog.String("order", s.OrderUUID),
+				slog.String("cause", context.Cause(r.Context()).Error()))
+			writePlacedUnrendered(w, s)
+			return
+		}
+		h.render(w, r, t, s)
+	})
 }
 
 func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
@@ -946,28 +1097,42 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	h.finish(w, r, t, s, h.cancelSession(r, t, s, claim, scope),
+		func(w http.ResponseWriter, now *checkout.Session) bool {
+			return h.refuseChange(w, r, now, "", "be canceled")
+		})
+}
 
+// cancelSession is cancel once its session is loaded.
+func (h *Handler) cancelSession(
+	r *http.Request, t *tenant.Tenant, s *checkout.Session,
+	claim *checkout.Claim, scope string,
+) answer {
 	if claim == nil {
-		h.renderReplay(w, r, t, s)
-		return
+		return fromSnapshot(func(w http.ResponseWriter) {
+			h.renderReplay(w, r, t, s)
+		})
 	}
 	// Once an order exists, or may, canceling the session would not
 	// cancel the order: the buyer could still pay it, and the session
 	// would read canceled over a paid order.
-	if h.refuseChange(w, s, "", "be canceled") {
+	if !s.Open() {
 		h.releaseIdem(r, claim, scope)
-		return
+		return fromSnapshot(func(w http.ResponseWriter) {
+			h.refuseChange(w, r, s, "", "be canceled")
+		})
 	}
 	s.Status = checkout.StatusCanceled
 	if err := h.store.Save(r.Context(), s); err != nil {
 		h.releaseIdem(r, claim, scope)
-		saveFailed(w, err)
-		return
+		return fromSnapshot(func(w http.ResponseWriter) {
+			saveFailed(w, err)
+		})
 	}
 	h.storeIdem(r, claim, scope, idemRecord{
 		BodyHash: bodyHash([]byte(r.PathValue("id"))),
 	})
-	h.render(w, r, t, s)
+	return afterSave(func(w http.ResponseWriter) { h.render(w, r, t, s) })
 }
 
 // --- Shared plumbing -------------------------------------------------------
@@ -981,7 +1146,7 @@ func (h *Handler) lockSession(
 			writeInFlight(w, idemRetryAfter, msgSessionBusy)
 			return nil, nil, false
 		}
-		writeUnavailable(w, "Checkout is temporarily unavailable.")
+		writeUnavailable(w, msgRecordsUnavailable)
 		return nil, nil, false
 	}
 	s, err := h.store.Load(r.Context(), t.SchemaName, id)
@@ -1011,7 +1176,7 @@ func (h *Handler) sessionError(w http.ResponseWriter, err error) {
 		})
 		return
 	}
-	writeUnavailable(w, "Checkout is temporarily unavailable.")
+	writeUnavailable(w, msgRecordsUnavailable)
 }
 
 // updateAllow is what a session that takes no change still serves: the
@@ -1023,13 +1188,14 @@ const updateAllow = http.MethodGet + ", " + http.MethodHead
 // did: one whose order is being placed, and one that is canceled or may
 // have an order (405, with what the target still serves).
 func (h *Handler) refuseChange(
-	w http.ResponseWriter, s *checkout.Session, allow, what string,
+	w http.ResponseWriter, r *http.Request, s *checkout.Session,
+	allow, what string,
 ) bool {
 	switch {
 	case s.Open():
 		return false
 	case s.Status == checkout.StatusCompleteInProgress:
-		h.writeCompletionPending(w, s)
+		h.writeCompletionPending(w, r, s)
 	case s.Status == checkout.StatusRequiresEscalation:
 		writeClosed(w, allow, "Session has placed an order that awaits "+
 			"its payment and cannot "+what+".")
@@ -1040,37 +1206,12 @@ func (h *Handler) refuseChange(
 	return true
 }
 
-// cartFailed answers an update whose cart call failed. An update can
-// outlast its lock, and a completion may have placed the order
-// meanwhile, which takes the cart with it. So for a cart that cannot be
-// reached the session is read again, and one that is no longer open is
-// answered as any update of it is, not as a resource that went missing.
-func (h *Handler) cartFailed(
-	w http.ResponseWriter, r *http.Request, t *tenant.Tenant,
-	s *checkout.Session, err error,
-) {
-	if errors.Is(err, django.ErrCartUnreachable) {
-		// The cart is "gone" only for a session that was read again and
-		// is still open. One that cannot be read is answered as that:
-		// missing (its order may exist), or unavailable.
-		now, loadErr := h.store.Load(r.Context(), t.SchemaName, s.ID)
-		if loadErr != nil {
-			h.sessionError(w, loadErr)
-			return
-		}
-		if h.refuseChange(w, now, updateAllow, "change") {
-			return
-		}
-	}
-	upstreamError(w, err)
-}
-
 // completeError answers a refused or failed completion of s. Every
 // sentinel of checkout and of the Django client has its case here or in
 // upstreamError (TestCompleteErrorMapsEverySentinel): a refusal is a 4xx,
 // and an order that exists, or may, is never answered as a failure.
 func (h *Handler) completeError(
-	w http.ResponseWriter, s *checkout.Session, err error,
+	w http.ResponseWriter, r *http.Request, s *checkout.Session, err error,
 ) {
 	var shortfall *django.StockShortfall
 	switch {
@@ -1097,7 +1238,7 @@ func (h *Handler) completeError(
 			Message: "The session is missing buyer or fulfillment data.",
 		})
 	case errors.Is(err, checkout.ErrCompletionInProgress):
-		h.writeCompletionPending(w, s)
+		h.writeCompletionPending(w, r, s)
 	case errors.Is(err, checkout.ErrOrderOutcomeUnknown):
 		writeOutcomeUnknown(w)
 	case errors.Is(err, checkout.ErrPaymentSessionFailed):
@@ -1108,13 +1249,9 @@ func (h *Handler) completeError(
 				"again or start a new checkout.",
 		})
 	case errors.Is(err, checkout.ErrSessionNotSaved):
-		// Not temporary: the stored session never learns of the order.
-		writeError(w, http.StatusInternalServerError, Error{
-			Type: "processing_error", Code: "order_placed",
-			Message: "Order " + s.OrderUUID + " is placed, but its " +
-				"checkout session could not be saved. Do not complete " +
-				"again or start a new checkout.",
-		})
+		writePlacedUnsaved(w, s.OrderUUID)
+	case errors.Is(err, checkout.ErrUnavailable):
+		writeUnavailable(w, msgRecordsUnavailable)
 	case errors.Is(err, checkout.ErrPayWayUnavailable),
 		errors.Is(err, checkout.ErrPaymentMethodUnsupported):
 		writeError(w, http.StatusBadRequest, Error{
@@ -1172,7 +1309,7 @@ func (h *Handler) renderBody(
 		// Being placed, or never confirmed: its cart may have gone with
 		// the order, so it is answered as what it is, not as a session
 		// to read again until it renders.
-		h.writeCompletionPending(w, s)
+		h.writeCompletionPending(w, r, s)
 	default:
 		writeUnavailable(w, "The session cannot be rendered right now.")
 	}

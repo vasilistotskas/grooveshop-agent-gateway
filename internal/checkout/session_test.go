@@ -155,19 +155,30 @@ func TestPlacedSessionLifeCountsFromPlacement(t *testing.T) {
 		return &Session{Status: status, PlacedAt: now.Add(-age)}
 	}
 
-	// Open sessions live activeTTL from each save. Every other one is
-	// kept terminalTTL: while it is held a caller is told what became of
-	// the checkout, and once it is gone its id is only "not found".
+	// Open sessions live activeTTL from each save, and so does one just
+	// marked in progress: nothing was sent for it yet, and if nothing
+	// ever says what became of it, it must not claim an order for a day.
+	// One an order exists for, or was sent for, is kept terminalTTL:
+	// while it is held a caller is told what became of the checkout.
 	for status, want := range map[Status]time.Duration{
-		StatusIncomplete:       activeTTL,
-		StatusReadyForComplete: activeTTL,
-		// An order that may exist though Django never confirmed it.
-		StatusCompleteInProgress: terminalTTL,
+		StatusIncomplete:         activeTTL,
+		StatusReadyForComplete:   activeTTL,
+		StatusCompleteInProgress: activeTTL,
+		StatusRequiresEscalation: terminalTTL,
 		StatusCompleted:          terminalTTL,
 		StatusCanceled:           terminalTTL,
 	} {
 		assert.Equal(t, want, (&Session{Status: status}).ttl(now), status)
 	}
+	inProgress := Session{Status: StatusCompleteInProgress}
+	// Its order was sent and never answered: an order may exist.
+	unconfirmed := inProgress
+	unconfirmed.Unconfirmed = true
+	assert.Equal(t, terminalTTL, unconfirmed.ttl(now))
+	// Its order was placed and the session could not be completed.
+	named := inProgress
+	named.OrderUUID = "b9be45e5-6062-4976-ae7b-2c31eb2ad689"
+	assert.Equal(t, terminalTTL, named.ttl(now))
 	// A placed session ends terminalTTL after it was placed.
 	assert.Equal(t, terminalTTL-time.Hour,
 		placed(time.Hour, StatusRequiresEscalation).ttl(now))

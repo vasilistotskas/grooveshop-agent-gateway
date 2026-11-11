@@ -88,10 +88,34 @@ func (stack ucpStack) lapse(t *testing.T, key string) {
 }
 
 // The answer a call gets when another request changed its session
-// meanwhile: ACP's 409, the changed-session text on UCP.
+// meanwhile and left it open: ACP's 409, the changed-session text on
+// UCP.
 var sessionChanged = map[string]string{
 	"acp": "409 idempotency_in_flight",
 	"ucp": "changed by another request",
+}
+
+// What a call that would change a session is answered while that
+// session's order is being placed, and once it is placed.
+var (
+	inFlight = map[string]string{
+		"acp": "409 idempotency_in_flight",
+		"ucp": "in progress or unconfirmed",
+	}
+	orderPlaced = map[string]string{
+		"acp": "405 conflict",
+		"ucp": "already placed order " + fixtureOrderUUID,
+	}
+)
+
+// assertStored checks that a complete whose snapshot was stale by the
+// time it answered was answered with the stored checkout, in status: the
+// order another complete placed, not a refusal about its cart or stock
+// and not a second order.
+func assertStored(t *testing.T, a surfaceAnswer, status string) {
+	t.Helper()
+	assert.Equal(t, status, a.status,
+		"answered from its own snapshot: %s", a.refusal)
 }
 
 // assertLost checks that a call was told to come back, having changed
@@ -161,7 +185,7 @@ func TestConcurrentCompletesPlaceOneOrder(t *testing.T) {
 				require.Equal(t, creates+1, stack.faults.orderCreates.Load())
 
 				held.open()
-				assertLost(t, surface.name, <-first)
+				assertStored(t, <-first, "completed")
 				assert.Equal(t, creates+1, stack.faults.orderCreates.Load(),
 					"the complete that lost sent an order to the store")
 				// The winner's order and its spent key stand.
@@ -212,7 +236,7 @@ func TestALostCompleteLeavesThePlacedSessionAlone(t *testing.T) {
 			placed := stack.storedBytes(t, id)
 
 			held.open()
-			assertLost(t, name, <-first)
+			assertStored(t, <-first, "completed")
 			assert.EqualValues(t, 1, stack.faults.orderCreates.Load())
 			assert.Equal(t, placed, stack.storedBytes(t, id),
 				"the placed session was written over")
@@ -261,7 +285,7 @@ func TestAStaleUpdateDoesNotOverwriteACompletion(t *testing.T) {
 					stack.storedSession(t, id).Status)
 
 				held.open()
-				assertLostUpdate(t, surface.name, <-updated)
+				assert.Contains(t, (<-updated).refusal, inFlight[surface.name])
 				assert.Equal(t, checkout.StatusCompleteInProgress,
 					stack.storedSession(t, id).Status,
 					"the update wrote over a session being placed")
@@ -291,7 +315,7 @@ func TestAStaleUpdateDoesNotOverwriteACompletion(t *testing.T) {
 				placed := stack.storedBytes(t, id)
 
 				held.open()
-				assertLostUpdate(t, surface.name, <-updated)
+				assert.Contains(t, (<-updated).refusal, orderPlaced[surface.name])
 				assert.Equal(t, placed, stack.storedBytes(t, id),
 					"the update wrote over a placed session")
 				// A ready session here would be ordered a second time.

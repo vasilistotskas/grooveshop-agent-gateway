@@ -74,6 +74,11 @@ type surfaceAnswer struct {
 	retryAfter string
 	// errorBody is ACP's error as sent, for the spec's Error schema.
 	errorBody []byte
+	// continueURL is the rendered checkout's continue_url.
+	continueURL string
+	// text is what the rendered checkout says beside its status: UCP's
+	// summary text, ACP's messages.
+	text string
 }
 
 // acpAnswer sends an ACP request and reads its answer: a POST under key,
@@ -119,8 +124,7 @@ func acpAnswer(
 			retryAfter: resp.Header.Get("Retry-After"), errorBody: sent,
 		}
 	}
-	status, _ := out["status"].(string)
-	return surfaceAnswer{status: status}
+	return rendered(out)
 }
 
 // mcpAnswer calls a UCP tool and reads its answer. It asserts nothing,
@@ -152,8 +156,25 @@ func mcpAnswer(
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return surfaceAnswer{refusal: err.Error()}
 	}
-	status, _ := out["status"].(string)
-	return surfaceAnswer{status: status}
+	a := rendered(out)
+	if len(res.Content) > 0 {
+		if text, ok := res.Content[0].(*mcp.TextContent); ok {
+			a.text = text.Text
+		}
+	}
+	return a
+}
+
+// rendered is the answer of a call that rendered the checkout.
+func rendered(out map[string]any) surfaceAnswer {
+	a := surfaceAnswer{}
+	a.status, _ = out["status"].(string)
+	a.continueURL, _ = out["continue_url"].(string)
+	// ACP's messages; UCP's summary text replaces this.
+	if messages, err := json.Marshal(out["messages"]); err == nil {
+		a.text = string(messages)
+	}
+	return a
 }
 
 // codPayment is UCP's payment object selecting cash on delivery, the
@@ -844,8 +865,14 @@ func TestCompleteLeavesAClosedSessionAsItIs(t *testing.T) {
 
 		// The order a complete asks for exists: the session is answered
 		// as it is, and what the call submitted is not stored.
-		require.Equal(t, "requires_escalation", surfaces["acp"].complete(
-			ctx, id, uuid.NewString(), changeBy("acp")))
+		answer := surfaces["acp"].answer(
+			ctx, id, uuid.NewString(), changeBy("acp"))
+		require.Equal(t, "requires_escalation", answer.status)
+		// continue_url is the payment page the store opened for the
+		// order, as its message says, and the message names the order.
+		assert.Equal(t, vivaCheckoutURL, answer.continueURL)
+		assert.Contains(t, answer.text, "Order "+fixtureOrderUUID+
+			" is placed and awaits its payment")
 
 		assert.Equal(t, before, stack.storedBytes(t, id))
 	})

@@ -90,6 +90,10 @@ func Render(
 		ContinueURL: links.CartClaim(s.CartID),
 	}
 	switch {
+	// An order that awaits its payment: the buyer goes to the payment
+	// page the store opened for it, as on UCP.
+	case s.Status == checkout.StatusRequiresEscalation && s.PaymentURL != "":
+		out.ContinueURL = s.PaymentURL
 	// A placed order has no cart left to claim: the buyer goes to the order.
 	case s.OrderUUID != "":
 		out.ContinueURL = links.OrderSuccess(s.OrderUUID)
@@ -324,7 +328,24 @@ func renderDiscounts(
 // error vocabulary so agents know what buyer input to collect.
 func appendStateMessages(s *checkout.Session, out *Session) {
 	if s.Status != checkout.StatusIncomplete {
-		if out.Status == "requires_escalation" {
+		switch {
+		case s.Status == checkout.StatusRequiresEscalation:
+			// The order exists: the message names it, so a platform
+			// that reads only this knows not to order again.
+			content := "Order " + s.OrderUUID + " is placed and awaits " +
+				"its payment: send the buyer to continue_url, the " +
+				"store's payment page. Do not start another checkout."
+			if s.PaymentURL == "" {
+				content = "Order " + s.OrderUUID + " is placed and " +
+					"awaits its payment, but its payment page could " +
+					"not be opened: continue_url is the order. Do not " +
+					"start another checkout."
+			}
+			out.Messages = append(out.Messages, Message{
+				Type: "info", ContentType: "plain",
+				Resolution: "requires_buyer_review", Content: content,
+			})
+		case out.Status == "requires_escalation":
 			out.Messages = append(out.Messages, Message{
 				Type: "info", ContentType: "plain",
 				Resolution: "requires_buyer_review",

@@ -228,7 +228,7 @@ func TestSessionLifetimeByStatus(t *testing.T) {
 	for status, want := range map[checkout.Status]time.Duration{
 		checkout.StatusIncomplete:         halfHour,
 		checkout.StatusReadyForComplete:   halfHour,
-		checkout.StatusCompleteInProgress: day,
+		checkout.StatusCompleteInProgress: halfHour,
 		checkout.StatusRequiresEscalation: day - time.Hour,
 		checkout.StatusCompleted:          day - time.Hour,
 		checkout.StatusCanceled:           day,
@@ -247,6 +247,20 @@ func TestSessionLifetimeByStatus(t *testing.T) {
 			assert.InDelta(t, want.Seconds(), ttl.Seconds(), 5)
 		})
 	}
+
+	// A session just marked in progress has an open one's half hour:
+	// nothing was sent for it yet. Once its order went unanswered, an
+	// order may exist, and it is kept the day.
+	t.Run("an order that went unanswered", func(t *testing.T) {
+		s := newSession()
+		require.NoError(t, store.Create(ctx, s))
+		s.Status = checkout.StatusCompleteInProgress
+		s.Unconfirmed = true
+		require.NoError(t, store.Save(ctx, s))
+		ttl, err := rdb.PTTL(ctx, sessionRedisKey(s.ID)).Result()
+		require.NoError(t, err)
+		assert.InDelta(t, day.Seconds(), ttl.Seconds(), 5)
+	})
 }
 
 // A session an older release stored lives under that release's key.
