@@ -126,7 +126,7 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 			return
 		}
 		if err := d.Flow.ApplyOrderEvent(ctx, body.SchemaName,
-			link.CheckoutID, body.PaymentStatus); err != nil {
+			link.CheckoutID, body.OrderUUID, body.PaymentStatus); err != nil {
 			retry("order event apply failed", err)
 			return
 		}

@@ -65,7 +65,7 @@ func TestACPErrorsFollowTheSpec(t *testing.T) {
 
 	t.Run("a busy session is in flight and frees the key", func(t *testing.T) {
 		id := acpReady(t, base)
-		lock := "ag:demostore:cs:" + id + ":lock"
+		lock := lockRedisKey(id)
 		require.NoError(t, stack.rdb.Set(ctx, lock, "another request",
 			10*time.Second).Err())
 
@@ -190,7 +190,7 @@ func TestACPErrorsFollowTheSpec(t *testing.T) {
 			stored.UpdatedAt = time.Now().Add(-time.Minute)
 			raw, err := json.Marshal(stored)
 			require.NoError(t, err)
-			require.NoError(t, stack.rdb.Set(ctx, "ag:demostore:cs:"+id, raw,
+			require.NoError(t, stack.rdb.Set(ctx, sessionRedisKey(id), raw,
 				redis.KeepTTL).Err())
 			for _, call := range []func() (*http.Response, map[string]any){
 				func() (*http.Response, map[string]any) {

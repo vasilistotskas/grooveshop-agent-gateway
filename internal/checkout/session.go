@@ -1,7 +1,8 @@
 // Package checkout implements the protocol-neutral checkout session shared
 // by the UCP MCP binding and the ACP REST surface: a pure state machine, a
-// Redis store with per-session locking and completion idempotency, and the
-// order-creation flow over the existing Django endpoints.
+// Redis store whose saves are compare-and-set, with per-session locking
+// and idempotency claims, and the order-creation flow over the existing
+// Django endpoints.
 package checkout
 
 import (
@@ -104,6 +105,14 @@ type Session struct {
 	// webhook payload permalinks render without a tenant lookup.
 	Domain string `json:"domain"`
 
+	// Revision names one stored state of the session: every save gives
+	// it a new random one. Store.Save writes only over the revision it
+	// read, so a request holding an older state cannot write. Not
+	// UpdatedAt, and not a counter: two requests that read one state
+	// and save in the same clock tick would write the same bytes, and
+	// each would take the other's write for its own.
+	Revision string `json:"revision"`
+
 	Status Status `json:"status"`
 	CartID string `json:"cartId"`
 
@@ -127,6 +136,11 @@ type Session struct {
 	PaymentURL string `json:"paymentUrl,omitempty"`
 	// PlacedAt ends the session terminalTTL later, whatever happens to it.
 	PlacedAt time.Time `json:"placedAt,omitzero"`
+	// Unconfirmed marks a session in progress whose order was sent and
+	// never answered: the order may exist. One in progress without it,
+	// and without an order, is a completion that is still running, or
+	// one that ended before it could say what happened.
+	Unconfirmed bool `json:"unconfirmed,omitempty"`
 
 	// WebhookURL is the platform's order-update delivery target,
 	// registered at create time.
@@ -148,13 +162,40 @@ func (s *Session) Open() bool {
 		s.Status == StatusReadyForComplete
 }
 
-// ttl is how long the session may still live. Calls keep an open session alive,
-// but not a placed one: it reads its order with the gateway's secret, past the
-// limit on a guest's order uuid, so it must end long before that limit however
-// often a caller holding its id touches it.
+// MayHaveOrder reports whether an order exists for the session, or may:
+// one is being placed (and stays "may" for good when Django never
+// confirmed it), awaits its payment, or is completed. Such a session
+// takes no update and no cancel: canceling the checkout would not
+// cancel the order. Every session is open, canceled, or this.
+func (s *Session) MayHaveOrder() bool {
+	return s.Status == StatusCompleteInProgress ||
+		s.Status == StatusRequiresEscalation ||
+		s.Status == StatusCompleted
+}
+
+// keptLong reports whether the session is kept terminalTTL: it is
+// terminal, or what the gateway knows says an order exists or was sent
+// (it awaits payment, it names its order, or its order went unanswered).
+// A session merely marked in progress is not: nothing has been sent for
+// it yet. If its completion then dies, or Django refuses the order and
+// the save that says so fails, it must not claim an order for a day.
+func (s *Session) keptLong() bool {
+	return s.Terminal() || s.Status == StatusRequiresEscalation ||
+		s.OrderUUID != "" || s.Unconfirmed
+}
+
+// ttl is how long the session may still live. Calls keep an open session
+// alive for activeTTL at a time, and a session just marked in progress
+// has that long too. One an order exists for, or may (keptLong), is
+// kept terminalTTL: while it is held, a caller is told what became of
+// the checkout (do not order again, the order, its payment page), and a
+// payment event finds it; once it is gone the id is only "no session".
+// A placed one still ends terminalTTL after it was placed, however often
+// a caller holding its id touches it: it reads its order with the
+// gateway's secret, past the limit on a guest's order uuid.
 func (s *Session) ttl(now time.Time) time.Duration {
 	ttl := activeTTL
-	if s.Terminal() {
+	if s.keptLong() {
 		ttl = terminalTTL
 	}
 	if s.PlacedAt.IsZero() {
