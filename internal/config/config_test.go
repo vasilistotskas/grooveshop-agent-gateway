@@ -1,6 +1,8 @@
 package config
 
 import (
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,7 +14,7 @@ func setRequired(t *testing.T) {
 	t.Setenv("DJANGO_BASE_URL", "http://backend-service/api/v1/")
 	t.Setenv("DJANGO_PUBLIC_HOST", "api.example.test")
 	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
-	t.Setenv("INTERNAL_EVENTS_SECRET", "s3cret")
+	t.Setenv("INTERNAL_EVENTS_SECRET", strings.Repeat("a", minInternalSecretLen))
 	t.Setenv("ASSETS_HOST", "assets.platform.test")
 	t.Setenv("STAFF_CONNECT_HOST", "connect.platform.test")
 	t.Setenv("STOREFRONT_DEFAULT_LOCALE", "el")
@@ -206,11 +208,228 @@ func TestLoadEnvIsValidated(t *testing.T) {
 	assert.Contains(t, err.Error(), "ENV")
 }
 
-func TestLoadLogLevelIsValidated(t *testing.T) {
+// LOG_LEVEL is parsed once, here: the logger takes the parsed level and
+// has no default of its own to fall back on.
+func TestLoadParsesLogLevel(t *testing.T) {
+	for value, want := range map[string]slog.Level{
+		"":      slog.LevelInfo,
+		"debug": slog.LevelDebug,
+		"WARN":  slog.LevelWarn,
+		"error": slog.LevelError,
+	} {
+		t.Run(value, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("LOG_LEVEL", value)
+			cfg, err := Load()
+			require.NoError(t, err)
+			assert.Equal(t, want, cfg.LogLevel)
+		})
+	}
+
 	setRequired(t)
 	t.Setenv("LOG_LEVEL", "verbose")
-
 	_, err := Load()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "LOG_LEVEL")
+}
+
+// Both base URLs have paths appended to them: Django's by string
+// concatenation, the chat provider's by URL resolution, which drops a
+// query or fragment. Without a scheme and host every call fails while
+// the pod stays Ready (readiness ignores Django on purpose).
+func TestLoadValidatesBaseURLs(t *testing.T) {
+	refused := []string{
+		"backend-service/api/v1",
+		"backend-service:8000/api/v1",
+		"//backend-service/api/v1",
+		"ftp://backend-service/api/v1",
+		"http:///api/v1",
+		"http://:8080/api/v1",
+		"http://user:pw@backend-service/api/v1",
+		"http://backend-service/api/v1?x=1",
+		"http://backend-service/api/v1#frag",
+		"http://backend service/api/v1",
+	}
+	for _, name := range []string{"DJANGO_BASE_URL", "CHAT_BASE_URL"} {
+		for _, value := range refused {
+			t.Run(name+"="+value, func(t *testing.T) {
+				setRequired(t)
+				t.Setenv(name, value)
+				_, err := Load()
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), name)
+				assert.NotContains(t, err.Error(), "pw",
+					"a credential in the URL is never echoed")
+			})
+		}
+	}
+	for value, want := range map[string]string{
+		"http://backend-service/api/v1/": "http://backend-service/api/v1",
+		"https://127.0.0.1:8000/api/v1":  "https://127.0.0.1:8000/api/v1",
+	} {
+		t.Run("DJANGO_BASE_URL="+value, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("DJANGO_BASE_URL", value)
+			cfg, err := Load()
+			require.NoError(t, err)
+			assert.Equal(t, want, cfg.DjangoBaseURL)
+		})
+	}
+	t.Run("CHAT_BASE_URL=http with port", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("CHAT_BASE_URL", "http://127.0.0.1:11434/v1/")
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, "http://127.0.0.1:11434/v1/", cfg.ChatBaseURL)
+	})
+}
+
+// CHAT_EFFORT is sent as reasoning_effort on every model call: a value
+// outside the API's set fails every chat turn.
+func TestLoadValidatesChatEffort(t *testing.T) {
+	for value, wantErr := range map[string]bool{
+		"none": false, "minimal": false, "low": false, "medium": false,
+		"high": false, "xhigh": false, "max": false,
+		"Low": true, "lowest": true, "off": true, "auto": true,
+	} {
+		t.Run(value, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("CHAT_EFFORT", value)
+			cfg, err := Load()
+			if wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "CHAT_EFFORT")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, value, cfg.ChatEffort)
+		})
+	}
+}
+
+// An image template missing {path} names one image for every product;
+// one missing {assets_host} ignores a tenant's own assets host; a
+// misspelt placeholder is published verbatim. Feeds carry these URLs to
+// Meta and TikTok, which never report a broken image back.
+func TestLoadValidatesImageURLTemplates(t *testing.T) {
+	refused := []string{
+		"https://assets.example.com/media_stream-image/{path}",
+		"https://{assets_host}/media_stream-image/image.jpg",
+		"https://{assets_host}/{schema}/{paht}/{path}",
+		"https://{assets_host}/{path}/{size}",
+		"{assets_host}/media_stream-image/{path}",
+		"ftp://{assets_host}/{path}",
+		"https://user@{assets_host}/{path}",
+	}
+	for _, name := range []string{
+		"MEDIA_IMAGE_URL_TEMPLATE", "FEED_IMAGE_URL_TEMPLATE",
+	} {
+		for _, value := range refused {
+			t.Run(name+"="+value, func(t *testing.T) {
+				setRequired(t)
+				t.Setenv(name, value)
+				_, err := Load()
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), name)
+			})
+		}
+		for _, value := range []string{
+			"https://{assets_host}/{schema}/{path}",
+			"http://{assets_host}:8080/x/{path}?w=800",
+		} {
+			t.Run(name+"="+value, func(t *testing.T) {
+				setRequired(t)
+				t.Setenv(name, value)
+				_, err := Load()
+				require.NoError(t, err)
+			})
+		}
+		// A port in the template and one in the host cannot both hold.
+		t.Run(name+" with a port twice", func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("ASSETS_HOST", "assets.example.com:8443")
+			t.Setenv(name, "http://{assets_host}:8080/x/{path}")
+			_, err := Load()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), name)
+		})
+		t.Run(name+" with the host's port", func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("ASSETS_HOST", "assets.example.com:8443")
+			t.Setenv(name, "https://{assets_host}/x/{path}")
+			_, err := Load()
+			require.NoError(t, err)
+		})
+	}
+}
+
+// The secret travels as a header both ways: a control character (a
+// trailing newline from a file) makes Go refuse every request carrying
+// it, and leading or trailing blanks are trimmed by the receiving
+// server, so the comparison fails. Production and staging need a secret
+// long enough not to be a placeholder; the error never echoes it.
+func TestLoadValidatesInternalSecret(t *testing.T) {
+	long := strings.Repeat("a", minInternalSecretLen)
+	for name, tc := range map[string]struct {
+		env, secret string
+		wantErr     bool
+	}{
+		"trailing newline":     {EnvProduction, long + "\n", true},
+		"carriage return":      {EnvProduction, long + "\r", true},
+		"inner control char":   {EnvProduction, "ab\x1b" + long, true},
+		"delete char":          {EnvProduction, long + "\x7f", true},
+		"leading space":        {EnvProduction, " " + long, true},
+		"trailing tab":         {EnvProduction, long + "\t", true},
+		"short in production":  {EnvProduction, long[1:], true},
+		"short in staging":     {EnvStaging, "change-me", true},
+		"newline in dev":       {EnvDevelopment, "change-me\n", true},
+		"minimum length":       {EnvProduction, long, false},
+		"long in staging":      {EnvStaging, long + long, false},
+		"short in development": {EnvDevelopment, "change-me", false},
+		"short in test":        {EnvTest, "s3cret", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("ENV", tc.env)
+			t.Setenv("INTERNAL_EVENTS_SECRET", tc.secret)
+			cfg, err := Load()
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "INTERNAL_EVENTS_SECRET")
+				assert.NotContains(t, err.Error(), strings.TrimSpace(tc.secret))
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.secret, cfg.InternalSecret)
+		})
+	}
+}
+
+// A stale window shorter than the fresh one expires the cached feed
+// before it is ever served stale: every request past it waits for a
+// full generation.
+func TestLoadFeedStaleTTLIsNotShorterThanFresh(t *testing.T) {
+	for _, tc := range []struct {
+		fresh, stale string
+		wantErr      bool
+	}{
+		{"6h", "5h", true},
+		{"", "1h", true},
+		{"6h", "6h", false},
+		{"1h", "", false},
+	} {
+		t.Run(tc.fresh+"/"+tc.stale, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("FEED_FRESH_TTL", tc.fresh)
+			t.Setenv("FEED_STALE_TTL", tc.stale)
+			_, err := Load()
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "FEED_STALE_TTL")
+				assert.Contains(t, err.Error(), "FEED_FRESH_TTL")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }

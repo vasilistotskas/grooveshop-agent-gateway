@@ -1,13 +1,19 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/openai/openai-go/v3/shared"
+	"golang.org/x/net/http/httpguts"
 )
 
 // Deployment environments. ENV is validated against this set so a typo
@@ -28,13 +34,27 @@ const (
 	HandlerEnvSandbox    = "sandbox"
 )
 
+// minInternalSecretLen is the shortest INTERNAL_EVENTS_SECRET production
+// and staging accept: a placeholder such as .env.example's is shorter,
+// and `openssl rand -hex 32`, how the platform makes its shared
+// secrets, gives 64.
+const minInternalSecretLen = 32
+
+// chatEfforts is every reasoning_effort the chat-completions API admits.
+var chatEfforts = []shared.ReasoningEffort{
+	shared.ReasoningEffortNone, shared.ReasoningEffortMinimal,
+	shared.ReasoningEffortLow, shared.ReasoningEffortMedium,
+	shared.ReasoningEffortHigh, shared.ReasoningEffortXhigh,
+	shared.ReasoningEffortMax,
+}
+
 // Config holds every per-instance setting. Per-tenant values (branding,
 // locale, feature flags, publishable keys) are served by Django's
 // tenant/resolve endpoint at request time and must never appear here.
 type Config struct {
 	ListenAddr string
 	Env        string
-	LogLevel   string
+	LogLevel   slog.Level
 
 	// AllowLocalWebhooks relaxes UCP webhook-endpoint validation to any
 	// http(s) host. Derived from Env here — and only here — so handlers
@@ -149,7 +169,6 @@ func Load() (Config, error) {
 	cfg := Config{
 		ListenAddr:              envOr("LISTEN_ADDR", ":8080"),
 		Env:                     envOr("ENV", EnvProduction),
-		LogLevel:                envOr("LOG_LEVEL", "info"),
 		DjangoBaseURL:           strings.TrimRight(os.Getenv("DJANGO_BASE_URL"), "/"),
 		DjangoPublicHost:        os.Getenv("DJANGO_PUBLIC_HOST"),
 		InternalSecret:          os.Getenv("INTERNAL_EVENTS_SECRET"),
@@ -169,11 +188,16 @@ func Load() (Config, error) {
 				"/1000/1000/contain/center/FFFFFF/5/85.jpeg"),
 	}
 
+	// The secret's minimum length is folded from ENV here, with the
+	// other environment differences.
+	var minSecretLen int
 	switch cfg.Env {
 	case EnvProduction:
 		cfg.PaymentHandlerEnv = HandlerEnvProduction
+		minSecretLen = minInternalSecretLen
 	case EnvStaging:
 		cfg.PaymentHandlerEnv = HandlerEnvSandbox
+		minSecretLen = minInternalSecretLen
 	case EnvDevelopment, EnvTest:
 		cfg.AllowLocalWebhooks = true
 		cfg.PaymentHandlerEnv = HandlerEnvSandbox
@@ -182,8 +206,8 @@ func Load() (Config, error) {
 			"config: ENV must be %s, %s, %s or %s (got %q)",
 			EnvProduction, EnvStaging, EnvDevelopment, EnvTest, cfg.Env)
 	}
-	var level slog.Level
-	if err := level.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
+	if err := cfg.LogLevel.UnmarshalText(
+		[]byte(envOr("LOG_LEVEL", "info"))); err != nil {
 		return Config{}, fmt.Errorf("config: LOG_LEVEL: %w", err)
 	}
 
@@ -297,10 +321,108 @@ func Load() (Config, error) {
 				"language code such as el (got %q)",
 			cfg.StorefrontDefaultLocale)
 	}
+	for _, b := range []struct{ name, value string }{
+		{"DJANGO_BASE_URL", cfg.DjangoBaseURL},
+		{"CHAT_BASE_URL", cfg.ChatBaseURL},
+	} {
+		if err := checkBaseURL(b.name, b.value); err != nil {
+			return Config{}, err
+		}
+	}
+	if !slices.Contains(chatEfforts,
+		shared.ReasoningEffort(cfg.ChatEffort)) {
+		return Config{}, fmt.Errorf(
+			"config: CHAT_EFFORT must be one of %v (got %q)",
+			chatEfforts, cfg.ChatEffort)
+	}
+	for _, t := range []struct{ name, value string }{
+		{"MEDIA_IMAGE_URL_TEMPLATE", cfg.MediaURLTemplate},
+		{"FEED_IMAGE_URL_TEMPLATE", cfg.FeedImageURLTemplate},
+	} {
+		if err := checkImageURLTemplate(
+			t.name, t.value, cfg.AssetsHost); err != nil {
+			return Config{}, err
+		}
+	}
+	if err := checkInternalSecret(cfg.InternalSecret, minSecretLen); err != nil {
+		return Config{}, err
+	}
+	// A stale window shorter than the fresh one expires a cached feed
+	// before it is ever served stale.
+	if cfg.FeedStaleTTL < cfg.FeedFreshTTL {
+		return Config{}, fmt.Errorf(
+			"config: FEED_STALE_TTL (%s) must not be shorter than "+
+				"FEED_FRESH_TTL (%s)", cfg.FeedStaleTTL, cfg.FeedFreshTTL)
+	}
 	return cfg, nil
 }
 
 var localeCode = regexp.MustCompile(`^[a-z]{2,3}$`)
+
+// checkBaseURL refuses a base URL that paths cannot be appended to: the
+// Django client concatenates them, and the chat client resolves them
+// against it, which drops a query or fragment. The value is not echoed:
+// user info would carry a credential.
+func checkBaseURL(name, value string) error {
+	u, err := url.Parse(value)
+	if err != nil || !isHTTPURL(u) || u.RawQuery != "" || u.ForceQuery ||
+		u.Fragment != "" {
+		return fmt.Errorf(
+			"config: %s must be an absolute http or https URL with a "+
+				"host and no user info, query or fragment", name)
+	}
+	return nil
+}
+
+func isHTTPURL(u *url.URL) bool {
+	return (u.Scheme == "http" || u.Scheme == "https") &&
+		u.Hostname() != "" &&
+		u.User == nil
+}
+
+// checkImageURLTemplate refuses a template whose URLs would be wrong for
+// every product: without {path} each names one image, without
+// {assets_host} a tenant's own assets host is ignored, and a misspelt
+// placeholder is published as it is. It is expanded as media.ImageURL
+// expands it, with the platform's assets host, so a template that
+// cannot take that host (a port after one that has its own) is refused.
+func checkImageURLTemplate(name, value, assetsHost string) error {
+	expanded := strings.NewReplacer(
+		"{assets_host}", assetsHost,
+		"{schema}", "schema",
+		"{path}", "path",
+	).Replace(value)
+	u, err := url.Parse(expanded)
+	if !strings.Contains(value, "{assets_host}") ||
+		!strings.Contains(value, "{path}") ||
+		strings.ContainsAny(expanded, "{}") ||
+		err != nil || !isHTTPURL(u) {
+		return fmt.Errorf(
+			"config: %s must expand, with ASSETS_HOST, to an absolute "+
+				"http or https URL without user info; it must contain "+
+				"{assets_host} and {path}, and no placeholder but those "+
+				"and {schema} (got %q)", name, value)
+	}
+	return nil
+}
+
+// checkInternalSecret refuses a secret that cannot authenticate: it is
+// sent and received as a header value, so a control character (a
+// trailing newline from a file) makes Go refuse every request carrying
+// it, and a receiving server trims leading and trailing blanks before
+// comparing. The secret itself is never echoed.
+func checkInternalSecret(secret string, minLen int) error {
+	if !httpguts.ValidHeaderFieldValue(secret) ||
+		strings.Trim(secret, " \t") != secret {
+		return errors.New("config: INTERNAL_EVENTS_SECRET must not " +
+			"contain control characters or start or end with whitespace")
+	}
+	if len(secret) < minLen {
+		return fmt.Errorf("config: INTERNAL_EVENTS_SECRET must be at "+
+			"least %d characters in this ENV", minLen)
+	}
+	return nil
+}
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

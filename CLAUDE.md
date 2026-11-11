@@ -79,10 +79,21 @@ passes.
   server clears it once the body is read, so streams outlive it.
   `IdleTimeout` (120s) sits above Traefik's 90s backend idle timeout.
   No `WriteTimeout`: it would cut every stream.
-- `internal/config` — env config, fail-fast `Load()`: unknown `ENV` or
-  `LOG_LEVEL` values refuse to boot, and `ENV` (production | staging |
-  development | test) is folded into `AllowLocalWebhooks` and
-  `PaymentHandlerEnv` there so no handler compares environment strings.
+- `internal/config` — env config, fail-fast `Load()`: a value that would
+  boot and then misbehave refuses to boot. Unknown `ENV`, `LOG_LEVEL`
+  (parsed once, into `Config.LogLevel`) or `CHAT_EFFORT` (the API's
+  `reasoning_effort` set, `shared.ReasoningEffort`); a
+  `DJANGO_BASE_URL` or `CHAT_BASE_URL` that is not an absolute http(s)
+  URL with a host and no user info, query or fragment; an image URL
+  template without `{assets_host}` and `{path}` or with another
+  placeholder than those and `{schema}`; an `INTERNAL_EVENTS_SECRET`
+  that is not a valid header value (control characters, leading or
+  trailing blanks) or, in production and staging, shorter than
+  `minInternalSecretLen`; `FEED_STALE_TTL` shorter than
+  `FEED_FRESH_TTL`; any numeric setting at zero or below. `ENV`
+  (production | staging | development | test) is folded into
+  `AllowLocalWebhooks`, `PaymentHandlerEnv` and the secret's minimum
+  length there so no handler compares environment strings.
   The infra staging overlay sets `ENV=staging`: production network
   rules, sandbox handler label. `STOREFRONT_DEFAULT_LOCALE` (required, a
   bare language code) is the storefront build's `DEFAULT_LOCALE`
