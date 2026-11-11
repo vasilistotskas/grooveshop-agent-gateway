@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/identity"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
@@ -191,7 +192,7 @@ func TestAnInvalidTokenIsChallengedAndTheVerdictCachedPerStore(t *testing.T) {
 
 	for range 2 {
 		_, err := v.Verify(ctx, acme(), "customer-token")
-		require.ErrorIs(t, err, ErrInvalidToken)
+		require.ErrorIs(t, err, identity.ErrInvalidToken)
 	}
 	other := acme()
 	other.SchemaName = "alpha"

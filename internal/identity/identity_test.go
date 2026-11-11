@@ -55,24 +55,25 @@ func testTenant() *tenant.Tenant {
 	}
 }
 
-func newHarness(t *testing.T) (*Verifier, *atomic.Int64, func()) {
+func newHarness(
+	t *testing.T,
+) (*Verifier[*django.AgentProfile], *atomic.Int64, func()) {
 	t.Helper()
 	var hits atomic.Int64
 	srv := fakeDjango(t, &hits)
 	dj := django.New(srv.URL+"/api/v1", "api.example.test", "s",
 		2*time.Second, testLogger(), nil)
-	return NewVerifier(dj, testLogger()), &hits, srv.Close
+	return NewShopperVerifier(dj), &hits, srv.Close
 }
 
 func TestVerifyValidTokenReturnsProfile(t *testing.T) {
 	v, _, done := newHarness(t)
 	defer done()
 
-	linked, err := v.Verify(t.Context(), testTenant(), "good")
+	profile, err := v.Verify(t.Context(), testTenant(), "good")
 	require.NoError(t, err)
-	require.NotNil(t, linked.Profile)
-	assert.Equal(t, int64(7), linked.Profile.ID)
-	assert.Equal(t, "good", linked.Bearer)
+	require.NotNil(t, profile)
+	assert.Equal(t, int64(7), profile.ID)
 }
 
 func TestVerifyInvalidToken(t *testing.T) {
@@ -87,10 +88,32 @@ func TestVerifyScopelessTokenPassesWithoutProfile(t *testing.T) {
 	v, _, done := newHarness(t)
 	defer done()
 
-	linked, err := v.Verify(t.Context(), testTenant(), "scopeless")
+	profile, err := v.Verify(t.Context(), testTenant(), "scopeless")
 	require.NoError(t, err)
-	assert.Nil(t, linked.Profile)
-	assert.Equal(t, "scopeless", linked.Bearer)
+	assert.Nil(t, profile)
+}
+
+// A scopeless token is linked all the same: the bearer goes on, without
+// a profile.
+func TestMiddlewareScopelessBearerIsLinkedWithoutProfile(t *testing.T) {
+	v, _, done := newHarness(t)
+	defer done()
+	var got *Linked
+	h := Middleware(v, testLogger())(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			got, _ = FromContext(r.Context())
+			w.WriteHeader(http.StatusOK)
+		}))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer scopeless")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req.WithContext(
+		tenant.NewContext(req.Context(), testTenant())))
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, got)
+	assert.Equal(t, &Linked{Bearer: "scopeless"}, got)
 }
 
 func TestVerifyCachesPositiveAndNegative(t *testing.T) {

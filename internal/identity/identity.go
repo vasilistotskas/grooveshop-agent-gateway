@@ -1,4 +1,5 @@
-// Package identity attaches a linked shopper account to agent requests.
+// Package identity verifies the bearer tokens of both MCP servers and
+// attaches a linked shopper account to the shoppers' /mcp requests.
 //
 // AI agents that completed the OAuth authorization-code flow against the
 // store's identity provider (Django allauth.idp) attach their access
@@ -10,17 +11,16 @@
 // Anonymous requests pass through untouched — the whole commerce
 // surface works without an account; identity only unlocks the my_*
 // tools.
+//
+// The verdict cache (Verifier) and the 401 challenge (WriteChallenge) are
+// shared with the store team's /mcp/admin (internal/adminmcp).
 package identity
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
-	"sync"
-	"time"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
@@ -47,107 +47,22 @@ func FromContext(ctx context.Context) (*Linked, bool) {
 	return l, ok
 }
 
-// cacheTTL bounds both positive and negative verification caching: long
-// enough to absorb an agent's tool-call burst, short enough that token
-// revocation propagates quickly.
-const cacheTTL = 60 * time.Second
-
-// cacheMax is a hard entry cap; hitting it flushes the map (crude, but
-// the cache is a shield, not a source of truth).
-const cacheMax = 4096
-
-type cacheEntry struct {
-	profile *django.AgentProfile
-	unauth  bool // token invalid/expired
-	expires time.Time
-}
-
-// Verifier validates bearer tokens against Django with a small
-// in-memory cache. Tokens are cached by SHA-256 so raw credentials
-// never sit in process memory.
-type Verifier struct {
-	dj  *django.Client
-	log *slog.Logger
-
-	mu    sync.Mutex
-	cache map[string]cacheEntry
-}
-
-func NewVerifier(dj *django.Client, log *slog.Logger) *Verifier {
-	return &Verifier{dj: dj, log: log, cache: map[string]cacheEntry{}}
-}
-
-// ErrInvalidToken reports a missing/expired/revoked bearer token.
-var ErrInvalidToken = errors.New("identity: invalid token")
-
-// Verify resolves the bearer token to a Linked credential.
-func (v *Verifier) Verify(
-	ctx context.Context, t *tenant.Tenant, token string,
-) (*Linked, error) {
-	// Key on (tenant, token), never the token alone. The upstream probe
-	// below is tenant-scoped, so a verdict is only ever valid for the
-	// tenant it was obtained for. Caching by token alone let a hit
-	// answer for a DIFFERENT store: a bearer valid for tenant A, replayed
-	// against tenant B within the TTL, was admitted with A's shopper
-	// profile attached — and in the other direction a token rejected at
-	// A was treated as invalid at its own store for the rest of the TTL.
-	// Every tenant's ingress targets this same pod pool, so both
-	// directions are reachable from outside.
-	sum := sha256.Sum256(
-		append(append([]byte(t.SchemaName), 0), token...),
-	)
-	key := hex.EncodeToString(sum[:])
-
-	v.mu.Lock()
-	entry, hit := v.cache[key]
-	v.mu.Unlock()
-	if hit && time.Now().Before(entry.expires) {
-		return v.entryToLinked(token, entry)
-	}
-
-	profile, err := v.dj.AgentMe(ctx, t.Domain, t.DefaultLocale, token)
-	entry = cacheEntry{expires: time.Now().Add(cacheTTL)}
-	switch {
-	case err == nil:
-		entry.profile = profile
-	case errors.Is(err, django.ErrUnauthorized):
-		entry.unauth = true
-	case errors.Is(err, django.ErrForbidden):
-		// Valid token without the `profile` scope: the /agent/me probe
-		// is denied, but scoped resources the token DOES carry still
-		// work — pass the bearer through without a profile.
-	default:
-		return nil, err
-	}
-
-	v.mu.Lock()
-	if len(v.cache) >= cacheMax {
-		v.cache = map[string]cacheEntry{}
-	}
-	v.cache[key] = entry
-	v.mu.Unlock()
-
-	return v.entryToLinked(token, entry)
-}
-
-func (v *Verifier) entryToLinked(
-	token string, entry cacheEntry,
-) (*Linked, error) {
-	if entry.unauth {
-		return nil, ErrInvalidToken
-	}
-	return &Linked{Bearer: token, Profile: entry.profile}, nil
-}
-
-// WriteChallenge answers 401 with the RFC 9728 challenge, which sends an MCP
-// client to the store's OAuth metadata. params are the challenge's own
-// attributes, such as the error or the scope needed.
-func WriteChallenge(
-	w http.ResponseWriter, domain, params, message string,
-) {
-	w.Header().Set("WWW-Authenticate", "Bearer "+params+
-		`, resource_metadata="`+storefront.OAuthResourceMetadata(domain)+`"`)
-	httpmw.WriteJSONError(w, http.StatusUnauthorized, message)
+// NewShopperVerifier verifies shoppers' bearers against /agent/me.
+func NewShopperVerifier(
+	dj *django.Client,
+) *Verifier[*django.AgentProfile] {
+	return NewVerifier(func(
+		ctx context.Context, t *tenant.Tenant, token string,
+	) (*django.AgentProfile, error) {
+		profile, err := dj.AgentMe(ctx, t.Domain, t.DefaultLocale, token)
+		if errors.Is(err, django.ErrForbidden) {
+			// Valid token without the `profile` scope: the /agent/me
+			// probe is denied, but scoped resources the token DOES carry
+			// still work — pass the bearer through without a profile.
+			return nil, nil
+		}
+		return profile, err
+	})
 }
 
 // Middleware validates an optional Authorization: Bearer header. Runs
@@ -155,7 +70,7 @@ func WriteChallenge(
 // probe). Invalid tokens get the RFC 9728 challenge so MCP clients can
 // discover the authorization server and re-run their OAuth flow.
 func Middleware(
-	v *Verifier, log *slog.Logger,
+	v *Verifier[*django.AgentProfile], log *slog.Logger,
 ) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -170,11 +85,11 @@ func Middleware(
 				return
 			}
 
-			linked, err := v.Verify(r.Context(), t, token)
+			profile, err := v.Verify(r.Context(), t, token)
 			switch {
 			case errors.Is(err, ErrInvalidToken):
-				WriteChallenge(w, t.Domain, `error="invalid_token"`,
-					"invalid or expired access token")
+				WriteChallenge(w, storefront.OAuthResourceMetadata(t.Domain),
+					`error="invalid_token"`, "invalid or expired access token")
 				return
 			case err != nil:
 				log.ErrorContext(r.Context(), "token verification failed",
@@ -183,8 +98,8 @@ func Middleware(
 					"store temporarily unavailable")
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(
-				NewContext(r.Context(), linked)))
+			next.ServeHTTP(w, r.WithContext(NewContext(r.Context(),
+				&Linked{Bearer: token, Profile: profile})))
 		})
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/identity"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -91,7 +92,7 @@ func RequireLinkedAccount(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		identity.WriteChallenge(w, t.Domain,
+		identity.WriteChallenge(w, storefront.OAuthResourceMetadata(t.Domain),
 			`scope="`+linkScopes(t.Features)+`"`,
 			"this tool needs a linked account")
 	})

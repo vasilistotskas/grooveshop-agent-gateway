@@ -16,18 +16,15 @@ package adminmcp
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/identity"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -82,89 +79,24 @@ func staffFrom(ctx context.Context) (*Staff, bool) {
 	return s, ok
 }
 
-// cacheTTL bounds positive and negative verdicts alike: long enough for an
-// AI app's burst of tool calls, short enough that a token revoked, or a
-// person removed from the team, stops verifying within a minute. Django
-// re-checks every forwarded call regardless.
-const cacheTTL = 60 * time.Second
-
-const cacheMax = 4096
-
-type cacheEntry struct {
-	profile *django.StaffProfile
-	invalid bool
-	expires time.Time
-}
-
-// ErrInvalidToken: the bearer is unknown, expired, revoked, bound to
-// another store, or its holder is no longer on the store's team.
-var ErrInvalidToken = errors.New("adminmcp: invalid token")
-
-// Verifier checks staff bearers against Django, with a small cache keyed
-// by SHA-256(schema, token): a verdict obtained for one store never
-// answers for another, and no raw token is kept as a key.
-type Verifier struct {
-	dj *django.Client
-
-	mu    sync.Mutex
-	cache map[string]cacheEntry
-}
-
-func NewVerifier(dj *django.Client) *Verifier {
-	return &Verifier{dj: dj, cache: map[string]cacheEntry{}}
-}
-
-func (v *Verifier) Verify(
-	ctx context.Context, t *tenant.Tenant, token string,
-) (*Staff, error) {
-	sum := sha256.Sum256(append(append([]byte(t.SchemaName), 0), token...))
-	key := hex.EncodeToString(sum[:])
-
-	v.mu.Lock()
-	entry, hit := v.cache[key]
-	v.mu.Unlock()
-	if !hit || !time.Now().Before(entry.expires) {
-		profile, err := v.dj.StaffMe(ctx, t.Domain, t.DefaultLocale, token)
-		entry = cacheEntry{expires: time.Now().Add(cacheTTL)}
-		switch {
-		case err == nil:
-			entry.profile = profile
-		case errors.Is(err, django.ErrUnauthorized):
-			entry.invalid = true
-		default:
-			// Not cached: a 404 (the store switched access off) or an
-			// outage answers the next call afresh.
-			return nil, err
-		}
-		v.mu.Lock()
-		if len(v.cache) >= cacheMax {
-			v.cache = map[string]cacheEntry{}
-		}
-		v.cache[key] = entry
-		v.mu.Unlock()
-	}
-	if entry.invalid {
-		return nil, ErrInvalidToken
-	}
-	return &Staff{Bearer: token, Profile: entry.profile}, nil
-}
-
-// WriteChallenge answers 401 with the RFC 9728 challenge that sends an MCP
-// client to /mcp/admin's metadata, and from there to the staff issuer.
-func WriteChallenge(
-	w http.ResponseWriter, t *tenant.Tenant, params, message string,
-) {
-	w.Header().Set("WWW-Authenticate", "Bearer "+params+
-		`, resource_metadata="`+ResourceMetadataURL(t)+`"`)
-	httpmw.WriteJSONError(w, http.StatusUnauthorized, message)
+// NewVerifier verifies staff bearers against /agent/staff/me. A 404 (the
+// store switched access off) or an outage is not cached: the next call
+// asks afresh.
+func NewVerifier(dj *django.Client) *identity.Verifier[*django.StaffProfile] {
+	return identity.NewVerifier(func(
+		ctx context.Context, t *tenant.Tenant, token string,
+	) (*django.StaffProfile, error) {
+		return dj.StaffMe(ctx, t.Domain, t.DefaultLocale, token)
+	})
 }
 
 // RequireStaff refuses /mcp/admin to anyone without a valid staff bearer.
 // Unlike the shoppers' /mcp there is nothing anonymous here, so a missing
 // token gets the challenge naming every read scope, which is what makes a
-// client start its OAuth flow.
+// client start its OAuth flow. Its challenge sends the client to
+// /mcp/admin's metadata, and from there to the staff issuer.
 func RequireStaff(
-	v *Verifier, log *slog.Logger,
+	v *identity.Verifier[*django.StaffProfile], log *slog.Logger,
 ) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -177,16 +109,16 @@ func RequireStaff(
 			}
 			token, present := httpmw.BearerToken(r)
 			if !present || token == "" {
-				WriteChallenge(w, t,
+				identity.WriteChallenge(w, ResourceMetadataURL(t),
 					`scope="`+strings.Join(ReadScopes, " ")+`"`,
 					"connect your store's admin account first")
 				return
 			}
-			staff, err := v.Verify(r.Context(), t, token)
+			profile, err := v.Verify(r.Context(), t, token)
 			switch {
-			case errors.Is(err, ErrInvalidToken):
-				WriteChallenge(w, t, `error="invalid_token"`,
-					"invalid or expired access token")
+			case errors.Is(err, identity.ErrInvalidToken):
+				identity.WriteChallenge(w, ResourceMetadataURL(t),
+					`error="invalid_token"`, "invalid or expired access token")
 				return
 			case errors.Is(err, django.ErrNotFound):
 				// The store switched it off and this pod's copy of its
@@ -209,7 +141,8 @@ func RequireStaff(
 					"store temporarily unavailable")
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(withStaff(r.Context(), staff)))
+			next.ServeHTTP(w, r.WithContext(withStaff(r.Context(),
+				&Staff{Bearer: token, Profile: profile})))
 		})
 	}
 }
