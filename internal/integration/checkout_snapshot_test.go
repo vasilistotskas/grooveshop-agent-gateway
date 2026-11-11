@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -137,6 +138,79 @@ func TestAnUpdatePastItsLockWritesNoCartOfACheckoutStoredSince(
 			assert.Greater(t, stack.faults.cartWrites.Load(), writes, name)
 		}
 	})
+}
+
+// A complete of a checkout that already placed its order renders it,
+// from what the call loaded. If the payment landed meanwhile, the call
+// answers the stored checkout: completed, not still awaiting a payment
+// that was made.
+func TestARenderFromAStaleSnapshotAnswersTheStoredCheckout(t *testing.T) {
+	ctx := context.Background()
+	stack := startUCPGateway(t)
+	surfaces := surfacesByName(t, stack)
+	for _, name := range []string{"acp", "ucp"} {
+		t.Run(name, func(t *testing.T) {
+			id := awaitingPayment(t, surfaces["ucp"])
+			stack.onSessionRead(t, id, exitRead, func() error {
+				status, err := stack.orderEvent("COMPLETED")
+				if err == nil && status != http.StatusNoContent {
+					err = fmt.Errorf("the payment event answered %d", status)
+				}
+				return err
+			})
+
+			answer := surfaces[name].answer(ctx, id, uuid.NewString(), nil)
+
+			assert.Equal(t, "completed", answer.status, answer.refusal)
+			assert.Equal(t, checkout.StatusCompleted,
+				stack.storedSession(t, id).Status)
+		})
+	}
+}
+
+// The save that marks a session in progress is what guards the order.
+// When Redis refuses it no order is sent, and the caller is told the
+// checkout records are unavailable: not Django's wording, and not that
+// anything is in progress. Its key is free, so the same call, sent
+// again, places the order.
+func TestACompleteThatCannotMarkItsSessionSaysRecordsAreUnavailable(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	stack := startUCPGateway(t)
+	want := map[string]string{
+		"acp": "503 unavailable",
+		"ucp": "checkout records are temporarily unavailable",
+	}
+	for name, surface := range surfacesByName(t, stack) {
+		t.Run(name, func(t *testing.T) {
+			id := surface.ready(t)
+			key := uuid.NewString()
+			creates := stack.faults.orderCreates.Load()
+			var failed atomic.Bool
+			stack.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+				if savesKey(cmd, sessionRedisKey(id)) &&
+					failed.CompareAndSwap(false, true) {
+					return errRedisDown
+				}
+				return nil
+			}))
+
+			answer := surface.answer(ctx, id, key, nil)
+
+			assert.Empty(t, answer.status)
+			assert.Contains(t, answer.refusal, want[name])
+			if name == "acp" {
+				assert.Contains(t, string(answer.errorBody),
+					"Checkout is temporarily unavailable.")
+			}
+			assert.Equal(t, creates, stack.faults.orderCreates.Load())
+			assert.Equal(t, checkout.StatusReadyForComplete,
+				stack.storedSession(t, id).Status)
+			require.Equal(t, "completed",
+				surface.complete(ctx, id, key, nil))
+		})
+	}
 }
 
 // A complete that finds its idempotency key spent is the retry of an

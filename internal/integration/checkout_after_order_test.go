@@ -34,20 +34,33 @@ func surfacesByName(t *testing.T, stack ucpStack) map[string]completionSurface {
 // push again.
 func (stack ucpStack) pushOrderEvent(t *testing.T, paymentStatus string) int {
 	t.Helper()
+	status, err := stack.orderEvent(paymentStatus)
+	require.NoError(t, err)
+	return status
+}
+
+// orderEvent is pushOrderEvent for any goroutine: it asserts nothing.
+func (stack ucpStack) orderEvent(paymentStatus string) (int, error) {
 	event, err := json.Marshal(map[string]any{
 		"schemaName": "demostore", "orderUuid": fixtureOrderUUID,
 		"status": "PROCESSING", "paymentStatus": paymentStatus,
 	})
-	require.NoError(t, err)
+	if err != nil {
+		return 0, err
+	}
 	req, err := http.NewRequest(http.MethodPost,
 		stack.gw.URL+"/internal/events/order-status", bytes.NewReader(event))
-	require.NoError(t, err)
+	if err != nil {
+		return 0, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Internal-Token", internalSecret)
 	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
+	if err != nil {
+		return 0, err
+	}
 	_ = resp.Body.Close()
-	return resp.StatusCode
+	return resp.StatusCode, nil
 }
 
 // savesKey reports whether cmd is the script that stores key.
