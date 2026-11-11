@@ -148,9 +148,13 @@ func cachedRSS(t *testing.T, gz []byte, size int) map[string]string {
 
 func gzipped(t *testing.T, raw string) []byte {
 	t.Helper()
-	gz, err := gzipBytes([]byte(raw))
+	s, err := newDocStream()
 	require.NoError(t, err)
-	return gz
+	_, err = io.WriteString(s, raw)
+	require.NoError(t, err)
+	e, err := s.entry()
+	require.NoError(t, err)
+	return e.gz
 }
 
 func feedService(

@@ -24,6 +24,13 @@ import (
 // so a generation succeeds.
 func oneProductCatalog(t *testing.T) *django.Client {
 	t.Helper()
+	return storeCatalog(t, 1)
+}
+
+// storeCatalog serves an empty category tree and a catalog of pages
+// pages, one product each.
+func storeCatalog(t *testing.T, pages int) *django.Client {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, "/product/category/all") {
@@ -31,7 +38,7 @@ func oneProductCatalog(t *testing.T) *django.Client {
 				_, _ = w.Write([]byte(`[]`))
 				return
 			}
-			writePage(w, 1, r.URL.Query().Get("page"))
+			writePage(w, pages, r.URL.Query().Get("page"))
 		}))
 	t.Cleanup(srv.Close)
 	return django.New(srv.URL+"/api/v1", "api.example.test", "secret",
