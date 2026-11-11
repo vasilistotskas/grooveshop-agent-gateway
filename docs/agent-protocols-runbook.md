@@ -401,9 +401,15 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | Case | Expected and observed |
 |---|---|
 | Update or cancel a completed checkout | Refused, naming the order |
+| Update or cancel a checkout whose order awaits its payment (UCP `requires_escalation`) | Refused, naming the order: the buyer could still pay a checkout that read cancelled. ACP: 405 `conflict` |
+| Update or cancel while the order is being placed, or after the store never confirmed it | UCP: "a completion of this checkout is in progress or unconfirmed". ACP: 409 `idempotency_in_flight`, then 502 `order_outcome_unknown` once the completion's time has passed |
 | Update a cancelled checkout | Refused |
 | Cancel an ACP session twice | 405 |
 | Update a completed or cancelled ACP session | 405 `conflict`, `Allow: GET, HEAD` |
+| A checkout id the gateway holds no session for (expired, evicted, never existed, or stored before a release that moved the session key) | UCP: "that checkout no longer exists here, and its id does not say whether it placed an order", with the instruction to look the order up with `get_order` or `track_order` before starting another. ACP: 404 `not_found`, whose message says an order may exist. Neither says only "start a new one" |
+| An update whose cart went with an order a concurrent complete placed | Answered as an update of a placed checkout, naming the order (ACP 405), never "the cart no longer exists; start a new one". Not exercised here: `checkout_after_order_test.go` |
+
+A session that may have an order (being placed, awaiting payment, completed) is kept 24 hours, ending 24 hours after the order was placed; an open one 30 minutes after its last save.
 
 ## 7. Store-admin connector (`/mcp/admin`)
 
@@ -497,3 +503,27 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 | `get_order` called an expired guest order unavailable | The agent was told to retry something that could never work | gateway #72 |
 | Every save restarted a placed checkout's lifetime | Repeated calls could keep a session alive indefinitely | gateway #72 |
 | The UCP profile named whichever host was asked | A client reading it on a secondary domain was sent to a server it could not link an account on | gateway #71 |
+
+## 10. Before deploying a release that moves the checkout session key
+
+**Applies to:** the release that fixes gateway #84, which moves sessions from `ag:{schema}:cs:{id}` to `ag:{schema}:cs:v2:{id}`, and any later bump of that key (`sessionKey` in `internal/checkout/store.go`).
+
+The new pods do not read sessions the old pods stored, on purpose: an old pod writes a session without checking what it holds, so the two must never share one. A checkout in flight at the deploy is therefore "not found" afterwards, and during the rollout a checkout made on one kind of pod is not found on the other. What that costs depends on the session's state:
+
+- **Open** (`incomplete`, `ready_for_complete`): the platform starts again. Nothing was ordered.
+- **`complete_in_progress` or `requires_escalation`: an order exists, or may.** The platform's retry or poll is told that no session is held and that an order may exist, and is told to look for it before starting another checkout (`get_order`, `track_order`, the buyer's confirmation email). A platform that starts another one anyway orders twice: for a hosted payment the first order's cart is still there. The order itself is unaffected: `get_order` and the order webhooks go through the order link, which does not move.
+- **`completed`, `canceled`:** only the session's own read is lost.
+
+So before the deploy, list the sessions that matter. This prints each stored session's status and key, without the lock keys, and keeps the two states above (run it where `redis-cli` reaches the gateway's Redis, with `REDISCLI_AUTH` set):
+
+```bash
+redis-cli --scan --pattern 'ag:*:cs:*' | grep -v ':lock$' | while read -r key; do
+  status=$(redis-cli GET "$key" | grep -o '"status":"[a-z_]*"' | head -1 | cut -d'"' -f4)
+  echo "$status $key"
+done | grep -E '^(complete_in_progress|requires_escalation) ' || echo "none being placed or awaiting payment"
+```
+
+- **None:** deploy.
+- **Some:** wait. A `requires_escalation` session leaves the list when its payment lands (it becomes `completed`) or, unpaid, 24 hours after its order was placed (30 minutes after its last save on the release before this one); a `complete_in_progress` one that stays is an order Django never confirmed, which ends the same way. Or deploy and accept that those platforms are told to check for an order.
+
+One more thing is open only while pods of both kinds run (the rollout, a minute or two with two replicas): a payment event for a session a new pod stored, delivered to an old pod, finds no session there and is answered 204, which is final for Django. The order webhook still goes out, but that session stays `requires_escalation` until it expires, 24 hours after its order was placed: `get_checkout` keeps showing the payment page for a paid order, while `get_order` shows the truth.

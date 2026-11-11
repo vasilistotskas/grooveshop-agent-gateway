@@ -390,12 +390,15 @@ passes.
     refused order's reset) from being written over a session that is
     being placed or is placed.
   - **A lost save is answered like a busy session**: ACP 409
-    `idempotency_in_flight` with `Retry-After: 2`, UCP the error's
-    text, the order-event push 503. The request is sent again and
-    reads the session as it is then. `ErrSessionChanged` always means
-    nothing happened: a completion's last save, lost after its order
-    was placed, is `ErrSessionNotSaved` with the key spent, and does
-    not wrap it.
+    `idempotency_in_flight` with `Retry-After: 2`, UCP
+    `errCheckoutChanged` (a `conflict` tool error), the order-event
+    push 503. The request is sent again and reads the session as it is
+    then. `ErrSessionChanged` means nothing was stored in the session,
+    and no order was sent. It does not mean nothing happened: an
+    update has written its cart lines and coupon to Django by then, so
+    UCP adds `checkoutNotUpdated` to that answer. A completion's last
+    save, lost after its order was placed, is `ErrSessionNotSaved`
+    with the key spent, and does not wrap it.
   - **The lock only orders requests** (`Store.Lock`, `ErrLocked`). It
     lasts `lockSteps` upstream timeouts: what a completion does under
     it when Django answers every call just inside its timeout. A
@@ -412,6 +415,31 @@ passes.
   - go-redis sends a command again when its reply was lost, so each
     script reports its own earlier run as done: a claim finds its own
     token, a save its own revision, a settle the value it wrote.
+- **No answer hands out a new checkout while an order for the old one
+  may exist.** A session is open (`Session.Open`), canceled, or may
+  have an order (`Session.MayHaveOrder`: being placed, awaiting its
+  payment, completed). Decide on those, never on `OrderUUID` or one
+  status:
+  - A session that may have an order takes no update and no cancel, on
+    either surface (`acp.refuseChange`, `mcpsrv.closedTo`): neither
+    would touch the order. It is kept `terminalTTL` like a terminal
+    one, capped a day after `PlacedAt` (`Session.ttl`): while it is
+    held a caller is told what became of the checkout and a payment
+    event finds it.
+  - A missing session is not "nothing happened". The gateway cannot
+    tell an id that expired unplaced from one that was placed and lost
+    its record (expiry, eviction, a deploy that moved the session key)
+    or one that never existed. `errCheckoutGone` (UCP) and
+    `msgSessionGone` (ACP's 404) say so, and say to look for an order
+    before another checkout; every "no session" answer goes through
+    them.
+  - An update whose cart cannot be reached reads the session again
+    (`cartFailed`, both surfaces): a completion that ran meanwhile took
+    the cart with its order, and the update is answered as one of a
+    placed session, never as a cart to replace with a new checkout.
+  - An order event records the order on a session that does not name
+    one (`Flow.ApplyOrderEvent`, read from Django for its id): a
+    session is never completed without its order.
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before
