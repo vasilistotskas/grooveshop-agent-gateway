@@ -103,5 +103,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	return serve(ctx, ln, handler, podTiming, log)
+	return serve(ctx, ln, handler,
+		podTiming(completionTail(dj, log)), log)
 }

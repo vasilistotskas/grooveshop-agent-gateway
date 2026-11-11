@@ -13,11 +13,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 )
 
 // lockedBuffer collects log lines written from serve's goroutines.
@@ -164,7 +168,7 @@ func TestServeLogsAMiddlewarePanicThroughTheGatewayLogger(t *testing.T) {
 			panic("middleware boom")
 		})))
 	ctx, stop := stoppable(t)
-	url, logs, done := startServe(t, ctx, handler, podTiming)
+	url, logs, done := startServe(t, ctx, handler, podTiming(0))
 
 	req, err := http.NewRequestWithContext(context.Background(),
 		http.MethodGet, url, nil)
@@ -181,7 +185,8 @@ func TestServeLogsAMiddlewarePanicThroughTheGatewayLogger(t *testing.T) {
 	assert.Contains(t, logs.String(), "level=ERROR")
 	assert.Contains(t, logs.String(), "http: panic serving")
 	stop()
-	require.NoError(t, waitServe(t, done, podTiming.drain+podTiming.final))
+	tm := podTiming(0)
+	require.NoError(t, waitServe(t, done, tm.drain+tm.final))
 }
 
 // A handler that ignores the cancellation is cut when the window ends,
@@ -227,7 +232,7 @@ func TestServeWithAContextAlreadyDone(t *testing.T) {
 	ctx, stop := context.WithCancel(context.Background())
 	stop()
 
-	_, logs, done := startServe(t, ctx, http.NotFoundHandler(), podTiming)
+	_, logs, done := startServe(t, ctx, http.NotFoundHandler(), podTiming(0))
 
 	require.NoError(t, waitServe(t, done, 5*time.Second))
 	assert.NotContains(t, logs.String(), "level=WARN")
@@ -268,7 +273,86 @@ func TestServeReturnsAListenerFailure(t *testing.T) {
 	require.NoError(t, ln.Close())
 
 	err = serve(context.Background(), ln, http.NotFoundHandler(),
-		podTiming, slog.New(slog.DiscardHandler))
+		podTiming(0), slog.New(slog.DiscardHandler))
 
 	assert.Error(t, err)
+}
+
+// An order completion can detach at the very end of the drain, so the
+// final window holds its whole detached budget and the key settle after
+// it; a stream keeps its own window when that is longer.
+func TestPodTimingHoldsACompletion(t *testing.T) {
+	discard := slog.New(slog.DiscardHandler)
+	for _, upstream := range []time.Duration{time.Second, 10 * time.Second} {
+		dj := django.New("http://127.0.0.1:1", "platform.test", "secret",
+			upstream, discard, obs.NewMetrics())
+		now := time.Now()
+		detached := checkout.NewFlow(dj, nil, storefront.Site{}, discard).
+			CompletionDeadline(&checkout.Session{UpdatedAt: now}).Sub(now)
+
+		tm := podTiming(completionTail(dj, discard))
+
+		assert.GreaterOrEqual(t, tm.final, detached+upstream, upstream)
+		assert.GreaterOrEqual(t, tm.final, streamFinal, upstream)
+	}
+}
+
+// An MCP tool runs on a goroutine of the SDK's own. The request that
+// carried it stays open until the tool returns, even once its context
+// has ended at the cut, so a tool finishing work it detached (an order
+// completion) inside the window is not cut by the process exiting.
+func TestServeWaitsForAToolThatOutlivesItsRequest(t *testing.T) {
+	tm := timing{
+		read: time.Minute, drain: 50 * time.Millisecond,
+		final: 5 * time.Second,
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	server := mcp.NewServer(&mcp.Implementation{Name: "test"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "place"}, func(
+		context.Context, *mcp.CallToolRequest, struct{},
+	) (*mcp.CallToolResult, struct{}, error) {
+		close(started)
+		<-release // work that runs on without the caller's context
+		close(finished)
+		return &mcp.CallToolResult{}, struct{}{}, nil
+	})
+	// As /mcp and /mcp/admin serve it.
+	handler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return server },
+		&mcp.StreamableHTTPOptions{
+			Stateless:                    true,
+			JSONResponse:                 true,
+			PropagateRequestCancellation: true,
+		})
+	ctx, stop := stoppable(t)
+	url, logs, done := startServe(t, ctx, handler, tm)
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).
+		Connect(context.Background(),
+			&mcp.StreamableClientTransport{Endpoint: url}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	go func() {
+		_, _ = session.CallTool(context.Background(),
+			&mcp.CallToolParams{Name: "place"})
+	}()
+	<-started
+
+	stop()
+
+	select {
+	case err := <-done:
+		require.FailNow(t, "serve returned while the tool was running",
+			"serve: %v", err)
+	case <-time.After(tm.drain + 200*time.Millisecond):
+	}
+	close(release)
+	require.NoError(t, waitServe(t, done, tm.drain+tm.final))
+	select {
+	case <-finished:
+	default:
+		assert.Fail(t, "serve returned before the tool finished")
+	}
+	assert.NotContains(t, logs.String(), "level=WARN")
 }

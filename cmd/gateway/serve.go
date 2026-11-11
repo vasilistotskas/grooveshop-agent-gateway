@@ -8,17 +8,21 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 )
 
 // timing is the server's request-read bound and its shutdown budget.
 //
 // Shutdown: Kubernetes runs the Deployment's preStop sleep (10s, while
 // Traefik drops the pod) before SIGTERM reaches us, and kills the
-// process terminationGracePeriodSeconds (30s) after the sleep began:
-// drain + final (15s) must end before that, with room to close what
-// remains and exit. Issue #117 revisits the drain: it will be derived
-// from the order-placement budget, with the grace period raised.
+// process terminationGracePeriodSeconds after the sleep began. So the
+// grace period must cover the sleep, drain + final, and a margin to
+// close what remains and exit. With UPSTREAM_TIMEOUT=10s final is 40s
+// and the grace period 65s (grooveshop-infrastructure,
+// base/agent-gateway.yaml); raising the timeout raises both.
 type timing struct {
 	// read bounds reading a whole request, body included; the server
 	// clears it once the body is read, so streams outlive it.
@@ -26,19 +30,43 @@ type timing struct {
 	// drain lets in-flight requests finish with their contexts live: a
 	// context cancelled at the signal would abort a Django call mid-way.
 	drain time.Duration
-	// final is what a request still open after the drain (a chat or MCP
-	// stream) gets, once its context is cancelled with
-	// httpmw.ErrShuttingDown, to write its last event and return.
+	// final is what a request still open after the drain gets, once its
+	// context is cancelled with httpmw.ErrShuttingDown: a stream (chat,
+	// MCP) writes its last event, and an order completion that went on
+	// without its caller places the order and settles its key.
 	final time.Duration
 }
 
-var podTiming = timing{
-	// Bodies here are capped at a few hundred KiB. Half of Traefik's
-	// entrypoint readTimeout (60s), so ours is never the looser bound for
-	// a proxied client, and in-cluster callers are bounded too.
-	read:  30 * time.Second,
-	drain: 10 * time.Second,
-	final: 5 * time.Second,
+// streamFinal is what a stream needs to write its last event.
+const streamFinal = 5 * time.Second
+
+// podTiming is the timing of a pod whose order completions keep their
+// request open for up to completion after its context ends.
+func podTiming(completion time.Duration) timing {
+	return timing{
+		// Bodies here are capped at a few hundred KiB. Half of Traefik's
+		// entrypoint readTimeout (60s), so ours is never the looser bound
+		// for a proxied client, and in-cluster callers are bounded too.
+		read:  30 * time.Second,
+		drain: 10 * time.Second,
+		final: max(streamFinal, completion),
+	}
+}
+
+// completionTail is the longest an order completion keeps its request
+// open once the request's context has ended: the part of
+// checkout.Flow.Complete that runs without its caller, then one upstream
+// timeout in which the caller settles its idempotency key by the
+// placement. A completion can detach until the end of the drain, so the
+// final window must hold all of it.
+//
+// The budget is read from the flow's own deadline for a session stored
+// in progress, so it cannot drift from what Complete runs on.
+func completionTail(dj *django.Client, log *slog.Logger) time.Duration {
+	var stored checkout.Session
+	budget := checkout.NewFlow(dj, nil, storefront.Site{}, log).
+		CompletionDeadline(&stored).Sub(stored.UpdatedAt)
+	return budget + dj.Timeout()
 }
 
 const (
@@ -85,7 +113,8 @@ func serve(
 	case <-ctx.Done():
 	}
 
-	log.InfoContext(ctx, "shutting down")
+	log.InfoContext(ctx, "shutting down",
+		slog.Duration("window", t.drain+t.final))
 	shutdownCtx, cancel := context.WithTimeout(
 		context.Background(), t.drain+t.final,
 	)
