@@ -645,15 +645,17 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Recompute()
+	// Rendered before the save, which it does not read: a session that
+	// cannot be answered is not stored, and a 5xx is never stored against
+	// the key, so a retry is a new create that leaves nothing behind.
+	body, ok := h.renderBody(w, r, t, s)
+	if !ok {
+		h.releaseIdem(r, t.SchemaName, createScope, key)
+		return
+	}
 	if err := h.store.Save(r.Context(), s); err != nil {
 		h.releaseIdem(r, t.SchemaName, createScope, key)
 		writeUnavailable(w, "Checkout is temporarily unavailable.")
-		return
-	}
-	body, ok := h.renderBody(w, r, t, s)
-	if !ok {
-		// A 5xx is never stored against the key: a retry is a new create.
-		h.releaseIdem(r, t.SchemaName, createScope, key)
 		return
 	}
 	h.storeIdem(r, t.SchemaName, createScope, key, idemRecord{

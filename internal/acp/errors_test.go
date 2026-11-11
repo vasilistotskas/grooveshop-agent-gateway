@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"log/slog"
 	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -346,9 +347,9 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 			assert.Empty(t, rec.Header().Get("Retry-After"))
 		})
 
-	// A deadline ahead (a writer whose clock runs fast) is waited for,
-	// never reported as an unknown outcome.
-	t.Run("a deadline far ahead is in flight until it", func(t *testing.T) {
+	// A save stamped in the future (a writer whose clock runs fast) is in
+	// flight, never an unknown outcome, and waits at most one budget.
+	t.Run("a deadline far ahead waits one budget at most", func(t *testing.T) {
 		ahead := *session
 		ahead.UpdatedAt = time.Now().Add(time.Hour)
 		rec := httptest.NewRecorder()
@@ -356,8 +357,29 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 		specError(t, rec, http.StatusConflict, "idempotency_in_flight")
 		after, err := strconv.Atoi(rec.Header().Get("Retry-After"))
 		require.NoError(t, err)
-		assert.Greater(t, after, int(time.Hour.Seconds()))
+		budget := time.Until(h.flow.CompletionDeadline(&checkout.Session{
+			UpdatedAt: time.Now(),
+		}))
+		assert.Positive(t, after)
+		assert.LessOrEqual(t, after, int(math.Ceil(budget.Seconds())))
 	})
+
+	// The order exists: the answer names it, so the platform can find it
+	// without ordering again.
+	t.Run("an unsaved session names its order", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		h.completeError(rec, session, checkout.ErrSessionNotSaved)
+		body := specError(t, rec, http.StatusInternalServerError,
+			"order_placed")
+		assert.Contains(t, body["message"], session.OrderUUID)
+	})
+}
+
+// Create keys live under a versioned scope: a record of another shape,
+// written by an older pod, is under another key and never read.
+func TestCreateKeyIsVersioned(t *testing.T) {
+	assert.Equal(t, "ag:alpha:acp:idem:create.v2:k",
+		idemRedisKey("alpha", createScope, "k"))
 }
 
 // A 405 names what its target still serves, even when that is nothing.

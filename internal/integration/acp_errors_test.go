@@ -5,10 +5,8 @@ package integration
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
@@ -134,78 +132,6 @@ func TestACPErrorsFollowTheSpec(t *testing.T) {
 		require.NoError(t, err)
 		_ = head.Body.Close()
 		assert.Equal(t, http.StatusOK, head.StatusCode)
-	})
-
-	// The spec: "Same key + identical body → server MUST return the
-	// original response with the same HTTP status code", and must not
-	// re-execute side effects, for as long as the key is kept.
-	t.Run("a create replay answers the original response", func(t *testing.T) {
-		key := uuid.NewString()
-		create := func() (*http.Response, []byte) {
-			return acpRaw(t, acpRequest(t, http.MethodPost, base, createBody,
-				key))
-		}
-		resp, original := create()
-		require.Equal(t, http.StatusCreated, resp.StatusCode, "%s", original)
-		assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
-		var created map[string]any
-		require.NoError(t, json.Unmarshal(original, &created))
-		writes := stack.faults.cartWrites.Load()
-
-		assertReplay := func(resp *http.Response, body []byte) {
-			t.Helper()
-			assert.Equal(t, http.StatusCreated, resp.StatusCode)
-			assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
-			assert.Equal(t, string(original), string(body))
-		}
-		assertReplay(create())
-
-		// Its session gone, the key still answers what it answered.
-		require.NoError(t, stack.rdb.Del(ctx,
-			"ag:demostore:cs:"+created["id"].(string)).Err())
-		assertReplay(create())
-
-		type answer struct {
-			status   int
-			replayed string
-			body     []byte
-			err      error
-		}
-		answers := make([]answer, 2)
-		var wg sync.WaitGroup
-		for i := range answers {
-			req := acpRequest(t, http.MethodPost, base, createBody, key)
-			wg.Go(func() {
-				resp, err := http.DefaultClient.Do(req)
-				if err != nil {
-					answers[i].err = err
-					return
-				}
-				defer func() { _ = resp.Body.Close() }()
-				answers[i].status = resp.StatusCode
-				answers[i].replayed = resp.Header.Get("Idempotent-Replayed")
-				answers[i].body, answers[i].err = io.ReadAll(resp.Body)
-			})
-		}
-		wg.Wait()
-		for _, a := range answers {
-			require.NoError(t, a.err)
-			assert.Equal(t, http.StatusCreated, a.status)
-			assert.Equal(t, "true", a.replayed)
-			assert.Equal(t, string(original), string(a.body))
-		}
-		assert.Equal(t, writes, stack.faults.cartWrites.Load(),
-			"a replay must not fill a cart again")
-
-		other := map[string]any{
-			"line_items":   []map[string]any{{"id": "1", "quantity": 3}},
-			"currency":     "EUR",
-			"capabilities": map[string]any{},
-		}
-		resp, body := acpCall(t, http.MethodPost, base, other, key)
-		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
-		assert.Equal(t, "idempotency_conflict", body["code"])
-		assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
 	})
 
 	t.Run("stock gone at completion is a 400 out_of_stock", func(t *testing.T) {

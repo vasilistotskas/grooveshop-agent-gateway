@@ -256,6 +256,13 @@ passes.
     or not the session lives. Update, complete and cancel replays
     render the session as it is now. `Idempotent-Replayed` is set only
     on a replay's own answer.
+  - So the buyer data a create carried (name, email, phone, address)
+    is kept in Redis for 24 hours under
+    `ag:{schema}:acp:idem:create.v2:{key}`, while the session itself
+    lives 30 minutes: the spec requires a key's response to be kept at
+    least 24 hours (§6.6). Nothing else reads it.
+  - A create is rendered before it is saved, and a 4xx or 5xx releases
+    its key: a create that failed leaves no session and no record.
   - `completeError` answers every `checkout` and `django` sentinel
     deliberately (`TestCompleteErrorMapsEverySentinel` walks them): a
     refusal is a 4xx, and an order that exists or may is never

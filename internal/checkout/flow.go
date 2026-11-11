@@ -161,9 +161,15 @@ func (f *Flow) Complete(
 // which set s.UpdatedAt. A session still in progress after it stays so
 // until it expires, because its outcome was never recorded. The writer's
 // clock sets it and the reader's judges it: a reader ahead says "outcome
-// unknown" early, which is the safe wrong answer.
+// unknown" early, which is the safe wrong answer. A writer ahead stamps a
+// save in the reader's future; no completion runs longer than its budget
+// from now, so the deadline is never further away than that.
 func (f *Flow) CompletionDeadline(s *Session) time.Time {
-	return s.UpdatedAt.Add(f.budget)
+	saved := s.UpdatedAt
+	if now := time.Now(); saved.After(now) {
+		saved = now
+	}
+	return saved.Add(f.budget)
 }
 
 // admit checks that the session can be placed and reserves its stock.

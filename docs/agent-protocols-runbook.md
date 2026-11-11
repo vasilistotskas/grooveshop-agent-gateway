@@ -365,7 +365,7 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | UCP complete again with a new key, after completing | Same order, none added |
 | ACP POST with no key | 400 `idempotency_key_required` |
 | ACP create replayed, same key and body | 201 with `Idempotent-Replayed: true` |
-| ACP same key, different body | 422 `idempotency_conflict` |
+| ACP same key, different body | 422 `idempotency_conflict`, except a complete of an already completed session, which answers 200 with the session whatever the body (#128) |
 | ACP create replayed after its session expired, same key and body | 201 with the original body and `Idempotent-Replayed: true` |
 | ACP call while another holds the session (lock busy) | 409 `idempotency_in_flight` with `Retry-After` |
 
