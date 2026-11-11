@@ -15,7 +15,7 @@ import (
 
 // A checkout the gateway stores no session for may never have been
 // completed, or may have placed an order and no longer be kept (it
-// expired, it was evicted, the gateway was redeployed), or its id may be
+// expired, Redis evicted it, a release changed the session key), or its id may be
 // wrong. The id does not say which, so no tool and no route answers
 // only "start a new one": the caller is told an order may exist, and
 // how to check.
@@ -81,5 +81,19 @@ func TestAMissingCheckoutMayHavePlacedAnOrder(t *testing.T) {
 			assert.Contains(t, text,
 				"ask the shopper for the store's order confirmation", tool)
 		}
+
+		// get_order for an order no checkout link is held for: it was
+		// placed elsewhere, or here and its link is gone (expired, or
+		// evicted). The answer is true in both, and names the tool that
+		// reads the order from the store.
+		res := callTool(t, session, "get_order", map[string]any{
+			"meta": meta(""), "id": fixtureOrderUUID,
+		})
+		require.True(t, res.IsError)
+		text := res.Content[0].(*mcp.TextContent).Text
+		assert.Contains(t, text, "order "+fixtureOrderUUID+" exists")
+		assert.Contains(t, text,
+			"or it was and its checkout record is no longer kept")
+		assert.Contains(t, text, "track_order")
 	})
 }

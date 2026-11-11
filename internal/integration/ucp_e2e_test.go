@@ -191,14 +191,28 @@ type checkoutFaults struct {
 	// stockShort makes the stock reservation answer a 409 shortfall.
 	stockShort atomic.Bool
 	// cartDeletedOnOrder makes the cart go with the first order, as it
-	// does in Django: asked for it, Django answers a new guest cart.
+	// does in Django for a pay way that is not settled online: asked for
+	// it, Django answers a new guest cart, and refuses to order from it.
 	cartDeletedOnOrder atomic.Bool
+	// ordersPlaced counts the order creations that were accepted.
+	ordersPlaced atomic.Int32
+	// before runs ahead of every request the fake receives.
+	before atomic.Pointer[func(*http.Request)]
 	// regionLookup makes the country's region list answer 502.
 	regionLookup atomic.Bool
 	// payWayLookup makes the pay-way list answer 502.
 	payWayLookup atomic.Bool
 	// orderRead makes reading a placed order answer 502.
 	orderRead atomic.Bool
+	// orderGone makes reading a placed order answer 404: Django no
+	// longer has it.
+	orderGone atomic.Bool
+	// orderCreatedAt is when the placed order reads as created; unset,
+	// the fixture's time, which is long past.
+	orderCreatedAt atomic.Pointer[time.Time]
+	// lineShort makes a cart line write answer 400 insufficient_stock:
+	// the stock went to an order.
+	lineShort atomic.Bool
 	// cartWrites counts the writes the cart received: its lines and its
 	// coupon.
 	cartWrites atomic.Int32
@@ -224,7 +238,28 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
-			inner.ServeHTTP(w, r)
+			if faults.orderGone.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(
+					`{"detail": "Not found.", "code": "not_found"}`))
+				return
+			}
+			createdAt := faults.orderCreatedAt.Load()
+			if createdAt == nil {
+				inner.ServeHTTP(w, r)
+				return
+			}
+			raw, err := os.ReadFile(fixturePath("order_by_uuid.json"))
+			var order map[string]any
+			if !assert.NoError(t, err) ||
+				!assert.NoError(t, json.Unmarshal(raw, &order)) {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			order["createdAt"] = createdAt.Format(time.RFC3339Nano)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(order)
 		})
 	outer.HandleFunc("GET /api/v1/cart",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -239,7 +274,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				}
 			}
 			if faults.cartDeletedOnOrder.Load() &&
-				faults.orderCreates.Load() > 0 {
+				faults.ordersPlaced.Load() > 0 {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"uuid": "` + uuid.NewString() +
 					`", "items": []}`))
@@ -270,7 +305,39 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 		outer.HandleFunc(write,
 			func(w http.ResponseWriter, r *http.Request) {
 				faults.cartWrites.Add(1)
-				inner.ServeHTTP(w, r)
+				refuse := func(status int, body string) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte(body))
+				}
+				switch {
+				// The line went with the order's cart: Django answers a
+				// changed line 404 and a deleted one 403
+				// (src/cart/views/item.py get_object, destroy).
+				case faults.cartDeletedOnOrder.Load() &&
+					faults.ordersPlaced.Load() > 0 &&
+					r.Method == http.MethodPut:
+					refuse(http.StatusNotFound, `{"detail": "No CartItem `+
+						`matches the given query.", "code": "not_found"}`)
+				case faults.cartDeletedOnOrder.Load() &&
+					faults.ordersPlaced.Load() > 0 &&
+					r.Method == http.MethodDelete:
+					refuse(http.StatusForbidden, `{"detail": "You do not `+
+						`have permission to delete this cart item.", `+
+						`"code": "cart_item_forbidden"}`)
+				// The stock went to an order (src/cart/serializers/item.py
+				// validate, through core/api/exception_handler.py).
+				case faults.lineShort.Load() &&
+					r.Method != http.MethodDelete:
+					const msg = "Not enough stock for 'Ζυμαρικά'. " +
+						"Available: 0, Requested: 3"
+					refuse(http.StatusBadRequest, `{"non_field_errors": ["`+
+						msg+`"], "code": "insufficient_stock", "fields": `+
+						`{"non_field_errors": [{"message": "`+msg+
+						`", "code": "insufficient_stock"}]}}`)
+				default:
+					inner.ServeHTTP(w, r)
+				}
 			})
 	}
 	outer.HandleFunc("POST /api/v1/cart/coupon",
@@ -286,6 +353,16 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	outer.HandleFunc("POST /api/v1/cart/reserve-stock",
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
+			if faults.cartDeletedOnOrder.Load() &&
+				faults.ordersPlaced.Load() > 0 {
+				// The cart went with its order, so Django reserves for
+				// the new, empty cart it makes for the id
+				// (src/cart/views/cart.py reserve_stock).
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"detail": "Cart is empty. Cannot ` +
+					`reserve stock for empty cart.", "code": "cart_empty"}`))
+				return
+			}
 			if faults.stockShort.Load() {
 				w.WriteHeader(http.StatusConflict)
 				_, _ = w.Write([]byte(`{"detail": "Not enough stock.",
@@ -317,6 +394,20 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 					`{"detail": "The cart changed while it was ordered."}`))
 				return
 			}
+			if faults.cartDeletedOnOrder.Load() &&
+				faults.ordersPlaced.Load() > 0 {
+				// Django's answer for a cart that no longer exists:
+				// order/views/order.py _get_cart_and_user, through
+				// core/api/exception_handler.py.
+				const msg = "Cart not found. Please add items to cart " +
+					"before checkout."
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"cart": ["` + msg + `"], ` +
+					`"code": "cart_not_found", "fields": {"cart": [` +
+					`{"message": "` + msg + `", "code": "cart_not_found"}]}}`))
+				return
+			}
 			// The cart rides the header, never the body.
 			assert.Equal(t, fixtureCartID, r.Header.Get("X-Cart-Id"))
 			var body map[string]any
@@ -336,6 +427,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			if hold := faults.orderHold.Load(); hold != nil {
 				(*hold)(r)
 			}
+			faults.ordersPlaced.Add(1)
 			serveFixture(t, w, "order_by_uuid.json")
 		})
 	outer.HandleFunc("POST /api/v1/order/684/create_checkout_session",
@@ -357,7 +449,12 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			}`))
 		})
 	outer.Handle("/", inner)
-	return outer
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if before := faults.before.Load(); before != nil {
+			(*before)(r)
+		}
+		outer.ServeHTTP(w, r)
+	})
 }
 
 // ucpUpstreamTimeout is how long the stack's gateway waits for Django.
@@ -939,8 +1036,7 @@ func TestUCPEndToEnd(t *testing.T) {
 		// The session expires within a day; the store reports shipment
 		// for weeks after. Events route through the order link, so the
 		// platform still hears about them.
-		require.NoError(t, stack.rdb.Del(context.Background(),
-			"ag:demostore:cs:"+checkoutID).Err())
+		stack.lapse(t, sessionRedisKey(checkoutID))
 		shipped, err := json.Marshal(map[string]any{
 			"schemaName": "demostore", "orderUuid": fixtureOrderUUID,
 			"status": "SHIPPED", "paymentStatus": "COMPLETED",
@@ -1068,7 +1164,7 @@ func TestUCPEndToEnd(t *testing.T) {
 			})
 			require.True(t, res.IsError)
 			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
-				"did not confirm whether the order was placed")
+				"never confirmed whether this checkout's order was placed")
 
 			// Upstream recovers; a retry under a NEW key must still not
 			// place the order a second time.

@@ -368,6 +368,9 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | ACP same key, different body | 422 `idempotency_conflict`, except a complete of an already completed session, which answers 200 with the session whatever the body (#128) |
 | ACP create replayed after its session expired, same key and body | 201 with the original body and `Idempotent-Replayed: true` |
 | ACP call while another holds the session (lock busy) | 409 `idempotency_in_flight` with `Retry-After` |
+| ACP or UCP call whose session another call stored while it ran (a slow store can hold a call past its lock) | Nothing is written and no order is sent. ACP: 409 `idempotency_in_flight` with `Retry-After: 2`. UCP: an error saying the checkout was changed by another request. Sent again, the call reads the session as it is. Not exercised here: the integration suite holds the store's answer to produce it (`completion_fence_test.go`) |
+| Two completes of one ready session at once, with one key or two | One order. The other complete answers as the row above, then, sent again, the placed session |
+| ACP create that ran past its key's claim while another create took the key | 409 `idempotency_in_flight`; its own session is discarded, and the retry answers the other create's response |
 
 ### Invalid input
 
@@ -398,9 +401,22 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | Case | Expected and observed |
 |---|---|
 | Update or cancel a completed checkout | Refused, naming the order |
+| Update or cancel a checkout whose order awaits its payment (UCP `requires_escalation`) | Refused, naming the order: the buyer could still pay a checkout that read cancelled. ACP: 405 `conflict` |
+| Update, complete or cancel while the order is being placed | UCP: "a completion of this checkout is in progress or unconfirmed; check its status shortly". ACP: 409 `idempotency_in_flight` with `Retry-After` |
+| Update, complete or cancel once that completion can no longer be running and the store never confirmed the order | UCP: "the store never confirmed whether this checkout's order was placed, and that will not change", with what a person can do (the store's order confirmation email, or asking the store) and not to start another checkout. ACP: 502 `order_outcome_unknown` |
+| A read (`get_checkout`, ACP GET) of a session in either of those two states | It renders while the cart still reads: status `complete_in_progress`, no link back to the cart. On UCP the text beside the status is the same guidance the other tools give for that state. When the cart no longer reads (it may have gone with the order), the read gets the answer of the two rows above |
+| Any call on a session in progress whose order is known: the completion placed it and could not save the session | UCP: "the order was placed but checkout state could not be saved; track it with track_order using orderUuid …". ACP: 500 `order_placed`, naming the order. The order was recorded beside the session when Django returned it; the next order event records it on the session |
+| ACP read or complete of a session whose order awaits its payment | 200 with the session: `requires_escalation`; `continue_url` is the payment page the store opened for the order, as on UCP (the order page when no payment page could be opened); a message names the order and says not to start another checkout. Nothing is stored |
+| Complete of a cancelled checkout | UCP: "is canceled and cannot be completed". ACP: 405 |
 | Update a cancelled checkout | Refused |
 | Cancel an ACP session twice | 405 |
 | Update a completed or cancelled ACP session | 405 `conflict`, `Allow: GET, HEAD` |
+| An update, complete or cancel that outlived its lock, when another request stored the session meanwhile (a complete that placed the order, a payment event) | Answered by what is stored now, never from what the call loaded and never with what Django said about the cart (it is empty, a line is gone, the stock is short: the other request's doing). A complete gets the placed session; an update or cancel the refusal that names the order; a session still open "changed by another request" (ACP 409, UCP `conflict`); one no longer stored the missing-session answer; one that cannot be read "unavailable". `checkout_snapshot_test.go`, `checkout_truth_test.go`, `checkout_after_order_test.go` |
+| An update that outlived its lock before its first cart write, when the session was stored meanwhile | It writes nothing to the cart, and is answered as in the row above. `checkout_snapshot_test.go` |
+| A complete whose session could not be marked in progress (Redis) | No order is sent. UCP: `unavailable`, "the store's checkout records are temporarily unavailable". ACP: 503 `unavailable`. The key is free for the same call |
+| ACP create whose idempotency record could not be written | 503 `unavailable`, and the session is not handed out. The same key replays it if the record was written after all, and creates anew once the claim ends if not |
+
+A session that may have an order is kept 24 hours: one that awaits its payment or is completed ends 24 hours after its order was placed; one whose order call went unanswered (`unconfirmed` in the stored session) has no placement time and ends 24 hours after that was stored. A session only marked in progress, like an open one, lives 30 minutes after its last save: that is every session whose completion is running, and one whose outcome Redis could not store afterwards (entry 11).
 
 ## 7. Store-admin connector (`/mcp/admin`)
 
@@ -494,3 +510,94 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 | `get_order` called an expired guest order unavailable | The agent was told to retry something that could never work | gateway #72 |
 | Every save restarted a placed checkout's lifetime | Repeated calls could keep a session alive indefinitely | gateway #72 |
 | The UCP profile named whichever host was asked | A client reading it on a secondary domain was sent to a server it could not link an account on | gateway #71 |
+
+## 10. Before deploying a release that moves the checkout session key
+
+**Applies to:** the release that fixes gateway #84, which moves sessions from `ag:{schema}:cs:{id}` to `ag:{schema}:cs:v2:{id}`, and any later bump of that key (`sessionKey` in `internal/checkout/store.go`).
+
+**It is the second of two releases.** The release before it (gateway #138) changes one thing: a checkout no session is stored for is answered "an order may exist, check before starting another", never only "start a new one". That release must be on every pod first. Then, while this release rolls out, a pod of either kind answers truthfully for a session it cannot see. Do not deploy this release onto pods that still answer "start a new one with create_checkout".
+
+The new pods do not read sessions the old pods stored, and the reverse, on purpose: an old pod writes a session without checking what it holds, so the two must never share one. What a platform sees, by the session's state:
+
+| The session | During the rollout (pods of both releases) | After it |
+|---|---|---|
+| Open (`incomplete`, `ready_for_complete`), stored by either kind | Found on pods of its kind. On the other kind: the missing-session answer; a platform that follows it finds no order and starts again | An old one is gone for good, a new one is found everywhere |
+| `complete_in_progress` or `requires_escalation`: an order exists, or may | Found on pods of its kind (do not start another checkout; the order; its payment page). On the other kind: the missing-session answer, which says an order may exist and how to check. A platform that starts another checkout anyway orders twice: for a hosted payment the first order's cart is still there | An old one: the missing-session answer until the platform stops asking. The order itself is unaffected: `get_order` and the order webhooks go through the order link, which does not move |
+| `completed`, `canceled` | As above; only the session's own read is lost | As above |
+| A payment event for a session a **new** pod stored, delivered to an **old** pod | The old pod finds the order link, looks under the old key, finds no session and answers 204, which is final for Django. The order webhook still goes out. That session stays `requires_escalation` until it ends, 24 hours after its order was placed: `get_checkout` keeps showing the payment page of a paid order, `get_order` shows the truth | Cannot happen |
+
+So before the deploy, list the sessions whose order exists or may. The gateway's Redis database is **4** (`REDIS_URL` ends `/4` in the infrastructure repo's `agent-gateway.yaml`; database 0 is Django's). Run this where `redis-cli` reaches that Redis, with `REDISCLI_AUTH` set. It runs in a subshell, so a failure ends the check and not your shell. It prints how many sessions it read (a session's lock and its placed-order record are not sessions and are not counted), then the ones that matter:
+
+```bash
+(
+  R="redis-cli -e -n 4"
+  $R ping | grep -qx PONG || { echo "Redis did not answer PONG: nothing was checked"; exit 1; }
+  all=$($R --scan --pattern 'ag:*:cs:*') || { echo "the scan failed: nothing was checked"; exit 1; }
+  keys=$(printf '%s\n' "$all" | grep -Ev ':(lock|order)$')
+  echo "sessions scanned: $(printf '%s\n' "$keys" | grep -c .)"
+  found=0
+  while read -r key; do
+    [ -n "$key" ] || continue
+    value=$($R GET "$key") || { echo "GET $key failed: the list is incomplete, do not deploy on it"; exit 1; }
+    [ -n "$value" ] || continue # it ended between the scan and the read
+    status=$(printf '%s' "$value" | grep -o '"status":"[a-z_]*"' | head -1 | cut -d'"' -f4)
+    [ -n "$status" ] || { echo "$key holds no status: the list is incomplete, do not deploy on it"; exit 1; }
+    case $status in
+      complete_in_progress | requires_escalation) echo "$status $key"; found=1 ;;
+    esac
+  done <<EOF
+$keys
+EOF
+  [ "$found" = 1 ] || echo "none being placed or awaiting payment"
+)
+```
+
+`-e` makes `redis-cli` exit non-zero when Redis refuses a command, which is how the check tells a failed read from an empty answer. "none being placed or awaiting payment" is printed only when every read succeeded. "sessions scanned: 0" with agent checkouts in use means the wrong Redis or database, not an empty one.
+
+- **None:** deploy.
+- **Some:** wait, or deploy and accept that those platforms are told an order may exist and to check for it. On the release before this one, a `requires_escalation` session leaves the list when its payment lands (it becomes `completed`) or 30 minutes after its last save, and a `complete_in_progress` one 30 minutes after it was marked. On this release a session awaiting payment ends 24 hours after its order was placed, one whose order call went unanswered 24 hours after that was stored, and one only marked in progress 30 minutes after the mark.
+
+**A rollback** to the release before this one (the one with gateway #138, and no further back) is the same split with the roles swapped:
+
+- Every session this release stored, under the `v2` key, is invisible to the old pods and gets the missing-session answer. It is still in Redis until it ends, with the placed-order record beside it (`…:order`), and is found again if this release is deployed again before then.
+- A session stored under the old key before the upgrade is visible again if it has not ended.
+- A payment event for a `v2` session that reaches an old pod is answered 204 and is not sent again: after a new deploy that session still reads `requires_escalation` until it ends, while `get_order` shows the paid order.
+- The old pods store a session without checking what it holds. What this release adds is gone until it is deployed again: two completions of one checkout can again place two orders.
+
+So run the check above before a rollback too, and do not roll back further than the release with #138: older pods answer a session they cannot see with only "start a new one".
+
+## 11. A checkout stuck in progress
+
+**What it is.** A session whose stored status stays `complete_in_progress`. A completion marks the session before it asks Django for the order, and stores the outcome after. The session stays marked when that second write never happens:
+
+| What happened | Is there an order? | How long the session stays |
+|---|---|---|
+| The mark was stored, and Redis failed its reply and the second attempt's too. The caller was told the checkout records are unavailable, and no order was sent | No | 30 minutes after the mark |
+| Django refused the order, and Redis failed the save that makes the session ready again, twice | No | 30 minutes after the mark |
+| The order was placed, and Redis failed the save that records it, twice | Yes. It is recorded beside the session (`…:order`) unless that write failed as well, which the log says; with the record, every call on the session names the order. The next order event records it on the session either way (it names its order, and Django supplies the rest), which is then kept 24 hours from the placement | 30 minutes after the mark, unless an event comes first |
+| The order call went unanswered, and that was stored (`"unconfirmed":true`) | Unknown | 24 hours |
+| The pod died between the mark and Django's answer | Unknown | 30 minutes after the mark |
+
+Callers are told "in progress" for three upstream timeouts, and after that "the store never confirmed whether this checkout's order was placed", with what a person can do, or the order when it is known. Once the session has ended they get the missing-session answer, which says an order may exist and how to check. No call places a second order for the session. The gateway cannot do better alone: it marks the session in Redis and creates the order in Django, and no write covers both. What closes it is Django telling a repeated order creation from a new one (`Idempotency-Key` on `POST /order`, gateway #83), or Django keeping the order's checkout record itself (Django #637).
+
+**Nothing needs doing** unless a buyer or a platform is waiting on one. Then:
+
+1. Find it. In the check of section 10, the lines that start `complete_in_progress` are these sessions. For one of them, with `R="redis-cli -e -n 4"`:
+
+   ```bash
+   $R GET "$key"            # status, updatedAt, cartId, the buyer's email, "unconfirmed", orderUuid
+   $R EXISTS "$key:order"   # 1: the order was placed, and GET "$key:order" names it
+   $R PTTL "$key"           # how long the session still lives, in ms
+   ```
+
+   The gateway's completion has ended once `updatedAt` is more than three times `UPSTREAM_TIMEOUT` old. Django's order request may still be running: the gateway's timeout ends its wait, not Django's work.
+
+2. Decide whether an order exists.
+   - `$key:order` exists, or the session has an `orderUuid`: it does. Leave the session; give the platform or the buyer the order.
+   - Otherwise search the gateway's logs for the session id (`session`). "checkout: session save failed" and "checkout: order index write failed" each name the `order` when one exists.
+   - Otherwise look in the store's Django admin for an order with the buyer's email created at or after the session's `updatedAt`. The store's order confirmation email, which the "never confirmed" answer points the buyer to, settles the same question.
+
+3. Clear it **only when you have confirmed that no order exists**: no order was sent (step 2's logs), or the order request ended in Django without one. An admin search that finds nothing while that request may still be running is not that confirmation. Then `$R DEL "$key"`: the next call on that checkout id gets the missing-session answer, and the platform starts a new checkout. If the outcome stays unknown, keep the session and start no new checkout. A session with `"unconfirmed":true` is otherwise kept the full 24 hours.
+
+   When an order exists, do not delete the session to "unblock" the platform: a new checkout for the same cart would be a second order. The order is the answer.
+
