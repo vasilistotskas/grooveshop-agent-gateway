@@ -337,9 +337,9 @@ func TestFeedsEndToEnd(t *testing.T) {
 		assert.Contains(t, string(body), "<g:id>6</g:id>")
 	})
 
-	// A blob that does not decode is a miss like an evicted one: it is
-	// regenerated, never answered with an error or served broken.
-	t.Run("a blob that does not decode is regenerated", func(t *testing.T) {
+	// A blob that is not this feed's gzip is a miss like an evicted one:
+	// it is regenerated, never answered with an error or served broken.
+	t.Run("a blob that is not the feed's gzip is regenerated", func(t *testing.T) {
 		first := get("/feeds/google.xml",
 			map[string]string{"Accept-Encoding": "identity"})
 		_ = first.Body.Close()

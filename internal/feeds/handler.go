@@ -1,6 +1,7 @@
 package feeds
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -66,10 +67,9 @@ func (s *Service) Handler(kind string) http.Handler {
 			h.Set("Content-Encoding", httphdr.Gzip)
 			size = len(gz)
 		}
-		// Body checked that gz decodes to meta.Size bytes, so the length
-		// is what is written. A write that fails now is the client's
-		// connection; net/http closes it short of this length, so the cut
-		// is visible, never a complete-looking 200.
+		// A body that ends short of this length (the client left, or the
+		// blob failed to decode midway) makes net/http close the
+		// connection, so the cut is visible, never a complete-looking 200.
 		h.Set("Content-Length", strconv.Itoa(size))
 		w.WriteHeader(http.StatusOK)
 		switch {
@@ -77,7 +77,10 @@ func (s *Service) Handler(kind string) http.Handler {
 		case gzipped:
 			_, _ = w.Write(gz)
 		default:
-			_ = decode(gz, meta.Size, w)
+			err := decode(gz, meta.Size, w)
+			if errors.Is(err, errBroken) {
+				s.dropBlob(r.Context(), t.SchemaName, formatOf(kind), err)
+			}
 		}
 	})
 }

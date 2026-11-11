@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"log/slog"
 	"maps"
@@ -54,9 +56,9 @@ func TestServesGzip(t *testing.T) {
 	}
 }
 
-// memRedis keeps keys in a map behind scriptedRedis: MGET, TOUCH, GET
-// and SET act on it (a missing key reads as redis.Nil, as from Redis),
-// and every other command succeeds.
+// memRedis keeps keys in a map behind scriptedRedis: MGET, TOUCH,
+// UNLINK, GET and SET act on it (a missing key reads as redis.Nil, as
+// from Redis), and every other command succeeds.
 type memRedis struct {
 	scriptedRedis
 	mu   sync.Mutex
@@ -85,15 +87,16 @@ func (m *memRedis) do(cmd redis.Cmder) error {
 			c.SetVal(vals)
 		}
 	case *redis.IntCmd:
-		if c.Name() == "touch" {
-			var n int64
-			for _, k := range args[1:] {
-				if _, ok := m.vals[fmt.Sprint(k)]; ok {
-					n++
+		var n int64
+		for _, k := range args[1:] {
+			if _, ok := m.vals[fmt.Sprint(k)]; ok {
+				n++
+				if c.Name() == "unlink" {
+					delete(m.vals, fmt.Sprint(k))
 				}
 			}
-			c.SetVal(n)
 		}
+		c.SetVal(n)
 	case *redis.StringCmd:
 		v, ok := m.vals[fmt.Sprint(args[1])]
 		if !ok {
@@ -273,29 +276,41 @@ func logLines(t *testing.T, logs *bytes.Buffer, msg string) []map[string]any {
 	return lines
 }
 
-// A blob that does not decode to its stored size is never served: it
-// is a miss, regenerated like an evicted one, and while a failed
-// generation's backoff runs it answers 503 at once, uncacheable, with
-// the cause logged once under the request.
+const brokenLine = "cached feed blob is broken"
+
+// A blob that is not this feed's whole gzip (checked from its header and
+// trailer, without decoding) is never served: it is dropped and a miss,
+// regenerated like an evicted one, and while a failed generation's
+// backoff runs it answers 503 at once, uncacheable, with the cause logged
+// once under the request.
 func TestFeedHandlerNeverServesABrokenBlob(t *testing.T) {
 	gz := gzipped(t, testFeed)
-	// The trailer's CRC-32 and size, zeroed: only reading to the end
-	// finds it.
+	// The trailer's CRC-32 and ISIZE, zeroed.
 	badTrailer := append(bytes.Clone(gz[:len(gz)-8]), make([]byte, 8)...)
 	for name, entry := range map[string]map[string]string{
-		"not gzip":         cachedRSS(t, []byte("not gzip"), len(testFeed)),
+		"not gzip": cachedRSS(t, []byte("not gzip"), len(testFeed)),
+		"empty":    cachedRSS(t, nil, len(testFeed)),
+		// Long enough, with a true ISIZE, but not a gzip header.
+		"not gzip, size in its tail": cachedRSS(t,
+			binary.LittleEndian.AppendUint32(make([]byte, 16),
+				uint32(len(testFeed))), len(testFeed)),
+		// A gzip header and a true ISIZE, but no room for a member.
+		"header and size only": cachedRSS(t,
+			binary.LittleEndian.AppendUint32([]byte{0x1f, 0x8b, 8},
+				uint32(len(testFeed))), len(testFeed)),
 		"cut short":        cachedRSS(t, gz[:len(gz)-6], len(testFeed)),
 		"bad gzip trailer": cachedRSS(t, badTrailer, len(testFeed)),
-		"size too large":   cachedRSS(t, gz, len(testFeed)+1),
-		"size too small":   cachedRSS(t, gz, len(testFeed)-1),
+		"another feed": cachedRSS(t, gzipped(t, testFeed+"<!-- -->"),
+			len(testFeed)),
+		"size too large": cachedRSS(t, gz, len(testFeed)+1),
+		"size too small": cachedRSS(t, gz, len(testFeed)-1),
 	} {
 		t.Run(name+"/backing off", func(t *testing.T) {
-			entry := maps.Clone(entry)
-			entry[failedKey("demostore")] = "1"
-			_, rdb := newMemRedis(entry)
-			var logs bytes.Buffer
 			for _, accept := range []string{"gzip", "identity"} {
-				logs.Reset()
+				entry := maps.Clone(entry)
+				entry[failedKey("demostore")] = "1"
+				m, rdb := newMemRedis(entry)
+				var logs bytes.Buffer
 				resp := serveFeed(t, feedService(nil, rdb, &logs),
 					http.MethodGet, map[string]string{"Accept-Encoding": accept})
 				body := readAll(t, resp)
@@ -303,11 +318,12 @@ func TestFeedHandlerNeverServesABrokenBlob(t *testing.T) {
 					resp.StatusCode, accept)
 				uncacheable(t, resp)
 				assert.NotContains(t, string(body), "<rss>", accept)
-				lines := logLines(t, bytes.NewBuffer(logs.Bytes()),
-					"cached feed does not decode")
-				require.Len(t, lines, 1, accept+": "+logs.String())
+				lines := logLines(t, &logs, brokenLine)
+				require.Len(t, lines, 1, accept)
 				assert.Equal(t, "ERROR", lines[0]["level"])
 				assert.Equal(t, "req-131", lines[0][obs.KeyRequestID])
+				_, kept := m.get(dataKey("demostore", formatRSS))
+				assert.False(t, kept, "the broken blob is dropped")
 			}
 		})
 		t.Run(name+"/regenerated", func(t *testing.T) {
@@ -366,5 +382,130 @@ func TestGeneratedFeedHasOneWeakValidatorForBothCodings(t *testing.T) {
 			readAll(t, resp)
 			assert.Equal(t, http.StatusNotModified, resp.StatusCode, accept)
 		}
+	}
+}
+
+// brokenMiddle is a gzip member with a whole header and a trailer true
+// to raw (CRC-32, ISIZE), whose deflate data holds the first half of raw
+// in a stored block and then a block of the reserved type, which fails
+// to decode (RFC 1951 3.2.3).
+func brokenMiddle(raw string) []byte {
+	half := raw[:len(raw)/2]
+	b := []byte{0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff}
+	b = append(b, 0) // BFINAL 0, BTYPE 00 (stored)
+	b = binary.LittleEndian.AppendUint16(b, uint16(len(half)))
+	b = binary.LittleEndian.AppendUint16(b, ^uint16(len(half)))
+	b = append(b, half...)
+	b = append(b, 0b111) // BFINAL 1, BTYPE 11 (reserved)
+	b = binary.LittleEndian.AppendUint32(b, crc32.ChecksumIEEE([]byte(raw)))
+	return binary.LittleEndian.AppendUint32(b, uint32(len(raw)))
+}
+
+// longerThanItsSize is the gzip of raw with more after it, whose ISIZE
+// is raw's length: whole to look at, longer once decoded.
+func longerThanItsSize(t *testing.T, raw string) []byte {
+	t.Helper()
+	gz := gzipped(t, raw+"<!-- more -->")
+	return binary.LittleEndian.AppendUint32(gz[:len(gz)-4:len(gz)-4],
+		uint32(len(raw)))
+}
+
+// A blob whose header and trailer are whole but that does not decode to
+// its size is found only while the identity body is streamed, and never
+// sends more than its declared length. One whose middle fails ends short
+// of that length, which net/http answers by closing the connection, so
+// the client sees an error, never a complete 200. Either way the cause
+// is logged once and the blob dropped, so the next request regenerates
+// it.
+func TestFeedHandlerCutsAnIdentityBodyThatFailsToDecode(t *testing.T) {
+	for name, tc := range map[string]struct {
+		blob    []byte
+		body    string
+		readErr error
+	}{
+		"broken middle": {
+			brokenMiddle(testFeed), testFeed[:len(testFeed)/2],
+			io.ErrUnexpectedEOF,
+		},
+		"longer than its size": {longerThanItsSize(t, testFeed), testFeed, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cutsAnIdentityBody(t, tc.blob, tc.body, tc.readErr)
+		})
+	}
+}
+
+func cutsAnIdentityBody(
+	t *testing.T, blob []byte, wantBody string, wantErr error,
+) {
+	m, rdb := newMemRedis(cachedRSS(t, blob, len(testFeed)))
+	var logs bytes.Buffer
+	s := feedService(oneProductCatalog(t), rdb, &logs)
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			ctx := tenant.NewContext(obs.WithRequestID(r.Context(),
+				"req-131"), demoTenant())
+			s.Handler(KindGoogle).ServeHTTP(w, r.WithContext(ctx))
+		}))
+	t.Cleanup(srv.Close)
+	get := func() (*http.Response, []byte, error) {
+		req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+		require.NoError(t, err)
+		req.Header.Set("Accept-Encoding", "identity")
+		resp, err := http.DefaultTransport.RoundTrip(req)
+		require.NoError(t, err)
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return resp, body, err
+	}
+
+	resp, body, err := get()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, strconv.Itoa(len(testFeed)),
+		resp.Header.Get("Content-Length"))
+	if wantErr != nil {
+		require.ErrorIs(t, err, wantErr)
+	} else {
+		require.NoError(t, err)
+	}
+	assert.Equal(t, wantBody, string(body))
+	lines := logLines(t, &logs, brokenLine)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "req-131", lines[0][obs.KeyRequestID])
+	_, kept := m.get(dataKey("demostore", formatRSS))
+	assert.False(t, kept, "the broken blob is dropped")
+
+	resp, body, err = get()
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, strconv.Itoa(len(body)),
+		resp.Header.Get("Content-Length"))
+	assert.True(t, strings.HasPrefix(string(body), "<?xml"))
+}
+
+// The gzip coding writes the blob as stored and decodes nothing, and a
+// HEAD decodes nothing in either coding: a blob whose middle does not
+// decode goes out byte for byte, nothing is logged, and it is kept.
+func TestFeedHandlerDecodesOnlyAnIdentityGET(t *testing.T) {
+	blob := brokenMiddle(testFeed)
+	for _, tc := range []struct {
+		method, accept string
+		body           []byte
+	}{
+		{http.MethodGet, "gzip", blob},
+		{http.MethodHead, "gzip", []byte{}},
+		{http.MethodHead, "identity", []byte{}},
+	} {
+		name := tc.method + " " + tc.accept
+		m, rdb := newMemRedis(cachedRSS(t, blob, len(testFeed)))
+		var logs bytes.Buffer
+		resp := serveFeed(t, feedService(nil, rdb, &logs), tc.method,
+			map[string]string{"Accept-Encoding": tc.accept})
+		body := readAll(t, resp)
+		require.Equal(t, http.StatusOK, resp.StatusCode, name)
+		assert.Equal(t, tc.body, body, name)
+		assert.Empty(t, logs.String(), name)
+		_, kept := m.get(dataKey("demostore", formatRSS))
+		assert.True(t, kept, name)
 	}
 }

@@ -240,8 +240,14 @@ passes.
   and only TOUCHes the blob (Redis evicts keys one by one, and TOUCH,
   unlike EXISTS, keeps the blob's LRU clock with the meta key's): an
   entry without its blob is a miss and regenerates, and so is one whose
-  blob does not decode to its stored size (checked on every body read),
-  so a broken blob is never served. One weak ETag covers the gzip and
+  blob is not whole: every body read checks the gzip header and the
+  trailer's ISIZE against the stored size, in constant time, with no
+  decoding. The gzip coding writes the blob as stored; only an identity
+  GET decodes it, streamed under its declared length and never past it.
+  A decode that fails midway cuts the response short of
+  `Content-Length` (net/http closes the connection), and the blob is
+  logged and dropped (`dropBlob`, as the header check does), so the next
+  request regenerates it. One weak ETag covers the gzip and
   the identity body; a 200 (and a HEAD) declares `Content-Length` in
   either coding, a 304 carries only `ETag`, `Cache-Control` and `Vary`,
   and an error answer none of the three. The sweep is

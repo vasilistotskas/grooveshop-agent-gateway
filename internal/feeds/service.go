@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -179,23 +180,22 @@ func (s *Service) Meta(
 		return Meta{}, err
 	}
 	if !ok {
-		return Meta{}, s.notCached(ctx, t.SchemaName, epoch)
+		return Meta{}, s.notCached(ctx, t.SchemaName, epoch, msgGone)
 	}
 	return meta, nil
 }
 
 // Body returns the gzipped feed with the metadata stored beside it, both
-// read in one step; the blob decodes to exactly meta.Size bytes. A blob
-// gone since Meta (evicted, invalidated, rewritten by another build), or
-// one that does not decode to its size, is a miss like any other: it
-// waits for a generation, under the same failure backoff, and is read
-// again.
+// read in one step. A blob gone since Meta (evicted, invalidated,
+// rewritten by another build), or one that is not whole (see whole), is a
+// miss like any other: it waits for a generation, under the same failure
+// backoff, and is read again.
 func (s *Service) Body(
 	ctx context.Context, t *tenant.Tenant, kind string,
 ) ([]byte, Meta, error) {
 	format := formatOf(kind)
 	gz, meta, ok, failed, _ := s.fromCache(ctx, t.SchemaName, format)
-	if ok {
+	if ok && s.whole(ctx, t.SchemaName, format, gz, meta) {
 		return gz, meta, nil
 	}
 	epoch, err := s.await(ctx, t, failed)
@@ -203,16 +203,121 @@ func (s *Service) Body(
 		return nil, Meta{}, err
 	}
 	gz, meta, ok, _, err = s.fromCache(ctx, t.SchemaName, format)
-	if err != nil {
+	switch {
+	case err != nil:
 		return nil, Meta{}, err
-	}
-	if !ok {
-		return nil, Meta{}, s.notCached(ctx, t.SchemaName, epoch)
+	case !ok:
+		return nil, Meta{}, s.notCached(ctx, t.SchemaName, epoch, msgGone)
+	case !s.whole(ctx, t.SchemaName, format, gz, meta):
+		return nil, Meta{}, s.notCached(ctx, t.SchemaName, epoch, msgBroken)
 	}
 	return gz, meta, nil
 }
 
+// whole reports whether gz can be meta's feed, in constant time: a gzip
+// member's header (RFC 1952 2.3.1: ID1, ID2, CM = deflate) and its
+// trailer's ISIZE, the length of the input modulo 2^32, equal to
+// meta.Size. It catches a value that is not this feed's gzip or is cut
+// short; a corrupt middle shows only while decoding (Service.Handler).
+// A blob that is not whole is logged and dropped.
+func (s *Service) whole(
+	ctx context.Context, schema, format string, gz []byte, meta Meta,
+) bool {
+	err := intact(gz, meta.Size)
+	if err != nil {
+		s.dropBlob(ctx, schema, format, err)
+	}
+	return err == nil
+}
+
+// gzipHeader and gzipTrailer are the fixed parts of a gzip member.
+const gzipHeader, gzipTrailer = 10, 8
+
+func intact(gz []byte, size int) error {
+	if len(gz) < gzipHeader+gzipTrailer {
+		return fmt.Errorf("%w: %d bytes", errBroken, len(gz))
+	}
+	if gz[0] != 0x1f || gz[1] != 0x8b || gz[2] != 8 {
+		return fmt.Errorf("%w: not gzip", errBroken)
+	}
+	isize := int64(binary.LittleEndian.Uint32(gz[len(gz)-4:]))
+	if isize != int64(size)%(1<<32) {
+		return fmt.Errorf("%w: ISIZE %d, size %d", errBroken, isize, size)
+	}
+	return nil
+}
+
+// errBroken is a cached blob that is not the feed its metadata describes.
+var errBroken = errors.New("feeds: cached blob is broken")
+
+// dropBlob logs a broken blob once and removes it, so the next request,
+// a revalidation included, finds a miss and regenerates under the
+// failure backoff. The removal outlives a caller that has left.
+func (s *Service) dropBlob(
+	ctx context.Context, schema, format string, cause error,
+) {
+	s.log.ErrorContext(ctx, "cached feed blob is broken",
+		slog.String("error", cause.Error()))
+	err := s.rdb.Unlink(context.WithoutCancel(ctx),
+		dataKey(schema, format)).Err()
+	if err != nil {
+		s.log.WarnContext(ctx, "broken feed blob not dropped",
+			slog.String("error", err.Error()))
+	}
+}
+
+// decode streams the feed gz holds to w, never more than size bytes. A
+// blob that does not decode to exactly size bytes (gzip checks its CRC-32
+// once read to the end) is an errBroken; a write that fails is returned
+// as it is.
+func decode(gz []byte, size int, w io.Writer) error {
+	zr, err := gzip.NewReader(bytes.NewReader(gz))
+	if err != nil {
+		return fmt.Errorf("%w: %w", errBroken, err)
+	}
+	defer func() { _ = zr.Close() }()
+	sink := &errWriter{w: w}
+	n, err := io.Copy(sink, io.LimitReader(zr, int64(size)))
+	switch {
+	case sink.err != nil:
+		return sink.err
+	case err != nil:
+		return fmt.Errorf("%w: %w", errBroken, err)
+	case n < int64(size):
+		return fmt.Errorf("%w: %d bytes, not %d", errBroken, n, size)
+	}
+	past, err := io.Copy(io.Discard, io.LimitReader(zr, 1))
+	switch {
+	case err != nil:
+		return fmt.Errorf("%w: %w", errBroken, err)
+	case past > 0:
+		return fmt.Errorf("%w: longer than %d bytes", errBroken, size)
+	}
+	return nil
+}
+
+// errWriter keeps the error of its writer's last failed Write, so decode
+// can tell the client's connection from the blob.
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (e *errWriter) Write(p []byte) (int, error) {
+	n, err := e.w.Write(p)
+	if err != nil {
+		e.err = err
+	}
+	return n, err
+}
+
 var errGenerationNotCached = errors.New("feeds: generation produced no cache")
+
+// What notCached logs: the read-back found no entry, or a broken blob.
+const (
+	msgGone   = "feed generated but gone from the cache"
+	msgBroken = "feed generated but its cached blob is broken"
+)
 
 // await joins the store's generation for a missing feed, or fails at
 // once while a failed one's backoff runs. It returns the epoch the
@@ -234,16 +339,16 @@ func (s *Service) await(
 
 // notCached handles a generation that succeeded but whose feed is not
 // there when read back (evicted again at once, under memory pressure), or
-// does not decode (fromCache logs why): without a mark, every request
-// would run another full sweep and still get 503. An invalidation since the generation's epoch lifts it, as for
-// a failure. A read-back that failed is not this: the generation wrote
-// the feed, so the failure says nothing about it. The request gets that
-// error (its own context's, when the caller left) and nothing is marked,
-// so the next request reads the feed.
+// is broken (msg says which): without a mark, every request would run
+// another full sweep and still get 503. An invalidation since the
+// generation's epoch lifts it, as for a failure. A read-back that failed
+// is not this: the generation wrote the feed, so the failure says nothing
+// about it. The request gets that error (its own context's, when the
+// caller left) and nothing is marked, so the next request reads the feed.
 func (s *Service) notCached(
-	ctx context.Context, schema string, epoch int64,
+	ctx context.Context, schema string, epoch int64, msg string,
 ) error {
-	s.log.ErrorContext(ctx, "feed generated but gone from the cache")
+	s.log.ErrorContext(ctx, msg)
 	s.mark(ctx, schema, epoch)
 	return errGenerationNotCached
 }
@@ -382,33 +487,7 @@ func (s *Service) fromCache(
 	if !isString || !ok {
 		return nil, Meta{}, false, failed, nil
 	}
-	if err := decode([]byte(data), meta.Size, io.Discard); err != nil {
-		s.log.ErrorContext(ctx, "cached feed does not decode",
-			slog.String("error", err.Error()))
-		return nil, Meta{}, false, failed, nil
-	}
 	return []byte(data), meta, true, failed, nil
-}
-
-// decode writes the feed gz holds to w. It fails unless gz is whole
-// (gzip checks its CRC-32 and length once read to the end) and decodes
-// to exactly size bytes; it never reads more than one byte past size.
-func decode(gz []byte, size int, w io.Writer) error {
-	zr, err := gzip.NewReader(bytes.NewReader(gz))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = zr.Close() }()
-	n, err := io.CopyN(w, zr, int64(size)+1)
-	switch {
-	case err == nil:
-		return fmt.Errorf("feeds: decodes past its %d bytes", size)
-	case errors.Is(err, io.EOF) && n == int64(size):
-		return nil
-	case errors.Is(err, io.EOF):
-		return fmt.Errorf("feeds: decodes to %d bytes, not %d", n, size)
-	}
-	return err
 }
 
 // decodeMeta reads a stored Meta; one from another build is a miss.
