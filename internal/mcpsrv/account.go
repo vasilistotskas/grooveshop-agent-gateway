@@ -37,7 +37,7 @@ func (h *handlers) linkedFor(
 // needs, which the agent fixes by re-authorizing, not by retrying.
 func scopedErr(err error, scope, notFound string) error {
 	if errors.Is(err, django.ErrForbidden) {
-		return &ToolError{Code: codeMissingScope, Hint: "the linked " +
+		return &ToolError{Code: codeNotGranted, Hint: "the linked " +
 			"account's token is missing the " + scope + " scope; " +
 			"re-authorize requesting it"}
 	}

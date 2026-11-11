@@ -103,9 +103,10 @@ func nullsIn(path string, v any) []string {
 }
 
 // A list a tool has nothing for is [], never null: an agent iterating
-// it must not have to guard against a missing list. Every tool the
-// chat server carries (a superset of /mcp's) is called against a store
-// with nothing to list; a new tool fails here until it is called too.
+// it must not have to guard against a missing list. Each tool the chat
+// server carries (a superset of /mcp's) is called once, against a store
+// with nothing to list, except the six UCP tools, whose spec objects
+// internal/ucp builds. A new tool fails here until it is called too.
 func TestToolOutputsListNothingAsEmptyArrays(t *testing.T) {
 	args := map[string]map[string]any{
 		"search_products":       {"query": "κάτι"},

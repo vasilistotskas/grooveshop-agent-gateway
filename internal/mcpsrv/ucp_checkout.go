@@ -98,7 +98,8 @@ func (h *handlers) createCheckout(
 	// no order capability.
 	s.WebhookURL = neg.OrderWebhookURL()
 	// Every lookup and refusal before the first cart write, which here
-	// may be creating the cart: a refused request must leave none behind.
+	// may be creating the cart: a region or payment the store refuses
+	// leaves no cart behind. A line sync failing after it does.
 	in.Checkout.applyTo(s)
 	if err := h.applyRegion(ctx, t, s, &in.Checkout); err != nil {
 		return nil, zero, err
@@ -117,9 +118,9 @@ func (h *handlers) createCheckout(
 		if err := checkout.SyncCartLines(
 			ctx, h.deps.Django, t, checkout.ProtocolUCP, s.CartID, lines,
 		); err != nil {
-			return nil, zero, upstreamErr(err,
-				"a requested product was not found; no checkout was "+
-					"created")
+			return nil, zero, withHint(upstreamErr(err,
+				"the cart made for this checkout could not be reached; "+
+					"start again"), checkoutNotCreated)
 		}
 	}
 	codes, hasCodes := in.Checkout.discountCodes()
@@ -127,9 +128,9 @@ func (h *handlers) createCheckout(
 		if err := checkout.ApplyDiscountCodes(
 			ctx, h.deps.Django, t, s, codes,
 		); err != nil {
-			return nil, zero, upstreamErr(err,
-				"the cart was not found, so no checkout was created; "+
-					"start a new one with line_items")
+			return nil, zero, withHint(upstreamErr(err,
+				"the cart was not found; start a new checkout with "+
+					"line_items"), checkoutNotCreated)
 		}
 	}
 	s.Recompute()
@@ -234,11 +235,8 @@ func (h *handlers) updateCheckout(
 		if err := checkout.SyncCartLines(
 			ctx, h.deps.Django, t, s.Protocol, s.CartID, lines,
 		); err != nil {
-			return nil, zero, upstreamErr(err,
-				"a product in line_items, or the checkout's cart, was "+
-					"not found; the checkout was not updated, though its "+
-					"cart may hold some of the submitted lines: send the "+
-					"corrected update in full")
+			return nil, zero, withHint(upstreamErr(err, cartGone),
+				checkoutNotUpdated)
 		}
 	}
 	codes, hasCodes := in.Checkout.discountCodes()
@@ -246,9 +244,8 @@ func (h *handlers) updateCheckout(
 		if err := checkout.ApplyDiscountCodes(
 			ctx, h.deps.Django, t, s, codes,
 		); err != nil {
-			return nil, zero, upstreamErr(err,
-				"the checkout's cart was not found, so the checkout was "+
-					"not updated; start a new one with create_checkout")
+			return nil, zero, withHint(upstreamErr(err, cartGone),
+				checkoutNotUpdated)
 		}
 	}
 	s.Recompute()
@@ -424,8 +421,24 @@ func (h *handlers) settleCompletion(
 // be read or written: the sessions, their locks and completion claims,
 // and the order links.
 var errCheckoutUnavailable = &ToolError{Code: codeUnavailable,
+	RetryAfter: unavailableRetryAfter,
 	Hint: "the store's checkout records are temporarily unavailable; " +
 		"retry shortly, then tell the shopper to try again later"}
+
+// What a create or update whose cart write failed left behind, added to
+// the hint for its cause (withHint). An update's cart writes cannot be
+// undone: lines may already be in the cart while the session keeps its
+// old buyer, fulfillment and payment.
+const (
+	checkoutNotCreated = "No checkout was created"
+	checkoutNotUpdated = "The checkout was not updated: its buyer, " +
+		"fulfillment and payment were not stored, though line items it " +
+		"sent may already be in the cart"
+	// cartGone is a checkout's cart Django no longer serves for its id:
+	// each retry would reach a new guest cart, never this one.
+	cartGone = "the checkout's cart no longer exists; start a new one " +
+		"with create_checkout"
+)
 
 // unrenderedErr is the answer for an order that exists while its
 // checkout is not rendered: the agent must read it again, not order

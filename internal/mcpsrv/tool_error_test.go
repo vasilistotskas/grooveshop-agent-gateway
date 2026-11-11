@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -109,6 +110,36 @@ func TestUpstreamErrLeaksNothingTheAgentMayNotSee(t *testing.T) {
 	assert.Equal(t, "unavailable", got.Code)
 	assert.Empty(t, got.Detail)
 	assert.NotContains(t, payWays.Error(), "relation")
+}
+
+// What a failed checkout write left behind reaches the agent whatever the
+// cause, and changes nothing else upstreamErr decided to tell.
+func TestWithHintAddsWhatTheCallLeftBehind(t *testing.T) {
+	for name, cause := range map[string]error{
+		"a refusal": &django.APIError{Status: 400,
+			Code: "insufficient_stock", Detail: "Μόνο 2 διαθέσιμα."},
+		"an outage":   &django.APIError{Status: 502},
+		"a gone cart": django.ErrCartUnreachable,
+	} {
+		t.Run(name, func(t *testing.T) {
+			base := upstreamErr(cause, cartGone)
+			before, ok := errors.AsType[*ToolError](base)
+			require.True(t, ok)
+			want := *before
+
+			got := withHint(base, checkoutNotUpdated)
+
+			var te *ToolError
+			require.ErrorAs(t, got, &te)
+			assert.Equal(t, want.Code, te.Code)
+			assert.Equal(t, want.Detail, te.Detail)
+			assert.Equal(t, want.RetryAfter, te.RetryAfter)
+			assert.Equal(t, want.Hint+". "+checkoutNotUpdated, te.Hint)
+		})
+	}
+	shared := *errCheckoutUnavailable
+	_ = withHint(errCheckoutUnavailable, checkoutNotCreated)
+	assert.Equal(t, shared, *errCheckoutUnavailable, "a shared value is copied")
 }
 
 // The tool result is JSON an agent can read field by field, Greek

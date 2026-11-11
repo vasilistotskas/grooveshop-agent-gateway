@@ -46,8 +46,9 @@ func (h *handlers) linksFor(
 // ToolError is a failed tool call's answer, rendered as JSON text so an
 // agent reads why the call failed and what to do, not just that it did:
 //
-//   - Code: the store's stable error code when it gave one for a refusal
-//     the agent may explain (Django's `code`), else the gateway's own.
+//   - Code: the store's stable code when it gave one for a refusal the
+//     agent may explain (Django's `code`, or a refused coupon's
+//     `reason`), else the gateway's own.
 //   - Detail: the store's explanation, in the store's language.
 //   - RetryAfter: seconds to wait before retrying, when known.
 //   - Hint: what the agent should do next.
@@ -76,12 +77,29 @@ const (
 	codeNotFound        = "not_found"
 	codeCartUnreachable = "cart_unreachable"
 	codeUnauthorized    = "unauthorized"
-	codeMissingScope    = "missing_scope"
+	codeNotGranted      = "not_granted"
 	codeThrottled       = "throttled"
 	codeConflict        = "conflict"
 	codeInvalid         = "invalid"
 	codeUnavailable     = "unavailable"
 )
+
+// unavailableRetryAfter is the wait, in seconds, an unavailable answer
+// names: the store's backend or its checkout records.
+const unavailableRetryAfter = 30
+
+// withHint adds a sentence to the hint of the ToolError err is, on a copy:
+// what the failed call left behind, which the hint for its cause cannot
+// know.
+func withHint(err error, sentence string) error {
+	te, ok := errors.AsType[*ToolError](err)
+	if !ok {
+		return err
+	}
+	out := *te
+	out.Hint += ". " + sentence
+	return &out
+}
 
 // upstreamErr converts Django client errors into agent-actionable tool
 // errors. The SDK packs returned errors into CallToolResult.IsError.
@@ -129,7 +147,8 @@ func upstreamErr(err error, notFound string) error {
 		return storeSaid(codeInvalid, "the store rejected the request; "+
 			"explain the detail to the shopper, or correct the arguments")
 	default:
-		return &ToolError{Code: codeUnavailable, RetryAfter: 30,
+		return &ToolError{Code: codeUnavailable,
+			RetryAfter: unavailableRetryAfter,
 			Hint: "the store's backend is temporarily unavailable; retry " +
 				"once, then tell the shopper to try again later"}
 	}

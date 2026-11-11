@@ -53,7 +53,7 @@ func TestAccountToolsSayWhatTheLinkLacks(t *testing.T) {
 
 		var got *ToolError
 		require.ErrorAs(t, err, &got)
-		assert.Equal(t, "missing_scope", got.Code)
+		assert.Equal(t, "not_granted", got.Code)
 		assert.Contains(t, got.Hint, "loyalty:read")
 	})
 }
