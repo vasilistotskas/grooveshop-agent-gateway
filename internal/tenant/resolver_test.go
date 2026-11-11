@@ -29,6 +29,33 @@ const demostoreJSON = `{
 		"loyalty": true, "promotions": false}
 }`
 
+const (
+	// testTTL is the memory (and Redis) TTL of the resolvers the tests
+	// build.
+	testTTL            = time.Minute
+	testNegTTL         = 50 * time.Millisecond
+	testInternalSecret = "test-secret"
+	// The credentials Django adds for a caller that sends the internal
+	// token.
+	testChatKey   = "sk-test-do-not-cache"
+	testACPBearer = "acp-test-do-not-cache"
+)
+
+// withSecrets adds the credential fields to a tenant/resolve body.
+func withSecrets(body string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(body), &m); err != nil {
+		panic(err)
+	}
+	m["chatApiKey"] = testChatKey
+	m["acpBearerToken"] = testACPBearer
+	out, err := json.Marshal(m)
+	if err != nil {
+		panic(err)
+	}
+	return string(out)
+}
+
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelError + 1,
@@ -51,11 +78,16 @@ func unreachableRedis() *redis.Client {
 }
 
 // fakeDjango serves tenant/resolve for one known domain and counts calls.
+// Like Django it answers with the secret fields only to a caller that
+// sends the internal token.
 type fakeDjango struct {
 	calls atomic.Int32
 	mu    sync.Mutex
 	fail  bool
-	srv   *httptest.Server
+	gone  bool
+	// hold, when set, parks every call until it is closed.
+	hold chan struct{}
+	srv  *httptest.Server
 }
 
 func newFakeDjango(t *testing.T) *fakeDjango {
@@ -65,15 +97,22 @@ func newFakeDjango(t *testing.T) *fakeDjango {
 		func(w http.ResponseWriter, r *http.Request) {
 			f.calls.Add(1)
 			f.mu.Lock()
-			failing := f.fail
+			failing, gone, hold := f.fail, f.gone, f.hold
 			f.mu.Unlock()
+			if hold != nil {
+				<-hold
+			}
 			if failing {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			if r.URL.Query().Get("domain") == "shop.example.test" {
-				_, _ = w.Write([]byte(demostoreJSON))
+			if !gone && r.URL.Query().Get("domain") == "shop.example.test" {
+				body := demostoreJSON
+				if r.Header.Get("X-Internal-Token") == testInternalSecret {
+					body = withSecrets(demostoreJSON)
+				}
+				_, _ = w.Write([]byte(body))
 				return
 			}
 			w.WriteHeader(http.StatusNotFound)
@@ -89,21 +128,36 @@ func (f *fakeDjango) goDown() {
 	f.mu.Unlock()
 }
 
-func (f *fakeDjango) client(t *testing.T) *django.Client {
-	t.Helper()
-	return django.New(f.srv.URL+"/api/v1", "api.example.test", "test-secret",
-		time.Second, testLogger(), nil)
+func (f *fakeDjango) comeUp() {
+	f.mu.Lock()
+	f.fail = false
+	f.mu.Unlock()
 }
 
-func newTestResolver(t *testing.T, f *fakeDjango, ttl time.Duration) *Resolver {
+// deactivate makes the store unknown, as Django answers once a tenant
+// is switched off.
+func (f *fakeDjango) deactivate() {
+	f.mu.Lock()
+	f.gone = true
+	f.mu.Unlock()
+}
+
+func (f *fakeDjango) client(t *testing.T) *django.Client {
 	t.Helper()
-	return NewResolver(f.client(t), unreachableRedis(), ttl, 50*time.Millisecond,
+	return django.New(f.srv.URL+"/api/v1", "api.example.test",
+		testInternalSecret, time.Second, testLogger(), nil)
+}
+
+func newTestResolver(t *testing.T, f *fakeDjango) *Resolver {
+	t.Helper()
+	return NewResolver(f.client(t), unreachableRedis(), testTTL,
+		testNegTTL,
 		testLogger(), nil)
 }
 
 func TestResolveCachesInMemory(t *testing.T) {
 	f := newFakeDjango(t)
-	r := newTestResolver(t, f, time.Minute)
+	r := newTestResolver(t, f)
 
 	first, err := r.Resolve(context.Background(), "SHOP.example.test:443")
 	require.NoError(t, err)
@@ -116,11 +170,27 @@ func TestResolveCachesInMemory(t *testing.T) {
 	assert.Equal(t, "demostore", second.SchemaName)
 	assert.Equal(t, int32(1), f.calls.Load(),
 		"second resolve must be served from memory")
+	assertMemoryTTL(t, r, "shop.example.test", testTTL)
+}
+
+// assertMemoryTTL checks that the memory entry for host expires ttl from
+// now: expireMemory stands in for waiting, so nothing else shows the TTL
+// is the configured one.
+func assertMemoryTTL(
+	t *testing.T, r *Resolver, host string, ttl time.Duration,
+) {
+	t.Helper()
+	r.mu.RLock()
+	e, ok := r.mem[host]
+	r.mu.RUnlock()
+	require.True(t, ok, "no memory entry for %s", host)
+	assert.WithinDuration(t, time.Now().Add(ttl), e.expires, time.Second,
+		"the memory entry must expire after the configured TTL")
 }
 
 func TestResolveUnknownDomainNegativeCache(t *testing.T) {
 	f := newFakeDjango(t)
-	r := newTestResolver(t, f, time.Minute)
+	r := newTestResolver(t, f)
 
 	_, err := r.Resolve(context.Background(), "nope.example.test")
 	assert.ErrorIs(t, err, ErrUnknownTenant)
@@ -129,11 +199,19 @@ func TestResolveUnknownDomainNegativeCache(t *testing.T) {
 	assert.ErrorIs(t, err, ErrUnknownTenant)
 	assert.Equal(t, int32(1), f.calls.Load(),
 		"negative result must be cached")
+	assertMemoryTTL(t, r, "nope.example.test", testNegTTL)
+
+	// A negative entry ends with its TTL: a store created since resolves.
+	expireMemory(t, r, "nope.example.test")
+	_, err = r.Resolve(context.Background(), "nope.example.test")
+	assert.ErrorIs(t, err, ErrUnknownTenant)
+	assert.Equal(t, int32(2), f.calls.Load(),
+		"an expired negative entry must be resolved again")
 }
 
 func TestResolveSingleflightCollapsesConcurrentMisses(t *testing.T) {
 	f := newFakeDjango(t)
-	r := newTestResolver(t, f, time.Minute)
+	r := newTestResolver(t, f)
 
 	var wg sync.WaitGroup
 	for range 25 {
@@ -149,12 +227,12 @@ func TestResolveSingleflightCollapsesConcurrentMisses(t *testing.T) {
 
 func TestResolveServesStaleWhenDjangoDown(t *testing.T) {
 	f := newFakeDjango(t)
-	r := newTestResolver(t, f, 10*time.Millisecond)
+	r := newTestResolver(t, f)
 
 	_, err := r.Resolve(context.Background(), "shop.example.test")
 	require.NoError(t, err)
 
-	time.Sleep(20 * time.Millisecond) // let the memory entry expire
+	expireMemory(t, r, "shop.example.test")
 	f.goDown()
 
 	got, err := r.Resolve(context.Background(), "shop.example.test")
@@ -167,11 +245,11 @@ func TestResolveServesStaleWhenDjangoDown(t *testing.T) {
 // request: the stale answer is cached for the negative TTL.
 func TestResolveStaleAnswerBacksOffDjango(t *testing.T) {
 	f := newFakeDjango(t)
-	r := newTestResolver(t, f, 10*time.Millisecond)
+	r := newTestResolver(t, f)
 
 	_, err := r.Resolve(context.Background(), "shop.example.test")
 	require.NoError(t, err)
-	time.Sleep(20 * time.Millisecond)
+	expireMemory(t, r, "shop.example.test")
 	f.goDown()
 
 	_, err = r.Resolve(context.Background(), "shop.example.test")
@@ -203,7 +281,7 @@ func TestResolveLeaderCancellationDoesNotFailFollowers(t *testing.T) {
 	dj := django.New(srv.URL+"/api/v1", "api.example.test", "test-secret",
 		5*time.Second, testLogger(), nil)
 	r := NewResolver(dj, unreachableRedis(), time.Minute,
-		50*time.Millisecond, testLogger(), nil)
+		testNegTTL, testLogger(), nil)
 
 	leaderCtx, cancel := context.WithCancel(context.Background())
 	leader := make(chan error, 1)
@@ -236,7 +314,7 @@ func TestSharedReturnsPanicAsError(t *testing.T) {
 func TestResolveErrorsWithoutStaleEntry(t *testing.T) {
 	f := newFakeDjango(t)
 	f.goDown()
-	r := newTestResolver(t, f, time.Minute)
+	r := newTestResolver(t, f)
 
 	_, err := r.Resolve(context.Background(), "shop.example.test")
 	require.Error(t, err)
@@ -289,7 +367,7 @@ func TestPublicConfigStripsCredentials(t *testing.T) {
 // secret-bearing routes can use it without a refresh.
 func TestDjangoResolveMarksSecretsLoaded(t *testing.T) {
 	f := newFakeDjango(t)
-	r := newTestResolver(t, f, time.Minute)
+	r := newTestResolver(t, f)
 
 	tn, err := r.Resolve(t.Context(), "shop.example.test")
 	require.NoError(t, err)

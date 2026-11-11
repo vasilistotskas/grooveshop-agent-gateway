@@ -126,7 +126,7 @@ passes.
   bound to the store's `/mcp/admin` on its primary domain. Every tool is
   read only; a write tool needs the owner's approval first
   (`grooveshop-docs/src/dev/flows/staff-mcp.md`).
-- `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:v5:{host}`
+- `internal/tenant` — resolver (process memory 5m → Redis `ag:tenant:<version>:{host}`
   → Django; singleflight; 60s negative cache; stale-if-error) + middleware
   (tenant from the **real Host header only** — inbound X-Forwarded-Host is
   deliberately ignored; spoofing it must never switch tenants).
@@ -302,9 +302,18 @@ passes.
   `0` / `""` are "not stated" and are left out, a missing or malformed
   value fails the call) and links `Links.ReturnPolicy` only while
   `/content-page/return-policy` is published (a 404 means it is not).
-- Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:v5:{host}`,
-  versioned with the cached `TenantConfig` shape: bump it when a field is
-  added, or entries an older pod wrote decode it as its zero value.
+- Redis keys: `ag:{schema}:…`; tenant cache `ag:tenant:<version>:{host}`,
+  versioned with the cached `TenantConfig` shape: bump `redisKeyVersion`
+  (`internal/tenant/resolver.go`) when a field is added, or entries an
+  older pod wrote decode it as its zero value.
+  `TestCachedShapeMatchesKeyVersion` pins the shape (a golden in
+  `internal/tenant/cacheguard_test.go`) to that version: a changed shape
+  fails until the golden is updated, which prompts the bump, and the
+  golden's diff shows a shape change in review. A field Django leaves out
+  of its schema (`contract:"undocumented"`) is one it sends only to the
+  gateway's authenticated call, and none of those is written to the shared
+  Redis entry: `publicConfig` clears each, and
+  `TestPublicConfigClearsEveryUndocumentedField` finds them by reflection.
 - No tenant label on Prometheus metrics (unbounded cardinality) — tenant
   goes in logs.
 - **No fallback/legacy/backward-compat code paths.** Environment differences
