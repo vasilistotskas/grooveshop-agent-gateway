@@ -392,7 +392,10 @@ passes.
   - **A lost save is answered like a busy session**: ACP 409
     `idempotency_in_flight` with `Retry-After: 2`, UCP the error's
     text, the order-event push 503. The request is sent again and
-    reads the session as it is then.
+    reads the session as it is then. `ErrSessionChanged` always means
+    nothing happened: a completion's last save, lost after its order
+    was placed, is `ErrSessionNotSaved` with the key spent, and does
+    not wrap it.
   - **The lock only orders requests** (`Store.Lock`, `ErrLocked`). It
     lasts `lockSteps` upstream timeouts: what a completion does under
     it when Django answers every call just inside its timeout. A
