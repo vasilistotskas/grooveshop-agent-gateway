@@ -227,8 +227,8 @@ func (c *capturedLog) logger() *slog.Logger {
 	}))
 }
 
-// expireMemory ends the TTL of the memory entry for host without waiting
-// for it. The entry must exist.
+// expireMemory ends the TTLs of the memory entry for host, its remembered
+// top-up's included, without waiting for them. The entry must exist.
 func expireMemory(t *testing.T, r *Resolver, host string) {
 	t.Helper()
 	r.mu.Lock()
@@ -236,5 +236,6 @@ func expireMemory(t *testing.T, r *Resolver, host string) {
 	e, ok := r.mem[host]
 	require.True(t, ok, "no memory entry for %s to expire", host)
 	e.expires = time.Now().Add(-time.Second)
+	e.topUp.until = e.expires
 	r.mem[host] = e
 }

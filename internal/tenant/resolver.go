@@ -43,8 +43,23 @@ type memEntry struct {
 	// held is the last tenant this pod got from Django for the host, the
 	// credentials included. It outlives the tenant a Redis hit puts in
 	// its place, so EnsureSecrets can serve it stale while Django cannot
-	// be asked. storeLocked keeps it; a negative entry drops it.
+	// be asked. It belongs to a store, not a host: storeLocked keeps it
+	// only while the tenant known for the host is that store.
 	held *Tenant
+	// topUp is the answer a credential caller got when Django could not
+	// give the credentials, remembered with held (see answerSecrets).
+	topUp topUp
+}
+
+// topUp is a credential caller's answer while Django cannot give the
+// credentials: the held ones served stale, or the failure that left none.
+// It is given again without asking Django until until, the negative TTL
+// later, as a stale config is, so a Django that is down or does not
+// recognise the gateway is asked once per negative TTL, not per request.
+type topUp struct {
+	tenant *Tenant
+	err    error
+	until  time.Time
 }
 
 // Resolver maps inbound hosts to tenants with two cache tiers. Layering:
@@ -90,7 +105,7 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (*Tenant, error) {
 		return nil, ErrUnknownTenant
 	}
 
-	if t, ok, err := r.fromMemory(domain, false); ok {
+	if t, ok, err := r.fromMemory(domain); ok {
 		r.count("hit")
 		return t, err
 	}
@@ -127,7 +142,7 @@ func (r *Resolver) shared(
 
 func (r *Resolver) resolveSlow(ctx context.Context, domain string) (*Tenant, error) {
 	// Re-check under singleflight: a concurrent caller may have filled it.
-	if t, ok, err := r.fromMemory(domain, false); ok {
+	if t, ok, err := r.fromMemory(domain); ok {
 		return t, err
 	}
 
@@ -141,7 +156,8 @@ func (r *Resolver) resolveSlow(ctx context.Context, domain string) (*Tenant, err
 // fromDjango asks Django for the host and caches its answer: the tenant,
 // credentials included, in memory and its public config in Redis; or, for a
 // store Django does not know, the negative entry in both, returned as
-// ErrUnknownTenant. Every other failure is answered by serveStale.
+// ErrUnknownTenant. Every other failure is answered by serveStale, or, for
+// a caller that needs the credentials, by answerSecrets.
 //
 // An answer for a token Django did not recognise is a public config: it is
 // cached as one, never as a store without credentials, and logged. A
@@ -179,59 +195,111 @@ func (r *Resolver) fromDjango(
 		r.count("negative")
 		return nil, ErrUnknownTenant
 	}
-	return r.serveStale(ctx, domain, err, needSecrets)
+	if needSecrets {
+		return r.answerSecrets(ctx, domain, err)
+	}
+	return r.serveStale(ctx, domain, err)
 }
 
-// serveStale answers a Django failure (cause) with what this pod last held
-// for the host, marked Stale, rather than 503ing every agent: tenant config
-// is near-static. needSecrets serves the last tenant with its credentials
-// (memEntry.held), otherwise the last tenant of any kind. The credentials
-// are served only until secretsUntil: past it a tenant goes without them,
-// and a caller that needs them gets cause. Without an answer it returns
-// cause.
+// serveStale answers a Django failure (cause) with the last config this pod
+// knows for the host, marked Stale and without credentials (those come
+// only from answerSecrets), rather than 503ing every agent: tenant config
+// is near-static. It has no age bound. Without a config it returns cause.
 //
 // The answer is cached for the negative TTL: otherwise every request
 // re-probes a Django that may be hanging rather than refusing, paying a
-// full upstream timeout before getting this answer.
+// full upstream timeout before getting this answer. An entry another
+// flight made live meanwhile is newer and is answered instead.
 func (r *Resolver) serveStale(
-	ctx context.Context, domain string, cause error, needSecrets bool,
+	ctx context.Context, domain string, cause error,
 ) (*Tenant, error) {
-	r.mu.RLock()
-	e := r.mem[domain]
-	r.mu.RUnlock()
-	last := e.tenant
-	if needSecrets {
-		last = e.held
-	}
-	if last == nil {
+	r.mu.Lock()
+	e, ok := r.mem[domain]
+	switch {
+	case ok && time.Now().Before(e.expires):
+		r.mu.Unlock()
+		if e.negative {
+			return nil, ErrUnknownTenant
+		}
+		return e.tenant, nil
+	case !ok || e.negative:
+		r.mu.Unlock()
 		return nil, cause
 	}
-	stale := *last
+	stale := *e.tenant
 	stale.Stale = true
-	expires := time.Now().Add(r.negTTL)
-	if stale.SecretsLoaded {
-		until := r.secretsUntil(&stale)
-		switch {
-		case time.Now().Before(until):
-			if until.Before(expires) {
-				expires = until
-			}
-		case needSecrets:
-			return nil, cause
-		default:
-			stale.TenantConfig = publicConfig(&stale.TenantConfig)
-			stale.SecretsLoaded = false
-		}
-	}
-	r.storeMemory(domain, memEntry{tenant: &stale, expires: expires})
+	stale.TenantConfig = publicConfig(&stale.TenantConfig)
+	stale.SecretsLoaded = false
+	r.storeLocked(domain, memEntry{
+		tenant: &stale, expires: time.Now().Add(r.negTTL),
+	})
+	r.mu.Unlock()
 	r.count("stale")
 	r.log.WarnContext(ctx, "serving stale tenant config",
 		slog.String(obs.KeyTenant, stale.SchemaName),
 		slog.String("host", domain),
-		slog.Bool("credentials", stale.SecretsLoaded),
 		slog.String("error", cause.Error()),
 	)
 	return &stale, nil
+}
+
+// answerSecrets answers a credential caller Django could not give the
+// credentials (cause): the held ones, marked Stale, until secretsUntil,
+// else cause. The answer is remembered on the entry (memEntry.topUp) and
+// never replaces its tenant, which stays the freshest config the pod knows.
+// A tenant with credentials or a negative entry another flight made live
+// meanwhile is newer and is answered instead.
+func (r *Resolver) answerSecrets(
+	ctx context.Context, domain string, cause error,
+) (*Tenant, error) {
+	now := time.Now()
+	r.mu.Lock()
+	e, ok := r.mem[domain]
+	if t, err, live := e.secretsAnswer(now); ok && live {
+		r.mu.Unlock()
+		return t, err
+	}
+	a := topUp{err: cause, until: now.Add(r.negTTL)}
+	if ok && e.held != nil {
+		if until := r.secretsUntil(e.held); now.Before(until) {
+			stale := *e.held
+			stale.Stale = true
+			a = topUp{tenant: &stale, until: a.until}
+			if until.Before(a.until) {
+				a.until = until
+			}
+		}
+	}
+	if ok {
+		e.topUp = a
+		r.mem[domain] = e
+	}
+	r.mu.Unlock()
+	if a.tenant != nil {
+		r.count("stale")
+		r.log.WarnContext(ctx, "serving stale tenant credentials",
+			slog.String(obs.KeyTenant, a.tenant.SchemaName),
+			slog.String("host", domain),
+			slog.String("error", cause.Error()),
+		)
+	}
+	return a.tenant, a.err
+}
+
+// secretsAnswer is what a credential caller gets from the entry without
+// asking Django, and whether there is such an answer: the store is gone,
+// a live tenant with its credentials, or the remembered top-up.
+func (e memEntry) secretsAnswer(now time.Time) (*Tenant, error, bool) {
+	live := now.Before(e.expires)
+	switch {
+	case live && e.negative:
+		return nil, ErrUnknownTenant, true
+	case live && e.tenant.SecretsLoaded:
+		return e.tenant, nil, true
+	case now.Before(e.topUp.until):
+		return e.topUp.tenant, e.topUp.err, true
+	}
+	return nil, nil, false
 }
 
 // secretsUntil is when the credentials of t may no longer be served: one
@@ -242,23 +310,16 @@ func (r *Resolver) secretsUntil(t *Tenant) time.Time {
 	return t.ResolvedAt.Add(2 * r.ttl)
 }
 
-// fromMemory returns the cached entry when found: a tenant, or
-// ErrUnknownTenant for a negative entry. With allowExpired it also
-// returns entries past their TTL — the stale-if-error path.
-func (r *Resolver) fromMemory(domain string, allowExpired bool) (*Tenant, bool, error) {
+// fromMemory returns the live cached entry when found: a tenant, or
+// ErrUnknownTenant for a negative entry.
+func (r *Resolver) fromMemory(domain string) (*Tenant, bool, error) {
 	r.mu.RLock()
 	e, ok := r.mem[domain]
 	r.mu.RUnlock()
-	if !ok {
-		return nil, false, nil
-	}
-	if !allowExpired && time.Now().After(e.expires) {
+	if !ok || time.Now().After(e.expires) {
 		return nil, false, nil
 	}
 	if e.negative {
-		if allowExpired && time.Now().After(e.expires) {
-			return nil, false, nil
-		}
 		return nil, true, ErrUnknownTenant
 	}
 	return e.tenant, true, nil
@@ -362,16 +423,19 @@ func (r *Resolver) fill(domain string, e memEntry) memEntry {
 }
 
 // storeLocked stores e, setting what it holds: a tenant fresh from Django
-// with its credentials is held itself, a store that is gone holds nothing,
-// and anything else keeps what the host's entry held.
+// with its credentials is held itself; any other tenant of the store the
+// host's entry knew keeps what that entry held and its remembered top-up;
+// a store that is gone, or another store, holds nothing.
 func (r *Resolver) storeLocked(domain string, e memEntry) {
+	prev := r.mem[domain]
+	e.held, e.topUp = nil, topUp{}
 	switch {
 	case e.negative:
-		e.held = nil
 	case e.tenant.SecretsLoaded && !e.tenant.Stale:
 		e.held = e.tenant
-	default:
-		e.held = r.mem[domain].held
+	case !prev.negative && prev.tenant != nil &&
+		prev.tenant.SchemaName == e.tenant.SchemaName:
+		e.held, e.topUp = prev.held, prev.topUp
 	}
 	if len(r.mem) >= maxMemEntries {
 		r.evictLocked()
@@ -441,8 +505,9 @@ func NormalizeHost(host string) string {
 // what the resolve caches, and the cost lands at most once per pod per
 // TTL, on two low-volume routes. A store Django no longer knows is
 // ErrUnknownTenant, cached as the resolve caches it; while Django cannot
-// be asked, the credentials this pod last held are served stale until
-// secretsUntil (serveStale).
+// give the credentials, the ones this pod last held for the store are
+// served stale until secretsUntil, and that answer, or the failure, is
+// remembered for the negative TTL (answerSecrets).
 func (r *Resolver) EnsureSecrets(
 	ctx context.Context, t *Tenant,
 ) (*Tenant, error) {
@@ -451,10 +516,12 @@ func (r *Resolver) EnsureSecrets(
 	}
 	v, err := r.shared(ctx, t.Domain+"|secrets",
 		func(ctx context.Context) (any, error) {
-			// Another flight may have filled memory since the caller
-			// resolved t.
-			if cur, ok, err := r.fromMemory(t.Domain, false); ok &&
-				(err != nil || cur.SecretsLoaded) {
+			// Memory may answer: another flight may have filled it since
+			// the caller resolved t, or a top-up is remembered.
+			r.mu.RLock()
+			e, ok := r.mem[t.Domain]
+			r.mu.RUnlock()
+			if cur, err, live := e.secretsAnswer(time.Now()); ok && live {
 				return cur, err
 			}
 			return r.fromDjango(ctx, t.Domain, true)

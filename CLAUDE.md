@@ -137,25 +137,37 @@ passes.
   (`fromDjango`), so a top-up counts on `gateway_tenant_cache_total`
   and rewrites the public Redis entry as a resolve does; a store Django
   answers 404 for is a 404 there too and is cached as the negative entry
-  in memory and Redis. A memory entry
-  keeps the last tenant this pod got from Django (`memEntry.held`)
-  through a Redis hit, so while Django cannot be asked the credential
-  routes serve those credentials marked `Stale`, cached for the negative
-  TTL like a stale config, but only until two `TENANT_CACHE_TTL`s after
-  the pod fetched them (`secretsUntil`); after that they answer 503 and
-  the other routes keep the config without credentials. So an ACP
-  bearer rotated in Django is refused by a pod within one TTL while
-  Django answers, and within two while it cannot; the chat key the same.
-  A store Django called gone drops what the pod held. A resolve Django
-  answered without recognising the gateway's internal token (a rotation
-  that reached one side) is logged at error ("Django did not recognise
-  the gateway's internal token") and cached as a public config, in
-  memory and Redis, never as a store without credentials: the plain
-  routes serve it, the credential routes take the failed top-up's path
-  (held credentials within their bound, else 503), and the next call
-  after Django recognises the token loads them. It counts as a `miss`
-  on `gateway_tenant_cache_total`, like any Django answer. The stale
-  config itself still has no age bound.
+  in memory and Redis.
+  - **Held credentials.** A memory entry keeps the last tenant this pod
+    got from Django (`memEntry.held`) through a Redis hit. They belong
+    to a store, not a host: `storeLocked` keeps them only while the
+    tenant known for the host has the same `SchemaName`, and drops them
+    for a gone store or a host that moved to another store.
+  - **When Django cannot give the credentials** (down, or the token not
+    recognised), a credential caller gets the held ones marked `Stale`
+    until two `TENANT_CACHE_TTL`s after the pod fetched them
+    (`secretsUntil`), else 503 (`answerSecrets`). That answer, or the
+    failure, is remembered on the entry (`memEntry.topUp`) for the
+    negative TTL, capped at the bound: one Django call per host per pod
+    per negative TTL. It never replaces the entry's tenant, which stays
+    the freshest config Django, Redis or the stale-if-error path gave,
+    and that is what the other routes serve, without credentials.
+  - **Rotation.** An ACP bearer rotated in Django is refused by a pod
+    within one TTL while Django answers, and within two while it cannot;
+    the chat key the same.
+  - **Unrecognised token.** A resolve Django answered without
+    recognising the gateway's internal token (a rotation that reached
+    one side) is logged once at error with its cause ("Django did not
+    recognise the gateway's internal token"; the middleware does not log
+    it again) and cached as a public config, in memory and Redis, never
+    as a store without credentials. The plain routes serve it; the
+    credential routes take the failed top-up's path above. Once Django
+    recognises the token, credentials load within one negative TTL. It
+    counts as a `miss` on `gateway_tenant_cache_total`, like any Django
+    answer.
+  - **Stale config.** A stale config carries no credentials and still
+    has no age bound. A stale answer never replaces an entry another
+    flight made live meanwhile.
 - `internal/django` — typed API client. `ResolveTenant` also reports
   whether Django recognised the internal token: Django adds `chatApiKey`
   and `acpBearerToken`, possibly empty, only then, so their presence is

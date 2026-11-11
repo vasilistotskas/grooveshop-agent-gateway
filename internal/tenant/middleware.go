@@ -56,7 +56,8 @@ func middleware(
 }
 
 // writeResolveError answers a failed resolve or top-up: 404 for a store
-// Django does not know, 503 (logged as msg) for anything else.
+// Django does not know, 503 for anything else, logged as msg unless the
+// resolver logged its cause already (errUnrecognised).
 func writeResolveError(
 	w http.ResponseWriter, req *http.Request, log *slog.Logger,
 	msg string, err error,
@@ -65,10 +66,12 @@ func writeResolveError(
 		httpmw.WriteJSONError(w, http.StatusNotFound, "unknown store")
 		return
 	}
-	log.ErrorContext(req.Context(), msg,
-		slog.String("host", req.Host),
-		slog.String("error", err.Error()),
-	)
+	if !errors.Is(err, errUnrecognised) {
+		log.ErrorContext(req.Context(), msg,
+			slog.String("host", req.Host),
+			slog.String("error", err.Error()),
+		)
+	}
 	httpmw.WriteJSONError(w, http.StatusServiceUnavailable,
 		"store temporarily unavailable")
 }
