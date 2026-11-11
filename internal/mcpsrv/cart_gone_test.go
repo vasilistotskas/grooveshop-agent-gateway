@@ -126,6 +126,139 @@ func TestChatCartToolsNeverAnswerAGoneCartWithCreateCart(t *testing.T) {
 	}
 }
 
+// A bare 404 is a Django feature gate's (tenant/permissions.py raises a
+// NotFound with no code); a cart Django does not have is cart_not_found
+// (cart/views/cart.py).
+const (
+	bare404     = `{"detail": "Not found."}`
+	cartGone404 = `{"detail": "Cart not found", "code": "cart_not_found"}`
+)
+
+// notFoundDjango answers every call with a bare 404.
+func notFoundDjango(t *testing.T, s surface) *handlers {
+	t.Helper()
+	return refusingDjango(t, s, http.StatusNotFound, bare404)
+}
+
+// refusingDjango answers every call with status and body.
+func refusingDjango(
+	t *testing.T, s surface, status int, body string,
+) *handlers {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}))
+	t.Cleanup(srv.Close)
+	return &handlers{surface: s, deps: Deps{Site: testSite,
+		Django: django.New(srv.URL+"/api/v1", "api.example.test", "secret",
+			5*time.Second, slog.New(slog.DiscardHandler), nil)}}
+}
+
+// cartScoped are the cart tools whose 404 can be the cart itself.
+var cartScoped = []string{"get_cart", "get_checkout_link",
+	"get_shipping_options", "apply_coupon", "remove_coupon"}
+
+// mcpServes reports whether /mcp serves a cartScoped tool: the coupon
+// tools are the chat's alone.
+func mcpServes(name string) bool {
+	return name != "apply_coupon" && name != "remove_coupon"
+}
+
+// A cart the chat names that Django does not have (cart_not_found, or a
+// 403, which reads as a 404) is the shopper's own browser cart gone:
+// unreachable, reload, never create_cart, which the chat does not serve.
+func TestChatCartAnswered404IsUnreachable(t *testing.T) {
+	type answer struct {
+		status int
+		body   string
+	}
+	for _, name := range cartScoped {
+		for _, a := range []answer{
+			{http.StatusNotFound, cartGone404},
+			{http.StatusForbidden, `{"detail": "Forbidden."}`},
+		} {
+			t.Run(name+" "+http.StatusText(a.status), func(t *testing.T) {
+				h := refusingDjango(t, chatSurface, a.status, a.body)
+				ctx := tenant.NewContext(context.Background(), cartTenant())
+
+				err := goneCartCalls[name](h, ctx)
+
+				var got *mcptool.ToolError
+				require.ErrorAs(t, err, &got)
+				assert.Equal(t, &mcptool.ToolError{
+					Code: mcptool.CodeCartUnreachable,
+					Hint: shopperCartUnreachable}, got)
+				assert.NotContains(t, err.Error(), "create_cart")
+			})
+		}
+	}
+}
+
+// On /mcp the same cart_not_found is a cart that is gone, which the agent
+// may replace with create_cart.
+func TestMCPCartAnswered404IsNotFound(t *testing.T) {
+	for _, name := range cartScoped {
+		if !mcpServes(name) {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			h := refusingDjango(t, mcpSurface, http.StatusNotFound,
+				cartGone404)
+			ctx := tenant.NewContext(context.Background(), cartTenant())
+
+			err := goneCartCalls[name](h, ctx)
+
+			var got *mcptool.ToolError
+			require.ErrorAs(t, err, &got)
+			assert.Equal(t, mcptool.CodeNotFound, got.Code)
+			assert.Equal(t, mcpCartGone, got.Hint)
+		})
+	}
+}
+
+// A bare 404 is a feature the store switched off while this pod still
+// offers the tool: on either surface it is not available here, never a
+// cart to reload or replace.
+func TestCartAnsweredABare404IsAFeatureOff(t *testing.T) {
+	for _, s := range []surface{mcpSurface, chatSurface} {
+		for _, name := range cartScoped {
+			if s == mcpSurface && !mcpServes(name) {
+				continue
+			}
+			t.Run(s.label()+" "+name, func(t *testing.T) {
+				h := notFoundDjango(t, s)
+				ctx := tenant.NewContext(context.Background(), cartTenant())
+
+				err := goneCartCalls[name](h, ctx)
+
+				var got *mcptool.ToolError
+				require.ErrorAs(t, err, &got)
+				assert.Equal(t, &mcptool.ToolError{
+					Code: mcptool.CodeNotFound, Hint: featureOff}, got)
+			})
+		}
+	}
+}
+
+// add_to_cart's 404 is its product's, on either surface: not a cart
+// that is gone.
+func TestAddToCartAnswered404IsTheProduct(t *testing.T) {
+	for _, s := range []surface{mcpSurface, chatSurface} {
+		h := notFoundDjango(t, s)
+		ctx := tenant.NewContext(context.Background(), cartTenant())
+
+		err := goneCartCalls["add_to_cart"](h, ctx)
+
+		var got *mcptool.ToolError
+		require.ErrorAs(t, err, &got)
+		assert.Equal(t, mcptool.CodeNotFound, got.Code, s.label())
+		assert.Equal(t, "product 1 was not found", got.Hint, s.label())
+	}
+}
+
 // On /mcp the agent owns its cart id: a gone cart is not found, and the
 // agent may create another.
 func TestMCPCartToolsAnswerAGoneCartWithCreateCart(t *testing.T) {

@@ -16,7 +16,7 @@ type ShippingOptionsIn struct {
 	CountryCode string `json:"countryCode" jsonschema:"ISO 3166-1 alpha-2 destination, e.g. GR"`
 	OrderValue  string `json:"orderValue,omitempty" jsonschema:"the cart's freeThresholdValue from get_cart as a decimal string: the items after discounts, excluding shipping, which free-shipping thresholds are judged on; ignored when the call names a cart, whose own value is used"`
 	WeightGrams int    `json:"weightGrams,omitempty" jsonschema:"the cart's totalWeightGrams from get_cart; without it no option is left out for its weight cap"`
-	CartID      string `json:"cartId,omitempty" jsonschema:"cart id from create_cart or add_to_cart; without it no option is left out for being too large for the cart"`
+	CartID      string `json:"cartId,omitempty" jsonschema:"the cartId a cart tool returned; without it no option is left out for being too large for the cart"`
 }
 
 type ShippingOptionOut struct {
@@ -63,7 +63,7 @@ func (h *handlers) getShippingOptions(
 	if in.CartID != "" || django.HasCartToken(ctx) {
 		c, err := h.deps.Django.GetCart(ctx, t.Domain, lang, in.CartID)
 		if err != nil {
-			return nil, out, h.cartErr(err, mcpCartGone)
+			return nil, out, h.cartGoneErr(err)
 		}
 		q.OrderValueAmount = c.FreeThresholdValue.String()
 	}

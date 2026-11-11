@@ -159,7 +159,11 @@ passes.
     case-sensitive keys, the first JSON value only. A body nested deeper
     is passed on undecoded and the SDK refuses it whole. It challenges
     when any message calls an account tool.
-  - Account tools forward the bearer — Django enforces scopes.
+  - Account tools forward the bearer — Django enforces scopes. Each
+    carries its scope on its definition (`account` in
+    `internal/mcpsrv/server.go`), the challenge reads them off the toolset
+    (`accountScopes`), and they are /mcp's alone: the chat server does
+    not register them.
 - `internal/mcptool` — what the tools of both MCP servers answer with:
   `ToolError` and every code the gateway mints, the `Untrusted` marker
   (`MarkUntrusted`) for text a customer wrote, and `Add`, through which
@@ -170,11 +174,26 @@ passes.
     and the duration. The context handler adds the request id and the
     store.
   - It never logs the arguments or the result.
+  - It counts the call on `gateway_tool_calls_total{server,tool,outcome}`.
+    The outcome is the gateway's own: a code Django or a coupon refusal
+    gave is counted as `refused` (`mcptool.OutcomeRefused`), the log line
+    keeps it.
   - An unknown tool, and arguments that fail the input schema, are
-    refused by the SDK before the handler and log no line.
+    refused by the SDK before the handler, neither logged nor counted.
   - A handler panic is recovered there (see `internal/httpmw`).
   - Each handler's context ends at the server's shutdown cut, with
     `httpmw.ErrShuttingDown`, on any protocol (see `cmd/gateway`).
+  - Every tool's annotations are `mcptool.ReadOnly`, `Adds` or
+    `Changes`, none open-world, each with the tool's title, which `Add`
+    also sets as `Tool.Title` (a 2025-03-26 client, which the transport
+    assumes for a request naming no version, reads only
+    `annotations.title`).
+  - `mcptool.Cacheable` lets a client keep `tools/list` for
+    `TENANT_CACHE_TTL`: public on /mcp, private on /mcp/admin. A pod may
+    serve a store's features up to about two TTLs old (a Redis hit gets
+    a fresh memory TTL), so a client can list a switched feature's tools
+    for about three TTLs. A call is still gated on the server: by the
+    pod's copy of the store's features, then by Django's own gates.
 
   How a Django failure maps to a code is each server's own `upstreamErr`.
 - `internal/adminmcp` — `/mcp/admin`, a separate MCP server with its own
@@ -287,6 +306,8 @@ passes.
   retried, as in `internal/ucp/fetch.go`. Errors unwrap to sentinels
   (`ErrNotFound`, `ErrConflict`, `ErrThrottled`, `ErrValidation`,
   `ErrUpstreamDown`) — branch with `errors.Is`, never on status literals.
+  An error answer is logged at debug with the route's template, the
+  status and Django's `code`, never its detail.
   A failure while reading a body (a document, an error body) is
   `ErrUpstreamDown` like one before the headers, or `context.Canceled`
   for a caller that hung up; a redirect whose body is cut stays the
@@ -434,14 +455,20 @@ passes.
   scope (`not_granted`, as on `/mcp/admin`), a refused coupon (its
   reason as the code) and the checkout store down
   (`errCheckoutUnavailable`, one value, `retryAfterSeconds` as an
-  upstream outage). A cart tool's failure goes through `handlers.cartErr`:
-  a cart the store no longer serves (`django.ErrCartUnreachable`) is
-  `not_found` on `/mcp`, whose agent owns its cart id and is told to
+  upstream outage). A cart tool's failure goes through `handlers.cartErr`,
+  or `handlers.cartGoneErr` for a call on the cart itself (a line's or a
+  product's 404 stays theirs). There a 404 with Django's code
+  `cart_not_found` (`django.CodeCartNotFound`) or a 403 is the cart
+  gone; a bare 404 is a feature gate's, answered `not_found` with
+  `featureOff` on both surfaces. A cart the store no longer serves
+  (`django.ErrCartUnreachable`, or the cart gone) is `not_found` on
+  `/mcp`, whose agent owns its cart id and is told to
   create another with `create_cart`. In the chat it is the shopper's
-  own browser cart, which a cart the model created would never replace,
-  so it is `cart_unreachable`: nothing changed, tell the shopper to
-  reload the page and try again (`shopperCartUnreachable`, the same
-  answer as a refused cart token). A checkout write that failed after
+  own browser cart, which a cart the model created would never replace
+  and which the chat serves no `create_cart` for, so it is
+  `cart_unreachable`: nothing changed, tell the shopper to reload the
+  page and try again (`shopperCartUnreachable`, the same answer as a
+  refused cart token). A checkout write that failed after
   another landed says so on top of its cause's hint (`withHint`). A list
   with nothing in it is `[]`, never `null`
   (`TestToolOutputsListNothingAsEmptyArrays`).
@@ -725,7 +752,10 @@ passes.
   feeds `catalogue` (`ProductFeedsOn`). The per-store server (cached per feature set) neither
   lists nor serves it, discovery does not advertise it, and the chat
   bridge, which shares one server built with `EveryFeature`, filters
-  through `mcpsrv.Offered`. With reviews off no rating or review count
+  through `mcpsrv.Offered`. Which surface serves a tool is a trait on
+  its definition too (`tool.on`): `chatOnly` (the coupon tools),
+  `mcpOnly` (the six UCP tools, whose input requires `meta`, and
+  `create_cart`) and `account`. With reviews off no rating or review count
   leaves the catalog tools either (ratings are on Django's 1–10 scale).
   With promotions off `checkout.ApplyDiscountCodes` refuses every code
   as `discount_code_invalid` without applying it (Django answers 404

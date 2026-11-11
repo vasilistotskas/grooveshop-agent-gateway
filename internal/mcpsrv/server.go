@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -18,6 +19,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
@@ -41,6 +43,9 @@ type Deps struct {
 	// Site builds the links into each store's storefront pages.
 	Site    storefront.Site
 	Log     *slog.Logger
+	Metrics *obs.Metrics
+	// ListTTL is how long a client may keep tools/list.
+	ListTTL time.Duration
 	Version string
 }
 
@@ -52,10 +57,11 @@ func NewServer(d Deps, id Identity, features django.StoreFeatures) *mcp.Server {
 	return newServer(d, id, features, mcpSurface)
 }
 
-// NewChatServer builds the chat bridge's server: every tool, chat-only
-// ones included, with the cart tools' cartId optional (cartToolOf). One
-// in-process client shares it across stores, and the bridge offers each
-// store only the tools it is served (Offered).
+// NewChatServer builds the chat bridge's server: every tool the chat is
+// served (servedOn), chat-only ones included, with the cart tools'
+// cartId optional (cartToolOf). One in-process client shares it across
+// stores, and the bridge offers each store only the tools it is served
+// (Offered).
 func NewChatServer(d Deps) *mcp.Server {
 	return newServer(d, BridgeIdentity, EveryFeature, chatSurface)
 }
@@ -74,22 +80,30 @@ func newServer(
 		Capabilities: &mcp.ServerCapabilities{
 			Tools: &mcp.ToolCapabilities{},
 		},
+		// The list is the store's (its features and its identity), the
+		// same for every caller. A client may list a switched feature's
+		// tools for about three TTLs (CLAUDE.md, internal/mcptool).
+		SetCacheable: mcptool.Cacheable(d.ListTTL, mcptool.CachePublic),
 	})
+	rec := mcptool.Recorder{Server: s.label(), Log: d.Log,
+		Metrics: d.Metrics}
 	for _, t := range toolset(&handlers{deps: d, surface: s}) {
 		if t.offeredTo(features) && t.servedOn(s) {
-			t.register(srv, s, d.Log)
+			t.register(srv, s, rec)
 		}
 	}
 	return srv
 }
 
 // surface is who a server is built for: agents on /mcp, or the
-// first-party chat.
-type surface int
+// first-party chat. A tool is served on a set of them (tool.on).
+type surface uint8
 
 const (
-	mcpSurface surface = iota
+	mcpSurface surface = 1 << iota
 	chatSurface
+
+	everySurface = mcpSurface | chatSurface
 )
 
 // label names the surface on each tool call's log line.
@@ -118,25 +132,51 @@ var EveryFeature = django.StoreFeatures{
 // as every handler has its own argument and result types).
 type tool struct {
 	def *mcp.Tool
-	// register adds the tool to a server for a surface, logging each call
-	// (mcptool.Add).
-	register func(*mcp.Server, surface, *slog.Logger)
+	// register adds the tool to a server for a surface, logging and
+	// counting each call (mcptool.Add).
+	register func(*mcp.Server, surface, mcptool.Recorder)
 	// offered, when set, is the store feature the tool serves: a store
 	// with it off is not served the tool.
 	offered func(django.StoreFeatures) bool
-	// chatOnly tools are served to the first-party chat alone: not on
-	// /mcp, and not advertised by discovery.
-	chatOnly bool
+	// on is the surfaces that serve the tool. Discovery advertises what
+	// /mcp serves.
+	on surface
+	// scope, set on an account tool, is the OAuth scope a linked
+	// account needs for it (accountScopes).
+	scope string
+	// changesCart: the tool changes the shopper's cart, and its result
+	// names the cart, which the chat widget adopts (ChangesCart).
+	changesCart bool
 }
 
 // chatOnly serves t to the chat alone.
 func chatOnly(t tool) tool {
-	t.chatOnly = true
+	t.on = chatSurface
+	return t
+}
+
+// mcpOnly serves t on /mcp alone: the chat never registers it.
+func mcpOnly(t tool) tool {
+	t.on = mcpSurface
+	return t
+}
+
+// account makes t an account tool needing scope. It is served on /mcp
+// alone: its bearer is a linked account's, which a chat shopper, signed
+// in through the storefront, does not carry.
+func account(scope string, t tool) tool {
+	t.scope = scope
+	return mcpOnly(t)
+}
+
+// changesCart marks t as a tool that changes the shopper's cart.
+func changesCart(t tool) tool {
+	t.changesCart = true
 	return t
 }
 
 func (t tool) servedOn(s surface) bool {
-	return !t.chatOnly || s == chatSurface
+	return t.on&s != 0
 }
 
 // onlyWith offers t only to a store with the feature on.
@@ -166,11 +206,12 @@ func favouritesOn(f django.StoreFeatures) bool {
 func loyaltyOn(f django.StoreFeatures) bool    { return f.Loyalty }
 func promotionsOn(f django.StoreFeatures) bool { return f.Cart && f.Promotions }
 
+// toolOf is a tool served on every surface.
 func toolOf[In, Out any](def *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) tool {
-	return tool{def: def, register: func(
-		srv *mcp.Server, s surface, log *slog.Logger,
+	return tool{def: def, on: everySurface, register: func(
+		srv *mcp.Server, _ surface, rec mcptool.Recorder,
 	) {
-		mcptool.Add(srv, log, s.label(), def, h)
+		mcptool.Add(srv, rec, def, h)
 	}}
 }
 
@@ -182,11 +223,11 @@ func toolOf[In, Out any](def *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) tool {
 func cartToolOf[In, Out any](
 	def *mcp.Tool, h mcp.ToolHandlerFor[In, Out],
 ) tool {
-	return tool{def: def, register: func(
-		srv *mcp.Server, s surface, log *slog.Logger,
+	return tool{def: def, on: everySurface, register: func(
+		srv *mcp.Server, s surface, rec mcptool.Recorder,
 	) {
 		if s != chatSurface {
-			mcptool.Add(srv, log, s.label(), def, h)
+			mcptool.Add(srv, rec, def, h)
 			return
 		}
 		schema, err := jsonschema.For[In](&jsonschema.ForOptions{})
@@ -197,13 +238,22 @@ func cartToolOf[In, Out any](
 			func(p string) bool { return p == "cartId" })
 		chat := *def
 		chat.InputSchema = schema
-		mcptool.Add(srv, log, s.label(), &chat, h)
+		mcptool.Add(srv, rec, &chat, h)
 	}}
 }
 
 // definitions is the toolset without handlers, read once: each tool's
-// name and the feature it serves.
+// definition and traits.
 var definitions = sync.OnceValue(func() []tool { return toolset(&handlers{}) })
+
+// byName is definitions by tool name.
+var byName = sync.OnceValue(func() map[string]tool {
+	tools := map[string]tool{}
+	for _, t := range definitions() {
+		tools[t.def.Name] = t
+	}
+	return tools
+})
 
 // toolNamesFor lists the tools NewServer registers for a store with
 // features, in order — the `capabilities` of its discovery entry. Read off
@@ -221,12 +271,14 @@ func toolNamesFor(features django.StoreFeatures) []string {
 // Offered reports whether a store with features is served the named tool.
 // The chat bridge asks it, because it shares one server across stores.
 func Offered(name string, features django.StoreFeatures) bool {
-	for _, t := range definitions() {
-		if t.def.Name == name {
-			return t.offeredTo(features)
-		}
-	}
-	return false
+	t, ok := byName()[name]
+	return ok && t.offeredTo(features)
+}
+
+// ChangesCart reports whether the named tool changes the shopper's cart:
+// the chat widget adopts the cart its result names.
+func ChangesCart(name string) bool {
+	return byName()[name].changesCart
 }
 
 // representativeQueries are requests a shopper's agent makes that this
@@ -248,7 +300,8 @@ func representativeQueries(store string) []string {
 func toolset(h *handlers) []tool {
 	return []tool{
 		onlyWith(catalogueOn, toolOf(&mcp.Tool{
-			Name: "search_products",
+			Name:        "search_products",
+			Annotations: mcptool.ReadOnly("Search products"),
 			Description: "Search the store's product catalog by free text " +
 				"with optional category and price filters. Greek and English " +
 				"queries both work (Greeklish is expanded server-side). " +
@@ -257,7 +310,8 @@ func toolset(h *handlers) []tool {
 		}, h.searchProducts)),
 
 		onlyWith(catalogueOn, toolOf(&mcp.Tool{
-			Name: "get_product",
+			Name:        "get_product",
+			Annotations: mcptool.ReadOnly("Get a product"),
 			Description: "Fetch one product by id: localized name and " +
 				"description, VAT-inclusive price, live stock, rating " +
 				"(1–10, when the store has reviews), page URL, image and " +
@@ -265,28 +319,32 @@ func toolset(h *handlers) []tool {
 		}, h.getProduct)),
 
 		onlyWith(catalogueOn, toolOf(&mcp.Tool{
-			Name: "list_categories",
+			Name:        "list_categories",
+			Annotations: mcptool.ReadOnly("Product categories"),
 			Description: "List the store's product category tree (ids and " +
 				"localized names). Category ids can be passed to " +
 				"search_products to narrow a search.",
 		}, h.listCategories)),
 
 		onlyWith(catalogueOn, toolOf(&mcp.Tool{
-			Name: "get_trending_searches",
+			Name:        "get_trending_searches",
+			Annotations: mcptool.ReadOnly("Trending searches"),
 			Description: "Popular search queries in this store over the last " +
 				"24 hours — useful to discover what shoppers are looking at. " +
 				"Feed a query into search_products to see the products.",
 		}, h.getTrendingSearches)),
 
 		onlyWith(reviewsOn, toolOf(&mcp.Tool{
-			Name: "get_product_reviews",
+			Name:        "get_product_reviews",
+			Annotations: mcptool.ReadOnly("Product reviews"),
 			Description: "Customer reviews for a product: overall rating and " +
 				"each review's rating (both 1–10) and recent " +
 				"verified-purchase comments.",
 		}, h.getProductReviews)),
 
 		onlyWith(cartOn, toolOf(&mcp.Tool{
-			Name: "get_shipping_options",
+			Name:        "get_shipping_options",
+			Annotations: mcptool.ReadOnly("Delivery options"),
 			Description: "Available delivery methods for a destination " +
 				"country with prices and free-shipping thresholds. Kinds: " +
 				"home_delivery and pickup_point (lockers/shops). When " +
@@ -295,7 +353,8 @@ func toolset(h *handlers) []tool {
 		}, h.getShippingOptions)),
 
 		onlyWith(cartOn, toolOf(&mcp.Tool{
-			Name: "find_pickup_points",
+			Name:        "find_pickup_points",
+			Annotations: mcptool.ReadOnly("Find pickup points"),
 			Description: "Find parcel pickup points near a postal code, " +
 				"searching only the pickup carriers this store delivers " +
 				"with to that country (ACS Smartpoint lockers/shops, BOX " +
@@ -305,7 +364,8 @@ func toolset(h *handlers) []tool {
 		}, h.findPickupPoints)),
 
 		onlyWith(cartOn, toolOf(&mcp.Tool{
-			Name: "get_payment_methods",
+			Name:        "get_payment_methods",
+			Annotations: mcptool.ReadOnly("Payment methods"),
 			Description: "Payment methods this store accepts (e.g. card via " +
 				"Viva/Stripe, cash on delivery), with any extra cost and " +
 				"free thresholds. Optionally filter by the shipping " +
@@ -315,7 +375,8 @@ func toolset(h *handlers) []tool {
 		// Open on every store, as track_order is: return terms bind
 		// orders already placed.
 		toolOf(&mcp.Tool{
-			Name: "get_store_policies",
+			Name:        "get_store_policies",
+			Annotations: mcptool.ReadOnly("Return policy"),
 			Description: "The store's return terms as it states them: " +
 				"the return window in days after delivery, who pays " +
 				"return shipping, and the link to its return-policy " +
@@ -323,39 +384,48 @@ func toolset(h *handlers) []tool {
 				"one in.",
 		}, h.getStorePolicies),
 
-		onlyWith(cartOn, toolOf(&mcp.Tool{
-			Name: "create_cart",
+		// Not in the chat: add_to_cart without a cart creates one, which
+		// the widget adopts, and a cart the model created while the
+		// widget sent one would never reach the shopper.
+		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
+			Name:        "create_cart",
+			Annotations: mcptool.Adds("Create a cart"),
 			Description: "Create an empty shopping cart. Persist the returned " +
 				"cartId — every cart and checkout tool needs it. add_to_cart " +
 				"also creates a cart implicitly when called without one.",
-		}, h.createCart)),
+		}, h.createCart))),
 
 		onlyWith(cartOn, cartToolOf(&mcp.Tool{
-			Name: "get_cart",
+			Name:        "get_cart",
+			Annotations: mcptool.ReadOnly("Get the cart"),
 			Description: "Fetch a cart's current lines and totals by cartId, " +
 				"including any applied coupon, promotion discount and " +
 				"promotional free shipping.",
 		}, h.getCart)),
 
-		onlyWith(cartOn, toolOf(&mcp.Tool{
-			Name: "add_to_cart",
+		changesCart(onlyWith(cartOn, toolOf(&mcp.Tool{
+			Name:        "add_to_cart",
+			Annotations: mcptool.Adds("Add to cart"),
 			Description: "Add a product to the cart (increments the line if " +
 				"already present). Omit cartId on the first call to create " +
 				"the cart implicitly; persist the returned cartId.",
-		}, h.addToCart)),
+		}, h.addToCart))),
 
-		onlyWith(cartOn, cartToolOf(&mcp.Tool{
+		changesCart(onlyWith(cartOn, cartToolOf(&mcp.Tool{
 			Name:        "update_cart_item",
+			Annotations: mcptool.Changes("Change a quantity"),
 			Description: "Change a cart line's quantity.",
-		}, h.updateCartItem)),
+		}, h.updateCartItem))),
 
-		onlyWith(cartOn, cartToolOf(&mcp.Tool{
+		changesCart(onlyWith(cartOn, cartToolOf(&mcp.Tool{
 			Name:        "remove_cart_item",
+			Annotations: mcptool.Changes("Remove from the cart"),
 			Description: "Remove a line from the cart.",
-		}, h.removeCartItem)),
+		}, h.removeCartItem))),
 
 		onlyWith(cartOn, cartToolOf(&mcp.Tool{
-			Name: "get_checkout_link",
+			Name:        "get_checkout_link",
+			Annotations: mcptool.ReadOnly("Checkout link"),
 			Description: "Get the URL where the shopper completes checkout in " +
 				"their browser — reviewing the cart, choosing delivery and " +
 				"paying (card via the store's payment provider, or cash on " +
@@ -365,29 +435,33 @@ func toolset(h *handlers) []tool {
 
 		// Chat-only: the owner allowed the assistant coupons on the
 		// shopper's cart; /mcp agents apply codes through checkout.
-		chatOnly(onlyWith(promotionsOn, toolOf(&mcp.Tool{
-			Name: "apply_coupon",
+		changesCart(chatOnly(onlyWith(promotionsOn, toolOf(&mcp.Tool{
+			Name:        "apply_coupon",
+			Annotations: mcptool.Changes("Apply a coupon"),
 			Description: "Apply a coupon code the shopper gave you to their " +
 				"cart (one coupon per cart: a new code replaces the " +
 				"previous one). Returns the cart with its new totals; a " +
 				"code the store refuses comes back with its reason.",
-		}, h.applyCoupon))),
+		}, h.applyCoupon)))),
 
-		chatOnly(onlyWith(promotionsOn, toolOf(&mcp.Tool{
-			Name: "remove_coupon",
+		changesCart(chatOnly(onlyWith(promotionsOn, toolOf(&mcp.Tool{
+			Name:        "remove_coupon",
+			Annotations: mcptool.Changes("Remove the coupon"),
 			Description: "Remove the coupon applied to the shopper's cart. " +
 				"Returns the cart with its new totals.",
-		}, h.removeCoupon))),
+		}, h.removeCoupon)))),
 
 		toolOf(&mcp.Tool{
-			Name: "track_order",
+			Name:        "track_order",
+			Annotations: mcptool.ReadOnly("Track an order"),
 			Description: "Track an existing order by its UUID (found in the " +
 				"confirmation email): fulfilment status, payment status and " +
 				"the carrier tracking link once shipped.",
 		}, h.trackOrder),
 
 		onlyWith(productAlertsOn, toolOf(&mcp.Tool{
-			Name: "subscribe_product_alert",
+			Name:        "subscribe_product_alert",
+			Annotations: mcptool.Adds("Product alert"),
 			Description: "Subscribe an email address to a product alert: " +
 				"restock (back in stock) or price_drop (price falls to a " +
 				"target). Useful when a product is out of stock or too " +
@@ -398,28 +472,32 @@ func toolset(h *handlers) []tool {
 		// authorization-code + PKCE against the store's identity provider;
 		// discovery via /.well-known/oauth-protected-resource/mcp). The
 		// bearer token travels on the MCP HTTP request's Authorization
-		// header and is forwarded to Django, which enforces scopes.
-		toolOf(&mcp.Tool{
-			Name: "my_orders",
+		// header and is forwarded to Django, which enforces scopes. An
+		// anonymous call is challenged for the scopes (RequireLinkedAccount).
+		account("orders:read", toolOf(&mcp.Tool{
+			Name:        "my_orders",
+			Annotations: mcptool.ReadOnly("My orders"),
 			Description: "The linked shopper's recent orders (requires a " +
 				"connected account with the orders:read scope). Returns " +
 				"status, payment state and totals; use track_order with an " +
 				"orderUuid for carrier tracking.",
-		}, h.myOrders),
+		}, h.myOrders)),
 
-		onlyWith(loyaltyOn, toolOf(&mcp.Tool{
-			Name: "my_loyalty_points",
+		account("loyalty:read", onlyWith(loyaltyOn, toolOf(&mcp.Tool{
+			Name:        "my_loyalty_points",
+			Annotations: mcptool.ReadOnly("My loyalty points"),
 			Description: "The linked shopper's loyalty summary — spendable " +
 				"points, level and tier (requires a connected account with " +
 				"the loyalty:read scope).",
-		}, h.myLoyaltyPoints)),
+		}, h.myLoyaltyPoints))),
 
-		onlyWith(favouritesOn, toolOf(&mcp.Tool{
-			Name: "my_favourites",
+		account("favourites:read", onlyWith(favouritesOn, toolOf(&mcp.Tool{
+			Name:        "my_favourites",
+			Annotations: mcptool.ReadOnly("My favourites"),
 			Description: "The linked shopper's favourite products — the " +
 				"basis for personalised recommendations (requires a " +
 				"connected account with the favourites:read scope).",
-		}, h.myFavourites)),
+		}, h.myFavourites))),
 
 		// UCP checkout capability (dev.ucp.shopping.checkout), MCP transport
 		// binding. Tool names, argument names and argument shapes come from
@@ -428,36 +506,44 @@ func toolset(h *handlers) []tool {
 		// protocol metadata, `id` names the target session, and `checkout`
 		// carries the domain object. Structured output is the UCP checkout
 		// session.
-		onlyWith(cartOn, toolOf(&mcp.Tool{
+		//
+		// The six UCP tools (these five and get_order) are never in the
+		// chat: a model cannot supply `meta.ucp-agent.profile`, and the
+		// assistant hands the shopper a checkout link instead.
+		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "create_checkout",
+			Annotations:  mcptool.Adds("Start a checkout"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: start a checkout session. Send " +
 				"checkout.line_items (or cart_id for a cart built with the " +
 				"cart tools). Collect buyer, fulfillment and payment with " +
 				"update_checkout until status is ready_for_complete. " +
 				"Requires meta.ucp-agent.profile.",
-		}, h.createCheckout)),
+		}, h.createCheckout))),
 
-		onlyWith(cartOn, toolOf(&mcp.Tool{
+		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "get_checkout",
+			Annotations:  mcptool.ReadOnly("Get a checkout"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: read the current state of a checkout " +
 				"session, including its totals, messages and the payment " +
 				"instruments available for it. Requires " +
 				"meta.ucp-agent.profile.",
-		}, h.getCheckout)),
+		}, h.getCheckout))),
 
-		onlyWith(cartOn, toolOf(&mcp.Tool{
+		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "update_checkout",
+			Annotations:  mcptool.Changes("Update a checkout"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: add or change buyer details, delivery " +
 				"(address or ACS/BOX NOW pickup point), payment and " +
 				"discount codes on a checkout session. Requires " +
 				"meta.ucp-agent.profile.",
-		}, h.updateCheckout)),
+		}, h.updateCheckout))),
 
-		onlyWith(cartOn, toolOf(&mcp.Tool{
+		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "complete_checkout",
+			Annotations:  mcptool.Changes("Place the order"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: place the order. Send " +
 				"checkout.payment.instruments naming one instrument the " +
@@ -466,28 +552,30 @@ func toolset(h *handlers) []tool {
 				"continue_url where the buyer authorizes on the store's " +
 				"hosted page. Requires meta.ucp-agent.profile and " +
 				"meta.idempotency-key.",
-		}, h.completeCheckout)),
+		}, h.completeCheckout))),
 
 		// UCP order capability (dev.ucp.shopping.order), MCP transport
 		// binding. Its conformance section requires exactly this tool.
-		toolOf(&mcp.Tool{
+		mcpOnly(toolOf(&mcp.Tool{
 			Name:         "get_order",
+			Annotations:  mcptool.ReadOnly("Get an order"),
 			OutputSchema: orderResultSchema,
 			Description: "UCP: the current state of an order placed through " +
 				"this surface — line items with per-line fulfilment status, " +
 				"totals and the permalink. Use track_order for shipment " +
 				"tracking or for orders placed on the web. Requires " +
 				"meta.ucp-agent.profile.",
-		}, h.getOrder),
+		}, h.getOrder)),
 
-		onlyWith(cartOn, toolOf(&mcp.Tool{
+		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "cancel_checkout",
+			Annotations:  mcptool.Changes("Cancel a checkout"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: abandon a checkout session the buyer is no " +
 				"longer pursuing. Already-canceled sessions succeed " +
 				"unchanged. Requires meta.ucp-agent.profile and " +
 				"meta.idempotency-key.",
-		}, h.cancelCheckout)),
+		}, h.cancelCheckout))),
 	}
 }
 
@@ -497,7 +585,7 @@ func toolset(h *handlers) []tool {
 const maxRequestBodyBytes = 256 << 10
 
 // Handler wraps the server in the stateless streamable HTTP transport.
-func Handler(d Deps, log *slog.Logger) http.Handler {
+func Handler(d Deps) http.Handler {
 	cache := &serverCache{deps: d, servers: map[string]*mcp.Server{}}
 	return mcp.NewStreamableHTTPHandler(
 		cache.forRequest,
@@ -506,7 +594,7 @@ func Handler(d Deps, log *slog.Logger) http.Handler {
 			JSONResponse:                 true,
 			PropagateRequestCancellation: true,
 			MaxRequestBodyBytes:          maxRequestBodyBytes,
-			Logger:                       log,
+			Logger:                       d.Log,
 		},
 	)
 }

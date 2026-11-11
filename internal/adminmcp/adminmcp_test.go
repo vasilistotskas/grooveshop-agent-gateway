@@ -137,11 +137,15 @@ func (f *fakeDjango) serve(t *testing.T) *django.Client {
 		5*time.Second, quietLog(), obs.NewMetrics())
 }
 
+// listTTL is how long the tests' server lets a client keep its lists.
+const listTTL = 5 * time.Minute
+
 // stack is /mcp/admin as routes.go mounts it, with the tenant already
 // resolved.
 func stack(dj *django.Client, tn *tenant.Tenant) http.Handler {
 	inner := RequireStaff(NewVerifier(dj, quietLog()), quietLog())(
-		Handler(Deps{Django: dj, Log: quietLog(), Version: "test"}))
+		Handler(Deps{Django: dj, Log: quietLog(), ListTTL: listTTL,
+			Version: "test"}))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		inner.ServeHTTP(w, r.WithContext(tenant.NewContext(r.Context(), tn)))
 	})
@@ -257,16 +261,24 @@ func TestAStaffVerdictForOneStoreIsNotAnothersVerdict(t *testing.T) {
 	assert.EqualValues(t, 1, alphaCalls.Load(), "alpha's verdict is cached")
 }
 
+// Every tool only reads, says so and has a title. The list may be kept
+// by the person's own client only: every request carries their
+// credential.
 func TestEveryToolOnlyReads(t *testing.T) {
 	f := &fakeDjango{granted: ReadScopes}
 	session := connect(t, stack(f.serve(t), acme()))
 
 	listed, err := session.ListTools(context.Background(), nil)
 	require.NoError(t, err)
+	assert.Equal(t, int(listTTL.Milliseconds()), listed.TTLMs)
+	assert.Equal(t, "private", listed.CacheScope)
 	names := []string{}
 	for _, tool := range listed.Tools {
 		names = append(names, tool.Name)
+		assert.NotEmpty(t, tool.Title, tool.Name)
 		require.NotNil(t, tool.Annotations, tool.Name)
+		// A 2025-03-26 client reads only annotations.title.
+		assert.Equal(t, tool.Title, tool.Annotations.Title, tool.Name)
 		assert.True(t, tool.Annotations.ReadOnlyHint, tool.Name)
 		require.NotNil(t, tool.Annotations.DestructiveHint, tool.Name)
 		assert.False(t, *tool.Annotations.DestructiveHint, tool.Name)

@@ -94,7 +94,12 @@ func New(d Deps) http.Handler {
 		Profiles:           d.Profiles,
 		Site:               site,
 		Log:                d.Log,
-		Version:            d.Version,
+		Metrics:            d.Metrics,
+		// A store's tool list follows its features and identity, which
+		// the gateway caches per TTL tier (worst case: CLAUDE.md,
+		// internal/mcptool).
+		ListTTL: d.Cfg.TenantCacheTTL,
+		Version: d.Version,
 	}
 	// Identity runs inside the tenant middleware (the upstream token
 	// probe needs the tenant). Auth is OPTIONAL — anonymous shopping
@@ -105,7 +110,7 @@ func New(d Deps) http.Handler {
 	mux.Handle("/mcp",
 		tenantMW(tenant.RequireAgentCommerce(
 			identityMW(mcpsrv.RequireLinkedAccount(
-				mcpsrv.Handler(mcpDeps, d.Log))))))
+				mcpsrv.Handler(mcpDeps))))))
 	// The store-admin MCP server: the store's own team, by role, read
 	// only. A separate server with its own tools and authorization server
 	// (Django's staff issuer on the platform's connect host); every call
@@ -116,6 +121,8 @@ func New(d Deps) http.Handler {
 			adminmcp.Handler(adminmcp.Deps{
 				Django:  d.Django,
 				Log:     d.Log,
+				Metrics: d.Metrics,
+				ListTTL: d.Cfg.TenantCacheTTL,
 				Version: d.Version,
 			}))))
 	mux.Handle("GET /.well-known/oauth-protected-resource"+adminmcp.Path,

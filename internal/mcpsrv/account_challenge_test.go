@@ -269,12 +269,18 @@ func TestRequireLinkedAccountRefusesAnUnreadableBody(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-func TestEveryAccountToolHasItsToolDefinition(t *testing.T) {
-	names := map[string]bool{}
-	for _, tool := range definitions() {
-		names[tool.def.Name] = true
-	}
-	for name := range accountScopes {
-		assert.True(t, names[name], name)
+// The account tools are read off the toolset, each with the scope its
+// description names, and none of them is the chat's.
+func TestAccountToolsCarryTheirScopes(t *testing.T) {
+	assert.Equal(t, map[string]string{
+		"my_orders":         "orders:read",
+		"my_loyalty_points": "loyalty:read",
+		"my_favourites":     "favourites:read",
+	}, accountScopes())
+	for name, scope := range accountScopes() {
+		tool := byName()[name]
+		assert.Contains(t, tool.def.Description, scope, name)
+		assert.False(t, tool.servedOn(chatSurface), name)
+		assert.True(t, tool.servedOn(mcpSurface), name)
 	}
 }

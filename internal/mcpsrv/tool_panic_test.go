@@ -22,7 +22,7 @@ func TestAPanickingToolIsAnsweredOverTheStatelessHandler(t *testing.T) {
 	store := cartTenant()
 	store.Features = EveryFeature
 	h := Handler(Deps{Site: testSite, Version: "test",
-		Log: slog.New(lines)}, slog.New(slog.DiscardHandler))
+		Log: slog.New(lines)})
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			h.ServeHTTP(w, r.WithContext(

@@ -14,31 +14,6 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcpsrv"
 )
 
-// cartTools return the shopper's cart id for the widget to adopt.
-// Whether the turn changed the cart the tools record themselves
-// (mcpsrv.CartActivity).
-var cartTools = map[string]bool{
-	"create_cart":      true,
-	"add_to_cart":      true,
-	"update_cart_item": true,
-	"remove_cart_item": true,
-	"apply_coupon":     true,
-	"remove_coupon":    true,
-}
-
-// checkoutTools are the UCP checkout capability's canonical tools. They
-// are withheld from the chatbot: their arguments are shaped for a
-// platform generating calls from the OpenRPC document, not for a
-// conversational model, and the shopping assistant is meant to hand the
-// buyer a checkout link rather than place orders itself.
-var checkoutTools = map[string]bool{
-	"create_checkout":   true,
-	"get_checkout":      true,
-	"update_checkout":   true,
-	"complete_checkout": true,
-	"cancel_checkout":   true,
-}
-
 // bridge is a per-turn in-process MCP client over the shared tool server.
 // The model's tool definitions are derived from the server's own schemas,
 // so the chatbot and external MCP agents can never drift apart.
@@ -102,11 +77,12 @@ func (b *bridge) close() {
 }
 
 // tools converts every MCP tool the store is served into an
-// OpenAI-protocol function tool. The shared server carries every tool, so
-// a tool whose feature the store switched off is left out here
-// (mcpsrv.Offered). The MCP input schema is JSON Schema (draft 2020-12,
-// as the SDK infers it) and is passed as the chat-completions
-// `parameters` object unchanged.
+// OpenAI-protocol function tool. The shared server carries the chat's
+// tools for every feature (the account and UCP tools are /mcp's alone,
+// mcpsrv.NewChatServer), so a tool whose feature the store switched off
+// is left out here (mcpsrv.Offered). The MCP input schema is JSON Schema
+// (draft 2020-12, as the SDK infers it) and is passed as the
+// chat-completions `parameters` object unchanged.
 func (b *bridge) tools(
 	ctx context.Context, features django.StoreFeatures,
 ) ([]openai.ChatCompletionToolUnionParam, error) {
@@ -117,11 +93,7 @@ func (b *bridge) tools(
 	tools := make([]openai.ChatCompletionToolUnionParam, 0, len(list.Tools))
 	b.offered = make(map[string]bool, len(list.Tools))
 	for _, t := range list.Tools {
-		// Account tools need an OAuth-linked credential on the MCP request.
-		// The chat widget's shopper signs in through the storefront, whose
-		// own pages already show orders and loyalty.
-		if mcpsrv.IsAccountTool(t.Name) || checkoutTools[t.Name] ||
-			!mcpsrv.Offered(t.Name, features) {
+		if !mcpsrv.Offered(t.Name, features) {
 			continue
 		}
 		b.offered[t.Name] = true
@@ -193,9 +165,11 @@ func (b *bridge) call(
 	return text, products, res.IsError, nil
 }
 
-// recordCartState tracks the active cart id, so the widget can adopt it.
+// recordCartState tracks the active cart id, so the widget can adopt it:
+// a tool that changes the cart names it in its result. Whether the turn
+// changed the cart the tools record themselves (mcpsrv.CartActivity).
 func (b *bridge) recordCartState(tool string, structured []byte) {
-	if !cartTools[tool] {
+	if !mcpsrv.ChangesCart(tool) {
 		return
 	}
 	var payload struct {

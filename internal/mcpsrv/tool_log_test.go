@@ -9,6 +9,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
 // toolLines keeps the server and tool, and the outcome, of every "tool
@@ -48,8 +50,30 @@ func (l *toolLines) Handle(_ context.Context, r slog.Record) error {
 func (l *toolLines) WithAttrs([]slog.Attr) slog.Handler { return l }
 func (l *toolLines) WithGroup(string) slog.Handler      { return l }
 
-// Every tool call on /mcp and in the chat is logged once, naming which
-// of them served it, as /mcp/admin's are.
+// toolCalls is gateway_tool_calls_total by "server tool outcome".
+func toolCalls(t *testing.T, m *obs.Metrics) map[string]float64 {
+	t.Helper()
+	families, err := m.Registry.Gather()
+	require.NoError(t, err)
+	out := map[string]float64{}
+	for _, f := range families {
+		if f.GetName() != "gateway_tool_calls_total" {
+			continue
+		}
+		for _, metric := range f.GetMetric() {
+			labels := map[string]string{}
+			for _, l := range metric.GetLabel() {
+				labels[l.GetName()] = l.GetValue()
+			}
+			out[labels["server"]+" "+labels["tool"]+" "+
+				labels["outcome"]] = metric.GetCounter().GetValue()
+		}
+	}
+	return out
+}
+
+// Every tool call on /mcp and in the chat is logged and counted once,
+// naming which of them served it, as /mcp/admin's are.
 func TestEveryToolCallIsLoggedWithItsServer(t *testing.T) {
 	for _, tc := range []struct {
 		server string
@@ -63,7 +87,9 @@ func TestEveryToolCallIsLoggedWithItsServer(t *testing.T) {
 	} {
 		t.Run(tc.server, func(t *testing.T) {
 			lines := &toolLines{}
-			srv := tc.build(Deps{Version: "test", Log: slog.New(lines)})
+			metrics := obs.NewMetrics()
+			srv := tc.build(Deps{Version: "test", Log: slog.New(lines),
+				Metrics: metrics})
 			serverT, clientT := mcp.NewInMemoryTransports()
 			_, err := srv.Connect(t.Context(), serverT, nil)
 			require.NoError(t, err)
@@ -77,7 +103,8 @@ func TestEveryToolCallIsLoggedWithItsServer(t *testing.T) {
 			// logged all the same. get_cart is registered per surface
 			// (cartToolOf).
 			for _, call := range []*mcp.CallToolParams{
-				{Name: "my_orders"},
+				{Name: "track_order",
+					Arguments: map[string]any{"orderUuid": "o"}},
 				{Name: "get_cart", Arguments: map[string]any{"cartId": "c"}},
 			} {
 				_, err = session.CallTool(t.Context(), call)
@@ -87,8 +114,12 @@ func TestEveryToolCallIsLoggedWithItsServer(t *testing.T) {
 			lines.mu.Lock()
 			defer lines.mu.Unlock()
 			assert.Equal(t, [][2]string{
-				{tc.server, "my_orders"}, {tc.server, "get_cart"},
+				{tc.server, "track_order"}, {tc.server, "get_cart"},
 			}, lines.lines)
+			assert.Equal(t, map[string]float64{
+				tc.server + " track_order error": 1,
+				tc.server + " get_cart error":    1,
+			}, toolCalls(t, metrics))
 		})
 	}
 }

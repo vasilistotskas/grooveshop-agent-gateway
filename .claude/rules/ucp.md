@@ -51,9 +51,10 @@ wins over this page.
   selection. `create_checkout` and `update_checkout` settle every
   lookup and refusal (region, payment) before their first cart write,
   creating the cart included, so a refused call leaves the cart as the
-  stored session knows it. These five tools are withheld from the
-  chatbot (`internal/chat/bridge.go`) — their shapes target a platform
-  generating calls, and chat hands over a checkout link instead.
+  stored session knows it. These five tools and `get_order` are never
+  registered on the chat server (`mcpOnly` in
+  `internal/mcpsrv/server.go`) — their input requires `meta`, which a
+  model cannot supply, and chat hands over a checkout link instead.
 - The service `schema` (OpenRPC) URL may appear ONLY while every method it
   defines for an ADVERTISED capability exists — the five checkout tools
   plus `get_order`. Declaring it asserts a machine-checkable contract.

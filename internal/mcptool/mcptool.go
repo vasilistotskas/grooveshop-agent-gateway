@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -83,6 +84,13 @@ func MarkUntrusted(source, s string) *Untrusted {
 	return &Untrusted{Untrusted: true, Source: source, Text: s}
 }
 
+// gatewayCodes are the codes above: the ones the gateway mints.
+var gatewayCodes = []string{
+	CodeNotFound, CodeCartUnreachable, CodeUnauthorized, CodeNotGranted,
+	CodeNotAllowed, CodeAccessOff, CodeThrottled, CodeConflict,
+	CodeInvalid, CodeUnavailable,
+}
+
 // KeyServer is the log key naming which surface served a call, with one
 // of the Server values: two of them carry a tool of one name.
 const KeyServer = "server"
@@ -94,8 +102,17 @@ const (
 	ServerAdmin = "mcp_admin"
 )
 
-// OutcomePanic is the outcome of a call whose handler panicked.
-const OutcomePanic = "panic"
+// A call's outcome, beside the ToolError codes.
+const (
+	OutcomeOK    = "ok"
+	OutcomeError = "error"
+	OutcomePanic = "panic"
+	// OutcomeRefused counts a ToolError whose code is the store's own
+	// (Django's `code`, a refused coupon's reason): those are
+	// open-ended, so the counter folds them into one value. The log line
+	// keeps the code.
+	OutcomeRefused = "refused"
+)
 
 // errPanicked answers a call whose handler panicked. The hint holds on
 // every surface: it names neither the store's backend nor who asked.
@@ -104,13 +121,25 @@ var errPanicked = &ToolError{Code: CodeUnavailable,
 	Hint: "the tool failed unexpectedly; retry once, then try again " +
 		"later"}
 
+// Recorder is where a server records its tool calls: Server is one of
+// the Server values, Metrics the registry gateway_tool_calls_total is
+// counted on (nil counts nothing).
+type Recorder struct {
+	Server  string
+	Log     *slog.Logger
+	Metrics *obs.Metrics
+}
+
 // Add registers a tool on srv. Each call that reaches the handler logs
 // one info line, "tool call", with KeyServer (server), the tool, the
-// outcome (ok, the ToolError's code, error, or OutcomePanic) and
-// duration_ms; the logger's context handler adds the request id and the
-// store. The arguments and the result are never logged: they carry
-// customer data. A call the SDK refuses before the handler, an unknown
-// tool or arguments that fail the input schema, logs no line.
+// outcome (OutcomeOK, the ToolError's code, OutcomeError or
+// OutcomePanic) and duration_ms; the logger's context handler adds the
+// request id and the store. The arguments and the result are never
+// logged: they carry customer data. The call is also counted on
+// gateway_tool_calls_total by server, tool and outcome, a store's own
+// code as OutcomeRefused. A call the SDK refuses before the handler, an
+// unknown tool or arguments that fail the input schema, is neither
+// logged nor counted.
 //
 // The SDK runs a handler on a goroutine of its own, which no recover
 // covers, so a panic would end the process. It is recovered here
@@ -121,34 +150,102 @@ var errPanicked = &ToolError{Code: CodeUnavailable,
 // server's shutdown cut, with httpmw.ErrShuttingDown, whatever the
 // protocol (httpmw.UntilShutdown): work a tool has not detached stops
 // there, as an ACP request's does.
+//
+// def's annotations are one of ReadOnly, Adds or Changes; their title is
+// the tool's Title too.
 func Add[In, Out any](
-	srv *mcp.Server, log *slog.Logger, server string, def *mcp.Tool,
+	srv *mcp.Server, rec Recorder, def *mcp.Tool,
 	h mcp.ToolHandlerFor[In, Out],
 ) {
-	mcp.AddTool(srv, def, func(
+	titled := *def
+	titled.Title = def.Annotations.Title
+	mcp.AddTool(srv, &titled, func(
 		ctx context.Context, req *mcp.CallToolRequest, in In,
 	) (*mcp.CallToolResult, Out, error) {
 		ctx, stop := httpmw.UntilShutdown(ctx)
 		defer stop()
 		start := time.Now()
-		res, out, err, panicked := run(ctx, log, def.Name, h, req, in)
-		outcome := "ok"
+		res, out, err, panicked := run(ctx, rec.Log, def.Name, h, req, in)
+		outcome := OutcomeOK
 		switch {
 		case panicked:
 			outcome, err = OutcomePanic, errPanicked
 		case err != nil:
-			outcome = "error"
+			outcome = OutcomeError
 			if te, ok := errors.AsType[*ToolError](err); ok {
 				outcome = te.Code
 			}
 		}
-		log.InfoContext(ctx, "tool call",
-			slog.String(KeyServer, server),
+		rec.Log.InfoContext(ctx, "tool call",
+			slog.String(KeyServer, rec.Server),
 			slog.String("tool", def.Name),
 			slog.String("outcome", outcome),
 			slog.Int64("duration_ms", time.Since(start).Milliseconds()))
+		if rec.Metrics != nil {
+			rec.Metrics.ToolCalls.WithLabelValues(
+				rec.Server, def.Name, counted(outcome)).Inc()
+		}
 		return res, out, err
 	})
+}
+
+// counted is the counter's value for an outcome: the gateway's own as
+// they are, a store's code as OutcomeRefused.
+func counted(outcome string) string {
+	switch {
+	case outcome == OutcomeOK, outcome == OutcomeError,
+		outcome == OutcomePanic, slices.Contains(gatewayCodes, outcome):
+		return outcome
+	}
+	return OutcomeRefused
+}
+
+// The effect a tool has on the store, as the hints of its annotations,
+// with its title. None reaches past the store, so none is open-world. An
+// absent hint means destructive and open-world, and a host may then ask
+// the person before every call. Add also sets the tool's own Title from
+// the annotations' one: a client on protocol 2025-03-26, which the
+// streamable transport assumes for a request naming no version, knows
+// only annotations.title.
+
+// ReadOnly is a tool that reads the store and changes nothing.
+func ReadOnly(title string) *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{Title: title, ReadOnlyHint: true,
+		DestructiveHint: new(false), IdempotentHint: true,
+		OpenWorldHint: new(false)}
+}
+
+// Adds is a tool that adds to the store (a cart, a cart line, an alert,
+// a checkout) and adds again when called again.
+func Adds(title string) *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{Title: title, DestructiveHint: new(false),
+		OpenWorldHint: new(false)}
+}
+
+// Changes is a tool that replaces or removes what the store holds (a
+// quantity, a line, a coupon, a checkout's state, an order placed), and
+// changes nothing more when called again with the same arguments.
+func Changes(title string) *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{Title: title, DestructiveHint: new(true),
+		IdempotentHint: true, OpenWorldHint: new(false)}
+}
+
+// The cacheScope values: who may keep a list result.
+const (
+	CachePublic  = "public"
+	CachePrivate = "private"
+)
+
+// Cacheable is a server's ServerOptions.SetCacheable: its tools/list
+// and server/discover answers may be kept for ttl, in scope. Left to
+// the SDK, ttlMs is 0, and a client treats every list as stale at once.
+func Cacheable(
+	ttl time.Duration, scope string,
+) func(context.Context, mcp.Request, *mcp.Cacheable) {
+	return func(_ context.Context, _ mcp.Request, c *mcp.Cacheable) {
+		c.TTLMs = int(ttl.Milliseconds())
+		c.CacheScope = scope
+	}
 }
 
 // run calls h, reporting whether it panicked; obs.Recover logs the panic.

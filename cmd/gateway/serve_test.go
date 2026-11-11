@@ -355,19 +355,20 @@ func TestServeCutsAToolOnAnOldProtocol(t *testing.T) {
 	started := make(chan struct{})
 	causes := make(chan error, 1)
 	server := mcp.NewServer(&mcp.Implementation{Name: "test"}, nil)
-	mcptool.Add(server, slog.New(slog.DiscardHandler), mcptool.ServerMCP,
-		&mcp.Tool{Name: "place"}, func(
-			ctx context.Context, _ *mcp.CallToolRequest, _ struct{},
-		) (*mcp.CallToolResult, struct{}, error) {
-			close(started)
-			select {
-			case <-ctx.Done():
-				causes <- context.Cause(ctx)
-			case <-time.After(tm.final):
-				causes <- nil
-			}
-			return &mcp.CallToolResult{}, struct{}{}, nil
-		})
+	mcptool.Add(server, mcptool.Recorder{
+		Server: mcptool.ServerMCP, Log: slog.New(slog.DiscardHandler),
+	}, &mcp.Tool{Name: "place", Annotations: mcptool.Adds("Place")}, func(
+		ctx context.Context, _ *mcp.CallToolRequest, _ struct{},
+	) (*mcp.CallToolResult, struct{}, error) {
+		close(started)
+		select {
+		case <-ctx.Done():
+			causes <- context.Cause(ctx)
+		case <-time.After(tm.final):
+			causes <- nil
+		}
+		return &mcp.CallToolResult{}, struct{}{}, nil
+	})
 	ctx, stop := stoppable(t)
 	url, logs, done := startServe(t, ctx, mcpHandler(server), tm)
 	go func() {
