@@ -318,6 +318,15 @@ func (h *handlers) updateSession(
 	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
 		return refusedBy(err)
 	}
+	codes, hasCodes := in.Checkout.discountCodes()
+	if in.Checkout.LineItems != nil || hasCodes {
+		// The lookups above can outlast the lock. A checkout another call
+		// stored meanwhile, a completion included, gets none of this
+		// update's cart writes; finish answers by what is stored.
+		if err := h.deps.Checkout.Current(ctx, s); err != nil {
+			return refusedBy(saveFailed(err))
+		}
+	}
 	if in.Checkout.LineItems != nil {
 		if err := checkout.SyncCartLines(
 			ctx, h.deps.Django, t, s.Protocol, s.CartID, lines,
@@ -326,7 +335,6 @@ func (h *handlers) updateSession(
 				checkoutNotUpdated))
 		}
 	}
-	codes, hasCodes := in.Checkout.discountCodes()
 	if hasCodes {
 		if err := checkout.ApplyDiscountCodes(
 			ctx, h.deps.Django, t, s, codes,

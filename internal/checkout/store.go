@@ -141,22 +141,29 @@ func (st *Store) Load(ctx context.Context, schema, id string) (*Session, error) 
 // KEYS[1] for ARGV[4] ms while the stored session's revision is still
 // ARGV[1], and returns 1. No stored session counts as revision "",
 // which only a session never stored has. Otherwise it writes nothing
-// and returns 0. go-redis sends a command again when its reply was
-// lost: the second run finds the revision the first one stored, which
-// no other save can have written, and reports it stored.
+// and returns 0. A lifetime of 0 or less is a placed session whose day
+// has passed: it is deleted, under the same check. go-redis sends a
+// command again when its reply was lost: the second run finds the
+// revision the first one stored, which no other save can have written
+// (or, after a delete, no session), and reports it done.
 var saveScript = redis.NewScript(`
 local stored = redis.call('GET', KEYS[1])
+local ended = tonumber(ARGV[4]) <= 0
 local revision = ''
 if stored then
   revision = cjson.decode(stored).revision
 end
-if revision == ARGV[2] then
+if revision == ARGV[2] or (ended and not stored) then
   return 1
 end
 if revision ~= ARGV[1] then
   return 0
 end
-redis.call('SET', KEYS[1], ARGV[3], 'PX', ARGV[4])
+if ended then
+  redis.call('DEL', KEYS[1])
+else
+  redis.call('SET', KEYS[1], ARGV[3], 'PX', ARGV[4])
+end
 return 1
 `)
 
@@ -181,15 +188,9 @@ func (st *Store) put(ctx context.Context, s *Session, stored string) error {
 	next.Revision = uuid.NewString()
 	next.UpdatedAt = time.Now().UTC()
 	key := sessionKey(s.Schema, s.ID)
+	// Zero or less ends a placed session whose day has passed: the
+	// script deletes it, under the same check as a write.
 	ttl := next.ttl(next.UpdatedAt).Milliseconds()
-	if ttl <= 0 {
-		// A placed session ends when its lifetime does, whoever wrote it
-		// last.
-		if err := st.rdb.Del(ctx, key).Err(); err != nil {
-			return fmt.Errorf("%w: save: %w", ErrUnavailable, err)
-		}
-		return nil
-	}
 	raw, err := json.Marshal(&next)
 	if err != nil {
 		return fmt.Errorf("checkout: encode: %w", err)
@@ -203,6 +204,25 @@ func (st *Store) put(ctx context.Context, s *Session, stored string) error {
 		return ErrSessionChanged
 	}
 	s.Revision, s.UpdatedAt = next.Revision, next.UpdatedAt
+	return nil
+}
+
+// Current reports whether s is still the stored session: nil, or
+// ErrSessionChanged when another request stored the session since s was
+// loaded, or it is gone. It proves nothing about a moment later, which
+// only Save does: it is for what a request does elsewhere on a session's
+// behalf (a cart write in Django), so that it does none for a session it
+// can already see has moved on.
+func (st *Store) Current(ctx context.Context, s *Session) error {
+	stored, err := st.Load(ctx, s.Schema, s.ID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return ErrSessionChanged
+	case err != nil:
+		return err
+	case stored.Revision != s.Revision:
+		return ErrSessionChanged
+	}
 	return nil
 }
 

@@ -190,8 +190,13 @@ func (f *Flow) saveOverEvent(ctx context.Context, s *Session) error {
 	if err != nil {
 		return err
 	}
-	if stored.Status == StatusCompleted {
+	switch stored.Status {
+	case StatusCompleted:
 		s.Status = StatusCompleted
+	case StatusCompleteInProgress:
+	default:
+		// Not what an event leaves: nothing is written over it.
+		return ErrSessionChanged
 	}
 	s.Revision = stored.Revision
 	return f.st.Save(ctx, s)

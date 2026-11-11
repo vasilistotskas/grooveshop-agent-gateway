@@ -19,25 +19,33 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 )
 
-// onSessionReread runs act ahead of the second read of session id from
-// now on: the next call's load is the first, and the second is that call
-// reading the session again. An error act returns is the read's result;
-// after a nil the read goes on.
-func (stack ucpStack) onSessionReread(
-	t *testing.T, id string, act func() error,
+// The reads a call makes of its session, counted from the call's start:
+// its load, then the read at its exit when its answer is made from the
+// snapshot. An update that writes the cart reads once more in between,
+// ahead of its first cart write.
+const (
+	exitRead         = 2
+	beforeCartWrites = 2
+	exitReadOfLines  = 3
+)
+
+// onSessionRead runs act ahead of the nth read of session id from now
+// on. An error act returns is the read's result; after a nil the read
+// goes on.
+func (stack ucpStack) onSessionRead(
+	t *testing.T, id string, nth int32, act func() error,
 ) {
 	t.Helper()
-	const reread = 2
 	var reads atomic.Int32
 	stack.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
 		args := cmd.Args()
 		if cmd.Name() != "get" || len(args) < 2 ||
-			args[1] != sessionRedisKey(id) || reads.Add(1) != reread {
+			args[1] != sessionRedisKey(id) || reads.Add(1) != nth {
 			return nil
 		}
 		return act()
 	}))
-	t.Cleanup(func() { reads.Store(reread) })
+	t.Cleanup(func() { reads.Store(nth) })
 }
 
 // evicted removes a session the way Redis evicts a key.
@@ -106,7 +114,7 @@ func TestACompleteRefusedForAnotherCompletesOrderReadsAgain(t *testing.T) {
 	for name, surface := range surfaces {
 		t.Run("a session evicted meanwhile, over "+name, func(t *testing.T) {
 			id := surface.ready(t)
-			stack.onSessionReread(t, id, stack.evicted(id))
+			stack.onSessionRead(t, id, exitRead, stack.evicted(id))
 			answer := surface.answer(ctx, id, uuid.NewString(), nil)
 			assert.Empty(t, answer.status)
 			assert.Contains(t, answer.refusal, sessionGone[name])
@@ -114,7 +122,7 @@ func TestACompleteRefusedForAnotherCompletesOrderReadsAgain(t *testing.T) {
 		})
 		t.Run("a session that cannot be read, over "+name, func(t *testing.T) {
 			id := surface.ready(t)
-			stack.onSessionReread(t, id,
+			stack.onSessionRead(t, id, exitRead,
 				func() error { return errRedisDown })
 			answer := surface.answer(ctx, id, uuid.NewString(), nil)
 			assert.Empty(t, answer.status)
@@ -142,9 +150,24 @@ func TestAnUpdateThatCannotReadItsSessionAgainDoesNotCallTheCartGone(
 	ctx := context.Background()
 	stack := startUCPGateway(t)
 	surfaces := surfacesByName(t, stack)
-	open := []string{
-		surfaces["ucp"].ready(t), surfaces["ucp"].ready(t),
-		surfaces["ucp"].ready(t), surfaces["ucp"].ready(t),
+	type scene struct {
+		name, at string
+		read     int32
+		id       string
+	}
+	var scenes []scene
+	for _, name := range []string{"acp", "ucp"} {
+		for at, read := range map[string]int32{
+			"before its cart writes": beforeCartWrites,
+			"at its exit":            exitReadOfLines,
+		} {
+			for range 2 {
+				scenes = append(scenes, scene{
+					name: name, at: at, read: read,
+					id: surfaces["ucp"].ready(t),
+				})
+			}
+		}
 	}
 	// Another checkout's order takes the cart they all share.
 	other := surfaces["ucp"].ready(t)
@@ -152,20 +175,23 @@ func TestAnUpdateThatCannotReadItsSessionAgainDoesNotCallTheCartGone(
 	require.Equal(t, "completed", surfaces["ucp"].complete(
 		ctx, other, uuid.NewString(), nil))
 
-	for i, name := range []string{"acp", "ucp"} {
-		t.Run("evicted, over "+name, func(t *testing.T) {
-			id := open[2*i]
-			stack.onSessionReread(t, id, stack.evicted(id))
-			answer := surfaces[name].updateLines(ctx, id)
-			assert.Contains(t, answer.refusal, sessionGone[name])
+	for i := 0; i < len(scenes); i += 2 {
+		gone, unreadable := scenes[i], scenes[i+1]
+		over := ", " + gone.at + ", over " + gone.name
+		t.Run("evicted"+over, func(t *testing.T) {
+			stack.onSessionRead(t, gone.id, gone.read,
+				stack.evicted(gone.id))
+			answer := surfaces[gone.name].updateLines(ctx, gone.id)
+			assert.Contains(t, answer.refusal, sessionGone[gone.name])
 			assert.NotContains(t, answer.refusal, "cart no longer exists")
 		})
-		t.Run("unreadable, over "+name, func(t *testing.T) {
-			id := open[2*i+1]
-			stack.onSessionReread(t, id,
+		t.Run("unreadable"+over, func(t *testing.T) {
+			stack.onSessionRead(t, unreadable.id, unreadable.read,
 				func() error { return errRedisDown })
-			answer := surfaces[name].updateLines(ctx, id)
-			assert.Contains(t, answer.refusal, sessionUnreadable[name])
+			answer := surfaces[unreadable.name].updateLines(
+				ctx, unreadable.id)
+			assert.Contains(t, answer.refusal,
+				sessionUnreadable[unreadable.name])
 			assert.NotContains(t, answer.refusal, "create_checkout")
 		})
 	}

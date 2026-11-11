@@ -90,6 +90,55 @@ func TestAnUpdateWhoseLineWriteMeetsAnotherCompletesOrder(t *testing.T) {
 	}
 }
 
+// An update asks the store what it needs before its first cart write,
+// and the lock can lapse while it waits. If another request stored the
+// checkout meanwhile, the update writes nothing to the cart: a cart
+// whose order is placed is not changed by a call that is then refused.
+func TestAnUpdatePastItsLockWritesNoCartOfACheckoutStoredSince(
+	t *testing.T,
+) {
+	for _, name := range []string{"acp", "ucp"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			stack := startUCPGateway(t)
+			surfaces := surfacesByName(t, stack)
+			surface := surfaces[name]
+			id := surface.ready(t)
+			held := stack.hold(t, surface.asked, 1)[0]
+			updated := make(chan surfaceAnswer, 1)
+			go func() { updated <- surface.updateAsking(ctx, id) }()
+			await(t, held, "what the update asks the store")
+			stack.lapse(t, lockRedisKey(id))
+			// Paid on the store's page: the order keeps its cart.
+			require.Equal(t, "requires_escalation", surfaces["ucp"].complete(
+				ctx, id, uuid.NewString(), changeBy("ucp")))
+			placed := stack.storedBytes(t, id)
+			writes := stack.faults.cartWrites.Load()
+
+			held.open()
+			answer := <-updated
+			assert.Empty(t, answer.status)
+			assert.Contains(t, answer.refusal, orderPlaced[name])
+			assert.Equal(t, writes, stack.faults.cartWrites.Load(),
+				"the update wrote to the cart of a placed order")
+			assert.Equal(t, placed, stack.storedBytes(t, id))
+		})
+	}
+
+	// Nobody stored it meanwhile: the update goes through.
+	t.Run("a checkout nobody touched", func(t *testing.T) {
+		ctx := context.Background()
+		stack := startUCPGateway(t)
+		for name, surface := range surfacesByName(t, stack) {
+			id := surface.ready(t)
+			writes := stack.faults.cartWrites.Load()
+			answer := surface.updateAsking(ctx, id)
+			assert.NotEmpty(t, answer.status, "%s: %s", name, answer.refusal)
+			assert.Greater(t, stack.faults.cartWrites.Load(), writes, name)
+		}
+	})
+}
+
 // A complete that finds its idempotency key spent is the retry of an
 // attempt that finished. What that attempt made of the session is what
 // is stored, not what this call loaded before it: answered from its own
@@ -156,7 +205,7 @@ func TestARefusalFromAStaleSnapshotAnswersTheStoredCheckout(t *testing.T) {
 	// its session again.
 	meanwhile := func(t *testing.T, id string) {
 		t.Helper()
-		stack.onSessionReread(t, id, func() error {
+		stack.onSessionRead(t, id, exitRead, func() error {
 			if err := stack.rdb.Del(ctx, lockRedisKey(id)).Err(); err != nil {
 				return err
 			}

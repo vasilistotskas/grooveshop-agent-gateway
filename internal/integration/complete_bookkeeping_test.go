@@ -53,6 +53,10 @@ type completionSurface struct {
 	update func(ctx context.Context, id string) surfaceAnswer
 	// updateLines replaces the checkout's lines, which writes its cart.
 	updateLines func(ctx context.Context, id string) surfaceAnswer
+	// updateAsking replaces the lines too, and submits what the store is
+	// asked about first, at the route asked.
+	updateAsking func(ctx context.Context, id string) surfaceAnswer
+	asked        string
 	// abandon is cancel with the whole answer. It asserts nothing.
 	abandon func(ctx context.Context, id string) surfaceAnswer
 	// read reads the checkout. It asserts nothing.
@@ -214,6 +218,22 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 					{"id": "1", "quantity": 3},
 				}})
 		},
+		updateAsking: func(ctx context.Context, id string) surfaceAnswer {
+			return acpAnswer(ctx, base+"/"+id, uuid.NewString(),
+				map[string]any{
+					"line_items": []map[string]any{
+						{"id": "1", "quantity": 3},
+					},
+					"fulfillment_details": map[string]any{
+						"address": map[string]any{
+							"line_one": "Πανεπιστημίου 12", "city": "Αθήνα",
+							"state": "GR-14", "country": "GR",
+							"postal_code": "10431",
+						},
+					},
+				})
+		},
+		asked: "GET /api/v1/region/GR/get_regions_by_country_alpha_2",
 		abandon: func(ctx context.Context, id string) surfaceAnswer {
 			return acpAnswer(ctx, base+"/"+id+"/cancel", uuid.NewString(),
 				nil)
@@ -305,6 +325,19 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 					}},
 				})
 		},
+		updateAsking: func(ctx context.Context, id string) surfaceAnswer {
+			return mcpAnswer(ctx, session, "update_checkout",
+				map[string]any{
+					"meta": meta(""), "id": id,
+					"checkout": map[string]any{
+						"line_items": []any{map[string]any{
+							"item": map[string]any{"id": "1"}, "quantity": 3,
+						}},
+						"payment": codPayment(),
+					},
+				})
+		},
+		asked: "GET /api/v1/pay_way",
 		abandon: func(ctx context.Context, id string) surfaceAnswer {
 			return mcpAnswer(ctx, session, "cancel_checkout",
 				map[string]any{"meta": meta(uuid.NewString()), "id": id})

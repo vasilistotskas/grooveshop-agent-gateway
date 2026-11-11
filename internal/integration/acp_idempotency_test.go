@@ -9,12 +9,16 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 )
 
 // sessionCount is how many checkout sessions the store holds.
@@ -25,7 +29,9 @@ func (stack ucpStack) sessionCount(t *testing.T) int {
 	require.NoError(t, err)
 	n := 0
 	for _, key := range keys {
-		if !strings.HasSuffix(key, ":lock") && !strings.HasSuffix(key, ":order") {
+		// Beside a session: its lock, and the order it placed.
+		if !strings.HasSuffix(key, ":lock") &&
+			!strings.HasSuffix(key, ":order") {
 			n++
 		}
 	}
@@ -72,6 +78,98 @@ func concurrently(
 		require.NoError(t, a.err)
 	}
 	return answers
+}
+
+// redisAround wraps each Redis command: it decides whether the command
+// is sent, and what its caller is told.
+type redisAround func(cmd redis.Cmder, send func() error) error
+
+func (redisAround) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (around redisAround) ProcessHook(
+	next redis.ProcessHook,
+) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		return around(cmd, func() error { return next(ctx, cmd) })
+	}
+}
+
+func (redisAround) ProcessPipelineHook(
+	next redis.ProcessPipelineHook,
+) redis.ProcessPipelineHook {
+	return next
+}
+
+// A create answers 201 only once its key holds the response. When the
+// write of that record fails, whether the key holds it is not known. The
+// session is then not handed out, because a retry of the key could
+// create a second one, and not discarded, because the record may name
+// it. The retry replays it if it was recorded, and creates anew if not.
+func TestACreateWhoseRecordIsNotConfirmedHandsOutNoSession(t *testing.T) {
+	stack := startUCPGateway(t)
+	base := stack.gw.URL + "/acp/checkout_sessions"
+	body := map[string]any{
+		"line_items":   []map[string]any{{"id": "1", "quantity": 2}},
+		"currency":     "EUR",
+		"capabilities": map[string]any{},
+	}
+	// Redis knows both scripts from here on: each is one command.
+	resp, _ := acpCall(t, http.MethodPost, base, body, uuid.NewString())
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	for name, written := range map[string]bool{
+		"the record was not written":             false,
+		"the record was written, its reply lost": true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			key := uuid.NewString()
+			record := "ag:demostore:acp:idem:create.v2:" + key
+			var scripts atomic.Int32
+			stack.rdb.AddHook(redisAround(
+				func(cmd redis.Cmder, send func() error) error {
+					// The key's first script claims it, its second
+					// records the response.
+					if !savesKey(cmd, record) || scripts.Add(1) != 2 {
+						return send()
+					}
+					if written {
+						if err := send(); err != nil {
+							return err
+						}
+					}
+					return errRedisDown
+				}))
+			sessions := stack.sessionCount(t)
+
+			resp, refused := acpCall(t, http.MethodPost, base, body, key)
+
+			require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+			assert.Equal(t, "unavailable", refused["code"])
+			assert.Equal(t, sessions+1, stack.sessionCount(t),
+				"the session is kept: the record may name it")
+
+			if !written {
+				// The key is still claimed, until the claim ends.
+				resp, _ := acpCall(t, http.MethodPost, base, body, key)
+				require.Equal(t, http.StatusConflict, resp.StatusCode)
+				stack.lapse(t, record)
+			}
+			resp, created := acpCall(t, http.MethodPost, base, body, key)
+			require.Equal(t, http.StatusCreated, resp.StatusCode)
+			stored := stack.storedSession(t, created["id"].(string))
+			assert.Equal(t, checkout.StatusIncomplete, stored.Status)
+			if written {
+				assert.Equal(t, "true",
+					resp.Header.Get("Idempotent-Replayed"))
+				assert.Equal(t, sessions+1, stack.sessionCount(t))
+			} else {
+				assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
+				assert.Equal(t, sessions+2, stack.sessionCount(t))
+			}
+		})
+	}
 }
 
 // The spec keeps a key's response for at least 24 hours: "Same key +

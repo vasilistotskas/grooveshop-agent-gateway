@@ -100,6 +100,58 @@ func TestPlacedSessionCannotBeKeptAlive(t *testing.T) {
 	assert.ErrorIs(t, err, checkout.ErrNotFound)
 }
 
+// The save that ends a placed session past its day is a save like any
+// other: it deletes only the session its caller read. A request that
+// holds an earlier revision, and whose clock says the day has passed,
+// deletes nothing of what another request stored since.
+func TestAnEndedSessionIsDeletedOnlyOverTheSessionItsCallerRead(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	store, _ := startStore(t)
+	s := newSession()
+	s.Status = checkout.StatusRequiresEscalation
+	s.PlacedAt = time.Now().Add(-23 * time.Hour)
+	require.NoError(t, store.Create(ctx, s))
+	stale, err := store.Load(ctx, s.Schema, s.ID)
+	require.NoError(t, err)
+	current, err := store.Load(ctx, s.Schema, s.ID)
+	require.NoError(t, err)
+	current.Status = checkout.StatusCompleted
+	require.NoError(t, store.Save(ctx, current))
+
+	stale.PlacedAt = time.Now().Add(-25 * time.Hour)
+	require.ErrorIs(t, store.Save(ctx, stale), checkout.ErrSessionChanged)
+	kept, err := store.Load(ctx, s.Schema, s.ID)
+	require.NoError(t, err)
+	assert.Equal(t, checkout.StatusCompleted, kept.Status)
+	assert.Equal(t, current.Revision, kept.Revision)
+
+	current.PlacedAt = time.Now().Add(-25 * time.Hour)
+	require.NoError(t, store.Save(ctx, current))
+	_, err = store.Load(ctx, s.Schema, s.ID)
+	assert.ErrorIs(t, err, checkout.ErrNotFound)
+}
+
+// Current tells a request whether the session it holds is still the
+// stored one, before it acts elsewhere on the session's behalf.
+func TestCurrentIsTheStoredRevision(t *testing.T) {
+	ctx := context.Background()
+	store, rdb := startStore(t)
+	s := newSession()
+	require.NoError(t, store.Create(ctx, s))
+	held, err := store.Load(ctx, s.Schema, s.ID)
+	require.NoError(t, err)
+	require.NoError(t, store.Current(ctx, held))
+
+	require.NoError(t, store.Save(ctx, s))
+	require.ErrorIs(t, store.Current(ctx, held), checkout.ErrSessionChanged)
+	require.NoError(t, store.Current(ctx, s))
+
+	require.NoError(t, rdb.Del(ctx, sessionRedisKey(s.ID)).Err())
+	assert.ErrorIs(t, store.Current(ctx, s), checkout.ErrSessionChanged)
+}
+
 // A save writes only over the session its caller read. Two requests that
 // read one session cannot both store it, whatever became of the lock:
 // the second is refused, and its session is left as it was.
@@ -306,6 +358,21 @@ func TestACommandSentTwiceIsAnsweredAsDone(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, s.Revision, stored.Revision)
 		assert.Equal(t, "saved@example.test", stored.Buyer.Email)
+	})
+
+	// The save of a placed session past its day deletes it. Its second
+	// run finds no session, which is what the first one left.
+	t.Run("the save that ends a session", func(t *testing.T) {
+		s := newSession()
+		s.Status = checkout.StatusCompleted
+		s.PlacedAt = time.Now().Add(-time.Hour)
+		require.NoError(t, store.Create(ctx, s))
+		s.PlacedAt = time.Now().Add(-25 * time.Hour)
+		var err error
+		twice.during(t, func() { err = store.Save(ctx, s) })
+		require.NoError(t, err)
+		_, err = store.Load(ctx, s.Schema, s.ID)
+		assert.ErrorIs(t, err, checkout.ErrNotFound)
 	})
 
 	t.Run("a lock", func(t *testing.T) {

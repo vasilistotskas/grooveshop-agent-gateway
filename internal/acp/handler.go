@@ -400,27 +400,27 @@ func (h *Handler) settling(r *http.Request) (
 var errClaimLapsed = errors.New(
 	"the claim lapsed and another request has the key")
 
-// storeIdem records what a claimed key did, and reports whether the key
-// is this request's to answer for. It is not when the claim lapsed and
-// another request took the key: nothing is written then.
+// storeIdem records what a claimed key did, and returns nil when the key
+// holds that record. errClaimLapsed: the claim lapsed and another
+// request took the key, so nothing was written. Any other error: the
+// record may or may not be stored.
 func (h *Handler) storeIdem(
 	r *http.Request, claim *checkout.Claim, scope string, rec idemRecord,
-) bool {
+) error {
 	raw, err := json.Marshal(rec)
 	if err != nil {
-		return true
+		return err
 	}
 	ctx, cancel := h.settling(r)
 	defer cancel()
 	recorded, err := claim.Settle(ctx, string(raw), idemRecordTTL)
+	if err == nil && !recorded {
+		err = errClaimLapsed
+	}
 	if err != nil {
 		h.logUnsettled(r, scope, "record", err)
-		return true
 	}
-	if !recorded {
-		h.logUnsettled(r, scope, "record", errClaimLapsed)
-	}
-	return recorded
+	return err
 }
 
 // releaseIdem frees a claimed key after a failed attempt.
@@ -716,10 +716,21 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		writeUnavailable(w, msgRecordsUnavailable)
 		return
 	}
-	if !h.storeIdem(r, claim, createScope, idemRecord{
+	err = h.storeIdem(r, claim, createScope, idemRecord{
 		BodyHash: bodyHash(raw), Status: http.StatusCreated,
 		Body: string(body),
-	}) {
+	})
+	switch {
+	case err == nil:
+	case !errors.Is(err, errClaimLapsed):
+		// Whether the key holds this response is not known, so the
+		// session is not handed out: answered 201 without its record, a
+		// retry of the key would create a second one. It is not
+		// discarded either, since the record may name it. The retry
+		// replays it if it was recorded, and creates anew if not.
+		writeUnavailable(w, msgRecordsUnavailable)
+		return
+	default:
 		// The key is another create's by now, and one key answers one
 		// session: this one was never handed out, and is not kept.
 		ctx, cancel := h.settling(r)
@@ -870,12 +881,24 @@ func (h *Handler) updateSession(
 	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
 		return refused(err)
 	}
+	hasCodes := req.Discounts != nil && req.Discounts.Codes != nil
+	if req.LineItems != nil || hasCodes {
+		// The lookups above can outlast the lock. A session another
+		// request stored meanwhile, a completion included, gets none of
+		// this update's cart writes; finish answers by what is stored.
+		if err := h.store.Current(r.Context(), s); err != nil {
+			h.releaseIdem(r, claim, scope)
+			return fromSnapshot(func(w http.ResponseWriter) {
+				saveFailed(w, err)
+			})
+		}
+	}
 	if req.LineItems != nil {
 		if err := h.syncCart(r, t, s.CartID, req.LineItems); err != nil {
 			return refused(err)
 		}
 	}
-	if req.Discounts != nil && req.Discounts.Codes != nil {
+	if hasCodes {
 		if err := checkout.ApplyDiscountCodes(
 			r.Context(), h.dj, t, s, req.Discounts.Codes,
 		); err != nil {
@@ -895,7 +918,7 @@ func (h *Handler) updateSession(
 			saveFailed(w, err)
 		})
 	}
-	h.storeIdem(r, claim, scope, idemRecord{BodyHash: bodyHash(raw)})
+	_ = h.storeIdem(r, claim, scope, idemRecord{BodyHash: bodyHash(raw)})
 	return afterSave(func(w http.ResponseWriter) { h.render(w, r, t, s) })
 }
 
@@ -1054,7 +1077,7 @@ func (h *Handler) completeSession(
 	// request passes: what follows is this call's own outcome. A claim
 	// that lapsed changes nothing in it, and the session says so to
 	// whoever holds the key now.
-	h.storeIdem(r, claim, scope, idemRecord{BodyHash: bodyHash(raw)})
+	_ = h.storeIdem(r, claim, scope, idemRecord{BodyHash: bodyHash(raw)})
 	return afterSave(func(w http.ResponseWriter) {
 		if err != nil {
 			h.completeError(w, r, s, err)
@@ -1129,7 +1152,7 @@ func (h *Handler) cancelSession(
 			saveFailed(w, err)
 		})
 	}
-	h.storeIdem(r, claim, scope, idemRecord{
+	_ = h.storeIdem(r, claim, scope, idemRecord{
 		BodyHash: bodyHash([]byte(r.PathValue("id"))),
 	})
 	return afterSave(func(w http.ResponseWriter) { h.render(w, r, t, s) })
