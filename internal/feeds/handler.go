@@ -1,18 +1,19 @@
 package feeds
 
 import (
-	"bytes"
-	"compress/gzip"
-	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httphdr"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
+const feedCacheControl = "public, max-age=3600"
+
 // Handler serves one feed kind. Route registration binds the kind, keeping
-// mux patterns literal (/feeds/google.xml etc.) for metrics labels.
+// mux patterns literal (/feeds/google.xml etc.) for metrics labels. The
+// GET patterns serve HEAD too, which gets the same header fields.
 func (s *Service) Handler(kind string) http.Handler {
 	contentType := "application/xml; charset=utf-8"
 	if kind == KindACP {
@@ -38,15 +39,16 @@ func (s *Service) Handler(kind string) http.Handler {
 			return
 		}
 
+		// What a 304 carries (RFC 9110 15.4.5); a 200 adds the
+		// representation's own fields.
 		h := w.Header()
-		cacheable := func(etag string) {
+		validators := func(etag string) {
 			h.Set("ETag", etag)
-			h.Set("Cache-Control", "public, max-age=3600")
-			h.Set("Content-Type", contentType)
+			h.Set("Cache-Control", feedCacheControl)
 			h.Set("Vary", "Accept-Encoding")
 		}
 		if httphdr.ETagMatches(r.Header.Values("If-None-Match"), meta.ETag) {
-			cacheable(meta.ETag)
+			validators(meta.ETag)
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
@@ -56,21 +58,27 @@ func (s *Service) Handler(kind string) http.Handler {
 			unavailable(err)
 			return
 		}
-		cacheable(meta.ETag)
-		if servesGzip(r.Header.Values("Accept-Encoding")) {
+		validators(meta.ETag)
+		h.Set("Content-Type", contentType)
+		gzipped := servesGzip(r.Header.Values("Accept-Encoding"))
+		size := meta.Size
+		if gzipped {
 			h.Set("Content-Encoding", httphdr.Gzip)
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(gz)
-			return
+			size = len(gz)
 		}
-		zr, err := gzip.NewReader(bytes.NewReader(gz))
-		if err != nil {
-			http.Error(w, "feed corrupt", http.StatusInternalServerError)
-			return
-		}
-		defer func() { _ = zr.Close() }()
+		// Body checked that gz decodes to meta.Size bytes, so the length
+		// is what is written. A write that fails now is the client's
+		// connection; net/http closes it short of this length, so the cut
+		// is visible, never a complete-looking 200.
+		h.Set("Content-Length", strconv.Itoa(size))
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.Copy(w, zr) //nolint:gosec // bounded: our own cache payload
+		switch {
+		case r.Method == http.MethodHead:
+		case gzipped:
+			_, _ = w.Write(gz)
+		default:
+			_ = decode(gz, meta.Size, w)
+		}
 	})
 }
 

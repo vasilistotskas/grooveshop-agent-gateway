@@ -486,6 +486,32 @@ func TestPlainText(t *testing.T) {
 		"a<xmp><i>x</i></xmp>b":                               "ab",
 		"a<noembed>e</noembed><noframes>f</noframes>b":        "ab",
 		"a<plaintext><p>rest":                                 "a",
+		// Django keeps the hidden attribute on any element and the
+		// storefront shows nothing of such an element: neither does the
+		// feed, nested elements and all.
+		"a<span hidden>secret</span>b":                     "ab",
+		`a<span hidden="until-found">x</span>b`:            "ab",
+		"a<span HIDDEN>x</span>b":                          "ab",
+		"a <div hidden><p>x</p><ul><li>y</li></ul></div>b": "a b",
+		"<p>a</p><p hidden>x</p><p>b</p>":                  "a b",
+		"<div hidden><div>x</div>y</div>z":                 "z",
+		"<div hidden><span hidden>x</span>y</div>z":        "z",
+		"<div><div hidden>x</div>y</div>z":                 "y z",
+		"<span hidden><b>x</b></span>y":                    "y",
+		"<div hidden><script>x</div></script>y</div>z":     "z",
+		"a<iframe hidden><p>x</p></iframe>b":               "ab",
+		// A void element has no content to hide, and a hidden one
+		// shows no break either.
+		"a<br hidden>b":                   "ab",
+		"a<hr hidden/>b":                  "ab",
+		`a<img hidden src="x.jpg">b<br>c`: "ab c",
+		// The self-closing flag means nothing on a non-void element:
+		// it stays open, as a browser reads it.
+		"a<span hidden/>x</span>b": "ab",
+		// Unclosed, it runs to the end, as a browser reads it.
+		"a<span hidden>rest <b>of it": "a",
+		// Only the attribute itself hides; Django drops aria-*.
+		`a <span data-hidden="1" class="hidden">x</span> b`: "a x b",
 		// A literal "<" reaches the gateway as Django stores it: nh3
 		// writes "&lt;" (and drops "<y" as a tag on save).
 		"a &lt; b": "a < b",

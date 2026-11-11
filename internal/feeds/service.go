@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -184,9 +185,11 @@ func (s *Service) Meta(
 }
 
 // Body returns the gzipped feed with the metadata stored beside it, both
-// read in one step. A blob gone since Meta (evicted, invalidated,
-// rewritten by another build) is a miss like any other: it waits for a
-// generation, under the same failure backoff, and is read again.
+// read in one step; the blob decodes to exactly meta.Size bytes. A blob
+// gone since Meta (evicted, invalidated, rewritten by another build), or
+// one that does not decode to its size, is a miss like any other: it
+// waits for a generation, under the same failure backoff, and is read
+// again.
 func (s *Service) Body(
 	ctx context.Context, t *tenant.Tenant, kind string,
 ) ([]byte, Meta, error) {
@@ -230,9 +233,9 @@ func (s *Service) await(
 }
 
 // notCached handles a generation that succeeded but whose feed is not
-// there when read back (evicted again at once, under memory pressure):
-// without a mark, every request would run another full sweep and still
-// get 503. An invalidation since the generation's epoch lifts it, as for
+// there when read back (evicted again at once, under memory pressure), or
+// does not decode (fromCache logs why): without a mark, every request
+// would run another full sweep and still get 503. An invalidation since the generation's epoch lifts it, as for
 // a failure. A read-back that failed is not this: the generation wrote
 // the feed, so the failure says nothing about it. The request gets that
 // error (its own context's, when the caller left) and nothing is marked,
@@ -379,7 +382,33 @@ func (s *Service) fromCache(
 	if !isString || !ok {
 		return nil, Meta{}, false, failed, nil
 	}
+	if err := decode([]byte(data), meta.Size, io.Discard); err != nil {
+		s.log.ErrorContext(ctx, "cached feed does not decode",
+			slog.String("error", err.Error()))
+		return nil, Meta{}, false, failed, nil
+	}
 	return []byte(data), meta, true, failed, nil
+}
+
+// decode writes the feed gz holds to w. It fails unless gz is whole
+// (gzip checks its CRC-32 and length once read to the end) and decodes
+// to exactly size bytes; it never reads more than one byte past size.
+func decode(gz []byte, size int, w io.Writer) error {
+	zr, err := gzip.NewReader(bytes.NewReader(gz))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = zr.Close() }()
+	n, err := io.CopyN(w, zr, int64(size)+1)
+	switch {
+	case err == nil:
+		return fmt.Errorf("feeds: decodes past its %d bytes", size)
+	case errors.Is(err, io.EOF) && n == int64(size):
+		return nil
+	case errors.Is(err, io.EOF):
+		return fmt.Errorf("feeds: decodes to %d bytes, not %d", n, size)
+	}
+	return err
 }
 
 // decodeMeta reads a stored Meta; one from another build is a miss.
@@ -510,8 +539,10 @@ func (s *Service) generate(
 			return err
 		}
 		sum := sha256.Sum256(raw)
+		// Weak: the gzip and the identity body share it, and a strong
+		// tag has to differ between codings (RFC 9110 8.8.3.3).
 		entries[format] = cacheEntry{gz: gz, meta: Meta{
-			ETag: `"` + hex.EncodeToString(sum[:16]) + `"`,
+			ETag: `W/"` + hex.EncodeToString(sum[:16]) + `"`,
 			Size: len(raw),
 		}}
 	}

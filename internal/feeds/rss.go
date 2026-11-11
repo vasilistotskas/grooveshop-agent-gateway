@@ -417,39 +417,84 @@ var rawTextTags = map[atom.Atom]bool{
 	atom.Style: true, atom.Textarea: true, atom.Title: true, atom.Xmp: true,
 }
 
+// voidTags have no content and no end tag (HTML's void elements).
+var voidTags = map[atom.Atom]bool{
+	atom.Area: true, atom.Base: true, atom.Br: true, atom.Col: true,
+	atom.Embed: true, atom.Hr: true, atom.Img: true, atom.Input: true,
+	atom.Link: true, atom.Meta: true, atom.Source: true, atom.Track: true,
+	atom.Wbr: true,
+}
+
 // plainText turns a rich-text description into one line of plain text:
 // the text tokens of the HTML tokenizer, so a ">" inside an attribute
 // value is never mistaken for a tag's end, and the content of a
-// raw-text element is dropped. Block tags become spaces so "a<br>b" or
-// "</li><li>" keep their words apart. The tokenizer decodes entities
-// once, so an encoded "&lt;b&gt;" stays text, and escapeXML encodes the
-// result exactly once.
+// raw-text element is dropped. So is an element carrying the hidden
+// attribute, with all it holds: Django's sanitizer keeps the attribute
+// on any element and the storefront shows nothing of it
+// (has_visible_content in core/utils/sanitize.py). Block tags become
+// spaces so "a<br>b" or "</li><li>" keep their words apart. The
+// tokenizer decodes entities once, so an encoded "&lt;b&gt;" stays text,
+// and escapeXML encodes the result exactly once.
 func plainText(v string) string {
 	var b strings.Builder
 	var raw atom.Atom
+	// The open hidden element and how many of its name are open inside
+	// it: Django stores nh3's output, which closes every element
+	// explicitly, so its own end tag is the one that brings the count to
+	// zero. One left open hides the rest, as a browser renders it.
+	var hidden string
+	var depth int
 	z := html.NewTokenizer(strings.NewReader(v))
 	for {
 		switch tt := z.Next(); tt {
 		case html.ErrorToken:
 			return strings.Join(strings.Fields(b.String()), " ")
 		case html.TextToken:
-			if raw == 0 {
+			if raw == 0 && depth == 0 {
 				b.Write(z.Text())
 			}
 		case html.StartTagToken, html.EndTagToken, html.SelfClosingTagToken:
-			name, _ := z.TagName()
+			name, hasAttr := z.TagName()
 			tag := atom.Lookup(name)
 			// The tokenizer enters raw text on a self-closing start tag
-			// too ("<script/>"), so either form starts the skip.
+			// too ("<script/>"), so either form starts the skip; a
+			// browser ignores the flag on any non-void element.
+			opens := tt != html.EndTagToken && !voidTags[tag]
 			switch {
 			case tt != html.EndTagToken && rawTextTags[tag]:
 				raw = tag
 			case tt == html.EndTagToken && tag == raw:
 				raw = 0
 			}
-			if blockTags[tag] {
+			switch {
+			case depth > 0:
+				if string(name) == hidden {
+					if opens {
+						depth++
+					} else if tt == html.EndTagToken {
+						depth--
+					}
+				}
+			case tt != html.EndTagToken && hasHidden(z, hasAttr):
+				if opens {
+					hidden, depth = string(name), 1
+				}
+			case blockTags[tag]:
 				b.WriteByte(' ')
 			}
 		}
 	}
+}
+
+// hasHidden reports whether the tag just read carries the hidden
+// attribute; the tokenizer lower-cases attribute names.
+func hasHidden(z *html.Tokenizer, more bool) bool {
+	for more {
+		var key []byte
+		key, _, more = z.TagAttr()
+		if string(key) == "hidden" {
+			return true
+		}
+	}
+	return false
 }
