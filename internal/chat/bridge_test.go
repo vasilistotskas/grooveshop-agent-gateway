@@ -53,7 +53,8 @@ func TestBridgeOffersOnlyTheStoreTools(t *testing.T) {
 // the tool knows, and the turn does not tell the widget the cart
 // changed: the assistant had claimed adds the shopper's cart never got.
 // Django adds to a new guest cart when it cannot reach the one named (a
-// signed-in shopper's cart is one) and answers 201 for it, as here.
+// signed-in shopper's cart is one) and answers 201 for it, as here. The
+// cart is the shopper's own, so the model is never told to create one.
 func TestBridgeReportsAFailedCartToolAsAFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
@@ -87,8 +88,9 @@ func TestBridgeReportsAFailedCartToolAsAFailure(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, failed)
 	assert.True(t, strings.HasPrefix(text, "ERROR: "), text)
-	assert.Contains(t, text, `"code":"not_found"`)
-	assert.Contains(t, text, "create_cart")
+	assert.Contains(t, text, `"code":"cart_unreachable"`)
+	assert.Contains(t, text, "reload the page and try again")
+	assert.NotContains(t, text, "create_cart")
 	_, mutated := br.cartState()
 	assert.False(t, mutated)
 }

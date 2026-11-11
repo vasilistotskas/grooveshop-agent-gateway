@@ -79,7 +79,13 @@ cross-repo change. The code wins over this page.
   `done.cartId` is sent on anonymous turns only, and the widget adopts
   it only then: a turn that sent a `cartToken` gets none, and the
   widget ignores `done.cartId` whenever it sent one, refreshing the
-  shopper's own cart through their session on `cartMutated`.
+  shopper's own cart through their session on `cartMutated`. A cart the
+  model created while the widget sent one would never reach the shopper,
+  so a sent cart the store no longer serves is answered `cart_unreachable`
+  with "reload the page and try again", never "create a new one"
+  (`handlers.cartErr`): a reload has the storefront fetch the shopper's
+  cart again, a new one for a deleted guest cart, and the widget sends
+  that.
   `cartMutated` is recorded by the cart tools when Django accepts a
   change (`mcpsrv.CartActivity`), so a change whose read-back failed
   still counts. The chat runs on its own server (`mcpsrv.NewChatServer`):

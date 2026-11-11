@@ -63,8 +63,7 @@ func (h *handlers) getShippingOptions(
 	if in.CartID != "" || django.HasCartToken(ctx) {
 		c, err := h.deps.Django.GetCart(ctx, t.Domain, lang, in.CartID)
 		if err != nil {
-			return nil, out, upstreamErr(err, "that cart no longer "+
-				"exists; create a new one with create_cart")
+			return nil, out, h.cartErr(err, mcpCartGone)
 		}
 		q.OrderValueAmount = c.FreeThresholdValue.String()
 	}
