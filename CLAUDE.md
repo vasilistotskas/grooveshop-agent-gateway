@@ -239,11 +239,26 @@ passes.
   marked, and one that failed before reading the epoch always is. A revalidation reads the meta key
   and only TOUCHes the blob (Redis evicts keys one by one, and TOUCH,
   unlike EXISTS, keeps the blob's LRU clock with the meta key's): an
-  entry without its blob is a miss and regenerates. The sweep is
+  entry without its blob is a miss and regenerates, and so is one whose
+  blob is not whole: every body read checks the gzip header and the
+  trailer's ISIZE against the stored size, in constant time, with no
+  decoding. The gzip coding writes the blob as stored; only an identity
+  GET decodes it, streamed under its declared length and never past it,
+  with its last `holdBack` bytes written only once gzip has verified the
+  CRC and the length. A decode that fails cuts the response short of
+  `Content-Length` (net/http closes the connection), and the blob is
+  logged and dropped (`dropBlob`, as the header check does), so the next
+  request regenerates it. The drop is a compare-and-delete on the meta
+  record read with the blob, so a blob a generation wrote since stays. One weak ETag covers the gzip and
+  the identity body; a 200 (and a HEAD) declares `Content-Length` in
+  either coding, a 304 carries only `ETag`, `Cache-Control` and `Vary`,
+  and an error answer none of the three. The sweep is
   detached from the request (`context.WithoutCancel`) and names no
   caller to Django (`django.WithoutCaller`): it is the store's work, not
   the crawler's. Field limits are the strictest of Google, Meta and
-  TikTok, named at the top of `rss.go`. `internal/httphdr` parses
+  TikTok, named at the top of `rss.go`. A description drops what the
+  storefront does not show: raw-text elements and any element carrying
+  `hidden` (`plainText`). `internal/httphdr` parses
   `If-None-Match` and `Accept-Encoding` for the feeds and the Server
   Card alike.
 - `internal/text` — rune-safe truncation. Byte-index cuts split Greek

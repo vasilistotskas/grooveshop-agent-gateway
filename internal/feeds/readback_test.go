@@ -1,7 +1,6 @@
 package feeds
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -65,7 +64,9 @@ func readBack(
 		}
 		return nil
 	}}
-	var logs bytes.Buffer
+	// The generation logs on its own goroutine; Body and Meta return
+	// only once it has finished.
+	var logs syncBuffer
 	s := NewService(oneProductCatalog(t), r.client(),
 		slog.New(slog.NewJSONHandler(&logs, nil)), obs.NewMetrics(), "", "",
 		time.Hour, 24*time.Hour, "test", storefront.NewSite("el"))
@@ -81,7 +82,42 @@ func readBack(
 	return r, logs.String(), err
 }
 
-const goneLine = "feed generated but gone from the cache"
+const goneLine = msgGone
+
+// A generation whose blob is broken when read back is marked like one
+// gone, and logged as what it is.
+func TestBodyReadBackOfABrokenBlob(t *testing.T) {
+	broken := cachedRSS(t, []byte("not gzip"), len(testFeed))
+	var reads atomic.Int32
+	r := &scriptedRedis{answer: func(cmd redis.Cmder) error {
+		switch c := cmd.(type) {
+		case *redis.SliceCmd:
+			if c.Name() != "mget" {
+				return nil
+			}
+			vals := make([]any, len(c.Args())-1)
+			if reads.Add(1) > 1 {
+				vals[0] = broken[dataKey("demostore", formatRSS)]
+				vals[1] = broken[metaKey("demostore", formatRSS)]
+			}
+			c.SetVal(vals)
+		case *redis.StringCmd:
+			return redis.Nil
+		}
+		return nil
+	}}
+	var logs syncBuffer
+	s := NewService(oneProductCatalog(t), r.client(),
+		slog.New(slog.NewJSONHandler(&logs, nil)), obs.NewMetrics(), "", "",
+		time.Hour, 24*time.Hour, "test", storefront.NewSite("el"))
+
+	_, _, err := s.Body(context.Background(), demoTenant(), KindGoogle)
+	require.ErrorIs(t, err, errGenerationNotCached)
+	assert.True(t, r.set("ag:demostore:feed:failed"))
+	assert.Contains(t, logs.String(), msgBroken)
+	assert.Contains(t, logs.String(), brokenLine)
+	assert.NotContains(t, logs.String(), goneLine)
+}
 
 func TestReadBackAfterGeneration(t *testing.T) {
 	for _, step := range []struct {
