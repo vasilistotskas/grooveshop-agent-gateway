@@ -356,6 +356,39 @@ func TestCompletesAtOncePlaceOneOrder(t *testing.T) {
 	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
 }
 
+// A session in progress can still be stored by something else before the
+// completion's last save: an order event, for an order that is paid at
+// once. That save then loses, with the order placed. It is reported as a
+// placed order whose session was not saved, with the key spent, and
+// never as a session that changed, which a caller answers "nothing
+// happened, send the request again".
+func TestCompleteReportsAPlacedOrderWhoseSessionMovedOn(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	ctx := context.Background()
+	s := f.readySession(t)
+	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+		if !setsKey(cmd, ":orderlink:") {
+			return nil
+		}
+		// The order exists, and the session is stored by another writer
+		// before the completion saves it.
+		other, err := f.store.Load(ctx, s.Schema, s.ID)
+		if err != nil {
+			return err
+		}
+		other.Status = checkout.StatusCompleted
+		return f.store.Save(ctx, other)
+	}))
+
+	placement, err := f.flow.Complete(ctx, f.tenant, s)
+
+	require.ErrorIs(t, err, checkout.ErrSessionNotSaved)
+	assert.NotErrorIs(t, err, checkout.ErrSessionChanged)
+	assert.Equal(t, checkout.OrderMayExist, placement)
+	assert.Equal(t, fixtureOrderUUID, s.OrderUUID)
+	assert.EqualValues(t, 1, f.faults.orderCreates.Load())
+}
+
 // The in-progress save is what guards the order. When Redis refuses it
 // no order is sent, and the session is not written again: that write
 // would be a ready snapshot saved over whatever the store holds by then.

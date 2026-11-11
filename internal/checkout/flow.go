@@ -158,7 +158,11 @@ func (f *Flow) Complete(
 			slog.String("order", s.OrderUUID),
 			slog.String("error", saveErr.Error()))
 		if err == nil {
-			err = fmt.Errorf("%w: %w", ErrSessionNotSaved, saveErr)
+			// The cause is named, not wrapped: a save lost to another
+			// writer is ErrSessionChanged, which tells a caller that
+			// nothing happened and to send the request again. Here the
+			// order exists.
+			err = fmt.Errorf("%w: %s", ErrSessionNotSaved, saveErr.Error())
 		}
 	}
 	return placement, err
