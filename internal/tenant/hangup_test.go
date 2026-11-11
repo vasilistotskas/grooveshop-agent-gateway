@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -43,9 +44,24 @@ func hungUp(
 		"http://ignored/", nil)
 	req.Host = secretsHost
 	rec := httptest.NewRecorder()
-	mw(slog.New(lines))(next).ServeHTTP(rec, req)
+	// Django holds the call, so a middleware that kept waiting for it
+	// would never return: fail instead of hanging until the test timeout.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		mw(slog.New(lines))(next).ServeHTTP(rec, req)
+	}()
+	select {
+	case <-done:
+	case <-time.After(hungUpBound):
+		t.Fatal("the middleware kept waiting for a caller that hung up")
+	}
 	return rec.Code, lines.n.Load()
 }
+
+// hungUpBound is far longer than a middleware that stops waiting takes;
+// it only keeps a broken one from hanging the suite.
+const hungUpBound = 30 * time.Second
 
 // A caller that hung up while its store was resolved is not an error.
 func TestMiddlewareCallerThatHungUpIsNotAnError(t *testing.T) {

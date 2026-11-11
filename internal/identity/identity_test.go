@@ -161,6 +161,20 @@ func TestMiddlewareAnonymousPassesThrough(t *testing.T) {
 	assert.Equal(t, int64(0), hits.Load())
 }
 
+// A Bearer header with no token is anonymous too: nothing is verified.
+func TestMiddlewareEmptyBearerIsAnonymous(t *testing.T) {
+	h, hits, done := middlewareHarness(t)
+	defer done()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer ")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, rec.Header().Get("X-Linked-Email"))
+	assert.Equal(t, int64(0), hits.Load())
+}
+
 func TestMiddlewareValidBearerAttachesIdentity(t *testing.T) {
 	h, _, done := middlewareHarness(t)
 	defer done()
@@ -183,9 +197,12 @@ func TestMiddlewareInvalidBearerGets401WithChallenge(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.Contains(t, rec.Header().Get("WWW-Authenticate"),
+	// The whole header: the client must be sent to the store's own
+	// issuer, through /mcp's metadata.
+	assert.Equal(t, `Bearer error="invalid_token", `+
 		`resource_metadata="https://shop.example.test`+
-			`/.well-known/oauth-protected-resource/mcp"`)
+		`/.well-known/oauth-protected-resource/mcp"`,
+		rec.Header().Get("WWW-Authenticate"))
 }
 
 // otherTenant is a second store served by the same gateway pod pool —

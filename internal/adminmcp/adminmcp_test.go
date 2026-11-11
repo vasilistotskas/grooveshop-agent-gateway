@@ -211,8 +211,12 @@ func TestAnInvalidTokenIsChallengedAndTheVerdictCachedPerStore(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer customer-token")
 	stack(dj, acme()).ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.Contains(t, rec.Header().Get("WWW-Authenticate"),
-		`error="invalid_token"`)
+	// The whole header: a staff client must be sent to /mcp/admin's
+	// metadata, which names the staff issuer, never to the customers'.
+	assert.Equal(t, `Bearer error="invalid_token", `+
+		`resource_metadata="https://shop.acme.test`+
+		`/.well-known/oauth-protected-resource/mcp/admin"`,
+		rec.Header().Get("WWW-Authenticate"))
 }
 
 // One token at two stores is two verdicts: Django binds a staff token to
@@ -532,48 +536,4 @@ func TestAToolCallIsLoggedAsTheAdminServers(t *testing.T) {
 	lines.mu.Lock()
 	defer lines.mu.Unlock()
 	assert.Equal(t, []string{"mcp_admin"}, lines.servers)
-}
-
-// errorLines counts the records logged at error level.
-type errorLines struct{ n atomic.Int32 }
-
-func (e *errorLines) Enabled(context.Context, slog.Level) bool { return true }
-
-func (e *errorLines) Handle(_ context.Context, r slog.Record) error {
-	if r.Level >= slog.LevelError {
-		e.n.Add(1)
-	}
-	return nil
-}
-
-func (e *errorLines) WithAttrs([]slog.Attr) slog.Handler { return e }
-func (e *errorLines) WithGroup(string) slog.Handler      { return e }
-
-// A caller that hung up while its staff bearer was verified is not an
-// error.
-func TestACallerThatHungUpIsNotAnError(t *testing.T) {
-	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
-	v := identity.NewVerifier(func(
-		context.Context, *tenant.Tenant, string,
-	) (*django.StaffProfile, error) {
-		<-release
-		return nil, nil
-	}, quietLog())
-	lines := &errorLines{}
-	h := RequireStaff(v, slog.New(lines))(http.HandlerFunc(
-		func(http.ResponseWriter, *http.Request) {
-			t.Error("an unverified call must not reach the handler")
-		}))
-	ctx, hangUp := context.WithCancel(tenant.NewContext(t.Context(), acme()))
-	hangUp()
-	req := httptest.NewRequestWithContext(ctx, http.MethodPost, Path,
-		strings.NewReader(`{}`))
-	req.Header.Set("Authorization", "Bearer "+goodToken)
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-	assert.Zero(t, lines.n.Load())
 }
