@@ -267,11 +267,31 @@ func uncacheable(t *testing.T, resp *http.Response) {
 	}
 }
 
+// syncBuffer is a log sink a server's or a generation's goroutine may
+// write while the test reads it. It makes the access safe, not complete:
+// a test reads it once the writer is known to be done.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // logLines returns the lines logged with msg.
-func logLines(t *testing.T, logs *bytes.Buffer, msg string) []map[string]any {
+func logLines(t *testing.T, logs *syncBuffer, msg string) []map[string]any {
 	t.Helper()
 	var lines []map[string]any
-	sc := bufio.NewScanner(logs)
+	sc := bufio.NewScanner(strings.NewReader(logs.String()))
 	for sc.Scan() {
 		var line map[string]any
 		require.NoError(t, json.Unmarshal(sc.Bytes(), &line))
@@ -316,7 +336,7 @@ func TestFeedHandlerNeverServesABrokenBlob(t *testing.T) {
 				entry := maps.Clone(entry)
 				entry[failedKey("demostore")] = "1"
 				m, rdb := newMemRedis(entry)
-				var logs bytes.Buffer
+				var logs syncBuffer
 				resp := serveFeed(t, feedService(nil, rdb, &logs),
 					http.MethodGet, map[string]string{"Accept-Encoding": accept})
 				body := readAll(t, resp)
@@ -461,10 +481,14 @@ func badCRC(t *testing.T, raw string) []byte {
 
 func cutsAnIdentityBody(t *testing.T, raw string, blob []byte) {
 	m, rdb := newMemRedis(cachedRSS(t, blob, len(raw)))
-	var logs bytes.Buffer
+	var logs syncBuffer
 	s := feedService(oneProductCatalog(t), rdb, &logs)
+	// The handler logs and drops the blob after the client has seen the
+	// cut, so each request waits for the handler to return.
+	served := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
+			defer func() { served <- struct{}{} }()
 			ctx := tenant.NewContext(obs.WithRequestID(r.Context(),
 				"req-131"), demoTenant())
 			s.Handler(KindGoogle).ServeHTTP(w, r.WithContext(ctx))
@@ -478,6 +502,7 @@ func cutsAnIdentityBody(t *testing.T, raw string, blob []byte) {
 		require.NoError(t, err)
 		body, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		<-served
 		return resp, body, err
 	}
 
@@ -511,7 +536,7 @@ func TestFeedHandlerStreamsAWholeIdentityBody(t *testing.T) {
 	} {
 		raw := bigFeed(n)
 		_, rdb := newMemRedis(cachedRSS(t, gzipped(t, raw), n))
-		var logs bytes.Buffer
+		var logs syncBuffer
 		resp := serveFeed(t, feedService(nil, rdb, &logs), http.MethodGet,
 			map[string]string{"Accept-Encoding": "identity"})
 		body := readAll(t, resp)
@@ -537,7 +562,7 @@ func TestFeedHandlerDecodesOnlyAnIdentityGET(t *testing.T) {
 	} {
 		name := tc.method + " " + tc.accept
 		m, rdb := newMemRedis(cachedRSS(t, blob, len(testFeed)))
-		var logs bytes.Buffer
+		var logs syncBuffer
 		resp := serveFeed(t, feedService(nil, rdb, &logs), tc.method,
 			map[string]string{"Accept-Encoding": tc.accept})
 		body := readAll(t, resp)

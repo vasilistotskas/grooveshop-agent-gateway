@@ -1,7 +1,6 @@
 package feeds
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -65,7 +64,9 @@ func readBack(
 		}
 		return nil
 	}}
-	var logs bytes.Buffer
+	// The generation logs on its own goroutine; Body and Meta return
+	// only once it has finished.
+	var logs syncBuffer
 	s := NewService(oneProductCatalog(t), r.client(),
 		slog.New(slog.NewJSONHandler(&logs, nil)), obs.NewMetrics(), "", "",
 		time.Hour, 24*time.Hour, "test", storefront.NewSite("el"))
@@ -105,7 +106,7 @@ func TestBodyReadBackOfABrokenBlob(t *testing.T) {
 		}
 		return nil
 	}}
-	var logs bytes.Buffer
+	var logs syncBuffer
 	s := NewService(oneProductCatalog(t), r.client(),
 		slog.New(slog.NewJSONHandler(&logs, nil)), obs.NewMetrics(), "", "",
 		time.Hour, 24*time.Hour, "test", storefront.NewSite("el"))
