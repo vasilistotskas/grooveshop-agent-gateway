@@ -35,6 +35,12 @@ func UntilShutdown(ctx context.Context) (
 		return ctx, func() {}
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
+	if shutdown.Err() != nil {
+		// Already cut: AfterFunc would cancel on a goroutine of its own,
+		// leaving the caller a live context for a moment.
+		cancel(context.Cause(shutdown))
+		return ctx, func() {}
+	}
 	unhook := context.AfterFunc(shutdown, func() {
 		cancel(context.Cause(shutdown))
 	})
