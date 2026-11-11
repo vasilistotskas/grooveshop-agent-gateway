@@ -108,6 +108,11 @@ passes.
     another. The cache holds at most 4096 entries and is flushed when
     full. A valid token is cached, and so is Django's 401 (invalid).
     Anything else is returned uncached.
+  - One implementation, one instance per server, never shared. The key
+    names no server, so a shared instance would let a shopper's verdict
+    stand for a staff one. The types keep them apart:
+    `Verifier[*django.AgentProfile]` for /mcp and
+    `Verifier[*django.StaffProfile]` for /mcp/admin.
   - Concurrent calls with one uncached token share one probe
     (singleflight). The probe is detached from the caller who started it.
   - `Refuse` is the one answer, on both servers, to a bearer that did not
@@ -119,7 +124,7 @@ passes.
       gate gives once it has;
     - Django's 429: a 429 with its `Retry-After`;
     - a caller that hung up: a 503 with no error line;
-    - anything else: a logged 503.
+    - anything else: a 503, logged with `server` (mcp or mcp_admin).
   - On /mcp a present `Authorization: Bearer` is verified against Django
     `/agent/me` (`NewShopperVerifier`; a 403 there is a valid token
     without the `profile` scope).
@@ -134,11 +139,18 @@ passes.
 - `internal/mcptool` — what the tools of both MCP servers answer with:
   `ToolError` and every code the gateway mints, the `Untrusted` marker
   (`MarkUntrusted`) for text a customer wrote, and `Add`, through which
-  every tool on /mcp, the chat and /mcp/admin is registered. `Add` logs
-  one info line per call, "tool call", with `server` (mcp, chat or
-  mcp_admin), the tool, the outcome (ok, the code, or error) and the
-  duration. It never logs the arguments or the result. How a Django
-  failure maps to a code is each server's own `upstreamErr`.
+  every tool on /mcp, the chat and /mcp/admin is registered.
+  - `Add` logs one info line per call that reaches the handler, "tool
+    call", with `server` (`mcptool.ServerMCP`, `ServerChat` or
+    `ServerAdmin`), the tool, the outcome (ok, the code, error or panic)
+    and the duration. The context handler adds the request id and the
+    store.
+  - It never logs the arguments or the result.
+  - An unknown tool, and arguments that fail the input schema, are
+    refused by the SDK before the handler and log no line.
+  - A handler panic is recovered there (see `internal/httpmw`).
+
+  How a Django failure maps to a code is each server's own `upstreamErr`.
 - `internal/adminmcp` — `/mcp/admin`, a separate MCP server with its own
   tools and middleware. `RequireStaff` refuses a call without a staff
   bearer (401 + RFC 9728 challenge naming every read scope and
@@ -219,7 +231,11 @@ passes.
   recover, outermost first (`server.withGlobalChain`). Recover wraps the
   mux directly, so a handler panic is logged and still gets its access
   line and metric: a 500, or the status already sent if the response
-  had begun (the status writer keeps the first one). A panic in the
+  had begun (the status writer keeps the first one). An MCP tool
+  handler is the exception: the SDK runs it on a goroutine of its own,
+  out of Recover's reach, so `mcptool.Add` recovers it. The panic is
+  logged with its stack, the call's line has outcome `panic`, and the
+  caller gets the tool error `unavailable`. A panic in the
   middleware itself is outside it: net/http recovers it, drops the
   connection and logs it at error through the gateway's logger
   (`Server.ErrorLog` in `serve.go`), with no access line or metric.
