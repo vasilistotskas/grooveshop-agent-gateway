@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 )
 
@@ -15,10 +16,12 @@ import (
 //
 // Shutdown: Kubernetes runs the Deployment's preStop sleep (10s, while
 // Traefik drops the pod) before SIGTERM reaches us, and kills the
-// process terminationGracePeriodSeconds (30s) after the sleep began:
-// drain + final (15s) must end before that, with room to close what
-// remains and exit. Issue #117 revisits the drain: it will be derived
-// from the order-placement budget, with the grace period raised.
+// process terminationGracePeriodSeconds after the sleep began. So the
+// grace period must cover the sleep, drain + final, and a margin to
+// close what remains and exit. With UPSTREAM_TIMEOUT=10s final is 51s
+// and the grace period 76s (grooveshop-infrastructure,
+// base/agent-gateway.yaml, whose pre-commit check computes it from
+// UPSTREAM_TIMEOUT); each second of timeout adds 5s to both.
 type timing struct {
 	// read bounds reading a whole request, body included; the server
 	// clears it once the body is read, so streams outlive it.
@@ -26,19 +29,48 @@ type timing struct {
 	// drain lets in-flight requests finish with their contexts live: a
 	// context cancelled at the signal would abort a Django call mid-way.
 	drain time.Duration
-	// final is what a request still open after the drain (a chat or MCP
-	// stream) gets, once its context is cancelled with
-	// httpmw.ErrShuttingDown, to write its last event and return.
+	// final is what a request still open after the drain gets, once its
+	// context is cancelled with httpmw.ErrShuttingDown: a stream (chat,
+	// MCP) writes its last event, and an order completion that went on
+	// without its caller places the order and settles its key.
 	final time.Duration
 }
 
-var podTiming = timing{
-	// Bodies here are capped at a few hundred KiB. Half of Traefik's
-	// entrypoint readTimeout (60s), so ours is never the looser bound for
-	// a proxied client, and in-cluster callers are bounded too.
-	read:  30 * time.Second,
-	drain: 10 * time.Second,
-	final: 5 * time.Second,
+// streamFinal is what a stream needs to write its last event.
+const streamFinal = 5 * time.Second
+
+// podTiming is the timing of a pod whose order completions keep their
+// request open for up to completion after its context ends.
+func podTiming(completion time.Duration) timing {
+	return timing{
+		// Bodies here are capped at a few hundred KiB. Half of Traefik's
+		// entrypoint readTimeout (60s), so ours is never the looser bound
+		// for a proxied client, and in-cluster callers are bounded too.
+		read:  30 * time.Second,
+		drain: 10 * time.Second,
+		final: max(streamFinal, completion),
+	}
+}
+
+// completionSettles is what a completion's request does on its own after
+// checkout.Flow.Complete, in upstream timeouts, each on a context of its
+// own bounded by one: settle its idempotency key by the placement, then
+// release the session lock.
+const completionSettles = 2
+
+// answerSlack is what writing the answer after the settles takes, so the
+// window does not close the connection under it.
+const answerSlack = time.Second
+
+// completionTail is the longest an order completion keeps its request
+// open once the request's context has ended: the part of
+// checkout.Flow.Complete that runs without its caller, the settles after
+// it and the answer. A completion can detach until the end of the drain,
+// so the final window must hold all of it. upstream is the Django
+// client's timeout.
+func completionTail(upstream time.Duration) time.Duration {
+	return checkout.CompletionBudget(upstream) +
+		completionSettles*upstream + answerSlack
 }
 
 const (
@@ -57,8 +89,11 @@ func serve(
 	ctx context.Context, ln net.Listener, handler http.Handler,
 	t timing, log *slog.Logger,
 ) error {
-	base, endRequests := context.WithCancelCause(context.Background())
+	requests, endRequests := context.WithCancelCause(context.Background())
 	defer endRequests(nil)
+	// Carried as a value too, so a context that lost the cancellation
+	// (an MCP tool's on an older protocol) can still find the cut.
+	base := httpmw.WithShutdown(requests)
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
@@ -85,7 +120,8 @@ func serve(
 	case <-ctx.Done():
 	}
 
-	log.InfoContext(ctx, "shutting down")
+	log.InfoContext(ctx, "shutting down",
+		slog.Duration("window", t.drain+t.final))
 	shutdownCtx, cancel := context.WithTimeout(
 		context.Background(), t.drain+t.final,
 	)

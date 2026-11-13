@@ -71,10 +71,26 @@ passes.
   (`serve.go`), the one piece of logic, tested. At SIGTERM (after the
   Deployment's 10s preStop sleep) in-flight requests drain for 10s with
   live contexts; then every request context is cancelled with cause
-  `httpmw.ErrShuttingDown`, and a stream gets 5s to write its last
-  event (the chat sends its `turn_failed` `error`). What is still open
-  is closed, logged at warn, and the process exits 0: 25s, inside
-  `terminationGracePeriodSeconds: 30`. `ReadTimeout` (30s, half of
+  `httpmw.ErrShuttingDown`. So is every MCP tool's, on both MCP
+  servers and any protocol: the SDK ends a tool's context with its
+  request only from protocol 2026-07-28, so `serve` also carries the cut
+  as a value (`httpmw.WithShutdown`) and `mcptool.Add` ends each
+  handler's context on it (`httpmw.UntilShutdown`). Then the final
+  window begins: a stream writes its last event (the chat sends its
+  `turn_failed` `error`), and an order completion that detached before
+  the cut finishes (`completionTail`: `checkout.CompletionBudget`, one
+  `UPSTREAM_TIMEOUT` to settle its key, one to release the session
+  lock, and `answerSlack` to write the answer). Both surfaces hold it
+  in their request: ACP's handler calls the flow, and the MCP SDK's
+  stateless handler returns only once its tool has
+  (`TestServeWaitsForAToolThatOutlivesItsRequest`). The window is the
+  longer of the stream's 5s and that tail, 51s at
+  `UPSTREAM_TIMEOUT=10s`. What is still open is closed, logged at
+  warn, and the process exits 0: 61s after SIGTERM, so the
+  infrastructure's `terminationGracePeriodSeconds` covers the 10s
+  sleep, the 61s and a 5s margin (76s); each second of
+  `UPSTREAM_TIMEOUT` adds 5s, and the infrastructure's pre-commit
+  check refuses a grace period that does not follow. `ReadTimeout` (30s, half of
   Traefik's entrypoint `readTimeout`) bounds reading a request; the
   server clears it once the body is read, so streams outlive it.
   `IdleTimeout` (120s) sits above Traefik's 90s backend idle timeout.
@@ -165,6 +181,8 @@ passes.
   - An unknown tool, and arguments that fail the input schema, are
     refused by the SDK before the handler, neither logged nor counted.
   - A handler panic is recovered there (see `internal/httpmw`).
+  - Each handler's context ends at the server's shutdown cut, with
+    `httpmw.ErrShuttingDown`, on any protocol (see `cmd/gateway`).
   - Every tool's annotations are `mcptool.ReadOnly`, `Adds` or
     `Changes`, none open-world, each with the tool's title, which `Add`
     also sets as `Tool.Title` (a 2025-03-26 client, which the transport
@@ -529,14 +547,17 @@ passes.
   client's timeouts (`completionSteps`), because Django has the order
   whether or not the caller's context is still live. That context ends
   when the platform disconnects (an ACP request's always; an MCP
-  tool's for a client on protocol 2026-07-28 or later,
-  `PropagateRequestCancellation`) and when the server cancels its
-  requests at the end of the shutdown drain (`serve.go`): the same
-  three checks cover both. A call whose context has ended before the
-  detach places no order; after a placed order it is answered "order
-  placed, read it again" without the upstream read, with an info log
-  line. The process exiting still cuts a completion: the drain is
-  shorter than the budget (issue #117). `Flow.Complete` alone stores
+  tool's only for a client on protocol 2026-07-28 or later,
+  `PropagateRequestCancellation`), and on every surface and protocol
+  when the server cuts its requests at the end of the shutdown drain
+  (`serve.go`; an MCP tool's through `mcptool.Add`): the same three
+  checks cover both. So no completion detaches after the cut. A call
+  whose context has ended before the detach places no order; after a
+  placed order it is answered "order placed, read it again" without the
+  upstream read, with an info log line. The process does not exit under
+  one: the shutdown's final window holds `checkout.CompletionBudget`,
+  the key settle and the lock release after it (`completionTail`,
+  `cmd/gateway`). `Flow.Complete` alone stores
   the session and the order link from the in-progress save on, and
   returns a `checkout.Placement`: `OrderMayExist` (the zero value)
   spends the caller's idempotency key, `NothingPlaced` releases it. A

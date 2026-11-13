@@ -4,16 +4,9 @@ package httpmw
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 )
-
-// ErrShuttingDown is the cause (context.Cause) of a request context the
-// server cancels at the end of its shutdown drain: a streaming handler
-// tells it from a client that left, and ends its stream with a final
-// event.
-var ErrShuttingDown = errors.New("server shutting down")
 
 // WriteJSONError writes the gateway's uniform `{"error": msg}` body. Every
 // surface that is not bound to a protocol error shape (ACP has its own)

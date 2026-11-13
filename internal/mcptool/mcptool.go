@@ -17,6 +17,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
@@ -144,6 +145,12 @@ type Recorder struct {
 // covers, so a panic would end the process. It is recovered here
 // (obs.Recover logs it with its stack) and answered as unavailable.
 //
+// The SDK ends a handler's context with its request only for a client on
+// protocol 2026-07-28 or later. Every handler's context ends at the
+// server's shutdown cut, with httpmw.ErrShuttingDown, whatever the
+// protocol (httpmw.UntilShutdown): work a tool has not detached stops
+// there, as an ACP request's does.
+//
 // def's annotations are one of ReadOnly, Adds or Changes; their title is
 // the tool's Title too.
 func Add[In, Out any](
@@ -155,6 +162,8 @@ func Add[In, Out any](
 	mcp.AddTool(srv, &titled, func(
 		ctx context.Context, req *mcp.CallToolRequest, in In,
 	) (*mcp.CallToolResult, Out, error) {
+		ctx, stop := httpmw.UntilShutdown(ctx)
+		defer stop()
 		start := time.Now()
 		res, out, err, panicked := run(ctx, rec.Log, def.Name, h, req, in)
 		outcome := OutcomeOK
