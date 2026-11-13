@@ -825,6 +825,10 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !checkout.ValidID(r.PathValue("id")) {
+		h.sessionError(w, checkout.ErrNotFound)
+		return
+	}
 	var req UpdateRequest
 	if !decodeBody(w, r, &req) {
 		return
@@ -1106,6 +1110,10 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !checkout.ValidID(r.PathValue("id")) {
+		h.sessionError(w, checkout.ErrNotFound)
+		return
+	}
 	scope := "cancel:" + r.PathValue("id")
 	claim, _, handled := h.claimIdem(w, r, t.SchemaName, scope,
 		[]byte(r.PathValue("id")))
@@ -1169,7 +1177,7 @@ func (h *Handler) lockSession(
 			writeInFlight(w, idemRetryAfter, msgSessionBusy)
 			return nil, nil, false
 		}
-		writeUnavailable(w, msgRecordsUnavailable)
+		h.sessionError(w, err)
 		return nil, nil, false
 	}
 	s, err := h.store.Load(r.Context(), t.SchemaName, id)

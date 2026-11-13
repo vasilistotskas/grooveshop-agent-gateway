@@ -1283,4 +1283,33 @@ func TestUCPEndToEnd(t *testing.T) {
 		_ = resp.Body.Close()
 		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 	})
+
+	t.Run("an id no checkout can have writes no key", func(t *testing.T) {
+		const bogus = "not-a-checkout-id"
+		for _, call := range []struct {
+			tool string
+			args map[string]any
+		}{
+			{"update_checkout", map[string]any{
+				"meta": meta(""), "id": bogus,
+				"checkout": map[string]any{"buyer": buyer},
+			}},
+			{"complete_checkout", map[string]any{
+				"meta": meta(uuid.NewString()), "id": bogus,
+				"checkout": map[string]any{"payment": codInstrument},
+			}},
+			{"cancel_checkout", map[string]any{
+				"meta": meta(uuid.NewString()), "id": bogus,
+			}},
+		} {
+			res := callTool(t, session, call.tool, call.args)
+			require.True(t, res.IsError, call.tool)
+			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
+				"no longer exists here", call.tool)
+		}
+		keys, err := stack.rdb.Keys(context.Background(),
+			"*"+bogus+"*").Result()
+		require.NoError(t, err)
+		assert.Empty(t, keys)
+	})
 }
