@@ -208,6 +208,8 @@ type checkoutFaults struct {
 	// orderGone makes reading a placed order answer 404: Django no
 	// longer has it.
 	orderGone atomic.Bool
+	// orderCanceled makes a placed order read as canceled.
+	orderCanceled atomic.Bool
 	// orderCreatedAt is when the placed order reads as created; unset,
 	// the fixture's time, which is long past.
 	orderCreatedAt atomic.Pointer[time.Time]
@@ -256,7 +258,8 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				return
 			}
 			createdAt := faults.orderCreatedAt.Load()
-			if createdAt == nil {
+			canceled := faults.orderCanceled.Load()
+			if createdAt == nil && !canceled {
 				inner.ServeHTTP(w, r)
 				return
 			}
@@ -267,7 +270,12 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			order["createdAt"] = createdAt.Format(time.RFC3339Nano)
+			if createdAt != nil {
+				order["createdAt"] = createdAt.Format(time.RFC3339Nano)
+			}
+			if canceled {
+				order["status"] = "CANCELED"
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(order)
 		})

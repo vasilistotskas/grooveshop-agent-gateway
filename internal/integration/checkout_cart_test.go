@@ -834,6 +834,47 @@ func TestCreateCheckoutOnACartInACheckout(t *testing.T) {
 			assert.Equal(t, sessions, stack.sessionCount(t))
 		})
 
+	// Django cancels an unpaid online order when its payment window
+	// ends and keeps the cart, while the checkout reads "awaiting
+	// payment" for its whole day. The order is asked: a shopper who left
+	// the payment page can check out the cart again.
+	awaitingPayment := func(s *checkout.Session) {
+		s.Status = checkout.StatusRequiresEscalation
+		s.OrderID, s.OrderUUID = 684, fixtureOrderUUID
+		s.PlacedAt = time.Now()
+	}
+	t.Run("a checkout whose unpaid order was canceled leaves the cart",
+		func(t *testing.T) {
+			cart := stack.faults.carts.mint()
+			old := ready(t, cart)
+			stack.become(t, old, awaitingPayment)
+			stack.faults.orderCanceled.Store(true)
+			defer stack.faults.orderCanceled.Store(false)
+
+			replaced(t, cart, old)
+
+			assert.Equal(t, checkout.StatusCanceled,
+				stack.storedSession(t, old).Status)
+		})
+
+	t.Run("an order awaiting payment that cannot be read keeps the cart",
+		func(t *testing.T) {
+			cart := stack.faults.carts.mint()
+			old := ready(t, cart)
+			stack.become(t, old, awaitingPayment)
+
+			stack.faults.orderRead.Store(true)
+			refused(t, cart, old, nil, `"code":"unavailable"`,
+				"No checkout was created")
+			stack.faults.orderRead.Store(false)
+
+			// An order Django no longer has is not a canceled one.
+			stack.faults.orderGone.Store(true)
+			defer stack.faults.orderGone.Store(false)
+			refused(t, cart, old, nil, `"code":"conflict"`,
+				"awaits its payment")
+		})
+
 	// A cash-on-delivery order empties its cart, and the shopper may
 	// fill the same cart again.
 	t.Run("a completed checkout leaves the cart to a new one",

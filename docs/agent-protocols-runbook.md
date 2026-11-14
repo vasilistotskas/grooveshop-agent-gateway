@@ -383,7 +383,7 @@ A cart has one live checkout: two on one cart could each place an order, because
 | An open UCP checkout another call is at work on (an update, a completion) | Not canceled under that call. The create looks again, three times at most, then answers `conflict`: "another request is at work on this cart's checkout", send it again shortly |
 | An open ACP session | Refused, `conflict`: "started outside this server". The ACP session is not touched |
 | One whose order is being placed, or was sent and never confirmed | Refused, `conflict`: "an order exists or may", do not start another checkout, and where to look with the checkout id or order id the caller holds. Nothing is looked up or written |
-| One whose order awaits its payment | Refused, `conflict`: "placed an order, which awaits its payment", with the same guidance |
+| One whose order awaits its payment | The order is read from Django. Still unpaid and not canceled: refused, `conflict`: "placed an order, which awaits its payment", with the same guidance. Canceled (Django cancels an unpaid online order when its payment window ends): that checkout is canceled and the new one holds the cart. Not readable: `unavailable`, retry. No longer in Django: refused as unpaid |
 | Several creates on one cart at once | One checkout on the cart is left that is not canceled. A create that finds the holder changed three times answers `conflict`, "send it again shortly" |
 | `cart_id` that is not a UUID | Refused: "cart_id is not a cart id". Every spelling of a UUID names the same cart |
 

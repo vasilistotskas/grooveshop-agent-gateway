@@ -275,6 +275,7 @@ func (h *handlers) takeCart(
 			return err
 		}
 		if !holder.Free() {
+			// An open checkout, or one whose order Django canceled.
 			err = h.supersede(ctx, holder.Session)
 			if errors.Is(err, checkout.ErrLocked) ||
 				errors.Is(err, checkout.ErrSessionChanged) {
@@ -298,8 +299,9 @@ func (h *handlers) takeCart(
 	return errCartBusy
 }
 
-// supersede cancels the open checkout whose cart a create takes, in
-// that checkout's own turn: under its lock, as cancel_checkout does. A
+// supersede cancels the checkout whose cart a create takes (an open
+// one, or one whose unpaid order Django canceled), in that checkout's
+// own turn: under its lock, as cancel_checkout does. A
 // call at work on it (an update writing the cart, a completion) holds
 // the lock, and the create does not cancel under it: Django's cart is
 // outside the session's compare-and-set, and only the lock keeps an
@@ -316,7 +318,7 @@ func (h *handlers) supersede(
 		return err
 	}
 	h.deps.Log.InfoContext(ctx,
-		"ucp: a create canceled the open checkout on its cart",
+		"ucp: a create canceled the checkout that held its cart",
 		slog.String("session", old.ID))
 	return nil
 }
@@ -347,8 +349,10 @@ func (h *handlers) cancel(ctx context.Context, s *checkout.Session) error {
 
 // cartHolder reads the checkout that holds a cart, for a create_checkout
 // that names the cart. The holder it returns is free
-// (checkout.CartHolder.Free), or is an open UCP checkout, which the
-// create cancels. A holder that keeps the cart is the create's refusal:
+// (checkout.CartHolder.Free), or is one the create cancels: an open UCP
+// checkout, or a checkout whose order awaited its payment and was
+// canceled by Django (orderCanceled). A holder that keeps the cart is
+// the create's refusal:
 //   - a checkout whose order is being placed or awaits its payment: an
 //     order exists, or may, and a second checkout could place a second
 //     one;
@@ -367,11 +371,45 @@ func (h *handlers) cartHolder(
 	switch {
 	case holder.Free():
 	case s.MayHaveOrder():
-		return holder, cartOrdered(s)
+		canceled, err := h.orderCanceled(ctx, t, s)
+		if err != nil {
+			return holder, err
+		}
+		if !canceled {
+			return holder, cartOrdered(s)
+		}
 	case s.Protocol != checkout.ProtocolUCP:
 		return holder, errCartElsewhere
 	}
 	return holder, nil
+}
+
+// orderCanceled reports whether Django canceled the order a checkout
+// placed and still reads as awaiting its payment. Django cancels an
+// unpaid online order when its payment window ends, and keeps the cart;
+// the session reads "awaiting payment" for its whole day, because only
+// a payment changes it. So the order is asked, not the session: the
+// cart of a canceled order is free, and the shopper who left the
+// payment page can check out again. An order Django no longer has, or
+// one in any other state, keeps the cart.
+func (h *handlers) orderCanceled(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+) (bool, error) {
+	if s.Status != checkout.StatusRequiresEscalation || s.OrderUUID == "" {
+		return false, nil
+	}
+	o, err := h.deps.Django.PlacedOrder(
+		ctx, t.Domain, t.DefaultLocale, s.OrderUUID)
+	switch {
+	case errors.Is(err, django.ErrNotFound):
+		return false, nil
+	case err != nil:
+		return false, withHint(upstreamErr(err,
+			"whether this cart's earlier order still awaits its "+
+				"payment could not be read; retry shortly"),
+			checkoutNotCreated)
+	}
+	return o.Status == django.OrderStatusCanceled, nil
 }
 
 // cartOrdered answers a create_checkout naming a cart whose checkout

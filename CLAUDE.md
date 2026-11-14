@@ -776,6 +776,15 @@ passes.
     an order exists or may, tell the caller not to start another
     checkout, and say where to look with the checkout id or order id
     it already holds.
+  - **An order that awaits its payment is asked of Django, not of the
+    session** (`orderCanceled`, `django.Client.PlacedOrder`). Django
+    cancels an unpaid online order when its payment window ends and
+    keeps the cart, while the session reads "awaiting payment" for its
+    whole day: only a payment changes it. A checkout whose order
+    Django canceled is canceled as an open one is, and the create
+    takes the cart, so a shopper who left the payment page can check
+    out again. An order Django no longer has keeps the cart; one that
+    cannot be read answers `unavailable`.
   - **No answer to a create gives another checkout, or names one or
     its order.** A checkout is not bound to its platform yet, so the
     UCP cart capability's "return the existing checkout" is not
