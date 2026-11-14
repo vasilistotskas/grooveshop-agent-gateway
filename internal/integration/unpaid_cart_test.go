@@ -116,13 +116,16 @@ func scrapeToolCalls(t *testing.T, stack ucpStack) string {
 	return strings.Join(lines, "")
 }
 
-// A create naming a cart Django no longer serves (a guest cart its order
-// emptied is usually removed) is answered as the cart tools answer that
-// cart, and leaves nothing behind. A Django outage on the same read is
-// still an outage.
+// A create naming a cart Django no longer serves (a guest cart an order
+// emptied or a sign-in merged is removed) is told an order may exist,
+// whether the render or the coupon call finds the cart gone, and leaves
+// nothing behind. A Django outage on the same read is still an outage.
 func TestACreateOnACartDjangoNoLongerServes(t *testing.T) {
 	ctx := context.Background()
 	stack := startUCPGateway(t)
+	// The store takes discount codes, so a create that sends one reaches
+	// the coupon call; set before the store is first resolved.
+	stack.faults.promotions.Store(true)
 	p := newPlatform(t, stack)
 	nothingLeft := func(t *testing.T, cart string) {
 		t.Helper()
@@ -148,6 +151,23 @@ func TestACreateOnACartDjangoNoLongerServes(t *testing.T) {
 			"order may exist")
 		assert.Contains(t, a.refusal, "No checkout was created")
 		assert.NotContains(t, a.refusal, "retry")
+		nothingLeft(t, cart)
+	})
+
+	// The coupon call is the first to find the cart gone when the create
+	// sends a discount code.
+	t.Run("a cart that is gone, with a discount code", func(t *testing.T) {
+		cart := uuid.NewString()
+
+		a := p.create(ctx, cart, map[string]any{
+			"discounts": map[string]any{"codes": []string{"SAVE10"}},
+		})
+
+		assert.Empty(t, a.id)
+		assert.Contains(t, a.refusal, `"code":"not_found"`)
+		assert.Contains(t, a.refusal, "so an order may exist")
+		assert.Contains(t, a.refusal, "No checkout was created")
+		assert.NotContains(t, a.refusal, "start a new checkout")
 		nothingLeft(t, cart)
 	})
 

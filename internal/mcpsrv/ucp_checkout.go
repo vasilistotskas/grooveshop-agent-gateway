@@ -121,7 +121,8 @@ func (h *handlers) createCheckout(
 			"the cart made for this checkout could not be reached; "+
 				"start again"), checkoutNotCreated)
 	}
-	hasCodes, err := h.applyCodes(ctx, t, s, &in.Checkout)
+	hasCodes, err := h.applyCodes(ctx, t, s, &in.Checkout,
+		"the cart was not found; start a new checkout with line_items")
 	if err != nil {
 		return nil, zero, err
 	}
@@ -183,10 +184,11 @@ func (h *handlers) newSession(
 }
 
 // applyCodes writes a create's discount codes to its cart, and reports
-// whether it sent any.
+// whether it sent any. gone is the hint for a cart Django no longer
+// serves, which the coupon call can be the first to find.
 func (h *handlers) applyCodes(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
-	in *UCPCheckoutIn,
+	in *UCPCheckoutIn, gone string,
 ) (bool, error) {
 	codes, hasCodes := in.discountCodes()
 	if !hasCodes {
@@ -195,9 +197,7 @@ func (h *handlers) applyCodes(
 	if err := checkout.ApplyDiscountCodes(
 		ctx, h.deps.Django, t, s, codes,
 	); err != nil {
-		return true, withHint(upstreamErr(err,
-			"the cart was not found; start a new checkout with "+
-				"line_items"), checkoutNotCreated)
+		return true, withHint(upstreamErr(err, gone), checkoutNotCreated)
 	}
 	return true, nil
 }
@@ -257,7 +257,7 @@ func (h *handlers) createFromCart(
 	}
 	defer release()
 
-	hasCodes, err := h.applyCodes(ctx, t, s, &in.Checkout)
+	hasCodes, err := h.applyCodes(ctx, t, s, &in.Checkout, cartIDGone)
 	if err != nil {
 		h.discard(ctx, s)
 		return nil, zero, err
@@ -277,8 +277,8 @@ func (h *handlers) createFromCart(
 					"on the cart")
 		}
 	}
-	// A cart Django no longer serves: a guest cart its order emptied is
-	// usually removed. The create is answered as the cart tools answer it.
+	// A cart Django no longer serves (a guest cart an order emptied or a
+	// sign-in merged is removed) is cartIDGone: an order may exist.
 	return h.created(ctx, t, s, neg, hasCodes, cartIDGone)
 }
 
