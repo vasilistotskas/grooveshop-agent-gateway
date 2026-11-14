@@ -372,6 +372,26 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | Two completes of one ready session at once, with one key or two | One order. The other complete answers as the row above, then, sent again, the placed session |
 | ACP create that ran past its key's claim while another create took the key | 409 `idempotency_in_flight`; its own session is discarded, and the retry answers the other create's response |
 
+### One checkout per cart
+
+A cart has one live checkout: two on one cart could each place an order, because Django keeps the cart of an order that awaits its online payment. The session that holds a cart is named in `ag:{schema}:checkoutcart:{cartId}`, written with the session and kept as long as it. Only UCP `create_checkout` with `cart_id` can name a cart that already has a checkout. Not exercised here: `checkout_cart_test.go` in the integration suite.
+
+| `create_checkout` with `cart_id`, by the checkout that holds the cart | Expected |
+|---|---|
+| None, or one that is completed, canceled or no longer stored | A new checkout, which holds the cart |
+| An open UCP checkout | It is canceled and the new checkout holds the cart: the newest create wins. The old id reads `canceled`, and a complete of it is refused. A create the store refuses (region, payment) cancels nothing |
+| An open ACP session | Refused, `conflict`: "started outside this server". The ACP session is not touched |
+| One whose order is being placed, or was sent and never confirmed | Refused, `conflict`: "an order exists or may", do not start another checkout, and where to look with the checkout id or order id the caller holds. Nothing is looked up or written |
+| One whose order awaits its payment | Refused, `conflict`: "placed an order, which awaits its payment", with the same guidance |
+| Several creates on one cart at once | One checkout on the cart is left that is not canceled. A create that finds the holder changed three times answers `conflict`, "send it again shortly" |
+| `cart_id` that is not a UUID | Refused: "cart_id is not a cart id". Every spelling of a UUID names the same cart |
+
+No answer gives the caller another checkout, or names one or its order.
+
+A cart Django just made (UCP `line_items`, an ACP create) is taken the same way. If it already has a record, no session is handed out: UCP `unavailable`, ACP 503, and an error line "a cart just made is already in a checkout".
+
+Two limits. Redis can evict the record while its session lives, and that cart can then get a second checkout: what refuses the second order is Django (#141, its Django half). And while the release that adds the record rolls out, a session an older pod creates has no record, so the rule holds for a cart from the first session a newer pod creates on it.
+
 ### Invalid input
 
 | Case | Expected and observed |
@@ -526,7 +546,7 @@ The new pods do not read sessions the old pods stored, and the reverse, on purpo
 | `completed`, `canceled` | As above; only the session's own read is lost | As above |
 | A payment event for a session a **new** pod stored, delivered to an **old** pod | The old pod finds the order link, looks under the old key, finds no session and answers 204, which is final for Django. The order webhook still goes out. That session stays `requires_escalation` until it ends, 24 hours after its order was placed: `get_checkout` keeps showing the payment page of a paid order, `get_order` shows the truth | Cannot happen |
 
-So before the deploy, list the sessions whose order exists or may. The gateway's Redis database is **4** (`REDIS_URL` ends `/4` in the infrastructure repo's `agent-gateway.yaml`; database 0 is Django's). Run this where `redis-cli` reaches that Redis, with `REDISCLI_AUTH` set. It runs in a subshell, so a failure ends the check and not your shell. It prints how many sessions it read (a session's lock and its placed-order record are not sessions and are not counted), then the ones that matter:
+So before the deploy, list the sessions whose order exists or may. The gateway's Redis database is **4** (`REDIS_URL` ends `/4` in the infrastructure repo's `agent-gateway.yaml`; database 0 is Django's). Run this where `redis-cli` reaches that Redis, with `REDISCLI_AUTH` set. It runs in a subshell, so a failure ends the check and not your shell. It prints how many sessions it read (a session's lock and its placed-order record are not sessions and are not counted; the carts' records are under `ag:*:checkoutcart:*`, outside the scan), then the ones that matter:
 
 ```bash
 (
@@ -597,7 +617,7 @@ Callers are told "in progress" for three upstream timeouts, and after that "the 
    - Otherwise search the gateway's logs for the session id (`session`). "checkout: session save failed" and "checkout: order index write failed" each name the `order` when one exists.
    - Otherwise look in the store's Django admin for an order with the buyer's email created at or after the session's `updatedAt`. The store's order confirmation email, which the "never confirmed" answer points the buyer to, settles the same question.
 
-3. Clear it **only when you have confirmed that no order exists**: no order was sent (step 2's logs), or the order request ended in Django without one. An admin search that finds nothing while that request may still be running is not that confirmation. Then `$R DEL "$key"`: the next call on that checkout id gets the missing-session answer, and the platform starts a new checkout. If the outcome stays unknown, keep the session and start no new checkout. A session with `"unconfirmed":true` is otherwise kept the full 24 hours.
+3. Clear it **only when you have confirmed that no order exists**: no order was sent (step 2's logs), or the order request ended in Django without one. An admin search that finds nothing while that request may still be running is not that confirmation. Then `$R DEL "$key"`: the next call on that checkout id gets the missing-session answer, and the platform starts a new checkout. The cart's record (`ag:{schema}:checkoutcart:{cartId}`, the session's `cartId`) then names a session that is not stored, which holds nothing: leave it, the next checkout on that cart replaces it. While the session is stored, a `create_checkout` naming its cart is refused. If the outcome stays unknown, keep the session and start no new checkout. A session with `"unconfirmed":true` is otherwise kept the full 24 hours.
 
    When an order exists, do not delete the session to "unblock" the platform: a new checkout for the same cart would be a second order. The order is the answer.
 

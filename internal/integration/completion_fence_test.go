@@ -412,6 +412,8 @@ func TestACPRequestPastItsClaimLeavesTheKeyToItsHolder(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, record, now, "the holder's record was replaced")
 			assert.Equal(t, sessions+1, stack.sessionCount(t))
+			assert.Empty(t, stack.staleCartRecords(t),
+				"the discarded session left its cart's record behind")
 
 			resp, replayed := acpRaw(t,
 				acpRequest(t, http.MethodPost, base, body, key))

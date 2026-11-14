@@ -711,7 +711,14 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		h.releaseIdem(r, claim, createScope)
 		return
 	}
-	if err := h.store.Create(r.Context(), s); err != nil {
+	// The cart was made for this session, so no checkout holds it.
+	if err := h.store.Create(
+		r.Context(), s, checkout.CartHolder{},
+	); err != nil {
+		if errors.Is(err, checkout.ErrCartHeld) {
+			h.log.ErrorContext(r.Context(),
+				"acp: a cart just made is already in a checkout")
+		}
 		h.releaseIdem(r, claim, createScope)
 		writeUnavailable(w, msgRecordsUnavailable)
 		return
@@ -1281,7 +1288,10 @@ func (h *Handler) completeError(
 		})
 	case errors.Is(err, checkout.ErrSessionNotSaved):
 		writePlacedUnsaved(w, s.OrderUUID)
-	case errors.Is(err, checkout.ErrUnavailable):
+	// ErrCartHeld is a create's, and is answered as create answers it:
+	// a cart made for a session is never another checkout's.
+	case errors.Is(err, checkout.ErrUnavailable),
+		errors.Is(err, checkout.ErrCartHeld):
 		writeUnavailable(w, msgRecordsUnavailable)
 	case errors.Is(err, checkout.ErrPayWayUnavailable),
 		errors.Is(err, checkout.ErrPaymentMethodUnsupported):

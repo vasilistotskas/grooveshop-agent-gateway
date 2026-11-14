@@ -512,13 +512,15 @@ func toolset(h *handlers) []tool {
 		// assistant hands the shopper a checkout link instead.
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "create_checkout",
-			Annotations:  mcptool.Adds("Start a checkout"),
+			Annotations:  mcptool.Replaces("Start a checkout"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: start a checkout session. Send " +
 				"checkout.line_items (or cart_id for a cart built with the " +
-				"cart tools). Collect buyer, fulfillment and payment with " +
-				"update_checkout until status is ready_for_complete. " +
-				"Requires meta.ucp-agent.profile.",
+				"cart tools). A cart has one checkout at a time: cart_id " +
+				"for a cart in an open checkout cancels that checkout " +
+				"and starts this one. Collect buyer, fulfillment and " +
+				"payment with update_checkout until status is " +
+				"ready_for_complete. Requires meta.ucp-agent.profile.",
 		}, h.createCheckout))),
 
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{

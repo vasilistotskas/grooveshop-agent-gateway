@@ -60,7 +60,7 @@ func startFlow(t *testing.T, upstreamTimeout time.Duration) flowStack {
 func (f flowStack) readySession(t *testing.T) *checkout.Session {
 	t.Helper()
 	s := checkout.NewSession(f.tenant.SchemaName, f.tenant.Domain,
-		checkout.ProtocolUCP, fixtureCartID)
+		checkout.ProtocolUCP, f.faults.carts.mint())
 	s.Buyer = checkout.Buyer{
 		FirstName: "Μαρία", LastName: "Παπαδοπούλου",
 		Email: "maria@example.test", Phone: "+306912345678",
@@ -74,7 +74,8 @@ func (f flowStack) readySession(t *testing.T) *checkout.Session {
 	s.PayWayID = 1
 	s.Recompute()
 	require.Equal(t, checkout.StatusReadyForComplete, s.Status)
-	require.NoError(t, f.store.Create(context.Background(), s))
+	require.NoError(t, f.store.Create(context.Background(), s,
+		checkout.CartHolder{}))
 	return s
 }
 
@@ -686,7 +687,7 @@ func TestCompleteSendsNoOrderWithoutTheInProgressSave(t *testing.T) {
 		if !savesKey(cmd, sessionRedisKey(s.ID)) {
 			return nil
 		}
-		revisions = append(revisions, cmd.Args()[5])
+		revisions = append(revisions, cmd.Args()[6])
 		return redisDown
 	}))
 

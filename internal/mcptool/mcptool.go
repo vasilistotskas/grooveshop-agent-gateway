@@ -151,8 +151,8 @@ type Recorder struct {
 // protocol (httpmw.UntilShutdown): work a tool has not detached stops
 // there, as an ACP request's does.
 //
-// def's annotations are one of ReadOnly, Adds or Changes; their title is
-// the tool's Title too.
+// def's annotations are one of ReadOnly, Adds, Replaces or Changes;
+// their title is the tool's Title too.
 func Add[In, Out any](
 	srv *mcp.Server, rec Recorder, def *mcp.Tool,
 	h mcp.ToolHandlerFor[In, Out],
@@ -215,10 +215,18 @@ func ReadOnly(title string) *mcp.ToolAnnotations {
 		OpenWorldHint: new(false)}
 }
 
-// Adds is a tool that adds to the store (a cart, a cart line, an alert,
-// a checkout) and adds again when called again.
+// Adds is a tool that adds to the store (a cart, a cart line, an alert)
+// and adds again when called again.
 func Adds(title string) *mcp.ToolAnnotations {
 	return &mcp.ToolAnnotations{Title: title, DestructiveHint: new(false),
+		OpenWorldHint: new(false)}
+}
+
+// Replaces is a tool that adds to the store and, in doing so, may end
+// what the store held (a checkout started on a cart cancels the open
+// checkout there), and does both again when called again.
+func Replaces(title string) *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{Title: title, DestructiveHint: new(true),
 		OpenWorldHint: new(false)}
 }
 

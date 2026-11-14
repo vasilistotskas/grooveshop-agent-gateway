@@ -272,7 +272,7 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 		ready: func(t *testing.T) string {
 			t.Helper()
 			res := callTool(t, session, "create_checkout", map[string]any{
-				"meta": meta(""), "cart_id": fixtureCartID,
+				"meta": meta(""), "cart_id": stack.faults.carts.mint(),
 				"checkout": map[string]any{
 					"buyer": map[string]any{
 						"first_name": "Μαρία", "last_name": "Παπαδοπούλου",

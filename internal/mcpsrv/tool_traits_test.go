@@ -111,7 +111,9 @@ func TestEveryToolIsAnnotatedAndTheListCacheable(t *testing.T) {
 // What a tool does to the store, as its hints say it.
 func TestToolHintsMatchWhatTheyDo(t *testing.T) {
 	adds := []string{"create_cart", "add_to_cart",
-		"subscribe_product_alert", "create_checkout"}
+		"subscribe_product_alert"}
+	// A checkout started on a cart cancels the open checkout there.
+	replaces := []string{"create_checkout"}
 	changes := []string{"update_cart_item", "remove_cart_item",
 		"apply_coupon", "remove_coupon", "update_checkout",
 		"complete_checkout", "cancel_checkout"}
@@ -121,6 +123,10 @@ func TestToolHintsMatchWhatTheyDo(t *testing.T) {
 		case slices.Contains(adds, name):
 			assert.False(t, a.ReadOnlyHint, name)
 			assert.False(t, *a.DestructiveHint, name)
+			assert.False(t, a.IdempotentHint, name)
+		case slices.Contains(replaces, name):
+			assert.False(t, a.ReadOnlyHint, name)
+			assert.True(t, *a.DestructiveHint, name)
 			assert.False(t, a.IdempotentHint, name)
 		case slices.Contains(changes, name):
 			assert.False(t, a.ReadOnlyHint, name)

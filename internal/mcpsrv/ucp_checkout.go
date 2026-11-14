@@ -26,12 +26,19 @@ import (
 type CreateCheckoutIn struct {
 	Meta     *MetaIn       `json:"meta"`
 	Checkout UCPCheckoutIn `json:"checkout"`
-	// CartID is an additive member UCP does not model: a canonical
-	// caller sends line_items. Consumers ignore members they do not
-	// recognise, so carrying it costs conformance nothing while keeping
-	// the cart tools usable as a path into checkout. (Order webhooks are
+	// CartID starts the checkout from a cart built with the cart tools.
+	// UCP models that in its cart capability (dev.ucp.shopping.cart),
+	// as a cart_id member of the checkout object. This business does
+	// not advertise that capability, so a canonical caller sends
+	// line_items, and the member stays here, beside `checkout`, outside
+	// the negotiated shape: consumers ignore members they do not
+	// recognise. The capability's aim is kept, a cart has one
+	// incomplete checkout, but not its means: a checkout is not bound
+	// to its platform yet, so the spec's "return the existing checkout"
+	// is not offered. The newest create holds the cart, and an open
+	// checkout on it is canceled (createFromCart). (Order webhooks are
 	// discovered from the platform profile, never taken from a request.)
-	CartID string `json:"cart_id,omitempty" jsonschema:"an existing cart from the cart tools; omit when sending line_items"`
+	CartID string `json:"cart_id,omitempty" jsonschema:"the cartId of an existing cart from the cart tools; omit when sending line_items. A cart has one checkout at a time: an open checkout that already holds the cart is canceled, and this one replaces it"`
 }
 
 // GetCheckoutIn is the get_checkout tool's arguments.
@@ -91,57 +98,274 @@ func (h *handlers) createCheckout(
 	case in.CartID == "" && len(lines) == 0:
 		return nil, zero, errors.New(
 			"checkout.line_items is required to start a checkout")
+	case in.CartID != "":
+		return h.createFromCart(ctx, t, in, neg)
 	}
 
-	s := checkout.NewSession(
-		t.SchemaName, t.Domain, checkout.ProtocolUCP, in.CartID)
-	// The platform's order-event endpoint, from its profile's negotiated
-	// order capability (vetted by negotiate); none when it negotiated
-	// no order capability.
-	s.WebhookURL = neg.OrderWebhookURL()
 	// Every lookup and refusal before the first cart write, which here
-	// may be creating the cart: a region or payment the store refuses
-	// leaves no cart behind. A line sync failing after it does.
-	in.Checkout.applyTo(s)
-	if err := h.applyRegion(ctx, t, s, &in.Checkout); err != nil {
+	// is creating the cart: a region or payment the store refuses leaves
+	// no cart behind. A line sync failing after it does.
+	s, err := h.newSession(ctx, t, &in.Checkout, neg)
+	if err != nil {
 		return nil, zero, err
 	}
-	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
+	c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, "")
+	if err != nil {
+		return nil, zero, upstreamErr(err, "the cart service is unavailable")
+	}
+	s.CartID = c.UUID
+	if err := checkout.SyncCartLines(
+		ctx, h.deps.Django, t, checkout.ProtocolUCP, s.CartID, lines,
+	); err != nil {
+		return nil, zero, withHint(upstreamErr(err,
+			"the cart made for this checkout could not be reached; "+
+				"start again"), checkoutNotCreated)
+	}
+	hasCodes, err := h.applyCodes(ctx, t, s, &in.Checkout)
+	if err != nil {
 		return nil, zero, err
-	}
-
-	if s.CartID == "" {
-		c, err := h.deps.Django.GetCart(ctx, t.Domain, t.DefaultLocale, "")
-		if err != nil {
-			return nil, zero, upstreamErr(err,
-				"the cart service is unavailable")
-		}
-		s.CartID = c.UUID
-		if err := checkout.SyncCartLines(
-			ctx, h.deps.Django, t, checkout.ProtocolUCP, s.CartID, lines,
-		); err != nil {
-			return nil, zero, withHint(upstreamErr(err,
-				"the cart made for this checkout could not be reached; "+
-					"start again"), checkoutNotCreated)
-		}
-	}
-	codes, hasCodes := in.Checkout.discountCodes()
-	if hasCodes {
-		if err := checkout.ApplyDiscountCodes(
-			ctx, h.deps.Django, t, s, codes,
-		); err != nil {
-			return nil, zero, withHint(upstreamErr(err,
-				"the cart was not found; start a new checkout with "+
-					"line_items"), checkoutNotCreated)
-		}
 	}
 	s.Recompute()
-	if err := h.deps.Checkout.Create(ctx, s); err != nil {
+	// The cart was made for this checkout, so no checkout holds it.
+	if err := h.deps.Checkout.Create(
+		ctx, s, checkout.CartHolder{},
+	); err != nil {
+		if errors.Is(err, checkout.ErrCartHeld) {
+			h.deps.Log.ErrorContext(ctx,
+				"ucp: a cart just made is already in a checkout")
+		}
 		return nil, zero, errCheckoutUnavailable
 	}
 	res, out, err := h.checkoutResult(ctx, t, s, neg)
 	return h.discountAnnotated(res, out, err, s, hasCodes)
 }
+
+// newSession is the session a create_checkout would store, with every
+// lookup and refusal settled and nothing written: it has no cart yet.
+func (h *handlers) newSession(
+	ctx context.Context, t *tenant.Tenant, in *UCPCheckoutIn,
+	neg ucp.Negotiated,
+) (*checkout.Session, error) {
+	s := checkout.NewSession(
+		t.SchemaName, t.Domain, checkout.ProtocolUCP, "")
+	// The platform's order-event endpoint, from its profile's negotiated
+	// order capability (vetted by negotiate); none when it negotiated
+	// no order capability.
+	s.WebhookURL = neg.OrderWebhookURL()
+	in.applyTo(s)
+	if err := h.applyRegion(ctx, t, s, in); err != nil {
+		return nil, err
+	}
+	if err := h.applyPayment(ctx, t, s, in, neg); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// applyCodes writes a create's discount codes to its cart, and reports
+// whether it sent any.
+func (h *handlers) applyCodes(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	in *UCPCheckoutIn,
+) (bool, error) {
+	codes, hasCodes := in.discountCodes()
+	if !hasCodes {
+		return false, nil
+	}
+	if err := checkout.ApplyDiscountCodes(
+		ctx, h.deps.Django, t, s, codes,
+	); err != nil {
+		return true, withHint(upstreamErr(err,
+			"the cart was not found; start a new checkout with "+
+				"line_items"), checkoutNotCreated)
+	}
+	return true, nil
+}
+
+// cartCreateRounds bounds how often a create naming a cart decides
+// again about the cart's holder, after another request changed it.
+const cartCreateRounds = 3
+
+// createFromCart is create_checkout for a cart the caller names. A cart
+// has one live checkout, which the store keeps (checkout.Store.Create):
+// two checkouts on one cart could each place an order, because Django
+// keeps the cart of an order that awaits its online payment.
+//
+// The newest create holds the cart. An open checkout on it is canceled,
+// with cancel_checkout's own write, and this call's checkout takes its
+// place: the old id reads canceled from then on. UCP's cart capability
+// would return the open checkout instead; a checkout is not bound to
+// its platform yet, so that is not offered, and no answer here gives
+// another checkout or names one.
+//
+// A checkout whose order is being placed or awaits its payment keeps
+// the cart, and the create is refused (cartHolder), before any lookup
+// and any cart write. What the create submits is settled before the
+// holder is canceled: a create the store refuses cancels nothing.
+func (h *handlers) createFromCart(
+	ctx context.Context, t *tenant.Tenant, in CreateCheckoutIn,
+	neg ucp.Negotiated,
+) (*mcp.CallToolResult, CheckoutResult, error) {
+	var zero CheckoutResult
+	// Django reads every spelling of a UUID as one cart, so the cart is
+	// named in one spelling here: it keys the cart's record.
+	cartID, ok := checkout.CanonicalCartID(in.CartID)
+	if !ok {
+		return nil, zero, errors.New(
+			"cart_id is not a cart id: send the cartId the cart tools " +
+				"returned, or omit it and send checkout.line_items")
+	}
+	if _, err := h.cartHolder(ctx, t, cartID); err != nil {
+		return nil, zero, err
+	}
+	s, err := h.newSession(ctx, t, &in.Checkout, neg)
+	if err != nil {
+		return nil, zero, err
+	}
+	s.CartID = cartID
+
+	// The cart is written once, however many rounds follow. hasCodes then
+	// says this call's discount codes are on the cart.
+	hasCodes, wrote := false, false
+	for range cartCreateRounds {
+		// Read again: the lookups above take time, and each further
+		// round follows another request's change to the holder.
+		holder, err := h.cartHolder(ctx, t, cartID)
+		if err != nil {
+			return nil, zero, afterCodes(err, hasCodes)
+		}
+		if !holder.Free() {
+			err = h.cancel(ctx, holder.Session)
+			if errors.Is(err, checkout.ErrSessionChanged) {
+				// The holder moved on, perhaps into placing its order.
+				continue
+			}
+			if err != nil {
+				return nil, zero, afterCodes(errCheckoutUnavailable, hasCodes)
+			}
+			h.deps.Log.InfoContext(ctx,
+				"ucp: a create canceled the open checkout on its cart",
+				slog.String("session", holder.Session.ID))
+		}
+		// The first cart write, once no live checkout holds the cart.
+		if !wrote {
+			hasCodes, err = h.applyCodes(ctx, t, s, &in.Checkout)
+			if err != nil {
+				return nil, zero, err
+			}
+			wrote = true
+			s.Recompute()
+		}
+		err = h.deps.Checkout.Create(ctx, s, holder)
+		if err == nil {
+			res, out, err := h.checkoutResult(ctx, t, s, neg)
+			return h.discountAnnotated(res, out, err, s, hasCodes)
+		}
+		if !errors.Is(err, checkout.ErrCartHeld) {
+			return nil, zero, afterCodes(errCheckoutUnavailable, hasCodes)
+		}
+		// Another create took the cart since it was read.
+	}
+	return nil, zero, afterCodes(errCartBusy, hasCodes)
+}
+
+// afterCodes adds, to a create's refusal, that its discount codes went
+// to the cart before it was refused.
+func afterCodes(err error, written bool) error {
+	if !written {
+		return err
+	}
+	return withHint(err,
+		"The discount codes this call sent may already be on the cart")
+}
+
+// cancel stores an open checkout as canceled, and only over the
+// checkout s was loaded as (Store.Save): what cancel_checkout does to
+// its checkout, and what a create does to the open checkout whose cart
+// it takes.
+func (h *handlers) cancel(ctx context.Context, s *checkout.Session) error {
+	s.Status = checkout.StatusCanceled
+	return h.deps.Checkout.Save(ctx, s)
+}
+
+// cartHolder reads the checkout that holds a cart, for a create_checkout
+// that names the cart. The holder it returns is free
+// (checkout.CartHolder.Free), or is an open UCP checkout, which the
+// create cancels. A holder that keeps the cart is the create's refusal:
+//   - a checkout whose order is being placed or awaits its payment: an
+//     order exists, or may, and a second checkout could place a second
+//     one;
+//   - an open checkout of another protocol, which is that surface's to
+//     cancel.
+//
+// No refusal names the holder or its order.
+func (h *handlers) cartHolder(
+	ctx context.Context, t *tenant.Tenant, cartID string,
+) (checkout.CartHolder, error) {
+	holder, err := h.deps.Checkout.HolderOf(ctx, t.SchemaName, cartID)
+	if err != nil {
+		return holder, errCheckoutUnavailable
+	}
+	s := holder.Session
+	switch {
+	case holder.Free():
+	case s.MayHaveOrder():
+		return holder, cartOrdered(s)
+	case s.Protocol != checkout.ProtocolUCP:
+		return holder, errCartElsewhere
+	}
+	return holder, nil
+}
+
+// cartOrdered answers a create_checkout naming a cart whose checkout
+// may have an order. Like errCheckoutGone it never says to start
+// another checkout, and it tells the caller where to look with what it
+// already holds: the checkout's id, the order's, or neither.
+func cartOrdered(s *checkout.Session) error {
+	if s.Status == checkout.StatusCompleteInProgress {
+		return errCartOrderPending
+	}
+	return errCartOrderUnpaid
+}
+
+var (
+	// errCartOrderPending: the cart's checkout is placing its order, or
+	// sent it and was never answered.
+	errCartOrderPending = &mcptool.ToolError{Code: mcptool.CodeConflict,
+		Hint: "this cart already has a checkout whose order is being " +
+			"placed, or was sent and never confirmed, so an order " +
+			"exists or may, and no checkout was created: do not start " +
+			"another checkout for it before checking. If you hold that " +
+			"checkout's id, read it with get_checkout; if you hold its " +
+			"order id, read the order with get_order or track_order; if " +
+			"not, ask the shopper for the store's order confirmation"}
+
+	// errCartOrderUnpaid: the cart's checkout placed an order that
+	// awaits its payment.
+	errCartOrderUnpaid = &mcptool.ToolError{Code: mcptool.CodeConflict,
+		Hint: "this cart already has a checkout that placed an order, " +
+			"which awaits its payment, so an order exists and no " +
+			"checkout was created: do not start another checkout for " +
+			"it. If you hold that checkout's id, read it with " +
+			"get_checkout for the payment page; if you hold its order " +
+			"id, read the order with get_order or track_order; if not, " +
+			"ask the shopper for the store's order confirmation"}
+
+	// errCartElsewhere: an open checkout of another protocol holds the
+	// cart.
+	errCartElsewhere = &mcptool.ToolError{Code: mcptool.CodeConflict,
+		Hint: "this cart is already in an open checkout that was " +
+			"started outside this server and cannot be changed here, " +
+			"so no checkout was created; that checkout must be finished " +
+			"or canceled where it was started before this cart can be " +
+			"checked out here"}
+
+	// errCartBusy: the create kept finding the cart's holder changed by
+	// other requests.
+	errCartBusy = &mcptool.ToolError{Code: mcptool.CodeConflict,
+		Hint: "other requests are starting a checkout for this cart, so " +
+			"this call created none; send it again shortly"}
+)
 
 // applyRegion settles the delivery region whenever a fulfillment was
 // submitted: its country decides whether one is needed at all.
@@ -920,8 +1144,7 @@ func (h *handlers) cancelSession(
 	if closed := h.cancelClosed(ctx, t, s, neg); closed != nil {
 		return fromSnapshot(closed)
 	}
-	s.Status = checkout.StatusCanceled
-	if err := h.deps.Checkout.Save(ctx, s); err != nil {
+	if err := h.cancel(ctx, s); err != nil {
 		return refusedBy(saveFailed(err))
 	}
 	return afterSave(func() (*mcp.CallToolResult, CheckoutResult, error) {
