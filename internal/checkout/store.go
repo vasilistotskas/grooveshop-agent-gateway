@@ -188,7 +188,10 @@ const (
 // session, in this one step: when no session holds the cart, or the
 // record still names ARGV[6], the holder its caller saw and may replace.
 // A cart another session holds is not taken: nothing is written, and the
-// answer is 2. A save keeps the record's lifetime the session's.
+// answer is 2. A save keeps the record's lifetime the session's, and
+// writes the record again where Redis holds none: Redis evicts keys one
+// by one, and a session whose record it evicted would hold its cart
+// against nobody.
 //
 // A lifetime of 0 or less is a placed session whose day has passed: it
 // is deleted, under the same check, and its cart's record with it.
@@ -228,7 +231,7 @@ if ended then
   return 1
 end
 redis.call('SET', KEYS[1], ARGV[3], 'PX', ARGV[4])
-if create then
+if create or not holder then
   redis.call('SET', KEYS[2], ARGV[5], 'PX', ARGV[4])
 elseif holder == ARGV[5] then
   redis.call('PEXPIRE', KEYS[2], ARGV[4])

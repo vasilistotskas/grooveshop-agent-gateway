@@ -746,7 +746,8 @@ passes.
   - The record lives as long as its session: every save sets its
     expiry to the session's, and the save that ends a session and
     `Store.Discard` delete it, each only while it names that session.
-    A record whose session is not stored holds nothing.
+    A save writes the record again where Redis holds none (an
+    eviction). A record whose session is not stored holds nothing.
   - UCP `create_checkout` with `cart_id` (`mcpsrv.createFromCart`)
     takes a UUID only, in its canonical spelling
     (`checkout.CanonicalCartID`: Django reads every spelling as one
@@ -774,10 +775,12 @@ passes.
   - A cart made for its session (`line_items`, ACP) is taken the same
     way. A held one there is a fault: logged, answered unavailable,
     and no session is handed out.
-  - Redis can lose the record while the session lives (eviction), and
-    the gateway cannot close that alone. The guard that holds whatever
-    Redis lost is Django refusing a second order from a cart whose
-    order awaits its payment: the other half of #141, in Django.
+  - Redis can lose the record while the session lives (eviction).
+    The session's next save writes it again; until then the cart can
+    get a second checkout, and the gateway cannot close that alone.
+    The guard that holds whatever Redis lost is Django refusing a
+    second order from a cart whose order awaits its payment: the
+    other half of #141, in Django.
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before

@@ -265,6 +265,20 @@ func TestACartsRecordLivesAsLongAsItsSession(t *testing.T) {
 		assertLivesWithSession(t, f.rdb, s, day)
 	})
 
+	// Redis evicts keys one by one, so a live session can lose its
+	// cart's record. Its next save writes it again.
+	t.Run("a save writes again a record Redis lost", func(t *testing.T) {
+		store, rdb := startStore(t)
+		s := newSession()
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
+		require.NoError(t, rdb.Del(ctx, cartRecordPrefix+s.CartID).Err())
+
+		require.NoError(t, store.Save(ctx, s))
+
+		assert.Equal(t, s.ID, heldBy(t, rdb, s.CartID))
+		assertLivesWithSession(t, rdb, s, halfHour)
+	})
+
 	// A session that lost its cart to the next checkout leaves that
 	// checkout's record alone, whatever it saves.
 	t.Run("a save of a session that no longer holds the cart",

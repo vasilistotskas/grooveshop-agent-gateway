@@ -390,7 +390,7 @@ No answer gives the caller another checkout, or names one or its order.
 
 A cart Django just made (UCP `line_items`, an ACP create) is taken the same way. If it already has a record, no session is handed out: UCP `unavailable`, ACP 503, and an error line "a cart just made is already in a checkout".
 
-Two limits. Redis can evict the record while its session lives, and that cart can then get a second checkout: what refuses the second order is Django (#141, its Django half). And while the release that adds the record rolls out, a session an older pod creates has no record, so the rule holds for a cart from the first session a newer pod creates on it.
+Two limits. Redis can evict the record while its session lives. The session's next save writes it again; until then that cart can get a second checkout, and what refuses the second order is Django (#141, its Django half). And while the release that adds the record rolls out, a session an older pod creates has no record, so the rule holds for a cart from the first session a newer pod creates on it.
 
 ### Invalid input
 
