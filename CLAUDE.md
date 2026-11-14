@@ -489,7 +489,7 @@ passes.
     `missing_api_version` or `unsupported_api_version` with
     `supported_versions`.
   - An `Idempotency-Key` longer than the spec's 255 characters is 400
-    `invalid` at `Idempotency-Key`, before Redis is asked
+    `invalid` at `Idempotency-Key`, before any Redis key is built from it
     (`errKeyForm`). Any string within it is a key: the spec makes it
     opaque.
   - 409 is only `idempotency_in_flight`, with `Retry-After`: a key or
@@ -856,17 +856,18 @@ passes.
     `cart_has_unpaid_order`, with the gateway's own message of the
     same meaning (`completeError`). Neither names an order: Django
     names none.
-  - **A cart Django no longer serves is gone, not a render to retry.**
-    A completed checkout leaves its cart to a new one, but Django
-    usually removes a guest cart its order emptied, so a create naming
-    that cart usually finds none. The render of a checkout without an order reads only its
-    cart, so a cart Django no longer serves there (`isCartGone`: another
-    cart served, `cart_not_found`, or a 403) is `errCheckoutCartGone`,
-    `not_found` with `cartGone`, never "retry"; an outage stays
-    `unavailable`. A `cart_id` create answers it as the cart tools do
-    (`mcpCartGone`, "create a new one with create_cart") with "No
-    checkout was created" (`handlers.created`), and leaves nothing
-    stored.
+  - **A cart Django no longer serves is gone, not a render to retry,
+    and not "nothing happened".** Django removes a guest cart that an
+    order emptied or a sign-in merged, so the shopper may have checked
+    it out on the store's own site. The render of a checkout without
+    an order reads its cart, so a cart Django no longer serves there
+    (`isCartGone`: another cart served, `cart_not_found`, or a 403) is
+    `errCheckoutCartGone`, `not_found` with `cartGone`, never "retry";
+    an outage stays `unavailable`. A `cart_id` create answers it with
+    `cartIDGone` and "No checkout was created" (`handlers.created`),
+    and leaves nothing stored. Both say an order may exist and to
+    check with the shopper before starting another checkout or cart:
+    never only "start a new one".
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before

@@ -279,7 +279,7 @@ func (h *handlers) createFromCart(
 	}
 	// A cart Django no longer serves: a guest cart its order emptied is
 	// usually removed. The create is answered as the cart tools answer it.
-	return h.created(ctx, t, s, neg, hasCodes, mcpCartGone)
+	return h.created(ctx, t, s, neg, hasCodes, cartIDGone)
 }
 
 // cartCreateRounds bounds how often a create naming a cart decides
@@ -1073,10 +1073,21 @@ const (
 	checkoutNotUpdated = "The checkout was not updated: its buyer, " +
 		"fulfillment and payment were not stored, though line items it " +
 		"sent may already be in the cart"
-	// cartGone is a checkout's cart Django no longer serves for its id:
-	// each retry would reach a new guest cart, never this one.
-	cartGone = "the checkout's cart no longer exists; start a new one " +
-		"with create_checkout"
+	// cartGone is a checkout's cart Django no longer serves for its id.
+	// Django removes a guest cart that an order emptied or a sign-in
+	// merged, so the shopper may have checked it out on the store's own
+	// site: an order may exist, and this is never only "start another".
+	cartGone = "the checkout's cart no longer exists: the shopper may " +
+		"have checked it out on the store's site, so an order may " +
+		"exist. Check with the shopper, or the store's order " +
+		"confirmation, before starting another checkout with " +
+		"create_checkout"
+	// cartIDGone is cartGone for a create naming a cart: the caller has
+	// no checkout on it yet.
+	cartIDGone = "that cart no longer exists: the shopper may have " +
+		"checked it out on the store's site, so an order may exist. " +
+		"Check with the shopper before building another cart with " +
+		"create_cart"
 )
 
 // errCheckoutCartGone answers a checkout without an order whose cart

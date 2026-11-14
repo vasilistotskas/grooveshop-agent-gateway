@@ -143,8 +143,10 @@ func TestACreateOnACartDjangoNoLongerServes(t *testing.T) {
 
 		assert.Empty(t, a.id)
 		assert.Contains(t, a.refusal, `"code":"not_found"`)
-		assert.Contains(t, a.refusal, "that cart no longer exists; "+
-			"create a new one with create_cart. No checkout was created")
+		assert.Contains(t, a.refusal, "that cart no longer exists: the "+
+			"shopper may have checked it out on the store's site, so an "+
+			"order may exist")
+		assert.Contains(t, a.refusal, "No checkout was created")
 		assert.NotContains(t, a.refusal, "retry")
 		nothingLeft(t, cart)
 	})
