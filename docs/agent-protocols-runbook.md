@@ -374,7 +374,7 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 
 ### One checkout per cart
 
-A cart has one live checkout: two on one cart could each place an order, because Django keeps the cart of an order that awaits its online payment. The session that holds a cart is named in `ag:{schema}:checkoutcart:{cartId}`, written with the session and kept as long as it. Only UCP `create_checkout` with `cart_id` can name a cart that already has a checkout. Not exercised here: `checkout_cart_test.go` in the integration suite.
+A cart has one live checkout: two on one cart could each place an order, because Django keeps the cart of an order that awaits its online payment. The session that holds a cart is named in `ag:{schema}:checkoutcart:{cartId}`, written with the session and kept as long as it. Only UCP `create_checkout` with `cart_id` can name a cart that already has a checkout. Not run by hand here. `checkout_cart_test.go` in the integration suite covers every row below against a fake Django, and the real-stack test (`internal/realstack/cart_checkout_test.go`) covers, against a real Django: one checkout per cart in any spelling of its id, a cart kept while its order awaits payment, a canceled unpaid order freeing the cart, and Django's own refusal of a second order.
 
 | `create_checkout` with `cart_id`, by the checkout that holds the cart | Expected |
 |---|---|
