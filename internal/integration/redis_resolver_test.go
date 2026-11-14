@@ -20,6 +20,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -42,7 +43,10 @@ func startRedis(t *testing.T) *redis.Client {
 	port, err := container.MappedPort(ctx, "6379")
 	require.NoError(t, err)
 
-	rdb := redis.NewClient(&redis.Options{Addr: host + ":" + port.Port()})
+	// Built as the gateway builds its client.
+	opts, err := config.RedisOptions("redis://" + host + ":" + port.Port())
+	require.NoError(t, err)
+	rdb := redis.NewClient(opts)
 	require.NoError(t, rdb.Ping(ctx).Err())
 	t.Cleanup(func() { _ = rdb.Close() })
 	return rdb

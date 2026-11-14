@@ -36,7 +36,7 @@ func run() error {
 	log := obs.NewLogger(cfg.LogLevel, cfg.Env, version)
 	metrics := obs.NewMetrics()
 
-	redisOpts, err := redis.ParseURL(cfg.RedisURL)
+	redisOpts, err := config.RedisOptions(cfg.RedisURL)
 	if err != nil {
 		return err
 	}

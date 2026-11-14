@@ -414,16 +414,14 @@ func writeReplay(w http.ResponseWriter, status int, body []byte) {
 	writeBody(w, status, body)
 }
 
-// settling is the context a claimed key is recorded or released on. It
-// outlives the request's own (a platform that hung up, a shutdown): a
-// key left in flight answers the retry 409 until its claim lapses. The
-// Django client's timeout bounds the one Redis write, which go-redis
-// alone would retry against a silent Redis for several times that.
+// settling is the context a claimed key is recorded or released on
+// (checkout.Store.Settling). It outlives the request's own (a platform
+// that hung up, a shutdown): a key left in flight answers the retry 409
+// until its claim lapses.
 func (h *Handler) settling(r *http.Request) (
 	context.Context, context.CancelFunc,
 ) {
-	return context.WithTimeout(
-		context.WithoutCancel(r.Context()), h.dj.Timeout())
+	return h.store.Settling(r.Context())
 }
 
 // errClaimLapsed is logged for a key its request could not record: the

@@ -278,16 +278,19 @@ func TestServeReturnsAListenerFailure(t *testing.T) {
 }
 
 // An order completion can detach at the very end of the drain, so the
-// final window holds its whole detached budget, then the key settle and
-// the lock release (one upstream timeout each), with room left to write
-// the answer; a stream keeps its own window when that is longer.
+// final window holds its whole tail, with room left to write the answer;
+// a stream keeps its own window when that is longer. The infrastructure's
+// grace period is computed from 51s at UPSTREAM_TIMEOUT=10s, and 5s more
+// for each second of it (scripts/check-gateway-grace.py): a change here
+// changes that formula first.
 func TestPodTimingHoldsACompletion(t *testing.T) {
 	for _, upstream := range []time.Duration{time.Second, 10 * time.Second} {
 		tm := podTiming(completionTail(upstream))
 
-		settled := checkout.CompletionBudget(upstream) + 2*upstream
-		assert.Greater(t, tm.final, settled, upstream)
+		assert.Greater(t, tm.final, checkout.CompletionTail(upstream),
+			upstream)
 		assert.GreaterOrEqual(t, tm.final, streamFinal, upstream)
+		assert.Equal(t, 5*upstream+answerSlack, tm.final, upstream)
 	}
 }
 
@@ -296,6 +299,51 @@ func TestPodTimingHoldsACompletion(t *testing.T) {
 // has ended at the cut, so a tool finishing work it detached (an order
 // completion) inside the window is not cut by the process exiting.
 func TestServeWaitsForAToolThatOutlivesItsRequest(t *testing.T) {
+	t.Run("protocol 2026-07-28", func(t *testing.T) {
+		servesUntilTheToolReturns(t, func(url string) {
+			session, err := mcp.NewClient(
+				&mcp.Implementation{Name: "test"}, nil,
+			).Connect(context.Background(),
+				&mcp.StreamableClientTransport{Endpoint: url}, nil)
+			if err != nil {
+				return
+			}
+			defer func() { _ = session.Close() }()
+			_, _ = session.CallTool(context.Background(),
+				&mcp.CallToolParams{Name: "place"})
+		})
+	})
+	// No MCP-Protocol-Version: the SDK takes the call for 2025-03-26,
+	// and the tool's context does not end with its request.
+	t.Run("a call naming no protocol", func(t *testing.T) {
+		servesUntilTheToolReturns(t, func(url string) {
+			postCall(url, "place")
+		})
+	})
+}
+
+// postCall sends a raw tools/call for tool with no MCP-Protocol-Version
+// header, as a client on a protocol before 2026-07-28 may.
+func postCall(url, tool string) {
+	req, err := http.NewRequestWithContext(context.Background(),
+		http.MethodPost, url, strings.NewReader(
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call",`+
+				`"params":{"name":"`+tool+`","arguments":{}}}`))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		_ = resp.Body.Close()
+	}
+}
+
+// servesUntilTheToolReturns calls a tool through call, stops the server
+// while the tool runs, and requires serve to return only after the tool
+// has, inside the window.
+func servesUntilTheToolReturns(t *testing.T, call func(url string)) {
+	t.Helper()
 	tm := timing{
 		read: time.Minute, drain: 50 * time.Millisecond,
 		final: 5 * time.Second,
@@ -314,16 +362,12 @@ func TestServeWaitsForAToolThatOutlivesItsRequest(t *testing.T) {
 	})
 	ctx, stop := stoppable(t)
 	url, logs, done := startServe(t, ctx, mcpHandler(server), tm)
-	session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).
-		Connect(context.Background(),
-			&mcp.StreamableClientTransport{Endpoint: url}, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = session.Close() })
-	go func() {
-		_, _ = session.CallTool(context.Background(),
-			&mcp.CallToolParams{Name: "place"})
-	}()
-	<-started
+	go call(url)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "the tool was never called")
+	}
 
 	stop()
 
@@ -371,20 +415,7 @@ func TestServeCutsAToolOnAnOldProtocol(t *testing.T) {
 	})
 	ctx, stop := stoppable(t)
 	url, logs, done := startServe(t, ctx, mcpHandler(server), tm)
-	go func() {
-		req, err := http.NewRequestWithContext(context.Background(),
-			http.MethodPost, url, strings.NewReader(
-				`{"jsonrpc":"2.0","id":1,"method":"tools/call",`+
-					`"params":{"name":"place","arguments":{}}}`))
-		if err != nil {
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
-		if resp, err := http.DefaultClient.Do(req); err == nil {
-			_ = resp.Body.Close()
-		}
-	}()
+	go postCall(url, "place")
 	<-started
 
 	stop()

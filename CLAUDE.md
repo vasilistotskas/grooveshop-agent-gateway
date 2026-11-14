@@ -78,12 +78,19 @@ passes.
   handler's context on it (`httpmw.UntilShutdown`). Then the final
   window begins: a stream writes its last event (the chat sends its
   `turn_failed` `error`), and an order completion that detached before
-  the cut finishes (`completionTail`: `checkout.CompletionBudget`, one
-  `UPSTREAM_TIMEOUT` to settle its key, one to release the session
-  lock, and `answerSlack` to write the answer). Both surfaces hold it
-  in their request: ACP's handler calls the flow, and the MCP SDK's
-  stateless handler returns only once its tool has
-  (`TestServeWaitsForAToolThatOutlivesItsRequest`). The window is the
+  the cut finishes (`completionTail`: `checkout.CompletionTail`, which
+  is `CompletionBudget` and the settle steps after it, each on a
+  `Store.Settling` context of one `UPSTREAM_TIMEOUT`: settle its key,
+  release the session lock; then `answerSlack` to write the answer).
+  Every Redis command ends at its context's deadline: the client is
+  built with `ContextTimeoutEnabled` (`config.RedisOptions`), so
+  go-redis sets each socket deadline to the earlier of the context's
+  and its own read or write timeout, and retries nothing past it.
+  `TestACompletionsStepsAfterItsOrderFitTheShutdownWindow` counts the
+  steps a completion takes after its order and their bounds. Both
+  surfaces hold it in their request: ACP's handler calls the flow, and
+  the MCP SDK's stateless handler returns only once its tool has, on
+  any protocol (`TestServeWaitsForAToolThatOutlivesItsRequest`). The window is the
   longer of the stream's 5s and that tail, 51s at
   `UPSTREAM_TIMEOUT=10s`. What is still open is closed, logged at
   warn, and the process exits 0: 61s after SIGTERM, so the
@@ -604,9 +611,9 @@ passes.
   whose context has ended before the detach places no order; after a
   placed order it is answered "order placed, read it again" without the
   upstream read, with an info log line. The process does not exit under
-  one: the shutdown's final window holds `checkout.CompletionBudget`,
-  the key settle and the lock release after it (`completionTail`,
-  `cmd/gateway`). `Flow.Complete` alone stores
+  one: the shutdown's final window holds `checkout.CompletionTail`,
+  the budget and the key settle and lock release after it
+  (`completionTail`, `cmd/gateway`). `Flow.Complete` alone stores
   the session and the order link from the in-progress save on, and
   returns a `checkout.Placement`: `OrderMayExist` (the zero value)
   spends the caller's idempotency key, `NothingPlaced` releases it. A
@@ -673,7 +680,9 @@ passes.
     in-progress save, the completion reads the session once
     (`Store.wasStored`): if it holds the save's revision, which no other
     write can carry, the save is this call's and the order is placed;
-    if not, or if the read fails too, `NothingPlaced`.
+    if not, or if the read fails too, `NothingPlaced`. The read ends at
+    the completion's budget like every Redis step in it, so one that
+    starts just before the budget ends fails there and sends no order.
   - **The lock only orders requests** (`Store.Lock`, `ErrLocked`). It
     lasts `lockSteps` upstream timeouts: what a completion does under
     it when Django answers every call just inside its timeout. A
