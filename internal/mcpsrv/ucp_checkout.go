@@ -729,8 +729,11 @@ func (h *handlers) lockedSession(
 	}
 	release, err := h.deps.Checkout.Lock(ctx, t.SchemaName, id)
 	if err != nil {
-		if errors.Is(err, checkout.ErrLocked) {
+		switch {
+		case errors.Is(err, checkout.ErrLocked):
 			return nil, nil, err
+		case errors.Is(err, checkout.ErrNotFound):
+			return nil, nil, errCheckoutGone
 		}
 		return nil, nil, errCheckoutUnavailable
 	}

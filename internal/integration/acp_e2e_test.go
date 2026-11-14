@@ -4,6 +4,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -441,5 +442,26 @@ func TestACPEndToEnd(t *testing.T) {
 			base+"/"+uuid.NewString(), nil, "")
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 		assert.Equal(t, "not_found", body["code"])
+	})
+
+	t.Run("an id no session can have writes no key", func(t *testing.T) {
+		const bogus = "not-a-session-id"
+		for _, op := range []struct {
+			path string
+			body map[string]any
+		}{
+			{"", map[string]any{"buyer": buyer}},
+			{"/complete", map[string]any{"buyer": buyer}},
+			{"/cancel", nil},
+		} {
+			resp, body := acpCall(t, http.MethodPost,
+				base+"/"+bogus+op.path, op.body, uuid.NewString())
+			assert.Equal(t, http.StatusNotFound, resp.StatusCode, op.path)
+			assert.Equal(t, "not_found", body["code"], op.path)
+		}
+		keys, err := stack.rdb.Keys(context.Background(),
+			"*"+bogus+"*").Result()
+		require.NoError(t, err)
+		assert.Empty(t, keys)
 	})
 }

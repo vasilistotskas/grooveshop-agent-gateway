@@ -119,8 +119,17 @@ func NewSession(schema, domain, protocol, cartID string) *Session {
 	}
 }
 
+// ValidID reports whether id can name a session. Sessions are minted
+// with uuid.NewString and keyed by that string, so only that spelling
+// can be stored: anything else, another spelling of a UUID included, is
+// ErrNotFound before a Redis key is built from it.
+func ValidID(id string) bool {
+	u, err := uuid.Parse(id)
+	return err == nil && u.String() == id
+}
+
 func (st *Store) Load(ctx context.Context, schema, id string) (*Session, error) {
-	if err := uuid.Validate(id); err != nil {
+	if !ValidID(id) {
 		return nil, ErrNotFound
 	}
 	raw, err := st.rdb.Get(ctx, sessionKey(schema, id)).Result()
@@ -251,8 +260,12 @@ func (st *Store) Discard(ctx context.Context, s *Session) error {
 // it, another gets ErrLocked. It orders them and protects nothing: the
 // lock expires while its holder may still be working, and Save alone
 // decides whether a session may be written. release frees the lock only
-// while this call still holds it.
+// while this call still holds it. An id no session can have is
+// ErrNotFound, and no lock is written for it.
 func (st *Store) Lock(ctx context.Context, schema, id string) (func(), error) {
+	if !ValidID(id) {
+		return nil, ErrNotFound
+	}
 	held, _, err := st.claim(ctx, lockKey(schema, id), st.lockTTL)
 	if err != nil {
 		return nil, fmt.Errorf("checkout: lock: %w", err)

@@ -95,6 +95,9 @@ func TestRoutesAnswerSpecErrors(t *testing.T) {
 		})
 	const session = "/acp/checkout_sessions/" +
 		"6f1c2a52-3d8e-4c55-9a0f-0c6a2b9e1d11"
+	// Another spelling of that UUID: no session is stored under it.
+	const noSession = "/acp/checkout_sessions/" +
+		"6F1C2A52-3D8E-4C55-9A0F-0C6A2B9E1D11"
 	createBody := `{"line_items":[{"id":"1"}],"currency":"eur"}`
 
 	cases := []struct {
@@ -184,6 +187,28 @@ func TestRoutesAnswerSpecErrors(t *testing.T) {
 			name: "Redis down on a cancel", method: http.MethodPost,
 			path: session + "/cancel", body: "{}",
 			status: http.StatusServiceUnavailable, code: "unavailable",
+		},
+		// An id no session can have is answered before Redis is asked
+		// for a key or a lock: with Redis down it is still not found.
+		{
+			name:   "an update of an id no session can have",
+			method: http.MethodPost, path: noSession, body: "{}",
+			status: http.StatusNotFound, code: "not_found",
+		},
+		{
+			name:   "a complete of an id no session can have",
+			method: http.MethodPost, path: noSession + "/complete",
+			body: "{}", status: http.StatusNotFound, code: "not_found",
+		},
+		{
+			name:   "a cancel of an id no session can have",
+			method: http.MethodPost, path: noSession + "/cancel",
+			body: "{}", status: http.StatusNotFound, code: "not_found",
+		},
+		{
+			name:   "a read of an id no session can have",
+			method: http.MethodGet, path: noSession,
+			status: http.StatusNotFound, code: "not_found",
 		},
 	}
 	for _, tc := range cases {
