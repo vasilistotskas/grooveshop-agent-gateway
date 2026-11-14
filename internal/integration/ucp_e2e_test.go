@@ -920,8 +920,9 @@ func TestRefusedPaymentLeavesTheCartAlone(t *testing.T) {
 }
 
 // An ACP create settles its lookups and refusals before it makes its
-// cart: one the store refuses there leaves no cart behind.
-func TestARefusedACPCreateLeavesNoCart(t *testing.T) {
+// cart, and an update before it writes the cart: one the store refuses
+// there leaves no cart behind, or the cart as it was.
+func TestARefusedACPCallLeavesTheCartAlone(t *testing.T) {
 	stack := startUCPGateway(t)
 	base := stack.gw.URL + "/acp/checkout_sessions"
 	create := func(itemID string) map[string]any {
@@ -967,6 +968,43 @@ func TestARefusedACPCreateLeavesNoCart(t *testing.T) {
 			assert.Equal(t, writes, stack.faults.cartWrites.Load())
 		})
 	}
+
+	// An update settles them before its first cart write too: a pay-way
+	// lookup that fails, which runs once a delivery is chosen, leaves the
+	// cart and the stored session as they were.
+	t.Run("an update whose pay-way lookup fails", func(t *testing.T) {
+		resp, created := acpCall(t, http.MethodPost, base, create("1"),
+			uuid.NewString())
+		require.Equal(t, http.StatusCreated, resp.StatusCode, "%v", created)
+		session := base + "/" + created["id"].(string)
+		_, before := acpCall(t, http.MethodGet, session, nil, "")
+		update := map[string]any{
+			"line_items": []map[string]any{{"id": "2", "quantity": 1}},
+			"selected_fulfillment_options": []map[string]any{{
+				"type": "shipping", "option_id": "acs:home_delivery",
+				"item_ids": []string{"410"},
+			}},
+		}
+
+		stack.faults.payWayLookup.Store(true)
+		t.Cleanup(func() { stack.faults.payWayLookup.Store(false) })
+		writes := stack.faults.cartWrites.Load()
+		resp, body := acpCall(t, http.MethodPost, session, update,
+			uuid.NewString())
+		require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode,
+			"%v", body)
+		assert.Equal(t, "upstream_unavailable", body["code"])
+		assert.Equal(t, writes, stack.faults.cartWrites.Load())
+		stack.faults.payWayLookup.Store(false)
+		_, after := acpCall(t, http.MethodGet, session, nil, "")
+		assert.Equal(t, before, after)
+
+		resp, body = acpCall(t, http.MethodPost, session, update,
+			uuid.NewString())
+		require.Equal(t, http.StatusOK, resp.StatusCode, "%v", body)
+		assert.NotEqual(t, before, body)
+		assert.Greater(t, stack.faults.cartWrites.Load(), writes)
+	})
 
 	t.Run("a create the store takes", func(t *testing.T) {
 		writes := stack.faults.cartWrites.Load()

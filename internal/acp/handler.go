@@ -595,12 +595,8 @@ func cartLines(items []ItemRef) ([]checkout.Line, error) {
 }
 
 func (h *Handler) syncCart(
-	r *http.Request, t *tenant.Tenant, cartID string, items []ItemRef,
+	r *http.Request, t *tenant.Tenant, cartID string, lines []checkout.Line,
 ) error {
-	lines, err := cartLines(items)
-	if err != nil {
-		return err
-	}
 	return checkout.SyncCartLines(
 		r.Context(), h.dj, t, checkout.ProtocolACP, cartID, lines)
 }
@@ -727,8 +723,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.CartID = cart.UUID
-	if err := checkout.SyncCartLines(r.Context(), h.dj, t,
-		checkout.ProtocolACP, s.CartID, lines); err != nil {
+	if err := h.syncCart(r, t, s.CartID, lines); err != nil {
 		refused(err)
 		return
 	}
@@ -938,12 +933,23 @@ func (h *Handler) updateSession(
 		})
 	}
 
-	// Before any cart write: a failed lookup must leave the cart and the
-	// stored session agreeing. Nothing here is saved until the end.
+	// Every lookup and refusal before any cart write: one that fails must
+	// leave the cart and the stored session agreeing. Nothing here is
+	// saved until the end.
+	var lines []checkout.Line
+	if req.LineItems != nil {
+		var err error
+		if lines, err = cartLines(req.LineItems); err != nil {
+			return refused(err)
+		}
+	}
 	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
 	applyFulfillment(s, req.FulfillmentDetails,
 		req.SelectedFulfillmentOptions)
 	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
+		return refused(err)
+	}
+	if err := h.selectPayWay(r, t, s); err != nil {
 		return refused(err)
 	}
 	hasCodes := req.Discounts != nil && req.Discounts.Codes != nil
@@ -959,7 +965,7 @@ func (h *Handler) updateSession(
 		}
 	}
 	if req.LineItems != nil {
-		if err := h.syncCart(r, t, s.CartID, req.LineItems); err != nil {
+		if err := h.syncCart(r, t, s.CartID, lines); err != nil {
 			return refused(err)
 		}
 	}
@@ -969,9 +975,6 @@ func (h *Handler) updateSession(
 		); err != nil {
 			return refused(err)
 		}
-	}
-	if err := h.selectPayWay(r, t, s); err != nil {
-		return refused(err)
 	}
 	s.Recompute()
 	// The lookups above can outlast the lock, and another request may

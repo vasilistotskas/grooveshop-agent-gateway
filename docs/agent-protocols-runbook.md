@@ -357,7 +357,7 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | Quantity above 999 | Refused: `quantity_too_large` |
 | Stock gone between ready and complete, UCP | Refused, naming the product. The session stays `ready_for_complete`, and a retry succeeds once stock returns |
 | Stock gone, ACP | 400 `out_of_stock`, naming the product |
-| UCP or ACP create the store refuses at a lookup (region, payment, an item id that is not a product's) | Refused before the cart is made: no guest cart is left in Django. `TestRefusedPaymentLeavesTheCartAlone` and `TestARefusedACPCreateLeavesNoCart` in the integration suite |
+| UCP or ACP create or update the store refuses at a lookup (region, payment, an item id that is not a product's) | Refused before the cart is written: a create leaves no guest cart in Django, an update leaves the cart and the stored session as they were. `TestRefusedPaymentLeavesTheCartAlone`, `TestRegionLookupFailureLeavesTheCartAlone` and `TestARefusedACPCallLeavesTheCartAlone` in the integration suite |
 
 ### Idempotency
 
