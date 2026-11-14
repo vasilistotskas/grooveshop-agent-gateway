@@ -180,3 +180,30 @@ func TestLocalized(t *testing.T) {
 	assert.Equal(t, "Tasse", Localized(tr, "fr").Name)
 	assert.Empty(t, Localized(map[string]Translation{}, "el").Name)
 }
+
+// Django keys its anonymous payment throttle on the order for a call
+// that carries the gateway's internal secret, and on the caller's
+// address otherwise: every buyer behind one AI platform would share it.
+func TestCreateOrderCheckoutSessionNamesTheGateway(t *testing.T) {
+	var gotGateway, gotUUID string
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "/api/v1/order/684/create_checkout_session",
+				r.URL.Path)
+			gotGateway = r.Header.Get("X-Internal-Gateway")
+			gotUUID = r.URL.Query().Get("uuid")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"sessionId":"s","checkoutUrl":"https://pay.example.test/s","status":"created","amount":"9.30","currency":"EUR","provider":"viva_wallet"}`))
+		}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	res, err := c.CreateOrderCheckoutSession(context.Background(),
+		"shop.example.test", "el", 684, "order-uuid",
+		"https://shop.example.test/ok", "https://shop.example.test/cancel")
+	require.NoError(t, err)
+
+	assert.Equal(t, "test-secret", gotGateway)
+	assert.Equal(t, "order-uuid", gotUUID)
+	assert.Equal(t, "https://pay.example.test/s", res.CheckoutURL)
+}
