@@ -173,9 +173,10 @@ func (st *Store) Load(ctx context.Context, schema, id string) (*Session, error) 
 	}
 	// Redis evicts keys one by one, by how recently each was read. A
 	// session is read by every call on it; its cart's record only by a
-	// create. So a read of the session counts as one of the record,
-	// which then is not evicted before the session it names. Best
-	// effort: the session was read.
+	// create. So a read of the session counts as one of the record:
+	// Redis then does not see the record as less recently read than a
+	// session that is still being read. Best effort: the session was
+	// read.
 	_ = st.rdb.Touch(ctx, cartKey(schema, s.CartID)).Err()
 	return &s, nil
 }

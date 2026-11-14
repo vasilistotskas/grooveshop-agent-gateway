@@ -289,17 +289,21 @@ func TestACartsRecordLivesAsLongAsItsSession(t *testing.T) {
 			s := newSession()
 			require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 			record := cartRecordPrefix + s.CartID
+			// Redis counts idle time in whole seconds on a clock that
+			// ticks once a second, so a key read just now can read as
+			// one second idle. Two seconds is past that.
+			const idleLongEnough = 2 * time.Second
 			require.Eventually(t, func() bool {
 				idle, err := rdb.ObjectIdleTime(ctx, record).Result()
-				return err == nil && idle >= time.Second
-			}, 10*time.Second, 200*time.Millisecond)
+				return err == nil && idle >= idleLongEnough
+			}, 15*time.Second, 200*time.Millisecond)
 
 			_, err := store.Load(ctx, s.Schema, s.ID)
 			require.NoError(t, err)
 
 			idle, err := rdb.ObjectIdleTime(ctx, record).Result()
 			require.NoError(t, err)
-			assert.Less(t, idle, time.Second)
+			assert.Less(t, idle, idleLongEnough)
 		})
 
 	// A session that lost its cart to the next checkout leaves that
