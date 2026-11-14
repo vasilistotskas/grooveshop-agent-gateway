@@ -47,17 +47,16 @@ func (stack ucpStack) beforeScriptOn(t *testing.T, key string, act func()) {
 func TestAnUpdateWhoseLineWriteMeetsAnotherCompletesOrder(t *testing.T) {
 	cases := []struct {
 		name string
-		// placed is how the winner completes, and what it leaves.
-		submit map[string]any
-		status string
+		// keepsCart: the winner's order keeps the cart (keepingCart),
+		// else it is a cash-on-delivery order.
+		keepsCart bool
 		// refuse makes the fake answer the held line write as Django
 		// does once that order exists.
 		refuse func(*checkoutFaults)
 	}{
-		{"cash on delivery: the line is gone", nil, "completed",
+		{"the line went with the order", false,
 			func(f *checkoutFaults) { f.cartDeletedOnOrder.Store(true) }},
-		{"hosted payment: the order took the stock", changeBy("ucp"),
-			"requires_escalation",
+		{"the order took the stock", true,
 			func(f *checkoutFaults) { f.lineShort.Store(true) }},
 	}
 	for _, tc := range cases {
@@ -67,14 +66,18 @@ func TestAnUpdateWhoseLineWriteMeetsAnotherCompletesOrder(t *testing.T) {
 				stack := startUCPGateway(t)
 				surfaces := surfacesByName(t, stack)
 				id := surfaces[name].ready(t)
+				submit, status := map[string]any(nil), "completed"
+				if tc.keepsCart {
+					submit, status = keepingCart(name)
+				}
 				// The update has read the cart and changes its line.
 				held := stack.hold(t, "PUT /api/v1/cart/item/410", 1)[0]
 				updated := make(chan surfaceAnswer, 1)
 				go func() { updated <- surfaces[name].updateLines(ctx, id) }()
 				await(t, held, "the update's line write")
 				stack.lapse(t, lockRedisKey(id))
-				require.Equal(t, tc.status, surfaces["ucp"].complete(
-					ctx, id, uuid.NewString(), tc.submit))
+				require.Equal(t, status, surfaces[name].complete(
+					ctx, id, uuid.NewString(), submit))
 				placed := stack.storedBytes(t, id)
 				tc.refuse(stack.faults)
 
@@ -111,9 +114,10 @@ func TestAnUpdatePastItsLockWritesNoCartOfACheckoutStoredSince(
 			go func() { updated <- surface.updateAsking(ctx, id) }()
 			await(t, held, "what the update asks the store")
 			stack.lapse(t, lockRedisKey(id))
-			// Paid on the store's page: the order keeps its cart.
-			require.Equal(t, "requires_escalation", surfaces["ucp"].complete(
-				ctx, id, uuid.NewString(), changeBy("ucp")))
+			// The order keeps its cart.
+			submit, status := keepingCart(name)
+			require.Equal(t, status, surface.complete(
+				ctx, id, uuid.NewString(), submit))
 			placed := stack.storedBytes(t, id)
 			writes := stack.faults.cartWrites.Load()
 
@@ -151,7 +155,7 @@ func TestARenderFromAStaleSnapshotAnswersTheStoredCheckout(t *testing.T) {
 	surfaces := surfacesByName(t, stack)
 	for _, name := range []string{"acp", "ucp"} {
 		t.Run(name, func(t *testing.T) {
-			id := awaitingPayment(t, surfaces["ucp"])
+			id := stack.awaitingPaymentOn(t, surfaces[name])
 			stack.onSessionRead(t, id, exitRead, func() error {
 				status, err := stack.orderEvent("COMPLETED")
 				if err == nil && status != http.StatusNoContent {
@@ -277,16 +281,20 @@ func TestARefusalFromAStaleSnapshotAnswersTheStoredCheckout(t *testing.T) {
 	ctx := context.Background()
 	stack := startUCPGateway(t)
 	surfaces := surfacesByName(t, stack)
-	// meanwhile places the order just before the call under test reads
-	// its session again.
-	meanwhile := func(t *testing.T, id string) {
+	// meanwhile places the order over the surface name just before the
+	// call under test reads its session again.
+	meanwhile := func(t *testing.T, name, id string) {
 		t.Helper()
+		submit := map[string]any{"payment": codPayment()}
+		if name == "acp" {
+			submit = nil
+		}
 		stack.onSessionRead(t, id, exitRead, func() error {
 			if err := stack.rdb.Del(ctx, lockRedisKey(id)).Err(); err != nil {
 				return err
 			}
-			if surfaces["ucp"].complete(ctx, id, uuid.NewString(),
-				map[string]any{"payment": codPayment()}) != "completed" {
+			if surfaces[name].complete(ctx, id, uuid.NewString(),
+				submit) != "completed" {
 				return errors.New("the other complete did not place")
 			}
 			return nil
@@ -295,14 +303,14 @@ func TestARefusalFromAStaleSnapshotAnswersTheStoredCheckout(t *testing.T) {
 
 	t.Run("acp: payment_data is missing", func(t *testing.T) {
 		id := surfaces["acp"].ready(t)
-		meanwhile(t, id)
+		meanwhile(t, "acp", id)
 		answer := acpAnswer(ctx, stack.gw.URL+"/acp/checkout_sessions/"+id+
 			"/complete", uuid.NewString(), map[string]any{})
 		assertStored(t, answer, "completed")
 	})
 	t.Run("acp: a delegated payment", func(t *testing.T) {
 		id := surfaces["acp"].ready(t)
-		meanwhile(t, id)
+		meanwhile(t, "acp", id)
 		answer := surfaces["acp"].answer(ctx, id, uuid.NewString(),
 			map[string]any{"payment_data": map[string]any{
 				"handler_id": "com.example.cards",
@@ -311,7 +319,7 @@ func TestARefusalFromAStaleSnapshotAnswersTheStoredCheckout(t *testing.T) {
 	})
 	t.Run("ucp: an instrument the store does not offer", func(t *testing.T) {
 		id := surfaces["ucp"].ready(t)
-		meanwhile(t, id)
+		meanwhile(t, "ucp", id)
 		answer := surfaces["ucp"].answer(ctx, id, uuid.NewString(),
 			map[string]any{"payment": map[string]any{
 				"instruments": []any{map[string]any{
@@ -343,11 +351,11 @@ func TestAnOrderItsSessionNeverSavedIsStillKnown(t *testing.T) {
 	stack := startUCPGateway(t)
 	surfaces := surfacesByName(t, stack)
 	redisDown := errors.New("redis is down")
-	// placedUnsaved returns a checkout whose order is placed and whose
-	// last save failed, both attempts of it.
-	placedUnsaved := func(t *testing.T) string {
+	// placedUnsaved returns a checkout of surface whose order is placed
+	// and whose last save failed, both attempts of it.
+	placedUnsaved := func(t *testing.T, surface completionSurface) string {
 		t.Helper()
-		id := surfaces["ucp"].ready(t)
+		id := surface.ready(t)
 		var linked atomic.Bool
 		var failures atomic.Int32
 		stack.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
@@ -360,9 +368,14 @@ func TestAnOrderItsSessionNeverSavedIsStillKnown(t *testing.T) {
 			}
 			return nil
 		}))
-		first := surfaces["ucp"].answer(ctx, id, uuid.NewString(), nil)
-		require.Contains(t, first.refusal, "the order was placed")
-		require.Contains(t, first.refusal, fixtureOrderUUID)
+		first := surface.answer(ctx, id, uuid.NewString(), nil)
+		if surface.name == "acp" {
+			require.Equal(t, "500 order_placed", first.refusal)
+			require.Contains(t, string(first.errorBody), fixtureOrderUUID)
+		} else {
+			require.Contains(t, first.refusal, "the order was placed")
+			require.Contains(t, first.refusal, fixtureOrderUUID)
+		}
 		stored := stack.storedSession(t, id)
 		require.Equal(t, checkout.StatusCompleteInProgress, stored.Status)
 		require.Empty(t, stored.OrderUUID)
@@ -370,14 +383,15 @@ func TestAnOrderItsSessionNeverSavedIsStillKnown(t *testing.T) {
 	}
 
 	t.Run("later calls are told the order", func(t *testing.T) {
-		id := placedUnsaved(t)
+		acpID := placedUnsaved(t, surfaces["acp"])
 		for what, answer := range map[string]surfaceAnswer{
-			"update":   surfaces["acp"].update(ctx, id),
-			"complete": surfaces["acp"].answer(ctx, id, uuid.NewString(), nil),
-			"cancel":   surfaces["acp"].abandon(ctx, id),
+			"update":   surfaces["acp"].update(ctx, acpID),
+			"complete": surfaces["acp"].answer(ctx, acpID, uuid.NewString(), nil),
+			"cancel":   surfaces["acp"].abandon(ctx, acpID),
 		} {
 			assert.Equal(t, "500 order_placed", answer.refusal, what)
 		}
+		id := placedUnsaved(t, surfaces["ucp"])
 		for what, answer := range map[string]surfaceAnswer{
 			"update":   surfaces["ucp"].update(ctx, id),
 			"complete": surfaces["ucp"].answer(ctx, id, uuid.NewString(), nil),
@@ -393,7 +407,7 @@ func TestAnOrderItsSessionNeverSavedIsStillKnown(t *testing.T) {
 
 	t.Run("any event records the order, the payment completes it",
 		func(t *testing.T) {
-			id := placedUnsaved(t)
+			id := placedUnsaved(t, surfaces["ucp"])
 			placed := time.Now()
 			stack.faults.orderCreatedAt.Store(&placed)
 			t.Cleanup(func() { stack.faults.orderCreatedAt.Store(nil) })
@@ -415,7 +429,7 @@ func TestAnOrderItsSessionNeverSavedIsStillKnown(t *testing.T) {
 	// does not need it: it names its order, and the order link vouches
 	// that the order is this checkout's.
 	t.Run("an event without the placed order's record", func(t *testing.T) {
-		id := placedUnsaved(t)
+		id := placedUnsaved(t, surfaces["ucp"])
 		stack.lapse(t, sessionRedisKey(id)+":order")
 		placed := time.Now()
 		stack.faults.orderCreatedAt.Store(&placed)

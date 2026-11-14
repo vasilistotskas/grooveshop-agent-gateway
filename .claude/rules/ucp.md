@@ -28,7 +28,11 @@ wins over this page.
 - **The canonical UCP tools take the wire shapes from the OpenRPC document**
   (`create_checkout`, `get_checkout`, `update_checkout`,
   `complete_checkout`, `cancel_checkout`): `meta` (with
-  `ucp-agent.profile`, plus `idempotency-key` on complete/cancel), `id`
+  `ucp-agent.profile`, plus `idempotency-key` on complete/cancel: 1 to
+  255 visible ASCII characters, `checkout.ValidIdempotencyKey`, refused
+  in `MetaIn.validate` before anything is read or written; the spec asks
+  for 128 bits of entropy, "e.g., UUID v4, 22+ char alphanumeric", and
+  sets no maximum, so 255 is ACP's header bound), `id`
   for the target session, and `checkout` for the domain object with
   snake_case members. Extensions compose FLAT onto `checkout`
   (`fulfillment`, `discounts`), never nested under capability names.

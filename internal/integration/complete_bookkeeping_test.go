@@ -392,7 +392,7 @@ func (stack ucpStack) bookkeeping(
 	t.Helper()
 	ctx := context.Background()
 	store := checkout.NewStore(stack.rdb, ucpUpstreamTimeout)
-	s, err := store.Load(ctx, "demostore", id)
+	s, err := store.LoadAnyProtocol(ctx, "demostore", id)
 	require.NoError(t, err)
 	out := bookkeeping{Session: s.Status, Key: keySpent}
 
@@ -670,12 +670,24 @@ func changeBy(surface string) map[string]any {
 	return otherBuyer()
 }
 
+// keepingCart is what a complete over surface submits to place an order
+// whose cart Django keeps, and the status the checkout is left in. UCP's
+// buyer pays on the store's hosted page, and the checkout awaits that
+// payment. ACP places pay-later orders only, whose cart the fake keeps
+// unless cartDeletedOnOrder is set.
+func keepingCart(surface string) (map[string]any, string) {
+	if surface == "ucp" {
+		return changeBy("ucp"), "requires_escalation"
+	}
+	return nil, "completed"
+}
+
 func (stack ucpStack) storedSession(
 	t *testing.T, id string,
 ) *checkout.Session {
 	t.Helper()
 	s, err := checkout.NewStore(stack.rdb, ucpUpstreamTimeout).
-		Load(context.Background(), "demostore", id)
+		LoadAnyProtocol(context.Background(), "demostore", id)
 	require.NoError(t, err)
 	return s
 }
@@ -887,13 +899,10 @@ func TestCompleteLeavesAClosedSessionAsItIs(t *testing.T) {
 		})
 	}
 
-	// A checkout answers on either surface by its id. UCP retries the
-	// payment link of an escalated one, so ACP is where a complete could
-	// write to it.
+	// UCP retries the payment link of an escalated checkout, so ACP is
+	// where a complete could write to one.
 	t.Run("awaiting payment, over acp", func(t *testing.T) {
-		id := surfaces["ucp"].ready(t)
-		require.Equal(t, "requires_escalation", surfaces["ucp"].complete(
-			ctx, id, uuid.NewString(), changeBy("ucp")))
+		id := stack.awaitingPaymentOn(t, surfaces["acp"])
 		before := stack.storedBytes(t, id)
 
 		// The order a complete asks for exists: the session is answered

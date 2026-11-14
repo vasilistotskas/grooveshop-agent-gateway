@@ -292,6 +292,9 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 		"checkout.ErrCompletionInProgress": {
 			checkout.ErrCompletionInProgress, http.StatusConflict,
 			"idempotency_in_flight"},
+		"checkout.ErrInvalidIdempotencyKey": {
+			checkout.ErrInvalidIdempotencyKey, http.StatusBadRequest,
+			"invalid"},
 		"checkout.ErrNotReady": {
 			checkout.ErrNotReady, http.StatusBadRequest, "missing"},
 		"checkout.ErrPaymentMethodUnsupported": {
@@ -441,4 +444,28 @@ func TestAMissingSessionMayHavePlacedAnOrder(t *testing.T) {
 	body := specError(t, rec, http.StatusNotFound, "not_found")
 	assert.Contains(t, body["message"], "an order may exist")
 	assert.Contains(t, body["message"], "before creating another session")
+}
+
+// A session that is not open takes no update and no cancel, whatever
+// state it is in: refuseChange decides on Session.Open alone, the
+// predicate UCP's closedTo decides on too.
+func TestRefuseChangeRefusesWhatIsNotOpen(t *testing.T) {
+	h := testHandler(t, unreachableRedis(t))
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	for _, status := range []checkout.Status{
+		checkout.StatusIncomplete, checkout.StatusReadyForComplete,
+		checkout.StatusCompleteInProgress, checkout.StatusRequiresEscalation,
+		checkout.StatusCompleted, checkout.StatusCanceled,
+	} {
+		s := checkout.NewSession("public", "shop.example.test",
+			checkout.ProtocolACP, "29eb4495-e018-45e7-b59c-6646302bd4ef")
+		s.Status = status
+		for _, what := range []string{"change", "be canceled"} {
+			rec := httptest.NewRecorder()
+			refused := h.refuseChange(rec, req, s, updateAllow, what)
+			assert.Equal(t, !s.Open(), refused, "%s %s", status, what)
+			assert.Equal(t, refused, rec.Code >= http.StatusBadRequest,
+				"%s %s", status, what)
+		}
+	}
 }

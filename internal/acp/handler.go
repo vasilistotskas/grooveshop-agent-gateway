@@ -770,7 +770,8 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s, err := h.store.Load(r.Context(), t.SchemaName, r.PathValue("id"))
+	s, err := h.store.Load(r.Context(), t.SchemaName, checkout.ProtocolACP,
+		r.PathValue("id"))
 	if err != nil {
 		h.sessionError(w, err)
 		return
@@ -827,7 +828,8 @@ func (h *Handler) finish(
 	}
 	// The body may be answering a caller that left; the read is short
 	// and its answer goes nowhere then.
-	now, err := h.store.Load(r.Context(), t.SchemaName, s.ID)
+	now, err := h.store.Load(r.Context(), t.SchemaName, checkout.ProtocolACP,
+		s.ID)
 	switch {
 	case err != nil:
 		h.sessionError(w, err)
@@ -974,8 +976,7 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 // completeClosed answers a complete of a session that is not open, and
 // reports whether it did. One that placed its order is answered with
 // the session: completed, or awaiting the payment its continue_url
-// leads to (a session placed over UCP with a hosted pay way is driven
-// here too). The order is what a complete asks for, and it exists.
+// leads to. The order is what a complete asks for, and it exists.
 func (h *Handler) completeClosed(
 	w http.ResponseWriter, r *http.Request, t *tenant.Tenant,
 	s *checkout.Session,
@@ -1189,18 +1190,13 @@ func (h *Handler) cancelSession(
 func (h *Handler) lockSession(
 	w http.ResponseWriter, r *http.Request, t *tenant.Tenant, id string,
 ) (*checkout.Session, func(), bool) {
-	release, err := h.store.Lock(r.Context(), t.SchemaName, id)
-	if err != nil {
-		if errors.Is(err, checkout.ErrLocked) {
-			writeInFlight(w, idemRetryAfter, msgSessionBusy)
-			return nil, nil, false
-		}
-		h.sessionError(w, err)
+	s, release, err := h.store.LockSession(r.Context(), t.SchemaName,
+		checkout.ProtocolACP, id)
+	switch {
+	case errors.Is(err, checkout.ErrLocked):
+		writeInFlight(w, idemRetryAfter, msgSessionBusy)
 		return nil, nil, false
-	}
-	s, err := h.store.Load(r.Context(), t.SchemaName, id)
-	if err != nil {
-		release()
+	case err != nil:
 		h.sessionError(w, err)
 		return nil, nil, false
 	}
@@ -1304,6 +1300,14 @@ func (h *Handler) completeError(
 	case errors.Is(err, checkout.ErrUnavailable),
 		errors.Is(err, checkout.ErrCartHeld):
 		writeUnavailable(w, msgRecordsUnavailable)
+	// ErrInvalidIdempotencyKey is UCP's completion claim's, and is
+	// answered as claimKey answers a header out of its bound.
+	case errors.Is(err, checkout.ErrInvalidIdempotencyKey):
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: "invalid",
+			Param:   "Idempotency-Key",
+			Message: "The Idempotency-Key header is not of an accepted form.",
+		})
 	case errors.Is(err, checkout.ErrPayWayUnavailable),
 		errors.Is(err, checkout.ErrPaymentMethodUnsupported):
 		writeError(w, http.StatusBadRequest, Error{

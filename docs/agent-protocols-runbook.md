@@ -345,6 +345,7 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | `X-Forwarded-Host` spoofed | Ignored: the real `Host` decides |
 | One store's ACP token on another store | 401 |
 | One store's checkout id on another store | "that checkout no longer exists here", as for any id no session is stored for: the answer says an order may exist and how to check, never only "start a new one" (ACP: 404 `not_found`, with the same meaning in its message) |
+| A UCP checkout's id on an ACP route, or an ACP session's id on a UCP tool | The same missing-session answer: a session answers only on the surface that created it. It is not written or locked. `checkout_surface_test.go` in the integration suite |
 | Cart and catalogue off (staging fyteia) | 4 tools, and 404 on UCP, ACP and feeds |
 
 ### Stock
@@ -361,6 +362,7 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | Case | Expected and observed |
 |---|---|
 | UCP complete or cancel with no key | Refused: "meta.idempotency-key is required" |
+| UCP complete or cancel with a key that is not 1 to 255 visible ASCII characters (longer, a space, non-ASCII) | Refused: "meta.idempotency-key must be 1 to 255 visible ASCII characters (no spaces), such as a UUID". Nothing is read or written. `ucp_idempotency_key_test.go` in the integration suite |
 | UCP complete replayed, same key | Same order, none added |
 | UCP complete again with a new key, after completing | Same order, none added |
 | ACP POST with no key | 400 `idempotency_key_required` |

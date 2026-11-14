@@ -32,23 +32,37 @@ type MetaIn struct {
 	// IdempotencyKey is required on complete_checkout and
 	// cancel_checkout, where a retried call must not place or cancel a
 	// second order.
-	IdempotencyKey string `json:"idempotency-key,omitempty" jsonschema:"UUID; REQUIRED on complete_checkout and cancel_checkout, repeat it to retry safely"`
+	IdempotencyKey string `json:"idempotency-key,omitempty" jsonschema:"a UUID, or up to 255 visible ASCII characters; REQUIRED on complete_checkout and cancel_checkout, repeat it to retry safely"`
 }
 
+// errIdempotencyKeyForm refuses a key outside checkout.ValidIdempotencyKey.
+// The call did nothing, so a key of the right form may be sent.
+var errIdempotencyKeyForm = fmt.Errorf(
+	"meta.idempotency-key must be 1 to %d visible ASCII characters "+
+		"(no spaces), such as a UUID; this call did nothing, so send it "+
+		"again with a key of that form", checkout.MaxIdempotencyKeyLen)
+
 // validate enforces the binding's metadata rules. needIdempotency is set
-// for the two operations the spec singles out for retry safety. The
-// profile URL itself is vetted when it is resolved (negotiate), where
-// the fetch-safety rules live.
+// for the two operations the spec singles out for retry safety; their key
+// is checked here, before anything is read or written. The profile URL
+// itself is vetted when it is resolved (negotiate), where the
+// fetch-safety rules live.
 func (m *MetaIn) validate(needIdempotency bool) error {
 	if m == nil || m.UCPAgent == nil || m.UCPAgent.Profile == "" {
 		return errors.New(
 			"meta.ucp-agent.profile is required: it identifies the " +
 				"calling platform so capabilities can be negotiated")
 	}
-	if needIdempotency && m.IdempotencyKey == "" {
+	if !needIdempotency {
+		return nil
+	}
+	if m.IdempotencyKey == "" {
 		return errors.New(
 			"meta.idempotency-key is required on this operation so a " +
 				"retry cannot place or cancel a second order")
+	}
+	if !checkout.ValidIdempotencyKey(m.IdempotencyKey) {
+		return errIdempotencyKeyForm
 	}
 	return nil
 }

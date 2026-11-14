@@ -81,7 +81,7 @@ func (f flowStack) readySession(t *testing.T) *checkout.Session {
 
 func (f flowStack) stored(t *testing.T, s *checkout.Session) *checkout.Session {
 	t.Helper()
-	got, err := f.store.Load(context.Background(), s.Schema, s.ID)
+	got, err := f.store.LoadAnyProtocol(context.Background(), s.Schema, s.ID)
 	require.NoError(t, err)
 	return got
 }
@@ -645,7 +645,7 @@ func TestOrderEventForAnOldOrderDoesNotKeepItsSession(t *testing.T) {
 	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
 		fixtureOrderUUID, django.PaymentStatusCompleted))
 
-	_, err := f.store.Load(ctx, s.Schema, s.ID)
+	_, err := f.store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 	assert.ErrorIs(t, err, checkout.ErrNotFound)
 }
 

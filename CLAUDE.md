@@ -540,6 +540,24 @@ passes.
   before starting another checkout, with the order id if the caller
   holds one and the store's order confirmation if not. Never answer a
   missing session with only "start a new one".
+- **A checkout session answers only on the surface that created it.**
+  `Session.Protocol` decides. A surface reads a session with
+  `Store.Load(schema, protocol, id)` and locks one with
+  `Store.LockSession(schema, protocol, id)`. A session of another
+  protocol is `ErrNotFound` there, so it gets that surface's
+  missing-session answer (above). `LockSession` reads the session
+  before it writes the lock, which is keyed by the id alone, so a call
+  on the other surface takes no lock. Two readers reach a session
+  through a record of the gateway's own, not a caller's id, and read
+  either protocol with `Store.LoadAnyProtocol`: an order event, through
+  its order link (`Flow.ApplyOrderEvent`), and a cart's holder
+  (`Store.HolderOf`). `Store.Lock` reads nothing: it locks a session
+  being created (`takeCart`) and a cart's holder being superseded.
+  Whether a session takes an update or a cancel is `Session.Open` on
+  both surfaces (`acp.refuseChange`, `mcpsrv.closedTo`); each keeps
+  its own wording and status codes. A complete of a session that is
+  not open is answered before the flow on both (`completeClosed`), so
+  `Flow.Complete` only ever sees an open one.
 - **A completion finishes without its caller.** `checkout.Flow.Complete`
   runs on the caller's context only until the order is about to be
   created. From the in-progress save on it is detached
@@ -809,7 +827,8 @@ passes.
     way. A held one there is a fault: logged, answered unavailable,
     and no session is handed out.
   - Redis can lose the record while the session lives (eviction).
-    Every load of a session touches its cart's record (`Store.Load`),
+    Every load of a session touches its cart's record (`Store.Load`,
+    `Store.LoadAnyProtocol`),
     so Redis does not see the record as less recently read than a
     session a platform keeps reading, and a session's next save writes
     a lost record again. A session nobody reads or saves, such as one

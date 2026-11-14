@@ -72,8 +72,43 @@ func TestAnIDNoSessionCanHaveTakesNoLock(t *testing.T) {
 		assert.False(t, ValidID(id), id)
 		_, err := st.Lock(t.Context(), "alpha", id)
 		assert.ErrorIs(t, err, ErrNotFound, id)
-		_, err = st.Load(t.Context(), "alpha", id)
+		_, _, err = st.LockSession(t.Context(), "alpha", ProtocolUCP, id)
 		assert.ErrorIs(t, err, ErrNotFound, id)
+		_, err = st.Load(t.Context(), "alpha", ProtocolUCP, id)
+		assert.ErrorIs(t, err, ErrNotFound, id)
+		_, err = st.LoadAnyProtocol(t.Context(), "alpha", id)
+		assert.ErrorIs(t, err, ErrNotFound, id)
+	}
+}
+
+// A completion's idempotency key ends a Redis key. One outside the bound
+// is refused before any key is built from it: the store has no Redis
+// client here, so a claim attempt would panic.
+func TestAnIdempotencyKeyOutsideTheBoundWritesNothing(t *testing.T) {
+	const id = "6f1c2a52-3d8e-4c55-9a0f-0c6a2b9e1d11"
+	for _, key := range []string{
+		"6f1c2a52-3d8e-4c55-9a0f-0c6a2b9e1d11",
+		"Zk3pQ9wL2mX7vB4nR8tY1c",
+		strings.Repeat("~", MaxIdempotencyKeyLen),
+		"!", "order-1:retry_2/a.b+c=d",
+	} {
+		assert.True(t, ValidIdempotencyKey(key), key)
+	}
+
+	st := NewStore(nil, time.Second)
+	for _, key := range []string{
+		"",
+		strings.Repeat("k", MaxIdempotencyKeyLen+1),
+		"a key with spaces",
+		"tab\there",
+		"line\nbreak",
+		"nul\x00",
+		"del\x7f",
+		"κλειδί",
+	} {
+		assert.False(t, ValidIdempotencyKey(key), key)
+		_, err := st.ClaimCompletion(t.Context(), "alpha", id, key)
+		assert.ErrorIs(t, err, ErrInvalidIdempotencyKey, key)
 	}
 }
 
