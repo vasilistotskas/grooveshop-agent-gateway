@@ -919,8 +919,9 @@ func TestCreateCheckoutOnACartInACheckout(t *testing.T) {
 				"awaits its payment")
 		})
 
-	// A cash-on-delivery order empties its cart, and the shopper may
-	// fill the same cart again.
+	// A completed checkout leaves its cart to a new one. Django usually
+	// removes a guest cart its order emptied, and a create naming that
+	// cart is told it no longer exists (TestACreateOnACartDjangoNoLongerServes).
 	t.Run("a completed checkout leaves the cart to a new one",
 		func(t *testing.T) {
 			cart := stack.faults.carts.mint()

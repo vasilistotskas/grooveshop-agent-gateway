@@ -24,6 +24,12 @@ const (
 // a feature gate's bare NotFound.
 const CodeCartNotFound = "cart_not_found"
 
+// CodeCartHasUnpaidOrder is the `code` of Django's 400 refusing an agent's
+// order from a cart whose earlier order still awaits its online payment
+// (order/views/order.py, CartHasUnpaidOrderError). CreateOrder reports it
+// as ErrCartHasUnpaidOrder.
+const CodeCartHasUnpaidOrder = "cart_has_unpaid_order"
+
 // AgentProtocolMCP is the attribution agentProtocol (Django's
 // AGENT_PROTOCOLS) of a cart an agent fills through the /mcp commerce
 // tools. A UCP or ACP checkout sends its own protocol

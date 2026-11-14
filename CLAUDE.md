@@ -841,11 +841,31 @@ passes.
     then get a second checkout: the gateway cannot close that alone.
     What holds whatever Redis lost is Django, which refuses an
     agent's order from a cart whose earlier order still awaits its
-    online payment (django-api #693, `code`
-    `cart_has_unpaid_order`). A UCP caller gets that code and
-    Django's sentence; ACP answers 400 `invalid_request` with the
-    sentence and its generic code (#154 gives the refusal its own
-    answer on both).
+    online payment (django-api #693). Its `code` is named once,
+    `django.CodeCartHasUnpaidOrder`, and `CreateOrder` reports it as
+    `django.ErrCartHasUnpaidOrder` (still Django's `*APIError`, so
+    a refusal: nothing placed, the session left `ready_for_complete`,
+    the key released). Both surfaces branch on that sentinel. UCP
+    answers Django's code and sentence with its own hint
+    (`cartOrderUnpaidErr`): this checkout placed no order, start no
+    other checkout, and once the store cancels that order unpaid this
+    checkout can be completed (once the buyer pays it, Django empties
+    the cart and the next complete is refused `cart_empty`); the
+    counter reads it as `refused`. ACP answers 400 `invalid_request`, code
+    `cart_has_unpaid_order`, with the gateway's own message of the
+    same meaning (`completeError`). Neither names an order: Django
+    names none.
+  - **A cart Django no longer serves is gone, not a render to retry.**
+    A completed checkout leaves its cart to a new one, but Django
+    usually removes a guest cart its order emptied, so a create naming
+    that cart usually finds none. The render of a checkout without an order reads only its
+    cart, so a cart Django no longer serves there (`isCartGone`: another
+    cart served, `cart_not_found`, or a 403) is `errCheckoutCartGone`,
+    `not_found` with `cartGone`, never "retry"; an outage stays
+    `unavailable`. A `cart_id` create answers it as the cart tools do
+    (`mcpCartGone`, "create a new one with create_cart") with "No
+    checkout was created" (`handlers.created`), and leaves nothing
+    stored.
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before

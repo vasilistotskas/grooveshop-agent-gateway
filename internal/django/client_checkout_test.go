@@ -137,6 +137,40 @@ func TestCreateOrderSendsAttribution(t *testing.T) {
 	assert.NotContains(t, got, "attribution")
 }
 
+// Django's refusal of a cart whose earlier order awaits its payment is
+// one sentinel, and still the *APIError with Django's code and sentence.
+// Another 400 is not it.
+func TestCreateOrderNamesTheUnpaidCartRefusal(t *testing.T) {
+	refused := func(body []byte) error {
+		srv := httptest.NewServer(http.HandlerFunc(
+			func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write(body)
+			}))
+		defer srv.Close()
+		_, err := newTestClient(t, srv.URL).CreateOrder(
+			context.Background(), "shop.example.test", "el", "cart-uuid",
+			OrderCreate{PayWayID: 1})
+		return err
+	}
+
+	err := refused(fixture(t, "order_cart_has_unpaid_order.json"))
+
+	require.ErrorIs(t, err, ErrCartHasUnpaidOrder)
+	assert.ErrorIs(t, err, ErrValidation)
+	apiErr, ok := errors.AsType[*APIError](err)
+	require.True(t, ok)
+	assert.Equal(t, CodeCartHasUnpaidOrder, apiErr.Code)
+	assert.Contains(t, apiErr.Detail,
+		"An order placed from this cart is already waiting for its payment")
+
+	err = refused([]byte(`{"detail": "Invalid order data", ` +
+		`"code": "invalid_order_data"}`))
+	require.ErrorIs(t, err, ErrValidation)
+	assert.NotErrorIs(t, err, ErrCartHasUnpaidOrder)
+}
+
 func TestLocalized(t *testing.T) {
 	tr := map[string]Translation{
 		"en": {Name: "Mug"}, "el": {Name: "Κούπα"}, "de": {Name: "Tasse"},
