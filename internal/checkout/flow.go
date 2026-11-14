@@ -157,6 +157,14 @@ func (f *Flow) Complete(
 		// the session this call loaded only.
 		err = f.st.put(ctx, s, s.Revision, fence)
 	}
+	if err != nil && !errors.Is(err, ErrSessionChanged) {
+		// Both replies can be lost with the write stored. Left so, the
+		// session would read as being placed, and then as an order whose
+		// outcome was never recorded, until it expired, with no order
+		// sent. The stored revision is this write's alone, so finding it
+		// is the reply: the order is placed, as after either attempt.
+		err = f.st.wasStored(ctx, s, fence, err)
+	}
 	if err != nil {
 		// The write that guards the order was refused, by Redis failing
 		// or by a session that has moved on (ErrSessionChanged): no

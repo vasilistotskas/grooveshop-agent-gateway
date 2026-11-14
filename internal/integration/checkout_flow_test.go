@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -519,6 +520,78 @@ func TestAMarkWhoseReplyWasLostPlacesTheOrder(t *testing.T) {
 	assert.EqualValues(t, 1, f.faults.orderCreates.Load())
 }
 
+// fenceRepliesLost lets every attempt of the write that marks session id
+// in progress reach Redis and loses its reply, and counts them.
+func fenceRepliesLost(rdb *redis.Client, id string) *atomic.Int32 {
+	var lost atomic.Int32
+	var fence atomic.Pointer[string]
+	rdb.AddHook(replyLost(func(cmd redis.Cmder) bool {
+		if !savesKey(cmd, sessionRedisKey(id)) {
+			return false
+		}
+		raw, _ := cmd.Args()[7].([]byte)
+		var written checkout.Session
+		if json.Unmarshal(raw, &written) != nil {
+			return false
+		}
+		if written.Status == checkout.StatusCompleteInProgress {
+			fence.CompareAndSwap(nil, &written.Revision)
+		}
+		if mark := fence.Load(); mark == nil || *mark != written.Revision {
+			return false
+		}
+		lost.Add(1)
+		return true
+	}))
+	return &lost
+}
+
+// The mark can be stored and lose its reply on both attempts. The
+// completion reads the session once: it holds the mark's revision, which
+// no other write can, so the mark is this call's and the order is placed
+// once, not left marked with nothing sent until the session expires.
+func TestAMarkWhoseRepliesWereBothLostPlacesTheOrder(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	s := f.readySession(t)
+	lost := fenceRepliesLost(f.rdb, s.ID)
+
+	placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+
+	require.EqualValues(t, 2, lost.Load(), "both replies were lost")
+	require.NoError(t, err)
+	assert.Equal(t, checkout.OrderMayExist, placement)
+	stored := f.stored(t, s)
+	assert.Equal(t, checkout.StatusCompleted, stored.Status)
+	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
+	assert.Equal(t, s.Revision, stored.Revision)
+	assert.EqualValues(t, 1, f.faults.orderCreates.Load())
+}
+
+// When the read after both lost replies fails too, the completion cannot
+// tell its mark was stored: it sends no order, as before the read.
+func TestAMarkThatCannotBeReadBackSendsNoOrder(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	s := f.readySession(t)
+	lost := fenceRepliesLost(f.rdb, s.ID)
+	var refused atomic.Bool
+	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+		if args := cmd.Args(); cmd.Name() == "get" && len(args) > 1 &&
+			args[1] == sessionRedisKey(s.ID) && lost.Load() == 2 &&
+			refused.CompareAndSwap(false, true) {
+			return errors.New("redis is down")
+		}
+		return nil
+	}))
+
+	placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+
+	require.True(t, refused.Load(), "the session was not read back")
+	require.ErrorIs(t, err, checkout.ErrUnavailable)
+	assert.Equal(t, checkout.NothingPlaced, placement)
+	assert.Zero(t, f.faults.orderCreates.Load())
+	assert.Equal(t, checkout.StatusCompleteInProgress, f.stored(t, s).Status)
+}
+
 // An order call that went unanswered leaves an order that may exist.
 // The save that says so, and keeps the session a day, gets the same
 // second attempt when Redis fails it.
@@ -677,6 +750,7 @@ func TestCompleteReportsAPlacedOrderWhoseSessionIsGone(t *testing.T) {
 // The in-progress save is what guards the order. When Redis refuses it
 // no order is sent, and the session is not written again: that write
 // would be a ready snapshot saved over whatever the store holds by then.
+// The read after the second failure finds the session as loaded.
 func TestCompleteSendsNoOrderWithoutTheInProgressSave(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
 	s := f.readySession(t)
