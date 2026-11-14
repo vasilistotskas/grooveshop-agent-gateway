@@ -346,7 +346,7 @@ func TestFeedsEndToEnd(t *testing.T) {
 		require.Equal(t, http.StatusOK, first.StatusCode)
 
 		for _, accept := range []string{"gzip", "identity"} {
-			require.NoError(t, rdb.Set(t.Context(), "ag:demostore:feed:rss",
+			require.NoError(t, rdb.Set(t.Context(), "ag:demostore:feed:google",
 				"not gzip", 0).Err())
 			resp := get("/feeds/google.xml",
 				map[string]string{"Accept-Encoding": accept})
@@ -366,7 +366,7 @@ func TestFeedsEndToEnd(t *testing.T) {
 			assert.Equal(t, first.Header.Get("ETag"),
 				resp.Header.Get("ETag"), accept)
 			assert.NotEqual(t, "not gzip", rdb.Get(t.Context(),
-				"ag:demostore:feed:rss").Val(), accept)
+				"ag:demostore:feed:google").Val(), accept)
 		}
 	})
 }

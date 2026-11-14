@@ -393,7 +393,13 @@ passes.
   default.
 - `internal/feeds` — one catalog sweep renders every feed, cached in
   Redis (`ag:{schema}:feed:{format}` plus `:meta`) between
-  `FEED_FRESH_TTL` and `FEED_STALE_TTL`. Each document is written an
+  `FEED_FRESH_TTL` and `FEED_STALE_TTL`. Three documents (`formats`):
+  Google's RSS (`google`), the RSS Meta and TikTok share (`rss`), and
+  ACP's JSON (`acp`). The two RSS documents differ only in `g:brand` for
+  a product without a brand of its own: the store's name for Meta and
+  TikTok, which require one, and none for Google, which asks for the
+  manufacturer's (`newGoogleWriter`, `newMetaTikTokWriter`); no
+  `g:identifier_exists` is written. Each document is written an
   item at a time into its gzip stream (`docStream`), which hashes and
   counts it for the ETag and `Meta.Size`: no feed is ever whole and
   uncompressed in memory, so a sweep costs the fetch window plus the

@@ -211,6 +211,12 @@ func TestFailedFeedRefreshIsNotRetriedByEveryRequest(t *testing.T) {
 	first, err := svc.Meta(ctx, ten, feeds.KindGoogle)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, g.sweeps.Load())
+	// meta.xml is another document, from the same sweep; read without a
+	// request, which would start a refresh of the stale entry.
+	var firstMeta feeds.Meta
+	require.NoError(t, json.Unmarshal(
+		[]byte(rdb.Get(ctx, "ag:demostore:feed:rss:meta").Val()), &firstMeta))
+	require.NotEqual(t, first.ETag, firstMeta.ETag)
 
 	g.broken.Store(true)
 	served, err := svc.Meta(ctx, ten, feeds.KindGoogle)
@@ -228,7 +234,7 @@ func TestFailedFeedRefreshIsNotRetriedByEveryRequest(t *testing.T) {
 	for _, s := range []*feeds.Service{svc, other, svc} {
 		served, err = s.Meta(ctx, ten, feeds.KindMeta)
 		require.NoError(t, err)
-		assert.Equal(t, first.ETag, served.ETag)
+		assert.Equal(t, firstMeta.ETag, served.ETag)
 	}
 	assert.EqualValues(t, 2, g.sweeps.Load(),
 		"no request starts a sweep while the backoff runs")
@@ -260,13 +266,13 @@ func TestFeedWithItsBlobEvictedRegenerates(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, g.sweeps.Load())
 
-	require.NoError(t, rdb.Unlink(ctx, "ag:demostore:feed:rss").Err())
+	require.NoError(t, rdb.Unlink(ctx, "ag:demostore:feed:google").Err())
 	meta, err := svc.Meta(ctx, ten, feeds.KindGoogle)
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, g.sweeps.Load(), "Meta saw the blob gone")
 	assert.Equal(t, first.ETag, meta.ETag)
 
-	require.NoError(t, rdb.Unlink(ctx, "ag:demostore:feed:rss").Err())
+	require.NoError(t, rdb.Unlink(ctx, "ag:demostore:feed:google").Err())
 	gz, meta, err := svc.Body(ctx, ten, feeds.KindGoogle)
 	require.NoError(t, err)
 	assert.NotEmpty(t, gz)
@@ -334,7 +340,10 @@ func evict(cmd redis.Cmder) {
 		return
 	}
 	key := fmt.Sprint(args[1])
-	if key != "ag:demostore:feed:rss" && key != "ag:demostore:feed:acp" {
+	switch key {
+	case "ag:demostore:feed:google", "ag:demostore:feed:rss",
+		"ag:demostore:feed:acp":
+	default:
 		return
 	}
 	switch c := cmd.(type) {
@@ -369,7 +378,8 @@ func TestBrokenBlobDropSparesAReplacement(t *testing.T) {
 
 	_, err := svc.Meta(ctx, ten, feeds.KindGoogle)
 	require.NoError(t, err)
-	const data, metaKey = "ag:demostore:feed:rss", "ag:demostore:feed:rss:meta"
+	const data = "ag:demostore:feed:google"
+	const metaKey = data + ":meta"
 	good := rdb.Get(ctx, data).Val()
 	var meta feeds.Meta
 	require.NoError(t, json.Unmarshal([]byte(rdb.Get(ctx, metaKey).Val()),

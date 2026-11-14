@@ -8,10 +8,15 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -258,6 +263,98 @@ func TestGenerationStoresEachDocumentWithItsMetadata(t *testing.T) {
 	require.NoError(t, validateACP(t, "ProductsResponse", acp))
 	products, _ := acp.(map[string]any)["products"].([]any)
 	assert.Len(t, products, 3)
+}
+
+// brandCatalog serves an empty category tree and one page of three
+// products: one with a brand, one without a brand but with a GTIN and an
+// MPN, and one with neither. It counts the catalogue pages it serves.
+func brandCatalog(t *testing.T, pages *atomic.Int32) *django.Client {
+	t.Helper()
+	product := func(id int, extra string) string {
+		return fmt.Sprintf(`{"id":%d,"translations":{"el":{"name":"P"}},`+
+			`"slug":"p","category":1,"effectivePrice":1.24,`+
+			`"priorPrice":null,"announcedDiscountPercent":null,"stock":1,`+
+			`"active":true,"mainImagePath":"m.jpg"%s}`, id, extra)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.HasSuffix(r.URL.Path, "/product/category/all") {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+			pages.Add(1)
+			_, _ = fmt.Fprintf(w, `{"links":{"next":null,"previous":null},`+
+				`"count":3,"totalPages":1,"pageSize":3,"page":1,`+
+				`"results":[%s,%s,%s]}`,
+				product(1, `,"brandName":"Spigen"`),
+				product(2, `,"gtin":"5901234123457","mpn":"WS-20"`),
+				product(3, ""))
+		}))
+	t.Cleanup(srv.Close)
+	return django.New(srv.URL+"/api/v1", "api.example.test", "secret",
+		5*time.Second, discard, obs.NewMetrics())
+}
+
+// One generation, one catalogue sweep, stores every format, and
+// google.xml differs from meta.xml and tiktok.xml only in g:brand: the
+// store's name for the two products without a brand on Meta and TikTok,
+// nothing on Google.
+func TestGoogleFeedDiffersOnlyInBrand(t *testing.T) {
+	var pages atomic.Int32
+	m, rdb := newMemRedis(map[string]string{})
+	s := feedService(brandCatalog(t, &pages), rdb, io.Discard)
+	store := &tenant.Tenant{
+		TenantConfig: django.TenantConfig{
+			SchemaName: "demostore", StoreName: "Demo Store",
+			DefaultLocale: "el", DefaultCurrency: "EUR",
+		},
+		Domain: "demo.example.test",
+	}
+	ctx := tenant.NewContext(context.Background(), store)
+	bodies := map[string]string{}
+	for _, kind := range []string{KindGoogle, KindMeta, KindTikTok} {
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet,
+			"/feeds/"+kind+".xml", nil)
+		rec := httptest.NewRecorder()
+		s.Handler(kind).ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, kind)
+		bodies[kind] = rec.Body.String()
+	}
+	assert.EqualValues(t, 1, pages.Load(), "one sweep renders every format")
+	for _, format := range formats {
+		_, ok := m.get(dataKey("demostore", format))
+		assert.True(t, ok, format)
+		_, ok = m.get(metaKey("demostore", format))
+		assert.True(t, ok, format)
+	}
+
+	assert.Equal(t, bodies[KindMeta], bodies[KindTikTok])
+	const storeBrand = "\n      <g:brand>Demo Store</g:brand>"
+	assert.Equal(t, 2, strings.Count(bodies[KindMeta], storeBrand))
+	assert.Equal(t, strings.ReplaceAll(bodies[KindMeta], storeBrand, ""),
+		bodies[KindGoogle])
+	assert.Equal(t, 1, strings.Count(bodies[KindGoogle], "<g:brand>"))
+	assert.Contains(t, bodies[KindGoogle], "<g:brand>Spigen</g:brand>")
+}
+
+// Invalidate drops every format's blob and metadata, and the failure
+// mark.
+func TestInvalidateDropsEveryFormat(t *testing.T) {
+	vals := map[string]string{failedKey("demostore"): "1"}
+	for _, format := range formats {
+		vals[dataKey("demostore", format)] = "gz"
+		vals[metaKey("demostore", format)] = "{}"
+	}
+	require.Contains(t, vals, dataKey("demostore", formatOf(KindGoogle)))
+	m, rdb := newMemRedis(vals)
+	s := feedService(nil, rdb, io.Discard)
+	removed, err := s.Invalidate(context.Background(), "demostore")
+	require.NoError(t, err)
+	assert.EqualValues(t, len(formats)*2+1, removed)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	assert.Empty(t, m.vals)
 }
 
 func counterValue(t *testing.T, m *obs.Metrics, name string) float64 {

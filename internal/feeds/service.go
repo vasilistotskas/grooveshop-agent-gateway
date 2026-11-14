@@ -33,17 +33,22 @@ const (
 	KindACP    = "acp"
 )
 
-// The three RSS kinds serve one document (see rss.go), so it is
-// rendered, compressed and cached once; a kind only picks its format.
+// A format is one cached document. Google gets its own RSS document;
+// Meta and TikTok share one (formatRSS), so it is rendered, compressed
+// and cached once. They differ only in g:brand (see rss.go).
 const (
-	formatRSS = "rss"
-	formatACP = "acp"
+	formatGoogle = "google"
+	formatRSS    = "rss"
+	formatACP    = "acp"
 )
 
-var formats = []string{formatRSS, formatACP}
+var formats = []string{formatGoogle, formatRSS, formatACP}
 
 func formatOf(kind string) string {
-	if kind == KindACP {
+	switch kind {
+	case KindGoogle:
+		return formatGoogle
+	case KindACP:
 		return formatACP
 	}
 	return formatRSS
@@ -51,9 +56,10 @@ func formatOf(kind string) string {
 
 // generationSlots bounds concurrent catalog sweeps per pod (memory
 // guard); the semaphore is shared by every tenant. At the page cap one
-// sweep peaked under 70 MiB of heap and two under 140 MiB, measured with
-// Django's page rendering in the same process (memory_measure_test.go),
-// so less in a pod. The pod's memory limit has to hold that above its
+// sweep peaked under 90 MiB of heap and two under 170 MiB (under 80 and
+// 110 MiB with production's GOMEMLIMIT), measured with Django's page
+// rendering in the same process (memory_measure_test.go), so less in a
+// pod. The pod's memory limit has to hold that above its
 // steady state: grooveshop-infrastructure,
 // manifests/app-constructs/grooveshop/base/agent-gateway.yaml.
 var generationSlots = make(chan struct{}, 2)
@@ -600,14 +606,18 @@ func (s *Service) generate(
 
 	// Each document is compressed as it is written, so none is ever held
 	// whole and uncompressed: a sweep holds the fetch window and the gzip
-	// output.
+	// output of each document.
 	streams := make(map[string]*docStream, len(formats))
 	for _, format := range formats {
 		if streams[format], err = newDocStream(); err != nil {
 			return err
 		}
 	}
-	rss, err := newRSSWriter(fctx, streams[formatRSS])
+	google, err := newGoogleWriter(fctx, streams[formatGoogle])
+	if err != nil {
+		return err
+	}
+	rss, err := newMetaTikTokWriter(fctx, streams[formatRSS])
 	if err != nil {
 		return err
 	}
@@ -632,6 +642,9 @@ func (s *Service) generate(
 				skipped++
 				return nil
 			}
+			if err := google.Item(item); err != nil {
+				return err
+			}
 			if err := rss.Item(item); err != nil {
 				return err
 			}
@@ -653,6 +666,9 @@ func (s *Service) generate(
 			slog.Int("pages", maxPages))
 	}
 
+	if err := google.Close(); err != nil {
+		return err
+	}
 	if err := rss.Close(); err != nil {
 		return err
 	}
