@@ -279,6 +279,29 @@ func TestACartsRecordLivesAsLongAsItsSession(t *testing.T) {
 		assertLivesWithSession(t, rdb, s, halfHour)
 	})
 
+	// Redis evicts by how recently a key was read. A session is read
+	// by every call on it, its cart's record only by a create: a read of
+	// the session counts as one of the record, so the record is not
+	// evicted from under a session a platform keeps reading.
+	t.Run("a read of the session is a read of its cart's record",
+		func(t *testing.T) {
+			store, rdb := startStore(t)
+			s := newSession()
+			require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
+			record := cartRecordPrefix + s.CartID
+			require.Eventually(t, func() bool {
+				idle, err := rdb.ObjectIdleTime(ctx, record).Result()
+				return err == nil && idle >= time.Second
+			}, 10*time.Second, 200*time.Millisecond)
+
+			_, err := store.Load(ctx, s.Schema, s.ID)
+			require.NoError(t, err)
+
+			idle, err := rdb.ObjectIdleTime(ctx, record).Result()
+			require.NoError(t, err)
+			assert.Less(t, idle, time.Second)
+		})
+
 	// A session that lost its cart to the next checkout leaves that
 	// checkout's record alone, whatever it saves.
 	t.Run("a save of a session that no longer holds the cart",
@@ -960,6 +983,96 @@ func TestACheckoutFromLineItemsHoldsItsCart(t *testing.T) {
 		s := stack.storedSession(t, id)
 		assert.Equal(t, id, heldBy(t, stack.rdb, s.CartID))
 		assertLivesWithSession(t, stack.rdb, s, 30*time.Minute)
+	})
+}
+
+// redisReply runs after each Redis command has run. An error it returns
+// replaces the command's reply: what a caller sees when the command was
+// carried out and its answer never arrived.
+type redisReply func(redis.Cmder) error
+
+func (redisReply) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (after redisReply) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if err := next(ctx, cmd); err != nil {
+			return err
+		}
+		if err := after(cmd); err != nil {
+			cmd.SetErr(err)
+			return err
+		}
+		return nil
+	}
+}
+
+func (redisReply) ProcessPipelineHook(
+	next redis.ProcessPipelineHook,
+) redis.ProcessPipelineHook {
+	return next
+}
+
+// A create whose store call fails does not know whether its checkout
+// was stored: the script may have run and its reply been lost. It gave
+// the checkout to nobody, so it removes it.
+func TestACreateTheStoreDidNotAnswerLeavesNoCheckout(t *testing.T) {
+	ctx := context.Background()
+	stack := startUCPGateway(t)
+	p := newPlatform(t, stack)
+	// The next create's script runs, and its reply is lost.
+	var armed atomic.Bool
+	stack.rdb.AddHook(redisReply(func(cmd redis.Cmder) error {
+		args := cmd.Args()
+		if (cmd.Name() != "evalsha" && cmd.Name() != "eval") ||
+			len(args) < 6 || args[5] != "" {
+			return nil
+		}
+		record, ok := args[4].(string)
+		if !ok || !strings.HasPrefix(record, cartRecordPrefix) ||
+			!armed.CompareAndSwap(true, false) {
+			return nil
+		}
+		return errors.New("the reply was lost")
+	}))
+	lost := func(t *testing.T) {
+		t.Helper()
+		assert.False(t, armed.Load(), "no create reached the store")
+		assert.Zero(t, stack.sessionCount(t),
+			"a checkout nobody was given was kept")
+		keys, err := stack.rdb.Keys(ctx, cartRecordPrefix+"*").Result()
+		require.NoError(t, err)
+		assert.Empty(t, keys)
+	}
+
+	t.Run("ucp, from line items", func(t *testing.T) {
+		armed.Store(true)
+		a := p.create(ctx, "", map[string]any{"line_items": []any{
+			map[string]any{"item": map[string]any{"id": "1"}, "quantity": 2},
+		}})
+		assert.Empty(t, a.id)
+		assert.Contains(t, a.refusal, `"code":"unavailable"`)
+		lost(t)
+	})
+
+	t.Run("ucp, from a cart", func(t *testing.T) {
+		armed.Store(true)
+		a := p.create(ctx, stack.faults.carts.mint(), nil)
+		assert.Empty(t, a.id)
+		assert.Contains(t, a.refusal, `"code":"unavailable"`)
+		lost(t)
+	})
+
+	t.Run("acp", func(t *testing.T) {
+		armed.Store(true)
+		resp, refusal := acpCall(t, http.MethodPost,
+			stack.gw.URL+"/acp/checkout_sessions", map[string]any{
+				"line_items":   []map[string]any{{"id": "1", "quantity": 2}},
+				"currency":     "EUR",
+				"capabilities": map[string]any{},
+			}, uuid.NewString())
+		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+		assert.Equal(t, "unavailable", refusal["code"])
+		lost(t)
 	})
 }
 

@@ -718,6 +718,10 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, checkout.ErrCartHeld) {
 			h.log.ErrorContext(r.Context(),
 				"acp: a cart just made is already in a checkout")
+		} else {
+			// Whether the session was stored is not known: the script
+			// may have run and its reply been lost.
+			h.discard(r, s)
 		}
 		h.releaseIdem(r, claim, createScope)
 		writeUnavailable(w, msgRecordsUnavailable)
@@ -740,18 +744,25 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	default:
 		// The key is another create's by now, and one key answers one
 		// session: this one was never handed out, and is not kept.
-		ctx, cancel := h.settling(r)
-		defer cancel()
-		if err := h.store.Discard(ctx, s); err != nil {
-			h.log.ErrorContext(r.Context(),
-				"acp: unanswered session not discarded",
-				slog.String("session", s.ID),
-				slog.String("error", err.Error()))
-		}
+		h.discard(r, s)
 		writeInFlight(w, idemRetryAfter, msgKeyInFlight)
 		return
 	}
 	writeBody(w, http.StatusCreated, body)
+}
+
+// discard removes a session its create stored, or may have stored, and
+// gave to nobody, on a context the caller cannot end. Discarding one
+// that was not stored removes nothing.
+func (h *Handler) discard(r *http.Request, s *checkout.Session) {
+	ctx, cancel := h.settling(r)
+	defer cancel()
+	if err := h.store.Discard(ctx, s); err != nil {
+		h.log.ErrorContext(r.Context(),
+			"acp: unanswered session not discarded",
+			slog.String("session", s.ID),
+			slog.String("error", err.Error()))
+	}
 }
 
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
