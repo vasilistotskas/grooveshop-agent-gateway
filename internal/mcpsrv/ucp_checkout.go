@@ -203,10 +203,10 @@ func (h *handlers) applyCodes(
 // The cart is written only by the checkout that holds it, in that
 // checkout's turn. So the create's discount codes go to the cart after
 // the new checkout has taken it, under the new checkout's lock, which
-// is held from before the checkout is stored: a later create that finds
-// it on the cart waits for that write (supersede). A code write that
-// fails leaves no checkout: the new one is discarded, and the one it
-// replaced stays canceled.
+// is held from before the checkout is stored (takeCart): a later create
+// that finds it on the cart waits for that write (supersede). A code
+// write that fails leaves no checkout: the new one is discarded, and
+// the one it replaced stays canceled.
 func (h *handlers) createFromCart(
 	ctx context.Context, t *tenant.Tenant, in CreateCheckoutIn,
 	neg ucp.Negotiated,
@@ -230,14 +230,11 @@ func (h *handlers) createFromCart(
 	s.CartID = cartID
 	s.Recompute()
 
-	release, err := h.deps.Checkout.Lock(ctx, t.SchemaName, s.ID)
+	release, err := h.takeCart(ctx, t, s)
 	if err != nil {
-		return nil, zero, errCheckoutUnavailable
-	}
-	defer release()
-	if err := h.takeCart(ctx, t, s); err != nil {
 		return nil, zero, err
 	}
+	defer release()
 
 	hasCodes, err := h.applyCodes(ctx, t, s, &in.Checkout)
 	if err != nil {
@@ -261,18 +258,29 @@ func (h *handlers) createFromCart(
 // was at work on it.
 const cartCreateRounds = 3
 
-// takeCart stores s as the checkout that holds its cart, canceling an
-// open UCP checkout that held it. A holder that keeps the cart is the
-// create's refusal (cartHolder). Each round reads the holder again: the
-// create's lookups took time, and every further round follows another
-// request's change to the holder.
+// takeCart stores s as the checkout that holds its cart, canceling the
+// checkout that held it where the create may (cartHolder); a holder
+// that keeps the cart is the create's refusal. Each round reads the
+// holder again: the create's lookups took time, and every further round
+// follows another request's change to the holder.
+//
+// It returns with s's lock held, for the cart writes that follow, and
+// release frees it. The lock is taken before s is first stored, and no
+// earlier, so that the lookups a round makes are not counted against
+// it.
 func (h *handlers) takeCart(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
-) error {
+) (release func(), err error) {
+	defer func() {
+		if err != nil && release != nil {
+			release()
+			release = nil
+		}
+	}()
 	for range cartCreateRounds {
 		holder, err := h.cartHolder(ctx, t, s.CartID)
 		if err != nil {
-			return err
+			return release, err
 		}
 		if !holder.Free() {
 			// An open checkout, or one whose order Django canceled.
@@ -284,19 +292,25 @@ func (h *handlers) takeCart(
 				continue
 			}
 			if err != nil {
-				return errCheckoutUnavailable
+				return release, errCheckoutUnavailable
+			}
+		}
+		if release == nil {
+			release, err = h.deps.Checkout.Lock(ctx, s.Schema, s.ID)
+			if err != nil {
+				return nil, errCheckoutUnavailable
 			}
 		}
 		err = h.deps.Checkout.Create(ctx, s, holder)
 		if err == nil {
-			return nil
+			return release, nil
 		}
 		if !errors.Is(err, checkout.ErrCartHeld) {
-			return errCheckoutUnavailable
+			return release, errCheckoutUnavailable
 		}
 		// Another create took the cart since it was read.
 	}
-	return errCartBusy
+	return release, errCartBusy
 }
 
 // supersede cancels the checkout whose cart a create takes (an open
