@@ -182,10 +182,6 @@ func (h *handlers) applyCodes(
 	return true, nil
 }
 
-// cartCreateRounds bounds how often a create naming a cart decides
-// again about the cart's holder, after another request changed it.
-const cartCreateRounds = 3
-
 // createFromCart is create_checkout for a cart the caller names. A cart
 // has one live checkout, which the store keeps (checkout.Store.Create):
 // two checkouts on one cart could each place an order, because Django
@@ -200,8 +196,17 @@ const cartCreateRounds = 3
 //
 // A checkout whose order is being placed or awaits its payment keeps
 // the cart, and the create is refused (cartHolder), before any lookup
-// and any cart write. What the create submits is settled before the
-// holder is canceled: a create the store refuses cancels nothing.
+// and any cart write. The create's region and payment are settled
+// before the holder is canceled: a create the store refuses there
+// cancels nothing.
+//
+// The cart is written only by the checkout that holds it, in that
+// checkout's turn. So the create's discount codes go to the cart after
+// the new checkout has taken it, under the new checkout's lock, which
+// is held from before the checkout is stored: a later create that finds
+// it on the cart waits for that write (supersede). A code write that
+// fails leaves no checkout: the new one is discarded, and the one it
+// replaced stays canceled.
 func (h *handlers) createFromCart(
 	ctx context.Context, t *tenant.Tenant, in CreateCheckoutIn,
 	neg ucp.Negotiated,
@@ -223,60 +228,112 @@ func (h *handlers) createFromCart(
 		return nil, zero, err
 	}
 	s.CartID = cartID
+	s.Recompute()
 
-	// The cart is written once, however many rounds follow. hasCodes then
-	// says this call's discount codes are on the cart.
-	hasCodes, wrote := false, false
+	release, err := h.deps.Checkout.Lock(ctx, t.SchemaName, s.ID)
+	if err != nil {
+		return nil, zero, errCheckoutUnavailable
+	}
+	defer release()
+	if err := h.takeCart(ctx, t, s); err != nil {
+		return nil, zero, err
+	}
+
+	hasCodes, err := h.applyCodes(ctx, t, s, &in.Checkout)
+	if err != nil {
+		h.discard(ctx, s)
+		return nil, zero, err
+	}
+	if hasCodes {
+		s.Recompute()
+		if err := h.deps.Checkout.Save(ctx, s); err != nil {
+			return nil, zero, withHint(saveFailed(err),
+				checkoutNotCreated+". The discount codes this call "+
+					"sent may already be on the cart")
+		}
+	}
+	res, out, err := h.checkoutResult(ctx, t, s, neg)
+	return h.discountAnnotated(res, out, err, s, hasCodes)
+}
+
+// cartCreateRounds bounds how often a create naming a cart decides
+// again about the cart's holder, after another request changed it or
+// was at work on it.
+const cartCreateRounds = 3
+
+// takeCart stores s as the checkout that holds its cart, canceling an
+// open UCP checkout that held it. A holder that keeps the cart is the
+// create's refusal (cartHolder). Each round reads the holder again: the
+// create's lookups took time, and every further round follows another
+// request's change to the holder.
+func (h *handlers) takeCart(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+) error {
 	for range cartCreateRounds {
-		// Read again: the lookups above take time, and each further
-		// round follows another request's change to the holder.
-		holder, err := h.cartHolder(ctx, t, cartID)
+		holder, err := h.cartHolder(ctx, t, s.CartID)
 		if err != nil {
-			return nil, zero, afterCodes(err, hasCodes)
+			return err
 		}
 		if !holder.Free() {
-			err = h.cancel(ctx, holder.Session)
-			if errors.Is(err, checkout.ErrSessionChanged) {
-				// The holder moved on, perhaps into placing its order.
+			err = h.supersede(ctx, holder.Session)
+			if errors.Is(err, checkout.ErrLocked) ||
+				errors.Is(err, checkout.ErrSessionChanged) {
+				// A call is at work on the holder, or one just stored
+				// it: perhaps it is placing its order by now.
 				continue
 			}
 			if err != nil {
-				return nil, zero, afterCodes(errCheckoutUnavailable, hasCodes)
+				return errCheckoutUnavailable
 			}
-			h.deps.Log.InfoContext(ctx,
-				"ucp: a create canceled the open checkout on its cart",
-				slog.String("session", holder.Session.ID))
-		}
-		// The first cart write, once no live checkout holds the cart.
-		if !wrote {
-			hasCodes, err = h.applyCodes(ctx, t, s, &in.Checkout)
-			if err != nil {
-				return nil, zero, err
-			}
-			wrote = true
-			s.Recompute()
 		}
 		err = h.deps.Checkout.Create(ctx, s, holder)
 		if err == nil {
-			res, out, err := h.checkoutResult(ctx, t, s, neg)
-			return h.discountAnnotated(res, out, err, s, hasCodes)
+			return nil
 		}
 		if !errors.Is(err, checkout.ErrCartHeld) {
-			return nil, zero, afterCodes(errCheckoutUnavailable, hasCodes)
+			return errCheckoutUnavailable
 		}
 		// Another create took the cart since it was read.
 	}
-	return nil, zero, afterCodes(errCartBusy, hasCodes)
+	return errCartBusy
 }
 
-// afterCodes adds, to a create's refusal, that its discount codes went
-// to the cart before it was refused.
-func afterCodes(err error, written bool) error {
-	if !written {
+// supersede cancels the open checkout whose cart a create takes, in
+// that checkout's own turn: under its lock, as cancel_checkout does. A
+// call at work on it (an update writing the cart, a completion) holds
+// the lock, and the create does not cancel under it: Django's cart is
+// outside the session's compare-and-set, and only the lock keeps an
+// update's cart writes out of the next checkout's cart.
+func (h *handlers) supersede(
+	ctx context.Context, old *checkout.Session,
+) error {
+	release, err := h.deps.Checkout.Lock(ctx, old.Schema, old.ID)
+	if err != nil {
 		return err
 	}
-	return withHint(err,
-		"The discount codes this call sent may already be on the cart")
+	defer release()
+	if err := h.cancel(ctx, old); err != nil {
+		return err
+	}
+	h.deps.Log.InfoContext(ctx,
+		"ucp: a create canceled the open checkout on its cart",
+		slog.String("session", old.ID))
+	return nil
+}
+
+// discard removes a checkout its create stored and never answered, on
+// a context the caller cannot end: the caller hanging up is one way a
+// create fails after its checkout was stored.
+func (h *handlers) discard(ctx context.Context, s *checkout.Session) {
+	ctx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), h.deps.Django.Timeout())
+	defer cancel()
+	if err := h.deps.Checkout.Discard(ctx, s); err != nil {
+		h.deps.Log.ErrorContext(ctx,
+			"ucp: unanswered checkout not discarded",
+			slog.String("session", s.ID),
+			slog.String("error", err.Error()))
+	}
 }
 
 // cancel stores an open checkout as canceled, and only over the
@@ -360,10 +417,10 @@ var (
 			"or canceled where it was started before this cart can be " +
 			"checked out here"}
 
-	// errCartBusy: the create kept finding the cart's holder changed by
-	// other requests.
+	// errCartBusy: in every round another request was at work on the
+	// cart's checkout, or had just changed it.
 	errCartBusy = &mcptool.ToolError{Code: mcptool.CodeConflict,
-		Hint: "other requests are starting a checkout for this cart, so " +
+		Hint: "another request is at work on this cart's checkout, so " +
 			"this call created none; send it again shortly"}
 )
 

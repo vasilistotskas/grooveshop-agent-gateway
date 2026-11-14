@@ -379,7 +379,8 @@ A cart has one live checkout: two on one cart could each place an order, because
 | `create_checkout` with `cart_id`, by the checkout that holds the cart | Expected |
 |---|---|
 | None, or one that is completed, canceled or no longer stored | A new checkout, which holds the cart |
-| An open UCP checkout | It is canceled and the new checkout holds the cart: the newest create wins. The old id reads `canceled`, and a complete of it is refused. A create the store refuses (region, payment) cancels nothing |
+| An open UCP checkout | It is canceled and the new checkout holds the cart: the newest create wins. The old id reads `canceled`, and a complete of it is refused. A create the store refuses (region, payment) cancels nothing. Its discount codes go to the cart only after the new checkout holds it; if that write fails, the new checkout is discarded and the old one stays canceled |
+| An open UCP checkout another call is at work on (an update, a completion) | Not canceled under that call. The create looks again, three times at most, then answers `conflict`: "another request is at work on this cart's checkout", send it again shortly |
 | An open ACP session | Refused, `conflict`: "started outside this server". The ACP session is not touched |
 | One whose order is being placed, or was sent and never confirmed | Refused, `conflict`: "an order exists or may", do not start another checkout, and where to look with the checkout id or order id the caller holds. Nothing is looked up or written |
 | One whose order awaits its payment | Refused, `conflict`: "placed an order, which awaits its payment", with the same guidance |

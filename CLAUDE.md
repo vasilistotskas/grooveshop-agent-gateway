@@ -757,6 +757,18 @@ passes.
     (`handlers.cancel`), and the new session takes its place; the old
     id reads `canceled` from then on. The create's region and payment
     are settled first, so a create the store refuses cancels nothing.
+  - **A cart is written only by the checkout that holds it, in that
+    checkout's turn.** Django's cart is outside the session's
+    compare-and-set, so only a lock keeps one checkout's cart writes
+    out of the next checkout's cart. The holder is canceled under its
+    own lock (`supersede`): a call at work on it (an update writing
+    the cart, a completion) holds that lock, and the create does not
+    cancel under it. The create's discount codes are written after its
+    checkout took the cart, under the new checkout's lock, which is
+    held from before the checkout is stored, so the next create waits
+    for that write. A code write that fails discards the new checkout
+    (`handlers.discard`) and leaves the old one canceled: the cart
+    then has no checkout.
   - A holder whose order is being placed or awaits its payment keeps
     the cart, and so does an open checkout of another protocol: the
     create is a `conflict` (`errCartOrderPending`,
@@ -769,9 +781,10 @@ passes.
     UCP cart capability's "return the existing checkout" is not
     offered.
   - A create that finds the holder changed by another request (a
-    cancel that lost its save, a cart another create took) decides
-    again on what the holder is then, `cartCreateRounds` times at
-    most, then answers `conflict` (`errCartBusy`).
+    cancel that lost its save, a cart another create took), or a call
+    at work on it, decides again on what the holder is then,
+    `cartCreateRounds` times at most, then answers `conflict`
+    (`errCartBusy`).
   - A cart made for its session (`line_items`, ACP) is taken the same
     way. A held one there is a fault: logged, answered unavailable,
     and no session is handed out.

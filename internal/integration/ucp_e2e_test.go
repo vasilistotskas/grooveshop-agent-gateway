@@ -217,6 +217,11 @@ type checkoutFaults struct {
 	// cartWrites counts the writes the cart received: its lines and its
 	// coupon.
 	cartWrites atomic.Int32
+	// promotions makes the store take discount codes. Set it before the
+	// gateway first resolves the store: the answer is cached.
+	promotions atomic.Bool
+	// couponWrite makes applying a coupon answer 502.
+	couponWrite atomic.Bool
 	// cartCreates counts the carts created: a cart read naming none.
 	cartCreates atomic.Int32
 	// namedCartReads counts the reads of a named cart; from the read
@@ -347,8 +352,26 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	}
 	outer.HandleFunc("POST /api/v1/cart/coupon",
 		func(w http.ResponseWriter, _ *http.Request) {
+			if faults.couponWrite.Load() {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
 			faults.cartWrites.Add(1)
 			serveFixture(t, w, "cart_with_coupon.json")
+		})
+	outer.HandleFunc("GET /api/v1/tenant/resolve",
+		func(w http.ResponseWriter, r *http.Request) {
+			if !faults.promotions.Load() {
+				inner.ServeHTTP(w, r)
+				return
+			}
+			rec := httptest.NewRecorder()
+			inner.ServeHTTP(rec, r)
+			maps.Copy(w.Header(), rec.Header())
+			w.WriteHeader(rec.Code)
+			_, _ = w.Write(bytes.Replace(rec.Body.Bytes(),
+				[]byte(`"promotions": false`),
+				[]byte(`"promotions": true`), 1))
 		})
 	outer.HandleFunc("DELETE /api/v1/cart/coupon",
 		func(w http.ResponseWriter, _ *http.Request) {

@@ -956,3 +956,135 @@ func TestACartJustMadeThatIsHeldStartsNoCheckout(t *testing.T) {
 	assert.Positive(t, taken.Load())
 	assert.Zero(t, stack.sessionCount(t))
 }
+
+// Django's cart is outside the session's compare-and-set, so a cart is
+// written only by the checkout that holds it, in that checkout's turn.
+// A create writes its discount codes once its checkout has taken the
+// cart, and cancels the checkout that held it only in that checkout's
+// turn: under its lock.
+func TestACreateWritesItsCartOnlyOnceItHoldsIt(t *testing.T) {
+	ctx := context.Background()
+	stack := startUCPGateway(t)
+	stack.faults.promotions.Store(true)
+	p := newPlatform(t, stack)
+	store := checkout.NewStore(stack.rdb, ucpUpstreamTimeout)
+	codes := map[string]any{
+		"discounts": map[string]any{"codes": []string{"SAVE10"}},
+	}
+
+	t.Run("the code is written when the new checkout holds the cart",
+		func(t *testing.T) {
+			cart := stack.faults.carts.mint()
+			old := p.started(t, cart)
+			// Who held the cart when the coupon reached the store. The
+			// hook runs on the fake's goroutine and asserts nothing.
+			var holder atomic.Pointer[string]
+			before := func(r *http.Request) {
+				if r.Method == http.MethodPost &&
+					r.URL.Path == "/api/v1/cart/coupon" {
+					id, _ := stack.rdb.Get(ctx, cartRecordPrefix+cart).Result()
+					holder.Store(&id)
+				}
+			}
+			stack.faults.before.Store(&before)
+			defer stack.faults.before.Store(nil)
+
+			a := p.create(ctx, cart, codes)
+
+			require.Empty(t, a.refusal)
+			require.NotNil(t, holder.Load(), "no coupon was written")
+			assert.Equal(t, a.id, *holder.Load(),
+				"the coupon was written before its checkout held the cart")
+			assert.Equal(t, []string{"SAVE10"},
+				stack.storedSession(t, a.id).DiscountCodes)
+			assert.Equal(t, checkout.StatusCanceled,
+				stack.storedSession(t, old).Status)
+		})
+
+	t.Run("a code write that fails leaves no checkout", func(t *testing.T) {
+		cart := stack.faults.carts.mint()
+		old := p.started(t, cart)
+		sessions := stack.sessionCount(t)
+		stack.faults.couponWrite.Store(true)
+		defer stack.faults.couponWrite.Store(false)
+
+		a := p.create(ctx, cart, codes)
+
+		assert.Empty(t, a.id)
+		assert.Contains(t, a.refusal, "No checkout was created")
+		assert.Equal(t, sessions, stack.sessionCount(t),
+			"the unanswered checkout was kept")
+		assert.Empty(t, heldBy(t, stack.rdb, cart))
+		assert.Equal(t, checkout.StatusCanceled,
+			stack.storedSession(t, old).Status)
+	})
+
+	// Another create takes the cart between this one's read of its
+	// holder and its own take, and starts placing its order.
+	t.Run("a create that loses the cart writes nothing to it",
+		func(t *testing.T) {
+			cart := stack.faults.carts.mint()
+			winner := sessionOn(cart)
+			var armed atomic.Bool
+			armed.Store(true)
+			took := make(chan error, 1)
+			stack.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+				args := cmd.Args()
+				if (cmd.Name() != "evalsha" && cmd.Name() != "eval") ||
+					len(args) < 5 || args[4] != cartRecordPrefix+cart ||
+					!armed.CompareAndSwap(true, false) {
+					return nil
+				}
+				err := store.Create(ctx, winner, checkout.CartHolder{})
+				if err == nil {
+					winner.Status = checkout.StatusCompleteInProgress
+					err = store.Save(ctx, winner)
+				}
+				took <- err
+				return nil
+			}))
+			t.Cleanup(func() { armed.Store(false) })
+			writes := stack.faults.cartWrites.Load()
+
+			a := p.create(ctx, cart, codes)
+
+			select {
+			case err := <-took:
+				require.NoError(t, err)
+			default:
+				t.Fatal("the create never tried to take the cart")
+			}
+			assert.Empty(t, a.id, "a second checkout was started")
+			assert.Contains(t, a.refusal, "order is being placed")
+			assert.NotContains(t, a.refusal, winner.ID)
+			assert.Equal(t, writes, stack.faults.cartWrites.Load(),
+				"the cart of another checkout was written")
+			assert.Equal(t, winner.ID, heldBy(t, stack.rdb, cart))
+		})
+
+	// A call at work on the holder (an update writing the cart, a
+	// completion) holds its lock.
+	t.Run("a checkout another call is at work on is not canceled",
+		func(t *testing.T) {
+			cart := stack.faults.carts.mint()
+			holder := p.started(t, cart)
+			stored := stack.storedBytes(t, holder)
+			sessions := stack.sessionCount(t)
+			writes := stack.faults.cartWrites.Load()
+			release, err := store.Lock(ctx, "demostore", holder)
+			require.NoError(t, err)
+			defer release()
+
+			a := p.create(ctx, cart, codes)
+
+			assert.Empty(t, a.id, "a second checkout was started")
+			assert.Contains(t, a.refusal, `"code":"conflict"`)
+			assert.Contains(t, a.refusal, "another request is at work")
+			assert.NotContains(t, a.refusal, holder)
+			assert.Equal(t, stored, stack.storedBytes(t, holder),
+				"the holder was written")
+			assert.Equal(t, holder, heldBy(t, stack.rdb, cart))
+			assert.Equal(t, sessions, stack.sessionCount(t))
+			assert.Equal(t, writes, stack.faults.cartWrites.Load())
+		})
+}
