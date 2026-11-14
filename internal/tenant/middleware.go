@@ -65,7 +65,7 @@ func writeResolveError(
 	msg string, err error,
 ) {
 	if errors.Is(err, ErrUnknownTenant) {
-		httpmw.WriteJSONError(w, http.StatusNotFound, "unknown store")
+		httpmw.WriteError(w, req, http.StatusNotFound, "unknown store")
 		return
 	}
 	if !errors.Is(err, context.Canceled) && !errors.Is(err, errNoCredentials) {
@@ -74,7 +74,7 @@ func writeResolveError(
 			slog.String("error", err.Error()),
 		)
 	}
-	httpmw.WriteJSONError(w, http.StatusServiceUnavailable,
+	httpmw.WriteError(w, req, http.StatusServiceUnavailable,
 		"store temporarily unavailable")
 }
 
@@ -111,7 +111,7 @@ func requireFeature(
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		t, ok := FromContext(req.Context())
 		if !ok || !enabled(t) {
-			httpmw.WriteJSONError(w, http.StatusNotFound, "not found")
+			httpmw.WriteError(w, req, http.StatusNotFound, "not found")
 			return
 		}
 		next.ServeHTTP(w, req)

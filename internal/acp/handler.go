@@ -113,6 +113,31 @@ func writeError(w http.ResponseWriter, status int, e Error) {
 	_ = json.NewEncoder(w).Encode(e)
 }
 
+// PathPrefix is where the ACP routes live: the server mounts
+// WriteRouteError (httpmw.WithErrorWriter) on every path under it.
+const PathPrefix = "/acp/"
+
+// WriteRouteError is the spec's Error for an answer written before the
+// handler: the rate limiter, the tenant middleware, Recover, the mux's
+// own 404 and 405. The status and message are the writer's, so the
+// answer says no more about the store than the writer did.
+func WriteRouteError(w http.ResponseWriter, status int, msg string) {
+	e := Error{Type: "invalid_request", Code: "invalid", Message: msg}
+	switch {
+	case status == http.StatusNotFound:
+		e.Code = "not_found"
+	case status == http.StatusMethodNotAllowed:
+		e.Code = "method_not_allowed"
+	case status == http.StatusTooManyRequests:
+		e.Type, e.Code = "service_unavailable", "rate_limited"
+	case status == http.StatusServiceUnavailable:
+		e.Type, e.Code = "service_unavailable", "unavailable"
+	case status >= http.StatusInternalServerError:
+		e.Type, e.Code = "processing_error", "internal_error"
+	}
+	writeError(w, status, e)
+}
+
 // msgRecordsUnavailable answers a checkout store (Redis) that could not
 // be read or written: sessions, locks, idempotency keys. It names the
 // gateway's own records, never the store's backend.

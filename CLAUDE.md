@@ -481,10 +481,22 @@ passes.
   spec's transport error `-32001`, and a spent discovery budget is its
   retryable `-32000` (`mcpsrv.negotiate`).
 - **ACP errors are the spec's** (`internal/acp/handler.go`): every
-  error written by `internal/acp` is checked against the vendored
-  `Error` schema, which requires `type`, `code` and `message`. Answers
-  the middleware writes before the handler (tenant, rate limit,
-  recover, the mux's own 404/405) are not.
+  error answered on `/acp/*` is checked against the vendored `Error`
+  schema, which requires `type`, `code` and `message`.
+  - What answers before the handler is the spec's too, with its status
+    and message unchanged: the tenant middleware's 404 and 503, the
+    checkout gate's 404, the rate limiter's 429 (with `Retry-After`),
+    `Recover`'s 500 and the mux's own 404 and 405 (with `Allow`), each
+    mapped by status to the spec's `type` and a code
+    (`acp.WriteRouteError`). The server mounts `acp.WriteRouteError` on every path
+    under `acp.PathPrefix` (`surfaceErrors`, outermost), in the request
+    context (`httpmw.WithErrorWriter`); `httpmw.WriteError`, `Recover`
+    and `server.unrouted` write through it, so `internal/tenant` and
+    `internal/httpmw` never import `internal/acp`. Other paths keep
+    `{"error": msg}` and the mux's text. `/mcp` mounts none: the MCP
+    SDK answers its own HTTP-level errors in plain text.
+  - A store whose checkout is off answers a checkout route exactly as
+    an unknown `/acp/` path does: 404 `not_found`, "not found".
   - A request whose `API-Version` is not `acp.Version` gets 400
     `missing_api_version` or `unsupported_api_version` with
     `supported_versions`.

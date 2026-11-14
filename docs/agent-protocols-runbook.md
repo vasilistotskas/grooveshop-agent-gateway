@@ -341,12 +341,13 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 
 | Case | Expected and observed |
 |---|---|
-| Unknown `Host` on `/mcp`, `/.well-known/ucp`, `/acp`, `/feeds` | 404 on all four |
+| Unknown `Host` on `/mcp`, `/.well-known/ucp`, `/acp`, `/feeds` | 404 on all four; on `/acp` the spec's `Error`, `not_found` |
 | `X-Forwarded-Host` spoofed | Ignored: the real `Host` decides |
 | One store's ACP token on another store | 401 |
 | One store's checkout id on another store | "that checkout no longer exists here", as for any id no session is stored for: the answer says an order may exist and how to check, never only "start a new one" (ACP: 404 `not_found`, with the same meaning in its message) |
 | A UCP checkout's id on an ACP route, or an ACP session's id on a UCP tool | The same missing-session answer: a session answers only on the surface that created it. It is not written or locked. `checkout_surface_test.go` in the integration suite |
-| Cart and catalogue off (staging fyteia) | 4 tools, and 404 on UCP, ACP and feeds |
+| Cart and catalogue off (staging fyteia) | 4 tools, and 404 on UCP, ACP and feeds. ACP's is the spec's `Error`, `not_found`, the same answer as an unknown `/acp/` path |
+| Any answer on `/acp/*` before the ACP handler (store unavailable 503, rate limit 429 with `Retry-After`, a panic's 500, the mux's 404 and 405 with `Allow`) | The spec's `Error` (`type`, `code`, `message`) as `application/json`, with the same status, `Retry-After` and `Allow`. `TestACPAnswersBeforeTheHandlerAreSpecErrors` in `internal/server` |
 
 ### Stock
 

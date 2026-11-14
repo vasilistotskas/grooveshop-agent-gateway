@@ -69,9 +69,9 @@ func testHandler(t *testing.T, rdb *redis.Client) *Handler {
 }
 
 // Every error internal/acp answers before it reaches Redis, or when Redis
-// is down, is a spec Error, driven through the mounted routes. (What the
-// middleware answers before them, such as an unknown store, is not
-// internal/acp's.)
+// is down, is a spec Error, driven through the mounted routes. What the
+// chain answers before them (an unknown store, the rate limit, the mux)
+// is internal/server's TestACPAnswersBeforeTheHandlerAreSpecErrors.
 func TestRoutesAnswerSpecErrors(t *testing.T) {
 	const (
 		token = "platform-token"
@@ -266,6 +266,34 @@ func TestRoutesAnswerSpecErrors(t *testing.T) {
 				assert.NotContains(t, body, "supported_versions")
 			}
 		})
+	}
+}
+
+// Whatever error status the chain answers /acp with, its body is a spec
+// Error with that status and the writer's message.
+func TestWriteRouteErrorIsASpecErrorForEveryStatus(t *testing.T) {
+	codes := map[int]string{
+		http.StatusNotFound:            "not_found",
+		http.StatusMethodNotAllowed:    "method_not_allowed",
+		http.StatusTooManyRequests:     "rate_limited",
+		http.StatusInternalServerError: "internal_error",
+		http.StatusServiceUnavailable:  "unavailable",
+	}
+	for status := 400; status < 600; status++ {
+		if http.StatusText(status) == "" {
+			continue
+		}
+		code, ok := codes[status]
+		if !ok {
+			code = "invalid"
+			if status >= 500 {
+				code = "internal_error"
+			}
+		}
+		rec := httptest.NewRecorder()
+		WriteRouteError(rec, status, "said by the writer")
+		body := specError(t, rec, status, code)
+		assert.Equal(t, "said by the writer", body["message"])
 	}
 }
 

@@ -222,22 +222,83 @@ func New(d Deps) http.Handler {
 // withGlobalChain wraps the mux in the middleware every route shares,
 // built from the mux outwards.
 func withGlobalChain(
-	mux http.Handler, log *slog.Logger, metrics *obs.Metrics,
+	mux *http.ServeMux, log *slog.Logger, metrics *obs.Metrics,
 	limiter *httpmw.RateLimiter,
 ) http.Handler {
 	// Recover is innermost, so a handler panic reaches Metrics and
 	// Logging as a 500 and its line carries the request id and tenant.
 	// It hands the mux the request it got, and Metrics, directly around
 	// it, sees r.Pattern, which the mux sets during routing.
-	h := httpmw.Recover(log)(mux)
+	h := httpmw.Recover(log)(unrouted(mux))
 	h = httpmw.Metrics(metrics)(h)
 	// Outside Metrics: it hands the mux a new request, whose r.Pattern
 	// Metrics would not see.
 	h = django.RelayCaller(h)
 	h = exceptInternal(limiter.Middleware(), h)
 	h = httpmw.Logging(log)(h)
-	return httpmw.RequestID()(h)
+	h = httpmw.RequestID()(h)
+	return surfaceErrors(h)
 }
+
+// surfaceErrors mounts a surface's error shape on its paths, outermost,
+// so every answer written before its handler takes it. Only ACP's spec
+// fixes the body of every error. /mcp mounts none: its transport (the
+// MCP SDK) answers HTTP-level errors in plain text itself.
+func surfaceErrors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, acp.PathPrefix) {
+			r = r.WithContext(httpmw.WithErrorWriter(
+				r.Context(), acp.WriteRouteError))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// unrouted answers a request no route serves in its surface's error
+// shape, when the surface mounted one: the mux's own 404 and 405 are
+// text/plain. The status and the 405's Allow header stay the mux's.
+func unrouted(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		write, ok := httpmw.SurfaceErrorWriter(r)
+		if !ok {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		h, pattern := mux.Handler(r)
+		if pattern != "" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		// The mux's own handlers have no side effects, so they can be run
+		// once to read their answer.
+		probe := &muxAnswer{header: http.Header{}}
+		h.ServeHTTP(probe, r)
+		switch probe.status {
+		case http.StatusNotFound, http.StatusMethodNotAllowed:
+			if allow := probe.header.Get("Allow"); allow != "" {
+				w.Header().Set("Allow", allow)
+			}
+			write(w, probe.status,
+				strings.ToLower(http.StatusText(probe.status)))
+		default:
+			// A redirect to the cleaned path.
+			mux.ServeHTTP(w, r)
+		}
+	})
+}
+
+// muxAnswer records the status and headers one of the mux's own
+// handlers answers with, and drops its body.
+type muxAnswer struct {
+	header http.Header
+	status int
+}
+
+func (a *muxAnswer) Header() http.Header { return a.header }
+
+func (a *muxAnswer) WriteHeader(status int) { a.status = status }
+
+func (a *muxAnswer) Write(b []byte) (int, error) { return len(b), nil }
 
 // exceptInternal applies mw to every route but /internal/*. Those are
 // Django's own workers pushing over the cluster Service (no ingress
