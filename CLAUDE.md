@@ -535,9 +535,9 @@ passes.
     `ag:{schema}:acp:idem:create.v2:{key}`, while the session itself
     lives 30 minutes: the spec requires a key's response to be kept at
     least 24 hours (§6.6). Nothing else reads it.
-  - A create or an update settles every lookup and refusal (the item
-    ids, the region, the pay way) before its first cart write, creating
-    the cart included, as UCP's `create_checkout` and `update_checkout`
+  - A create or an update settles every lookup and refusal it can make
+    without the cart (item ids that are not numbers, the region, the pay
+    way) before its first cart write, creating the cart included, as UCP's `create_checkout` and `update_checkout`
     do: a create refused there leaves no cart in Django, an update the
     cart as the stored session knows it. A line sync that fails partway
     still leaves what it wrote.
