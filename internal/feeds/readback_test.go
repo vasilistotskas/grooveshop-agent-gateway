@@ -85,7 +85,7 @@ func readBack(
 		_, err = s.Meta(ctx, demoTenant(), KindGoogle)
 	}
 	require.Equal(t, int32(2), reads.Load(), "the read, then the read-back")
-	require.True(t, r.set("ag:demostore:feed:rss"), "generated")
+	require.True(t, r.set("ag:demostore:feed:google"), "generated")
 	return r, logs.String(), err
 }
 
@@ -104,8 +104,8 @@ func TestBodyReadBackOfABrokenBlob(t *testing.T) {
 			}
 			vals := make([]any, len(c.Args())-1)
 			if reads.Add(1) > 1 {
-				vals[0] = broken[dataKey("demostore", formatRSS)]
-				vals[1] = broken[metaKey("demostore", formatRSS)]
+				vals[0] = broken[dataKey("demostore", formatGoogle)]
+				vals[1] = broken[metaKey("demostore", formatGoogle)]
 			}
 			c.SetVal(vals)
 		case *redis.StringCmd:

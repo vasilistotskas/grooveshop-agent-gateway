@@ -260,13 +260,13 @@ func TestFeedWithItsBlobEvictedRegenerates(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, g.sweeps.Load())
 
-	require.NoError(t, rdb.Unlink(ctx, "ag:demostore:feed:rss").Err())
+	require.NoError(t, rdb.Unlink(ctx, "ag:demostore:feed:google").Err())
 	meta, err := svc.Meta(ctx, ten, feeds.KindGoogle)
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, g.sweeps.Load(), "Meta saw the blob gone")
 	assert.Equal(t, first.ETag, meta.ETag)
 
-	require.NoError(t, rdb.Unlink(ctx, "ag:demostore:feed:rss").Err())
+	require.NoError(t, rdb.Unlink(ctx, "ag:demostore:feed:google").Err())
 	gz, meta, err := svc.Body(ctx, ten, feeds.KindGoogle)
 	require.NoError(t, err)
 	assert.NotEmpty(t, gz)
@@ -334,7 +334,10 @@ func evict(cmd redis.Cmder) {
 		return
 	}
 	key := fmt.Sprint(args[1])
-	if key != "ag:demostore:feed:rss" && key != "ag:demostore:feed:acp" {
+	switch key {
+	case "ag:demostore:feed:google", "ag:demostore:feed:rss",
+		"ag:demostore:feed:acp":
+	default:
 		return
 	}
 	switch c := cmd.(type) {
@@ -369,7 +372,8 @@ func TestBrokenBlobDropSparesAReplacement(t *testing.T) {
 
 	_, err := svc.Meta(ctx, ten, feeds.KindGoogle)
 	require.NoError(t, err)
-	const data, metaKey = "ag:demostore:feed:rss", "ag:demostore:feed:rss:meta"
+	const data = "ag:demostore:feed:google"
+	const metaKey = data + ":meta"
 	good := rdb.Get(ctx, data).Val()
 	var meta feeds.Meta
 	require.NoError(t, json.Unmarshal([]byte(rdb.Get(ctx, metaKey).Val()),

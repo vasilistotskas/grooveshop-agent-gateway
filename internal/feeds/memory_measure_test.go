@@ -423,15 +423,18 @@ func TestFeedMemory(t *testing.T) {
 	for _, err := range errs {
 		require.NoError(t, err)
 	}
+	google := dataKey("store0", formatGoogle)
 	rss, acp := dataKey("store0", formatRSS), dataKey("store0", formatACP)
 	fmt.Printf("FEEDMEM products=%d sweeps=%d gogc=%q gomemlimit=%q "+
 		"duration_s=%.2f baseline_heapinuse_mib=%s peak_heapinuse_mib=%s "+
 		"peak_heapalloc_mib=%s peak_sys_mib=%s totalalloc_mib=%s numgc=%d "+
+		"google_raw=%d google_gz=%d google_etag=%s "+
 		"rss_raw=%d rss_gz=%d rss_etag=%s acp_raw=%d acp_gz=%d acp_etag=%s\n",
 		products, sweeps, os.Getenv("GOGC"), os.Getenv("GOMEMLIMIT"),
 		elapsed.Seconds(), mib(before.HeapInuse), mib(p.heapInuse),
 		mib(p.heapAlloc), mib(p.sys),
 		mib(after.TotalAlloc-before.TotalAlloc), after.NumGC-before.NumGC,
+		rec.meta[google].Size, rec.gz[google], rec.meta[google].ETag,
 		rec.meta[rss].Size, rec.gz[rss], rec.meta[rss].ETag,
 		rec.meta[acp].Size, rec.gz[acp], rec.meta[acp].ETag)
 }

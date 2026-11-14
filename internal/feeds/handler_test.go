@@ -131,7 +131,7 @@ func (m *memRedis) get(key string) (string, bool) {
 const testFeed = `<?xml version="1.0" encoding="UTF-8"?>` +
 	`<rss><channel><title>Store</title></channel></rss>`
 
-// cachedRSS is a fresh, cached RSS entry whose blob is gz and whose
+// cachedRSS is a fresh, cached google.xml entry whose blob is gz and whose
 // stored size is size.
 func cachedRSS(t *testing.T, gz []byte, size int) map[string]string {
 	t.Helper()
@@ -141,8 +141,8 @@ func cachedRSS(t *testing.T, gz []byte, size int) map[string]string {
 	})
 	require.NoError(t, err)
 	return map[string]string{
-		dataKey("demostore", formatRSS): string(gz),
-		metaKey("demostore", formatRSS): string(meta),
+		dataKey("demostore", formatGoogle): string(gz),
+		metaKey("demostore", formatGoogle): string(meta),
 	}
 }
 
@@ -352,7 +352,7 @@ func TestFeedHandlerNeverServesABrokenBlob(t *testing.T) {
 				require.Len(t, lines, 1, accept)
 				assert.Equal(t, "ERROR", lines[0]["level"])
 				assert.Equal(t, "req-131", lines[0][obs.KeyRequestID])
-				_, kept := m.get(dataKey("demostore", formatRSS))
+				_, kept := m.get(dataKey("demostore", formatGoogle))
 				assert.False(t, kept, "the broken blob is dropped")
 			}
 		})
@@ -366,7 +366,7 @@ func TestFeedHandlerNeverServesABrokenBlob(t *testing.T) {
 			assert.True(t, strings.HasPrefix(string(body), "<?xml"))
 			assert.Equal(t, strconv.Itoa(len(body)),
 				resp.Header.Get("Content-Length"))
-			stored, ok := m.get(dataKey("demostore", formatRSS))
+			stored, ok := m.get(dataKey("demostore", formatGoogle))
 			require.True(t, ok)
 			zr, err := gzip.NewReader(strings.NewReader(stored))
 			require.NoError(t, err)
@@ -520,7 +520,7 @@ func cutsAnIdentityBody(t *testing.T, raw string, blob []byte) {
 	lines := logLines(t, &logs, brokenLine)
 	require.Len(t, lines, 1)
 	assert.Equal(t, "req-131", lines[0][obs.KeyRequestID])
-	_, kept := m.get(dataKey("demostore", formatRSS))
+	_, kept := m.get(dataKey("demostore", formatGoogle))
 	assert.False(t, kept, "the broken blob is dropped")
 
 	resp, body, err = get()
@@ -573,7 +573,7 @@ func TestFeedHandlerDecodesOnlyAnIdentityGET(t *testing.T) {
 		require.Equal(t, http.StatusOK, resp.StatusCode, name)
 		assert.Equal(t, tc.body, body, name)
 		assert.Empty(t, logs.String(), name)
-		_, kept := m.get(dataKey("demostore", formatRSS))
+		_, kept := m.get(dataKey("demostore", formatGoogle))
 		assert.True(t, kept, name)
 	}
 }
@@ -584,7 +584,7 @@ func TestFeedHandlerDecodesOnlyAnIdentityGET(t *testing.T) {
 func TestDropBlobSparesAReplacement(t *testing.T) {
 	judged := cachedRSS(t, []byte("not gzip"), len(testFeed))
 	var meta Meta
-	raw := judged[metaKey("demostore", formatRSS)]
+	raw := judged[metaKey("demostore", formatGoogle)]
 	require.NoError(t, json.Unmarshal([]byte(raw), &meta))
 	meta.record = raw
 	// The generation that replaced it, a second later.
@@ -594,17 +594,17 @@ func TestDropBlobSparesAReplacement(t *testing.T) {
 	require.NoError(t, err)
 
 	m, rdb := newMemRedis(map[string]string{
-		dataKey("demostore", formatRSS): string(gzipped(t, testFeed)),
-		metaKey("demostore", formatRSS): string(newerRaw),
+		dataKey("demostore", formatGoogle): string(gzipped(t, testFeed)),
+		metaKey("demostore", formatGoogle): string(newerRaw),
 	})
 	feedService(nil, rdb, io.Discard).dropBlob(context.Background(),
-		"demostore", formatRSS, meta, errBroken)
-	_, kept := m.get(dataKey("demostore", formatRSS))
+		"demostore", formatGoogle, meta, errBroken)
+	_, kept := m.get(dataKey("demostore", formatGoogle))
 	assert.True(t, kept, "a blob written since the judgement stays")
 
 	m, rdb = newMemRedis(judged)
 	feedService(nil, rdb, io.Discard).dropBlob(context.Background(),
-		"demostore", formatRSS, meta, errBroken)
-	_, kept = m.get(dataKey("demostore", formatRSS))
+		"demostore", formatGoogle, meta, errBroken)
+	_, kept = m.get(dataKey("demostore", formatGoogle))
 	assert.False(t, kept, "the blob judged goes")
 }

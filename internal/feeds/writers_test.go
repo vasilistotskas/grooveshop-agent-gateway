@@ -137,11 +137,23 @@ func fixtureCatalogue() []django.Product {
 	}
 }
 
-// rssDocument is the RSS document of items.
+// rssWriterFor is a constructor of one RSS document's writer.
+type rssWriterFor func(*feedContext, io.Writer) (*rssWriter, error)
+
+// rssDocument is the Meta and TikTok RSS document of items.
 func rssDocument(t *testing.T, ctx *feedContext, items ...*feedItem) []byte {
 	t.Helper()
+	return rssDocumentBy(t, newMetaTikTokWriter, ctx, items...)
+}
+
+// rssDocumentBy is the RSS document of items newWriter writes.
+func rssDocumentBy(
+	t *testing.T, newWriter rssWriterFor, ctx *feedContext,
+	items ...*feedItem,
+) []byte {
+	t.Helper()
 	var out bytes.Buffer
-	w, err := newRSSWriter(ctx, &out)
+	w, err := newWriter(ctx, &out)
 	require.NoError(t, err)
 	for _, it := range items {
 		require.NoError(t, w.Item(it))
@@ -181,6 +193,89 @@ func TestRSSWriterGolden(t *testing.T) {
 	ctx := testFeedContext()
 	goldenCompare(t, "feed_rss.xml",
 		rssDocument(t, ctx, fixtureItems(t, ctx)...))
+	goldenCompare(t, "feed_google.xml",
+		rssDocumentBy(t, newGoogleWriter, ctx, fixtureItems(t, ctx)...))
+}
+
+// g:brand follows each target's rule: the product's own brand on every
+// document; for a product without one, nothing on Google's, whether or
+// not it has a GTIN or MPN, and the store's name on Meta and TikTok's.
+func TestFeedBrandPerTarget(t *testing.T) {
+	products := map[string]func(*django.ProductFeed){
+		"brand": func(p *django.ProductFeed) {
+			p.BrandName = new("Spigen")
+		},
+		"no brand, GTIN and MPN": func(p *django.ProductFeed) {
+			p.Gtin, p.Mpn = "5901234123457", "WS-20"
+		},
+		"no brand, GTIN": func(p *django.ProductFeed) {
+			p.Gtin = "5901234123457"
+		},
+		"no brand, MPN":            func(p *django.ProductFeed) { p.Mpn = "WS-20" },
+		"no brand, no identifiers": func(*django.ProductFeed) {},
+		"empty brand name": func(p *django.ProductFeed) {
+			p.BrandName = new("")
+		},
+	}
+	for _, tc := range []struct {
+		document  string
+		newWriter rssWriterFor
+		// want maps a product to its g:brand, "" for none.
+		want map[string]string
+	}{
+		{
+			document: "google", newWriter: newGoogleWriter,
+			want: map[string]string{"brand": "Spigen"},
+		},
+		{
+			document: "meta and tiktok", newWriter: newMetaTikTokWriter,
+			want: map[string]string{
+				"brand":                    "Spigen",
+				"no brand, GTIN and MPN":   "Demo Store",
+				"no brand, GTIN":           "Demo Store",
+				"no brand, MPN":            "Demo Store",
+				"no brand, no identifiers": "Demo Store",
+				"empty brand name":         "Demo Store",
+			},
+		},
+	} {
+		for name, mutate := range products {
+			t.Run(tc.document+"/"+name, func(t *testing.T) {
+				ctx := testFeedContext()
+				p := fixtureProducts()[0]
+				mutate(&p)
+				it, err := newFeedItem(&p, ctx)
+				require.NoError(t, err)
+				var doc struct {
+					Items []struct {
+						Brand *string `xml:"http://base.google.com/ns/1.0 brand"`
+					} `xml:"channel>item"`
+				}
+				require.NoError(t, xml.Unmarshal(
+					rssDocumentBy(t, tc.newWriter, ctx, it), &doc))
+				require.Len(t, doc.Items, 1)
+				want := tc.want[name]
+				if want == "" {
+					assert.Nil(t, doc.Items[0].Brand)
+					return
+				}
+				require.NotNil(t, doc.Items[0].Brand)
+				assert.Equal(t, want, *doc.Items[0].Brand)
+			})
+		}
+	}
+}
+
+// The store's name standing in for a brand keeps to the brand's limit,
+// cut once, by runes.
+func TestStoreNameBrandIsCut(t *testing.T) {
+	ctx := testFeedContext()
+	ctx.StoreName = strings.Repeat("Ω", feedBrandMax+5)
+	it, err := newFeedItem(&fixtureProducts()[0], ctx)
+	require.NoError(t, err)
+	assert.Empty(t, it.Brand, "the item carries the product's brand only")
+	assert.Contains(t, string(rssDocument(t, ctx, it)),
+		"<g:brand>"+strings.Repeat("Ω", feedBrandMax)+"</g:brand>")
 }
 
 func TestACPWriterGolden(t *testing.T) {
@@ -372,7 +467,7 @@ func TestWritersStreamEachItem(t *testing.T) {
 	require.GreaterOrEqual(t, len(items), 2)
 
 	var rssOut bytes.Buffer
-	rss, err := newRSSWriter(ctx, &rssOut)
+	rss, err := newMetaTikTokWriter(ctx, &rssOut)
 	require.NoError(t, err)
 	assert.True(t, strings.HasSuffix(rssOut.String(), "</description>\n"),
 		"the channel's head")

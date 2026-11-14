@@ -2,6 +2,7 @@ package feeds
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
 	"io"
 	"strings"
@@ -26,8 +27,9 @@ import (
 //     template pins 1000x1000 JPEG on white
 //   - g:id equals the pixel/CAPI content_ids — always the product id,
 //     never sku/uuid
-//   - text limits are the strictest of the three so one document serves
-//     them all. Google's product data specification
+//   - text limits are the strictest of the three, so either document
+//     (Google's, and the one Meta and TikTok share) is valid for any of
+//     them. Google's product data specification
 //     (support.google.com/merchants/answer/7052112) is the strictest
 //     for every field below; Meta's catalog reference
 //     (developers.facebook.com/docs/marketing-api/catalog/reference)
@@ -95,11 +97,13 @@ type feedItem struct {
 	// consumers as a reduction, so it may only ever be the prior price.
 	EffectiveMinor int64
 	PriorMinor     int64
-	Brand          string
-	Gtin           string
-	Mpn            string
-	CategoryName   string
-	VariantGroup   *int64
+	// Brand is the product's own brand, empty when it has none; what a
+	// document sends in its place is the document's writer's choice.
+	Brand        string
+	Gtin         string
+	Mpn          string
+	CategoryName string
+	VariantGroup *int64
 	// ItemGroupTitle and VariantOptions describe a variant: the group's
 	// name, and the attributes (flagged variant axes) its siblings
 	// differ by. Google disapproves items of one group that no
@@ -210,11 +214,10 @@ func newFeedItem(p *django.ProductFeed, ctx *feedContext) (*feedItem, error) {
 			ctx.AssetsHost, ctx.Schema, path))
 	}
 
-	brand := ctx.StoreName
-	if p.BrandName != nil && *p.BrandName != "" {
-		brand = *p.BrandName
+	var brand string
+	if p.BrandName != nil {
+		brand = text.Runes(*p.BrandName, feedBrandMax)
 	}
-	brand = text.Runes(brand, feedBrandMax)
 
 	// A product without a category gets no product_type, never the name
 	// of whatever category 0 would map to.
@@ -259,17 +262,42 @@ func feedHighlights(highlights []string) []string {
 	return kept
 }
 
-// rssWriter writes the RSS-dialect feed google.xml, meta.xml and
-// tiktok.xml all serve to out, one item at a time, so the document is
-// never held whole: pending holds only the part being written.
+// rssWriter writes one RSS-dialect document to out, one item at a time,
+// so the document is never held whole: pending holds only the part being
+// written. brandFallback is the g:brand of an item without a brand of its
+// own; empty, such an item has no g:brand.
 type rssWriter struct {
-	out     io.Writer
-	pending bytes.Buffer
+	out           io.Writer
+	pending       bytes.Buffer
+	brandFallback string
+}
+
+// newGoogleWriter writes google.xml. Google asks for the brand of whoever
+// made the product, and for none on a product that has none: "For
+// products that truly don't have a brand [...] leave this field empty"
+// (support.google.com/merchants/answer/7052112). A store's name in its
+// place would state a brand the product does not carry, so an item
+// without a brand of its own has no g:brand. A store that makes its own
+// goods gives them a brand named after the store.
+func newGoogleWriter(ctx *feedContext, out io.Writer) (*rssWriter, error) {
+	return newRSSWriter(ctx, "", out)
+}
+
+// newMetaTikTokWriter writes the document meta.xml and tiktok.xml share.
+// Both list brand as a required field, and TikTok rejects an upload
+// without one, so an item without a brand of its own carries the store's
+// name.
+func newMetaTikTokWriter(
+	ctx *feedContext, out io.Writer,
+) (*rssWriter, error) {
+	return newRSSWriter(ctx, text.Runes(ctx.StoreName, feedBrandMax), out)
 }
 
 // newRSSWriter writes the document's head to out.
-func newRSSWriter(ctx *feedContext, out io.Writer) (*rssWriter, error) {
-	w := &rssWriter{out: out}
+func newRSSWriter(
+	ctx *feedContext, brandFallback string, out io.Writer,
+) (*rssWriter, error) {
+	w := &rssWriter{out: out, brandFallback: brandFallback}
 	w.pending.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
 	w.pending.WriteString(
 		`<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">` + "\n")
@@ -317,8 +345,10 @@ func (w *rssWriter) Item(it *feedItem) error {
 		fields = append(fields, fmt.Sprintf("<g:price>%s</g:price>",
 			formatFeedPrice(it.EffectiveMinor, it.Currency)))
 	}
-	fields = append(fields,
-		fmt.Sprintf("<g:brand>%s</g:brand>", escapeXML(it.Brand)))
+	if brand := cmp.Or(it.Brand, w.brandFallback); brand != "" {
+		fields = append(fields,
+			fmt.Sprintf("<g:brand>%s</g:brand>", escapeXML(brand)))
+	}
 	if it.Gtin != "" {
 		fields = append(fields,
 			fmt.Sprintf("<g:gtin>%s</g:gtin>", escapeXML(it.Gtin)))
