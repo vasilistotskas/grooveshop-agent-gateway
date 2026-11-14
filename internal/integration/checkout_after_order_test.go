@@ -310,7 +310,8 @@ func TestAnUpdatePastItsLockIsNotToldToStartOver(t *testing.T) {
 		stack := startUCPGateway(t)
 		surfaces := surfacesByName(t, stack)
 		id := surfaces["ucp"].ready(t)
-		// Another checkout's order takes the cart.
+		// An order that is not this checkout's takes the cart: the fake
+		// deletes every cart with the first order it places.
 		other := surfaces["ucp"].ready(t)
 		stack.faults.cartDeletedOnOrder.Store(true)
 		require.Equal(t, "completed", surfaces["ucp"].complete(

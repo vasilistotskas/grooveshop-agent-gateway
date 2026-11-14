@@ -27,6 +27,10 @@ var (
 	ErrSessionChanged = errors.New(
 		"checkout: this checkout was changed by another request while " +
 			"this one ran; read it again before retrying")
+	// ErrCartHeld marks a create that Redis refused: another checkout
+	// holds the session's cart. Nothing was written.
+	ErrCartHeld = errors.New(
+		"checkout: the cart is held by another checkout")
 	// ErrCompletionInProgress marks a duplicate complete while the first
 	// is still running.
 	ErrCompletionInProgress = errors.New(
@@ -85,16 +89,40 @@ func NewStore(rdb *redis.Client, upstreamTimeout time.Duration) *Store {
 	}
 }
 
-// sessionKey is versioned with how sessions are written. v2 sessions
-// carry a revision and are stored only by compare-and-set; a pod that
-// writes them unconditionally (v1) must never share one with a pod that
-// does not, so neither reads the other's.
+// sessionKey is versioned with how sessions are written: a pod that
+// writes them another way must never share one with a pod of this
+// release, so neither reads the other's.
+//   - v2: sessions carry a revision and are stored only by
+//     compare-and-set (v1 pods wrote them unconditionally).
+//   - v3: a session is stored with its cart's record, and every save
+//     keeps that record alive (a v2 pod's save would let it expire under
+//     a session that still holds the cart).
 func sessionKey(schema, id string) string {
-	return "ag:" + schema + ":cs:v2:" + id
+	return "ag:" + schema + ":cs:v3:" + id
 }
 
 func lockKey(schema, id string) string {
 	return sessionKey(schema, id) + ":lock"
+}
+
+// cartKey holds the id of the session that holds a cart: a cart has one
+// live checkout. It is a family of its own, outside ag:{schema}:cs:,
+// whose keys all belong to one session. cartID is Django's spelling of
+// the cart's UUID, the canonical one; an id a caller sent is put in that
+// spelling first (CanonicalCartID), so one cart has one record.
+func cartKey(schema, cartID string) string {
+	return "ag:" + schema + ":checkoutcart:" + cartID
+}
+
+// CanonicalCartID is a caller's cart id in the spelling Django gives a
+// cart, and false for what is not a UUID. Django reads any spelling of
+// a UUID as the same cart.
+func CanonicalCartID(id string) (string, bool) {
+	u, err := uuid.Parse(id)
+	if err != nil {
+		return "", false
+	}
+	return u.String(), true
 }
 
 func idemKey(schema, id, key string) string {
@@ -146,39 +174,130 @@ func (st *Store) Load(ctx context.Context, schema, id string) (*Session, error) 
 	return &s, nil
 }
 
-// saveScript stores the session ARGV[3], whose revision is ARGV[2], in
-// KEYS[1] for ARGV[4] ms while the stored session's revision is still
-// ARGV[1], and returns 1. No stored session counts as revision "",
-// which only a session never stored has. Otherwise it writes nothing
-// and returns 0. A lifetime of 0 or less is a placed session whose day
-// has passed: it is deleted, under the same check. go-redis sends a
-// command again when its reply was lost: the second run finds the
-// revision the first one stored, which no other save can have written
-// (or, after a delete, no session), and reports it done.
+// The answers of saveScript.
+const (
+	saveChanged = iota
+	saveStored
+	saveCartHeld
+)
+
+// saveScript stores the session ARGV[3], whose id is ARGV[5] and whose
+// revision is ARGV[2], in KEYS[1] for ARGV[4] ms while the stored
+// session's revision is still ARGV[1], and returns 1. No stored session
+// counts as revision "", which only a session never stored has.
+// Otherwise it writes nothing and returns 0.
+//
+// KEYS[2] names the session that holds the session's cart, and lives as
+// long as that session. A create (ARGV[1] is "") takes it with the
+// session, in this one step: when no session holds the cart, or the
+// record still names ARGV[6], the holder its caller saw and may replace.
+// A cart another session holds is not taken: nothing is written, and the
+// answer is 2. A save keeps the record's lifetime the session's, and
+// writes the record again where Redis holds none: Redis evicts keys one
+// by one, and a session whose record it evicted would hold its cart
+// against nobody.
+//
+// A lifetime of 0 or less is a placed session whose day has passed: it
+// is deleted, under the same check, and its cart's record with it.
+//
+// go-redis sends a command again when its reply was lost: the second run
+// finds the revision the first one stored, which no other save can have
+// written (or, after a delete, no session), and reports it done.
 var saveScript = redis.NewScript(`
 local stored = redis.call('GET', KEYS[1])
+local holder = redis.call('GET', KEYS[2])
 local ended = tonumber(ARGV[4]) <= 0
 local revision = ''
 if stored then
   revision = cjson.decode(stored).revision
 end
-if revision == ARGV[2] or (ended and not stored) then
+if revision == ARGV[2] then
+  return 1
+end
+if ended and not stored then
+  if holder == ARGV[5] then
+    redis.call('DEL', KEYS[2])
+  end
   return 1
 end
 if revision ~= ARGV[1] then
   return 0
 end
+local create = ARGV[1] == ''
+if create and holder and holder ~= ARGV[5] and holder ~= ARGV[6] then
+  return 2
+end
 if ended then
   redis.call('DEL', KEYS[1])
-else
-  redis.call('SET', KEYS[1], ARGV[3], 'PX', ARGV[4])
+  if holder == ARGV[5] then
+    redis.call('DEL', KEYS[2])
+  end
+  return 1
+end
+redis.call('SET', KEYS[1], ARGV[3], 'PX', ARGV[4])
+if create or not holder then
+  redis.call('SET', KEYS[2], ARGV[5], 'PX', ARGV[4])
+elseif holder == ARGV[5] then
+  redis.call('PEXPIRE', KEYS[2], ARGV[4])
 end
 return 1
 `)
 
-// Create stores a session that was never stored.
-func (st *Store) Create(ctx context.Context, s *Session) error {
-	return st.put(ctx, s, "", newWrite())
+// CartHolder is who held a cart when HolderOf read it. The zero value
+// is a cart no checkout holds.
+type CartHolder struct {
+	// Session is the checkout the cart's record names. It is nil for a
+	// cart without a record, and for a record whose session is no longer
+	// stored: that record is stale, and holds nothing.
+	Session *Session
+	// record is the record's value, which Create must still find to give
+	// the cart to another session.
+	record string
+}
+
+// Free reports whether another checkout may take the cart: no session
+// holds it, or the one that does is canceled or completed. An open
+// session keeps its cart, and so does one whose order is being placed
+// or awaits its payment.
+func (h CartHolder) Free() bool {
+	return h.Session == nil || h.Session.Terminal()
+}
+
+// HolderOf reads the checkout that holds a cart.
+func (st *Store) HolderOf(
+	ctx context.Context, schema, cartID string,
+) (CartHolder, error) {
+	id, err := st.rdb.Get(ctx, cartKey(schema, cartID)).Result()
+	if errors.Is(err, redis.Nil) {
+		return CartHolder{}, nil
+	}
+	if err != nil {
+		return CartHolder{},
+			fmt.Errorf("%w: cart holder: %w", ErrUnavailable, err)
+	}
+	s, err := st.Load(ctx, schema, id)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return CartHolder{record: id}, nil
+	case err != nil:
+		return CartHolder{}, err
+	}
+	return CartHolder{Session: s, record: id}, nil
+}
+
+// Create stores a session that was never stored, and gives it its cart:
+// a cart has one live checkout. seen is what the caller read for the
+// cart (HolderOf), the zero value for a cart just made. The cart is
+// taken only while it is as seen and free (CartHolder.Free); a cart
+// another checkout holds, or took since, is ErrCartHeld, and nothing is
+// written.
+func (st *Store) Create(
+	ctx context.Context, s *Session, seen CartHolder,
+) error {
+	if !seen.Free() {
+		return ErrCartHeld
+	}
+	return st.store(ctx, s, "", newWrite(), seen.record)
 }
 
 // write names one stored state of a session: its revision and the time
@@ -206,10 +325,20 @@ func (st *Store) Save(ctx context.Context, s *Session) error {
 func (st *Store) put(
 	ctx context.Context, s *Session, stored string, w write,
 ) error {
+	return st.store(ctx, s, stored, w, "")
+}
+
+// store is put, and a create's taking of the cart: holder is the
+// cart's record as the create's caller saw it.
+func (st *Store) store(
+	ctx context.Context, s *Session, stored string, w write, holder string,
+) error {
 	next := *s
 	next.Revision = w.revision
 	next.UpdatedAt = w.at
-	key := sessionKey(s.Schema, s.ID)
+	keys := []string{
+		sessionKey(s.Schema, s.ID), cartKey(s.Schema, s.CartID),
+	}
 	// Zero or less ends a placed session whose day has passed: the
 	// script deletes it, under the same check as a write.
 	ttl := next.ttl(next.UpdatedAt).Milliseconds()
@@ -217,12 +346,16 @@ func (st *Store) put(
 	if err != nil {
 		return fmt.Errorf("checkout: encode: %w", err)
 	}
-	written, err := saveScript.Run(ctx, st.rdb, []string{key},
-		stored, next.Revision, raw, ttl).Int()
+	answer, err := saveScript.Run(ctx, st.rdb, keys,
+		stored, next.Revision, raw, ttl, s.ID, holder).Int()
 	if err != nil {
 		return fmt.Errorf("%w: save: %w", ErrUnavailable, err)
 	}
-	if written != 1 {
+	switch answer {
+	case saveStored:
+	case saveCartHeld:
+		return ErrCartHeld
+	default:
 		return ErrSessionChanged
 	}
 	s.Revision, s.UpdatedAt = next.Revision, next.UpdatedAt
@@ -248,9 +381,23 @@ func (st *Store) Current(ctx context.Context, s *Session) error {
 	return nil
 }
 
-// Discard deletes a session that was created and never answered.
+// discardScript deletes the session in KEYS[1], whose id is ARGV[1], and
+// its cart's record in KEYS[2] while that still names it.
+var discardScript = redis.NewScript(`
+redis.call('DEL', KEYS[1])
+if redis.call('GET', KEYS[2]) == ARGV[1] then
+  redis.call('DEL', KEYS[2])
+end
+return 1
+`)
+
+// Discard deletes a session that was created and never answered, and
+// frees its cart.
 func (st *Store) Discard(ctx context.Context, s *Session) error {
-	if err := st.rdb.Del(ctx, sessionKey(s.Schema, s.ID)).Err(); err != nil {
+	keys := []string{
+		sessionKey(s.Schema, s.ID), cartKey(s.Schema, s.CartID),
+	}
+	if err := discardScript.Run(ctx, st.rdb, keys, s.ID).Err(); err != nil {
 		return fmt.Errorf("%w: discard: %w", ErrUnavailable, err)
 	}
 	return nil

@@ -28,9 +28,10 @@ func startStore(t *testing.T) (*checkout.Store, *redis.Client) {
 	return checkout.NewStore(rdb, storeTimeout), rdb
 }
 
+// newSession is a session on a cart of its own.
 func newSession() *checkout.Session {
 	return checkout.NewSession("demostore", "shop.test",
-		checkout.ProtocolUCP, "cart")
+		checkout.ProtocolUCP, uuid.NewString())
 }
 
 // sentTwice, while on, makes Redis run each script twice and hands back
@@ -88,7 +89,7 @@ func TestPlacedSessionCannotBeKeptAlive(t *testing.T) {
 	s := newSession()
 	s.Status = checkout.StatusRequiresEscalation
 	s.PlacedAt = time.Now().Add(-24*time.Hour + 5*time.Minute)
-	require.NoError(t, store.Create(ctx, s))
+	require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 	ttl, err := rdb.TTL(ctx, sessionRedisKey(s.ID)).Result()
 	require.NoError(t, err)
 	assert.Positive(t, ttl)
@@ -112,7 +113,7 @@ func TestAnEndedSessionIsDeletedOnlyOverTheSessionItsCallerRead(
 	s := newSession()
 	s.Status = checkout.StatusRequiresEscalation
 	s.PlacedAt = time.Now().Add(-23 * time.Hour)
-	require.NoError(t, store.Create(ctx, s))
+	require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 	stale, err := store.Load(ctx, s.Schema, s.ID)
 	require.NoError(t, err)
 	current, err := store.Load(ctx, s.Schema, s.ID)
@@ -139,7 +140,7 @@ func TestCurrentIsTheStoredRevision(t *testing.T) {
 	ctx := context.Background()
 	store, rdb := startStore(t)
 	s := newSession()
-	require.NoError(t, store.Create(ctx, s))
+	require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 	held, err := store.Load(ctx, s.Schema, s.ID)
 	require.NoError(t, err)
 	require.NoError(t, store.Current(ctx, held))
@@ -167,7 +168,7 @@ func TestSaveWritesOnlyOverTheSessionItRead(t *testing.T) {
 
 	t.Run("the second of two saves is refused", func(t *testing.T) {
 		s := newSession()
-		require.NoError(t, store.Create(ctx, s))
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 		first, second := load(t, s), load(t, s)
 		first.Buyer.Email = "first@example.test"
 		require.NoError(t, store.Save(ctx, first))
@@ -190,7 +191,7 @@ func TestSaveWritesOnlyOverTheSessionItRead(t *testing.T) {
 	t.Run("a session is told apart by its revision, not its time",
 		func(t *testing.T) {
 			s := newSession()
-			require.NoError(t, store.Create(ctx, s))
+			require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 			stale := load(t, s)
 			require.NoError(t, store.Save(ctx, load(t, s)))
 			// The later save, stamped with the stale one's time.
@@ -208,7 +209,7 @@ func TestSaveWritesOnlyOverTheSessionItRead(t *testing.T) {
 
 	t.Run("a session that is gone is not stored again", func(t *testing.T) {
 		s := newSession()
-		require.NoError(t, store.Create(ctx, s))
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 		require.NoError(t, rdb.Del(ctx, sessionRedisKey(s.ID)).Err())
 
 		require.ErrorIs(t, store.Save(ctx, s), checkout.ErrSessionChanged)
@@ -219,11 +220,11 @@ func TestSaveWritesOnlyOverTheSessionItRead(t *testing.T) {
 
 	t.Run("a stored session is not created again", func(t *testing.T) {
 		s := newSession()
-		require.NoError(t, store.Create(ctx, s))
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 		again := *s
 		again.Buyer.Email = "again@example.test"
 
-		require.ErrorIs(t, store.Create(ctx, &again),
+		require.ErrorIs(t, store.Create(ctx, &again, checkout.CartHolder{}),
 			checkout.ErrSessionChanged)
 
 		assert.Empty(t, load(t, s).Buyer.Email)
@@ -231,7 +232,7 @@ func TestSaveWritesOnlyOverTheSessionItRead(t *testing.T) {
 
 	t.Run("a discarded session is gone", func(t *testing.T) {
 		s := newSession()
-		require.NoError(t, store.Create(ctx, s))
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 		require.NoError(t, store.Discard(ctx, s))
 		_, err := store.Load(ctx, s.Schema, s.ID)
 		assert.ErrorIs(t, err, checkout.ErrNotFound)
@@ -246,7 +247,7 @@ func TestSaveDoesNotTakeAnotherWritersTwinForItsOwn(t *testing.T) {
 	ctx := context.Background()
 	store, rdb := startStore(t)
 	s := newSession()
-	require.NoError(t, store.Create(ctx, s))
+	require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 	key := sessionRedisKey(s.ID)
 	twinned := false
 	rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
@@ -254,10 +255,10 @@ func TestSaveDoesNotTakeAnotherWritersTwinForItsOwn(t *testing.T) {
 			return nil
 		}
 		twinned = true
-		// The script's arguments after its key: the revision read, the
+		// The script's arguments after its two keys: the revision read, the
 		// new one, the session, its lifetime.
 		args := cmd.Args()
-		mine, session := args[5].(string), string(args[6].([]byte))
+		mine, session := args[6].(string), string(args[7].([]byte))
 		twin := strings.Replace(session, mine, uuid.NewString(), 1)
 		require.NotEqual(t, session, twin)
 		return rdb.Set(ctx, key, twin, redis.KeepTTL).Err()
@@ -287,7 +288,7 @@ func TestSessionLifetimeByStatus(t *testing.T) {
 	} {
 		t.Run(string(status), func(t *testing.T) {
 			s := newSession()
-			require.NoError(t, store.Create(ctx, s))
+			require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 			s.Status = status
 			if status == checkout.StatusRequiresEscalation ||
 				status == checkout.StatusCompleted {
@@ -305,7 +306,7 @@ func TestSessionLifetimeByStatus(t *testing.T) {
 	// order may exist, and it is kept the day.
 	t.Run("an order that went unanswered", func(t *testing.T) {
 		s := newSession()
-		require.NoError(t, store.Create(ctx, s))
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 		s.Status = checkout.StatusCompleteInProgress
 		s.Unconfirmed = true
 		require.NoError(t, store.Save(ctx, s))
@@ -322,7 +323,7 @@ func TestSessionUnderTheOldKeyIsNotThisStores(t *testing.T) {
 	ctx := context.Background()
 	store, rdb := startStore(t)
 	s := newSession()
-	require.NoError(t, store.Create(ctx, s))
+	require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 	raw, err := rdb.Get(ctx, sessionRedisKey(s.ID)).Result()
 	require.NoError(t, err)
 	oldKey := "ag:demostore:cs:" + s.ID
@@ -349,7 +350,9 @@ func TestACommandSentTwiceIsAnsweredAsDone(t *testing.T) {
 	t.Run("a save", func(t *testing.T) {
 		s := newSession()
 		var err error
-		twice.during(t, func() { err = store.Create(ctx, s) })
+		twice.during(t, func() {
+			err = store.Create(ctx, s, checkout.CartHolder{})
+		})
 		require.NoError(t, err, "create")
 		s.Buyer.Email = "saved@example.test"
 		twice.during(t, func() { err = store.Save(ctx, s) })
@@ -366,7 +369,7 @@ func TestACommandSentTwiceIsAnsweredAsDone(t *testing.T) {
 		s := newSession()
 		s.Status = checkout.StatusCompleted
 		s.PlacedAt = time.Now().Add(-time.Hour)
-		require.NoError(t, store.Create(ctx, s))
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 		s.PlacedAt = time.Now().Add(-25 * time.Hour)
 		var err error
 		twice.during(t, func() { err = store.Save(ctx, s) })

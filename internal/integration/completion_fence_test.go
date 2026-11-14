@@ -22,7 +22,7 @@ import (
 )
 
 // Where the gateway keeps a checkout session and its lock.
-func sessionRedisKey(id string) string { return "ag:demostore:cs:v2:" + id }
+func sessionRedisKey(id string) string { return "ag:demostore:cs:v3:" + id }
 func lockRedisKey(id string) string    { return sessionRedisKey(id) + ":lock" }
 
 // gate is one request the fake Django holds: reached closes when the
@@ -412,6 +412,8 @@ func TestACPRequestPastItsClaimLeavesTheKeyToItsHolder(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, record, now, "the holder's record was replaced")
 			assert.Equal(t, sessions+1, stack.sessionCount(t))
+			assert.Empty(t, stack.staleCartRecords(t),
+				"the discarded session left its cart's record behind")
 
 			resp, replayed := acpRaw(t,
 				acpRequest(t, http.MethodPost, base, body, key))

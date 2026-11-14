@@ -7,9 +7,10 @@ import (
 
 // Upstream enum values the gateway branches on. They mirror Django's
 // pay_way provider codes, shipping provider codes and
-// order.enum.status.PaymentStatus; a rename there is a contract change
-// that lands here, in one place.
+// order.enum.status (OrderStatus, PaymentStatus); a rename there is a
+// contract change that lands here, in one place.
 const (
+	OrderStatusCanceled     = "CANCELED"
 	ProviderVivaWallet      = "viva_wallet"
 	ProviderCashOnDelivery  = "cash_on_delivery"
 	ShippingProviderACS     = "acs"

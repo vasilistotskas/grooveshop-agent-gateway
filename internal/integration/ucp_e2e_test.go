@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -207,6 +208,8 @@ type checkoutFaults struct {
 	// orderGone makes reading a placed order answer 404: Django no
 	// longer has it.
 	orderGone atomic.Bool
+	// orderCanceled makes a placed order read as canceled.
+	orderCanceled atomic.Bool
 	// orderCreatedAt is when the placed order reads as created; unset,
 	// the fixture's time, which is long past.
 	orderCreatedAt atomic.Pointer[time.Time]
@@ -216,6 +219,11 @@ type checkoutFaults struct {
 	// cartWrites counts the writes the cart received: its lines and its
 	// coupon.
 	cartWrites atomic.Int32
+	// promotions makes the store take discount codes. Set it before the
+	// gateway first resolves the store: the answer is cached.
+	promotions atomic.Bool
+	// couponWrite makes applying a coupon answer 502.
+	couponWrite atomic.Bool
 	// cartCreates counts the carts created: a cart read naming none.
 	cartCreates atomic.Int32
 	// namedCartReads counts the reads of a named cart; from the read
@@ -224,6 +232,8 @@ type checkoutFaults struct {
 	namedCartReadsFailFrom atomic.Int32
 	// agentProtocol is the attribution the last order create carried.
 	agentProtocol atomic.Value
+	// carts are the carts the fake made.
+	carts *fakeCarts
 }
 
 // fakeCheckoutDjango extends the shared fake with the order-placement
@@ -232,6 +242,8 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	t.Helper()
 	outer := http.NewServeMux()
 	inner := fakeDjangoMux(t)
+	carts := &fakeCarts{made: map[string]bool{}}
+	faults.carts = carts
 	outer.HandleFunc("GET /api/v1/agent/internal/order/{uuid}",
 		func(w http.ResponseWriter, r *http.Request) {
 			if faults.orderRead.Load() {
@@ -246,7 +258,8 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				return
 			}
 			createdAt := faults.orderCreatedAt.Load()
-			if createdAt == nil {
+			canceled := faults.orderCanceled.Load()
+			if createdAt == nil && !canceled {
 				inner.ServeHTTP(w, r)
 				return
 			}
@@ -257,7 +270,12 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			order["createdAt"] = createdAt.Format(time.RFC3339Nano)
+			if createdAt != nil {
+				order["createdAt"] = createdAt.Format(time.RFC3339Nano)
+			}
+			if canceled {
+				order["status"] = "CANCELED"
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(order)
 		})
@@ -342,8 +360,26 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	}
 	outer.HandleFunc("POST /api/v1/cart/coupon",
 		func(w http.ResponseWriter, _ *http.Request) {
+			if faults.couponWrite.Load() {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
 			faults.cartWrites.Add(1)
 			serveFixture(t, w, "cart_with_coupon.json")
+		})
+	outer.HandleFunc("GET /api/v1/tenant/resolve",
+		func(w http.ResponseWriter, r *http.Request) {
+			if !faults.promotions.Load() {
+				inner.ServeHTTP(w, r)
+				return
+			}
+			rec := httptest.NewRecorder()
+			inner.ServeHTTP(rec, r)
+			maps.Copy(w.Header(), rec.Header())
+			w.WriteHeader(rec.Code)
+			_, _ = w.Write(bytes.Replace(rec.Body.Bytes(),
+				[]byte(`"promotions": false`),
+				[]byte(`"promotions": true`), 1))
 		})
 	outer.HandleFunc("DELETE /api/v1/cart/coupon",
 		func(w http.ResponseWriter, _ *http.Request) {
@@ -409,7 +445,8 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				return
 			}
 			// The cart rides the header, never the body.
-			assert.Equal(t, fixtureCartID, r.Header.Get("X-Cart-Id"))
+			assert.True(t, carts.known(r.Header.Get("X-Cart-Id")),
+				"the order names a cart the store never made")
 			var body map[string]any
 			assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			assert.NotEmpty(t, body["payWayId"])
@@ -453,8 +490,54 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 		if before := faults.before.Load(); before != nil {
 			(*before)(r)
 		}
-		outer.ServeHTTP(w, r)
+		carts.serve(outer, w, r)
 	})
+}
+
+// fakeCarts gives each cart the fake makes an id of its own, as Django
+// does. The fixtures all carry fixtureCartID, so an answer about a cart
+// made here is rewritten to that cart's id. A cart the fake never made
+// is answered with the fixture's cart, which is another cart to its
+// caller, as Django's new guest cart is.
+type fakeCarts struct {
+	mu   sync.Mutex
+	made map[string]bool
+}
+
+// known reports whether id is the fixture's cart or one made here.
+func (c *fakeCarts) known(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return id == fixtureCartID || c.made[id]
+}
+
+// mint makes a cart, which reads as the fixture's cart with items.
+func (c *fakeCarts) mint() string {
+	id := uuid.NewString()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.made[id] = true
+	return id
+}
+
+func (c *fakeCarts) serve(
+	next http.Handler, w http.ResponseWriter, r *http.Request,
+) {
+	id := r.Header.Get("X-Cart-Id")
+	if id == "" && r.Method == http.MethodGet &&
+		r.URL.Path == "/api/v1/cart" {
+		id = c.mint()
+	}
+	if id == fixtureCartID || !c.known(id) {
+		next.ServeHTTP(w, r)
+		return
+	}
+	rec := httptest.NewRecorder()
+	next.ServeHTTP(rec, r)
+	maps.Copy(w.Header(), rec.Header())
+	w.WriteHeader(rec.Code)
+	_, _ = w.Write(bytes.ReplaceAll(rec.Body.Bytes(),
+		[]byte(fixtureCartID), []byte(id)))
 }
 
 // ucpUpstreamTimeout is how long the stack's gateway waits for Django.
@@ -849,7 +932,7 @@ func TestUCPEndToEnd(t *testing.T) {
 			}
 			res := callTool(t, session, "create_checkout", map[string]any{
 				"meta":    meta(""),
-				"cart_id": fixtureCartID,
+				"cart_id": stack.faults.carts.mint(),
 				"checkout": map[string]any{
 					"buyer": buyer, "fulfillment": noRegion,
 					"payment": codInstrument,
@@ -894,7 +977,7 @@ func TestUCPEndToEnd(t *testing.T) {
 		func(t *testing.T) {
 			res := callTool(t, session, "create_checkout", map[string]any{
 				"meta":     meta(""),
-				"cart_id":  fixtureCartID,
+				"cart_id":  stack.faults.carts.mint(),
 				"checkout": map[string]any{},
 			})
 			require.False(t, res.IsError)
@@ -951,7 +1034,7 @@ func TestUCPEndToEnd(t *testing.T) {
 		"and signs the platform webhook", func(t *testing.T) {
 		res := callTool(t, session, "create_checkout", map[string]any{
 			"meta":    meta(""),
-			"cart_id": fixtureCartID,
+			"cart_id": stack.faults.carts.mint(),
 			"checkout": map[string]any{
 				"buyer":       buyer,
 				"fulfillment": fulfillment,
@@ -1067,7 +1150,7 @@ func TestUCPEndToEnd(t *testing.T) {
 		func(t *testing.T) {
 			res := callTool(t, session, "create_checkout", map[string]any{
 				"meta":    meta(""),
-				"cart_id": fixtureCartID,
+				"cart_id": stack.faults.carts.mint(),
 				"checkout": map[string]any{
 					"buyer": buyer, "fulfillment": fulfillment,
 				},
@@ -1092,7 +1175,7 @@ func TestUCPEndToEnd(t *testing.T) {
 			stack.faults.paymentLink.Store(true)
 			res := callTool(t, session, "create_checkout", map[string]any{
 				"meta":    meta(""),
-				"cart_id": fixtureCartID,
+				"cart_id": stack.faults.carts.mint(),
 				"checkout": map[string]any{
 					"buyer": buyer, "fulfillment": fulfillment,
 					"pay_way_id": 2,
@@ -1147,7 +1230,7 @@ func TestUCPEndToEnd(t *testing.T) {
 			t.Cleanup(func() { stack.faults.orderCreate.Store(false) })
 			res := callTool(t, session, "create_checkout", map[string]any{
 				"meta":    meta(""),
-				"cart_id": fixtureCartID,
+				"cart_id": stack.faults.carts.mint(),
 				"checkout": map[string]any{
 					"buyer": buyer, "fulfillment": fulfillment,
 					"pay_way_id": 2,
@@ -1234,7 +1317,7 @@ func TestUCPEndToEnd(t *testing.T) {
 			res := callTool(t, session, "create_checkout", map[string]any{
 				"meta": map[string]any{"ucp-agent": map[string]any{
 					"profile": noCheckout}},
-				"cart_id":  fixtureCartID,
+				"cart_id":  stack.faults.carts.mint(),
 				"checkout": map[string]any{},
 			})
 			require.False(t, res.IsError, "a negotiation outcome, not a failure")
@@ -1247,7 +1330,7 @@ func TestUCPEndToEnd(t *testing.T) {
 
 	t.Run("responses declare the negotiated capabilities", func(t *testing.T) {
 		res := callTool(t, session, "create_checkout", map[string]any{
-			"meta": meta(""), "cart_id": fixtureCartID,
+			"meta": meta(""), "cart_id": stack.faults.carts.mint(),
 			"checkout": map[string]any{},
 		})
 		require.False(t, res.IsError)

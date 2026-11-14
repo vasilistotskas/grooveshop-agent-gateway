@@ -142,6 +142,29 @@ func TestCreateCheckoutRefusesThePaymentBeforeTheCart(t *testing.T) {
 	}
 }
 
+// A cart_id that is not a UUID names no cart: it is refused before a
+// Redis key is built from it and before the store is asked anything. The
+// checkout store cannot be reached here, so a create that went on to
+// read the cart's holder would answer "unavailable".
+func TestCreateCheckoutRefusesACartIDThatIsNoUUID(t *testing.T) {
+	for _, id := range []string{
+		"cart", "*", fixtureCartID + ":lock", fixtureCartID[:35],
+	} {
+		t.Run(id, func(t *testing.T) {
+			dj, calls := ucpDjango(t)
+			h := ucpHandlers(t, dj)
+			ctx := tenant.NewContext(context.Background(), cartTenant())
+
+			_, _, err := h.createCheckout(ctx, nil, CreateCheckoutIn{
+				Meta: ucpMeta(t, ""), CartID: id,
+			})
+
+			require.ErrorContains(t, err, "cart_id is not a cart id")
+			assert.Empty(t, calls())
+		})
+	}
+}
+
 // A checkout store that cannot be reached is the store being unavailable,
 // the same ToolError at every tool that reads or writes it.
 func TestCheckoutStoreOutageIsUnavailable(t *testing.T) {

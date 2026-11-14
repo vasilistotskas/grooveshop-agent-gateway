@@ -51,7 +51,17 @@ wins over this page.
   selection. `create_checkout` and `update_checkout` settle every
   lookup and refusal (region, payment) before their first cart write,
   creating the cart included, so a refused call leaves the cart as the
-  stored session knows it. These five tools and `get_order` are never
+  stored session knows it. `create_checkout` also takes `cart_id`, for
+  a cart built with the cart tools. UCP models it in the cart
+  capability (`dev.ucp.shopping.cart`), as a member of `checkout`; the
+  profile does not advertise that capability, so the member sits beside
+  `checkout`, outside the negotiated shape. The capability's aim is
+  kept, a cart has one incomplete checkout, by other means: the newest
+  create holds the cart and an open checkout on it is canceled. A
+  checkout is not bound to its platform yet, so the spec's "return the
+  existing checkout" is not offered (`createFromCart`; "One live
+  checkout holds a cart" in `CLAUDE.md`).
+  These five tools and `get_order` are never
   registered on the chat server (`mcpOnly` in
   `internal/mcpsrv/server.go`) — their input requires `meta`, which a
   model cannot supply, and chat hands over a checkout link instead.

@@ -183,7 +183,7 @@ passes.
   - A handler panic is recovered there (see `internal/httpmw`).
   - Each handler's context ends at the server's shutdown cut, with
     `httpmw.ErrShuttingDown`, on any protocol (see `cmd/gateway`).
-  - Every tool's annotations are `mcptool.ReadOnly`, `Adds` or
+  - Every tool's annotations are `mcptool.ReadOnly`, `Adds`, `Replaces` or
     `Changes`, none open-world, each with the tool's title, which `Add`
     also sets as `Tool.Title` (a 2025-03-26 client, which the transport
     assumes for a request naming no version, reads only
@@ -718,7 +718,7 @@ passes.
       warn and answered 204, and the session is left as it is: a
       session is never completed without its order. The record
       `Flow.place` writes beside the session (`Store.IndexOrder`:
-      `ag:{schema}:cs:v2:{id}:order`, the order's uuid) is for calls on
+      `ag:{schema}:cs:v3:{id}:order`, the order's uuid) is for calls on
       the session, not events: Redis may evict it;
     - a payment-completed event also sets `completed`. No other event
       changes a status.
@@ -733,6 +733,83 @@ passes.
     so a call on one whose completion placed the order and could not
     save it is answered with the order (`placedUnsavedErr`,
     `writePlacedUnsaved`).
+- **One live checkout holds a cart** (#141). Two sessions on one cart
+  could each place an order, because Django keeps the cart of an order
+  that awaits its online payment. The store keeps it to one:
+  - `ag:{schema}:checkoutcart:{cartId}` names the session that holds
+    the cart. `Store.Create` stores the session and takes the cart in
+    one script (`saveScript`): when no session holds the cart, or the
+    record still names the holder the caller read (`Store.HolderOf`)
+    and that holder is free (`CartHolder.Free`: no longer stored,
+    canceled or completed). A cart another session holds is
+    `ErrCartHeld`, and nothing is written.
+  - The record lives as long as its session: every save sets its
+    expiry to the session's, and the save that ends a session and
+    `Store.Discard` delete it, each only while it names that session.
+    A save writes the record again where Redis holds none (an
+    eviction). A record whose session is not stored holds nothing.
+  - UCP `create_checkout` with `cart_id` (`mcpsrv.createFromCart`)
+    takes a UUID only, in its canonical spelling
+    (`checkout.CanonicalCartID`: Django reads every spelling as one
+    cart), and reads the holder before any lookup or cart write
+    (`cartHolder`). **The newest create holds the cart: an open UCP
+    checkout on it is canceled**, with `cancel_checkout`'s own save
+    (`handlers.cancel`), and the new session takes its place; the old
+    id reads `canceled` from then on. The create's region and payment
+    are settled first, so a create the store refuses cancels nothing.
+  - **A cart is written only by the checkout that holds it, in that
+    checkout's turn.** Django's cart is outside the session's
+    compare-and-set, so only a lock keeps one checkout's cart writes
+    out of the next checkout's cart. The holder is canceled under its
+    own lock (`supersede`): a call at work on it (an update writing
+    the cart, a completion) holds that lock, and the create does not
+    cancel under it. The create's discount codes are written after its
+    checkout took the cart, under the new checkout's lock, which is
+    held from before the checkout is stored, so the next create waits
+    for that write. A create that fails after it took the cart (the
+    code write, the save after it, the render: `handlers.created`)
+    discards the new checkout (`handlers.discard`) and leaves the old
+    one canceled: the cart then has no checkout. A `line_items`
+    create that cannot render is discarded the same way: no create
+    leaves a checkout nobody was given.
+  - A holder whose order is being placed or awaits its payment keeps
+    the cart, and so does an open checkout of another protocol: the
+    create is a `conflict` (`errCartOrderPending`,
+    `errCartOrderUnpaid`, `errCartElsewhere`). The first two say that
+    an order exists or may, tell the caller not to start another
+    checkout, and say where to look with the checkout id or order id
+    it already holds.
+  - **An order that awaits its payment is asked of Django, not of the
+    session** (`orderCanceled`, `django.Client.PlacedOrder`). Django
+    cancels an unpaid online order when its payment window ends and
+    keeps the cart, while the session reads "awaiting payment" for its
+    whole day: only a payment changes it. A checkout whose order
+    Django canceled is canceled as an open one is, and the create
+    takes the cart, so a shopper who left the payment page can check
+    out again, whatever protocol that checkout was (nothing is left
+    of it to finish). An order Django no longer has keeps the cart;
+    one that cannot be read answers `unavailable`. Two states fail
+    closed for the session's day: a checkout still in progress that
+    names a canceled order, and a paid order whose payment event never
+    arrived (#108 makes a placed checkout read its order).
+  - **No answer to a create gives another checkout, or names one or
+    its order.** A checkout is not bound to its platform yet, so the
+    UCP cart capability's "return the existing checkout" is not
+    offered.
+  - A create that finds the holder changed by another request (a
+    cancel that lost its save, a cart another create took), or a call
+    at work on it, decides again on what the holder is then,
+    `cartCreateRounds` times at most, then answers `conflict`
+    (`errCartBusy`).
+  - A cart made for its session (`line_items`, ACP) is taken the same
+    way. A held one there is a fault: logged, answered unavailable,
+    and no session is handed out.
+  - Redis can lose the record while the session lives (eviction).
+    The session's next save writes it again; until then the cart can
+    get a second checkout, and the gateway cannot close that alone.
+    The guard that holds whatever Redis lost is Django refusing a
+    second order from a cart whose order awaits its payment: the
+    other half of #141, in Django.
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before
@@ -786,12 +863,16 @@ passes.
   gateway's authenticated call, and none of those is written to the shared
   Redis entry: `publicConfig` clears each, and
   `TestPublicConfigClearsEveryUndocumentedField` finds them by reflection.
-  A checkout session is `ag:{schema}:cs:v2:{id}`, its lock that plus
+  A checkout session is `ag:{schema}:cs:v3:{id}`, its lock that plus
   `:lock`, the order it placed that plus `:order`. The version is of how sessions are written, not only of their
   shape: bump it whenever an older pod writing the key its own way could
-  undo what a newer one relies on (v1 pods wrote sessions unconditionally),
+  undo what a newer one relies on (v1 pods wrote sessions unconditionally;
+  v2 pods saved one without keeping its cart's record alive),
   so the two never share a session; a session under an older key is not
-  found. `TestSessionKeyIsVersioned` pins it. A Redis write that depends
+  found. `TestSessionKeyIsVersioned` pins it. The session that holds a
+  cart is named in `ag:{schema}:checkoutcart:{cartId}` (`cartKey`), a
+  family of its own: every key under `cs:` belongs to one session.
+  A Redis write that depends
   on what the key holds is a script (`redis.NewScript`), never a read
   followed by a write.
 - No tenant label on Prometheus metrics (unbounded cardinality) — tenant

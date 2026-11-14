@@ -286,6 +286,9 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 		"checkout.ErrSessionChanged": {
 			checkout.ErrSessionChanged, http.StatusConflict,
 			"idempotency_in_flight"},
+		"checkout.ErrCartHeld": {
+			checkout.ErrCartHeld, http.StatusServiceUnavailable,
+			"unavailable"},
 		"checkout.ErrCompletionInProgress": {
 			checkout.ErrCompletionInProgress, http.StatusConflict,
 			"idempotency_in_flight"},
