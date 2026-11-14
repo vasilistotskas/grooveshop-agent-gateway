@@ -857,6 +857,23 @@ func TestCreateCheckoutOnACartInACheckout(t *testing.T) {
 				stack.storedSession(t, old).Status)
 		})
 
+	// Nothing is left of such a checkout to finish, whatever surface
+	// started it, and that surface refuses to cancel a checkout that
+	// placed an order.
+	t.Run("another protocol's checkout whose unpaid order was canceled "+
+		"leaves the cart", func(t *testing.T) {
+		old := acpReady(t, acpBase)
+		cart := stack.storedSession(t, old).CartID
+		stack.become(t, old, awaitingPayment)
+		stack.faults.orderCanceled.Store(true)
+		defer stack.faults.orderCanceled.Store(false)
+
+		replaced(t, cart, old)
+
+		assert.Equal(t, checkout.StatusCanceled,
+			stack.storedSession(t, old).Status)
+	})
+
 	t.Run("an order awaiting payment that cannot be read keeps the cart",
 		func(t *testing.T) {
 			cart := stack.faults.carts.mint()
@@ -1017,14 +1034,19 @@ func TestACreateWritesItsCartOnlyOnceItHoldsIt(t *testing.T) {
 		func(t *testing.T) {
 			cart := stack.faults.carts.mint()
 			old := p.started(t, cart)
-			// Who held the cart when the coupon reached the store. The
-			// hook runs on the fake's goroutine and asserts nothing.
+			// Who held the cart when the coupon reached the store, and
+			// whether that checkout's lock was held. The hook runs on
+			// the fake's goroutine and asserts nothing.
 			var holder atomic.Pointer[string]
+			var locked atomic.Bool
 			before := func(r *http.Request) {
 				if r.Method == http.MethodPost &&
 					r.URL.Path == "/api/v1/cart/coupon" {
 					id, _ := stack.rdb.Get(ctx, cartRecordPrefix+cart).Result()
 					holder.Store(&id)
+					n, _ := stack.rdb.Exists(ctx,
+						sessionRedisKey(id)+":lock").Result()
+					locked.Store(n == 1)
 				}
 			}
 			stack.faults.before.Store(&before)
@@ -1036,6 +1058,8 @@ func TestACreateWritesItsCartOnlyOnceItHoldsIt(t *testing.T) {
 			require.NotNil(t, holder.Load(), "no coupon was written")
 			assert.Equal(t, a.id, *holder.Load(),
 				"the coupon was written before its checkout held the cart")
+			assert.True(t, locked.Load(),
+				"the coupon was written outside its checkout's lock")
 			assert.Equal(t, []string{"SAVE10"},
 				stack.storedSession(t, a.id).DiscountCodes)
 			assert.Equal(t, checkout.StatusCanceled,
@@ -1059,6 +1083,28 @@ func TestACreateWritesItsCartOnlyOnceItHoldsIt(t *testing.T) {
 		assert.Equal(t, checkout.StatusCanceled,
 			stack.storedSession(t, old).Status)
 	})
+
+	// The checkout is stored before it is rendered. One that cannot be
+	// rendered was given to nobody.
+	t.Run("a create that cannot answer leaves no checkout",
+		func(t *testing.T) {
+			cart := stack.faults.carts.mint()
+			old := p.started(t, cart)
+			sessions := stack.sessionCount(t)
+			stack.faults.namedCartReadsFailFrom.Store(
+				stack.faults.namedCartReads.Load() + 1)
+			defer stack.faults.namedCartReadsFailFrom.Store(0)
+
+			a := p.create(ctx, cart, nil)
+
+			assert.Empty(t, a.id)
+			assert.Contains(t, a.refusal, "No checkout was created")
+			assert.Equal(t, sessions, stack.sessionCount(t),
+				"the unanswered checkout was kept")
+			assert.Empty(t, heldBy(t, stack.rdb, cart))
+			assert.Equal(t, checkout.StatusCanceled,
+				stack.storedSession(t, old).Status)
+		})
 
 	// Another create takes the cart between this one's read of its
 	// holder and its own take, and starts placing its order.

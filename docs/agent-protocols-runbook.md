@@ -379,9 +379,9 @@ A cart has one live checkout: two on one cart could each place an order, because
 | `create_checkout` with `cart_id`, by the checkout that holds the cart | Expected |
 |---|---|
 | None, or one that is completed, canceled or no longer stored | A new checkout, which holds the cart |
-| An open UCP checkout | It is canceled and the new checkout holds the cart: the newest create wins. The old id reads `canceled`, and a complete of it is refused. A create the store refuses (region, payment) cancels nothing. Its discount codes go to the cart only after the new checkout holds it; if that write fails, the new checkout is discarded and the old one stays canceled |
+| An open UCP checkout | It is canceled and the new checkout holds the cart: the newest create wins. The old id reads `canceled`, and a complete of it is refused. A create the store refuses (region, payment) cancels nothing. Its discount codes go to the cart only after the new checkout holds it. A create that fails after it took the cart (that write, the save after it, the render) discards the new checkout, and the old one stays canceled |
 | An open UCP checkout another call is at work on (an update, a completion) | Not canceled under that call. The create looks again, three times at most, then answers `conflict`: "another request is at work on this cart's checkout", send it again shortly |
-| An open ACP session | Refused, `conflict`: "started outside this server". The ACP session is not touched |
+| An open ACP session | Refused, `conflict`: "started outside this server". The ACP session is not touched. (One whose unpaid order Django canceled is canceled like a UCP one: nothing is left of it to finish) |
 | One whose order is being placed, or was sent and never confirmed | Refused, `conflict`: "an order exists or may", do not start another checkout, and where to look with the checkout id or order id the caller holds. Nothing is looked up or written |
 | One whose order awaits its payment | The order is read from Django. Still unpaid and not canceled: refused, `conflict`: "placed an order, which awaits its payment", with the same guidance. Canceled (Django cancels an unpaid online order when its payment window ends): that checkout is canceled and the new one holds the cart. Not readable: `unavailable`, retry. No longer in Django: refused as unpaid |
 | Several creates on one cart at once | One checkout on the cart is left that is not canceled. A create that finds the holder changed three times answers `conflict`, "send it again shortly" |
@@ -391,7 +391,7 @@ No answer gives the caller another checkout, or names one or its order.
 
 A cart Django just made (UCP `line_items`, an ACP create) is taken the same way. If it already has a record, no session is handed out: UCP `unavailable`, ACP 503, and an error line "a cart just made is already in a checkout".
 
-Two limits. Redis can evict the record while its session lives. The session's next save writes it again; until then that cart can get a second checkout, and what refuses the second order is Django (#141, its Django half). And while the release that adds the record rolls out, a session an older pod creates has no record, so the rule holds for a cart from the first session a newer pod creates on it.
+Two limits. Redis can evict the record while its session lives. The session's next save writes it again; until then that cart can get a second checkout, and what refuses the second order is Django (#141, its Django half). And the release that adds the record moves the session key (section 10), because an older pod saves a session without keeping its cart's record alive: while it rolls out, a checkout an older pod stored is not seen by a newer pod, and the rule holds among the checkouts the newer pods store.
 
 ### Invalid input
 
@@ -534,11 +534,16 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 
 ## 10. Before deploying a release that moves the checkout session key
 
-**Applies to:** the release that fixes gateway #84, which moves sessions from `ag:{schema}:cs:{id}` to `ag:{schema}:cs:v2:{id}`, and any later bump of that key (`sessionKey` in `internal/checkout/store.go`).
+**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Two have so far:
 
-**It is the second of two releases.** The release before it (gateway #138) changes one thing: a checkout no session is stored for is answered "an order may exist, check before starting another", never only "start a new one". That release must be on every pod first. Then, while this release rolls out, a pod of either kind answers truthfully for a session it cannot see. Do not deploy this release onto pods that still answer "start a new one with create_checkout".
+| Release | Key | Why an older pod must not share a session |
+|---|---|---|
+| The one that fixed gateway #84 | `ag:{schema}:cs:{id}` to `ag:{schema}:cs:v2:{id}` | It writes a session without checking what the key holds |
+| The one with gateway #141's cart record | `cs:v2` to `cs:v3` | It saves a session without keeping its cart's record alive, so the record would expire under a session that still holds the cart |
 
-The new pods do not read sessions the old pods stored, and the reverse, on purpose: an old pod writes a session without checking what it holds, so the two must never share one. What a platform sees, by the session's state:
+**The pods it replaces must already answer a missing session truthfully.** Since the release with gateway #138, a checkout no session is stored for is answered "an order may exist, check before starting another", never only "start a new one". While a key-moving release rolls out, a pod of either kind then answers truthfully for a session it cannot see. Do not deploy one onto pods older than that.
+
+The new pods do not read sessions the old pods stored, and the reverse, on purpose: an old pod writes a session its own way (the table above), so the two must never share one. What a platform sees, by the session's state:
 
 | The session | During the rollout (pods of both releases) | After it |
 |---|---|---|
@@ -576,14 +581,14 @@ EOF
 `-e` makes `redis-cli` exit non-zero when Redis refuses a command, which is how the check tells a failed read from an empty answer. "none being placed or awaiting payment" is printed only when every read succeeded. "sessions scanned: 0" with agent checkouts in use means the wrong Redis or database, not an empty one.
 
 - **None:** deploy.
-- **Some:** wait, or deploy and accept that those platforms are told an order may exist and to check for it. On the release before this one, a `requires_escalation` session leaves the list when its payment lands (it becomes `completed`) or 30 minutes after its last save, and a `complete_in_progress` one 30 minutes after it was marked. On this release a session awaiting payment ends 24 hours after its order was placed, one whose order call went unanswered 24 hours after that was stored, and one only marked in progress 30 minutes after the mark.
+- **Some:** wait, or deploy and accept that those platforms are told an order may exist and to check for it. A session awaiting payment leaves the list when its payment lands (it becomes `completed`) or 24 hours after its order was placed, one whose order call went unanswered 24 hours after that was stored, and one only marked in progress 30 minutes after the mark. (On pods older than the #84 release, each left 30 minutes after its last save.)
 
-**A rollback** to the release before this one (the one with gateway #138, and no further back) is the same split with the roles swapped:
+**A rollback** to the release before a key move (never further back than the one with gateway #138) is the same split with the roles swapped:
 
-- Every session this release stored, under the `v2` key, is invisible to the old pods and gets the missing-session answer. It is still in Redis until it ends, with the placed-order record beside it (`…:order`), and is found again if this release is deployed again before then.
+- Every session the newer release stored, under its own key, is invisible to the old pods and gets the missing-session answer. It is still in Redis until it ends, with the placed-order record beside it (`…:order`), and is found again if this release is deployed again before then.
 - A session stored under the old key before the upgrade is visible again if it has not ended.
-- A payment event for a `v2` session that reaches an old pod is answered 204 and is not sent again: after a new deploy that session still reads `requires_escalation` until it ends, while `get_order` shows the paid order.
-- The old pods store a session without checking what it holds. What this release adds is gone until it is deployed again: two completions of one checkout can again place two orders.
+- A payment event for a session under the newer key that reaches an old pod is answered 204 and is not sent again: after a new deploy that session still reads `requires_escalation` until it ends, while `get_order` shows the paid order.
+- What the newer release adds is gone until it is deployed again. Back from `v2`: the old pods store a session without checking what it holds, and two completions of one checkout can again place two orders. Back from `v3`: no checkout holds its cart, and two checkouts on one cart can again each place an order.
 
 So run the check above before a rollback too, and do not roll back further than the release with #138: older pods answer a session they cannot see with only "start a new one".
 

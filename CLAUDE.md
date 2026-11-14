@@ -718,7 +718,7 @@ passes.
       warn and answered 204, and the session is left as it is: a
       session is never completed without its order. The record
       `Flow.place` writes beside the session (`Store.IndexOrder`:
-      `ag:{schema}:cs:v2:{id}:order`, the order's uuid) is for calls on
+      `ag:{schema}:cs:v3:{id}:order`, the order's uuid) is for calls on
       the session, not events: Redis may evict it;
     - a payment-completed event also sets `completed`. No other event
       changes a status.
@@ -766,9 +766,12 @@ passes.
     cancel under it. The create's discount codes are written after its
     checkout took the cart, under the new checkout's lock, which is
     held from before the checkout is stored, so the next create waits
-    for that write. A code write that fails discards the new checkout
-    (`handlers.discard`) and leaves the old one canceled: the cart
-    then has no checkout.
+    for that write. A create that fails after it took the cart (the
+    code write, the save after it, the render: `handlers.created`)
+    discards the new checkout (`handlers.discard`) and leaves the old
+    one canceled: the cart then has no checkout. A `line_items`
+    create that cannot render is discarded the same way: no create
+    leaves a checkout nobody was given.
   - A holder whose order is being placed or awaits its payment keeps
     the cart, and so does an open checkout of another protocol: the
     create is a `conflict` (`errCartOrderPending`,
@@ -783,8 +786,12 @@ passes.
     whole day: only a payment changes it. A checkout whose order
     Django canceled is canceled as an open one is, and the create
     takes the cart, so a shopper who left the payment page can check
-    out again. An order Django no longer has keeps the cart; one that
-    cannot be read answers `unavailable`.
+    out again, whatever protocol that checkout was (nothing is left
+    of it to finish). An order Django no longer has keeps the cart;
+    one that cannot be read answers `unavailable`. Two states fail
+    closed for the session's day: a checkout still in progress that
+    names a canceled order, and a paid order whose payment event never
+    arrived (#108 makes a placed checkout read its order).
   - **No answer to a create gives another checkout, or names one or
     its order.** A checkout is not bound to its platform yet, so the
     UCP cart capability's "return the existing checkout" is not
@@ -856,10 +863,11 @@ passes.
   gateway's authenticated call, and none of those is written to the shared
   Redis entry: `publicConfig` clears each, and
   `TestPublicConfigClearsEveryUndocumentedField` finds them by reflection.
-  A checkout session is `ag:{schema}:cs:v2:{id}`, its lock that plus
+  A checkout session is `ag:{schema}:cs:v3:{id}`, its lock that plus
   `:lock`, the order it placed that plus `:order`. The version is of how sessions are written, not only of their
   shape: bump it whenever an older pod writing the key its own way could
-  undo what a newer one relies on (v1 pods wrote sessions unconditionally),
+  undo what a newer one relies on (v1 pods wrote sessions unconditionally;
+  v2 pods saved one without keeping its cart's record alive),
   so the two never share a session; a session under an older key is not
   found. `TestSessionKeyIsVersioned` pins it. The session that holds a
   cart is named in `ag:{schema}:checkoutcart:{cartId}` (`cartKey`), a

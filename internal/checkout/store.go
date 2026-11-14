@@ -89,12 +89,16 @@ func NewStore(rdb *redis.Client, upstreamTimeout time.Duration) *Store {
 	}
 }
 
-// sessionKey is versioned with how sessions are written. v2 sessions
-// carry a revision and are stored only by compare-and-set; a pod that
-// writes them unconditionally (v1) must never share one with a pod that
-// does not, so neither reads the other's.
+// sessionKey is versioned with how sessions are written: a pod that
+// writes them another way must never share one with a pod of this
+// release, so neither reads the other's.
+//   - v2: sessions carry a revision and are stored only by
+//     compare-and-set (v1 pods wrote them unconditionally).
+//   - v3: a session is stored with its cart's record, and every save
+//     keeps that record alive (a v2 pod's save would let it expire under
+//     a session that still holds the cart).
 func sessionKey(schema, id string) string {
-	return "ag:" + schema + ":cs:v2:" + id
+	return "ag:" + schema + ":cs:v3:" + id
 }
 
 func lockKey(schema, id string) string {

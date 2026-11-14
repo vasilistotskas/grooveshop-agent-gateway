@@ -136,8 +136,22 @@ func (h *handlers) createCheckout(
 		}
 		return nil, zero, errCheckoutUnavailable
 	}
+	return h.created(ctx, t, s, neg, hasCodes)
+}
+
+// created answers a create with the checkout it just stored. One that
+// cannot be rendered was given to nobody, so it is discarded: a create
+// that fails leaves no checkout.
+func (h *handlers) created(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	neg ucp.Negotiated, hasCodes bool,
+) (*mcp.CallToolResult, CheckoutResult, error) {
 	res, out, err := h.checkoutResult(ctx, t, s, neg)
-	return h.discountAnnotated(res, out, err, s, hasCodes)
+	if err != nil {
+		h.discard(ctx, s)
+		return nil, CheckoutResult{}, withHint(err, checkoutNotCreated)
+	}
+	return h.discountAnnotated(res, out, nil, s, hasCodes)
 }
 
 // newSession is the session a create_checkout would store, with every
@@ -204,9 +218,10 @@ func (h *handlers) applyCodes(
 // checkout's turn. So the create's discount codes go to the cart after
 // the new checkout has taken it, under the new checkout's lock, which
 // is held from before the checkout is stored (takeCart): a later create
-// that finds it on the cart waits for that write (supersede). A code
-// write that fails leaves no checkout: the new one is discarded, and
-// the one it replaced stays canceled.
+// that finds it on the cart waits for that write (supersede). A create
+// that fails after it took the cart (the code write, the save after it,
+// the render) leaves no checkout: the new one is discarded, and the one
+// it replaced stays canceled.
 func (h *handlers) createFromCart(
 	ctx context.Context, t *tenant.Tenant, in CreateCheckoutIn,
 	neg ucp.Negotiated,
@@ -244,13 +259,19 @@ func (h *handlers) createFromCart(
 	if hasCodes {
 		s.Recompute()
 		if err := h.deps.Checkout.Save(ctx, s); err != nil {
-			return nil, zero, withHint(saveFailed(err),
-				checkoutNotCreated+". The discount codes this call "+
-					"sent may already be on the cart")
+			// Stored since by another create that took the cart, or
+			// the store failed: either way nobody was given s.
+			h.discard(ctx, s)
+			answer := error(errCheckoutUnavailable)
+			if errors.Is(err, checkout.ErrSessionChanged) {
+				answer = errCartBusy
+			}
+			return nil, zero, withHint(answer,
+				"The discount codes this call sent may already be "+
+					"on the cart")
 		}
 	}
-	res, out, err := h.checkoutResult(ctx, t, s, neg)
-	return h.discountAnnotated(res, out, err, s, hasCodes)
+	return h.created(ctx, t, s, neg, hasCodes)
 }
 
 // cartCreateRounds bounds how often a create naming a cart decides
@@ -371,7 +392,9 @@ func (h *handlers) cancel(ctx context.Context, s *checkout.Session) error {
 //     order exists, or may, and a second checkout could place a second
 //     one;
 //   - an open checkout of another protocol, which is that surface's to
-//     cancel.
+//     cancel. One whose order Django canceled is canceled here whatever
+//     its protocol: nothing is left of it to finish, and its own surface
+//     refuses to cancel a checkout that placed an order.
 //
 // No refusal names the holder or its order.
 func (h *handlers) cartHolder(
