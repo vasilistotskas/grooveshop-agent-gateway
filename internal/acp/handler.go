@@ -1318,9 +1318,10 @@ func (h *Handler) completeError(
 			Type: "invalid_request", Code: "cart_has_unpaid_order",
 			Message: "An order placed from this session's cart already " +
 				"awaits its payment, so this session placed no order. Do " +
-				"not create another session for this cart: the buyer pays " +
-				"that order, or the store cancels it when its payment " +
-				"window ends, and this session can then be completed.",
+				"not create another session for this cart. If the buyer " +
+				"pays that order, it holds these goods and this session " +
+				"is not needed; if the store cancels it unpaid when its " +
+				"payment window ends, this session can then be completed.",
 		})
 	default:
 		upstreamError(w, err)

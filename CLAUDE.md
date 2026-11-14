@@ -824,9 +824,10 @@ passes.
     the key released). Both surfaces branch on that sentinel. UCP
     answers Django's code and sentence with its own hint
     (`cartOrderUnpaidErr`): this checkout placed no order, start no
-    other checkout, and once the buyer pays that order or the store
-    cancels it unpaid, this checkout can be completed; the counter
-    reads it as `refused`. ACP answers 400 `invalid_request`, code
+    other checkout, and once the store cancels that order unpaid this
+    checkout can be completed (once the buyer pays it, Django empties
+    the cart and the next complete is refused `cart_empty`); the
+    counter reads it as `refused`. ACP answers 400 `invalid_request`, code
     `cart_has_unpaid_order`, with the gateway's own message of the
     same meaning (`completeError`). Neither names an order: Django
     names none.
