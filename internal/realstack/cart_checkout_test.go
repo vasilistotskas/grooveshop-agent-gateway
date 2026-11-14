@@ -6,11 +6,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/google/uuid"
@@ -25,31 +23,6 @@ import (
 // reads the cart's id, that it keeps the cart of an order awaiting its
 // online payment, what it reports once it canceled that order, and that it
 // refuses a second agent order from such a cart itself.
-
-// visitor sends its requests as the store's ingress hands them to the
-// gateway: naming the address they came from, which the gateway relays.
-type visitor struct {
-	address string
-	next    http.RoundTripper
-}
-
-func (v visitor) RoundTrip(r *http.Request) (*http.Response, error) {
-	r = r.Clone(r.Context())
-	r.Header.Set("X-Forwarded-For", v.address)
-	return v.next.RoundTrip(r)
-}
-
-var visitors atomic.Int32
-
-// connectAsVisitor is connect from an address of its own. Django lets one
-// address place ten guest orders a minute. With no ingress in the stack
-// every test's orders come from the gateway's address, and with the orders
-// placed here the suite would place more than ten in its minute.
-func connectAsVisitor(t *testing.T) *mcp.ClientSession {
-	t.Helper()
-	address := fmt.Sprintf("203.0.113.%d", visitors.Add(1))
-	return connectVia(t, visitor{address, hostTransport{storeHost, ""}})
-}
 
 // cartWith is a cart the cart tools made, holding one unit.
 func cartWith(t *testing.T, s *mcp.ClientSession, product string) string {
@@ -115,7 +88,7 @@ with schema_context("demostore"):
 // started on two spellings would be two on one cart. The second create
 // takes the cart from the first, and the cart places one order.
 func TestACartHasOneCheckoutInAnySpellingOfItsID(t *testing.T) {
-	s := connectAsVisitor(t)
+	s := connect(t, "")
 	cart := cartWith(t, s, productID(t, s))
 
 	// The gateway keys a cart by the canonical spelling of its id. A
@@ -233,7 +206,7 @@ with tenant_context(Tenant.objects.get(schema_name="demostore")):
 func TestACartWithAnUnpaidOrderKeepsItsCheckoutUntilTheOrderIsCanceled(
 	t *testing.T,
 ) {
-	s := connectAsVisitor(t)
+	s := connect(t, "")
 	held := placeUnpaidOrder(t, s)
 
 	t.Run("a second checkout on the cart is refused", func(t *testing.T) {
@@ -287,7 +260,7 @@ func loseCartRecord(t *testing.T, cart string) {
 // Django refuses that checkout's order, and the platform reads why in
 // Django's own code.
 func TestDjangoRefusesASecondOrderFromACartWhoseOrderIsUnpaid(t *testing.T) {
-	s := connectAsVisitor(t)
+	s := connect(t, "")
 	held := placeUnpaidOrder(t, s)
 	loseCartRecord(t, held.cart)
 

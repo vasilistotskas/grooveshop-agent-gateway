@@ -43,12 +43,6 @@ func (h hostTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func connect(t *testing.T, token string) *mcp.ClientSession {
 	t.Helper()
-	return connectVia(t, hostTransport{storeHost, token})
-}
-
-// connectVia opens a session with the store's MCP server over transport.
-func connectVia(t *testing.T, transport http.RoundTripper) *mcp.ClientSession {
-	t.Helper()
 	client := mcp.NewClient(
 		&mcp.Implementation{Name: "real-stack", Version: "test"}, nil)
 	session, err := client.Connect(context.Background(),
@@ -56,7 +50,7 @@ func connectVia(t *testing.T, transport http.RoundTripper) *mcp.ClientSession {
 			Endpoint: running.gatewayURL + "/mcp",
 			HTTPClient: &http.Client{
 				Timeout:   requestTimeout,
-				Transport: transport,
+				Transport: hostTransport{storeHost, token},
 			},
 			DisableStandaloneSSE: true,
 		}, nil)
