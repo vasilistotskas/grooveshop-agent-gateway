@@ -1160,8 +1160,9 @@ func (h *handlers) checkoutResult(
 			// checkout to read again until it renders.
 			return nil, zero, h.pending(ctx, s)
 		case isCartGone(err):
-			// Without an order the render reads only the cart: Django no
-			// longer serves it, and no retry reaches it again.
+			// Without an order the render reads the cart, and its other
+			// reads (pay way, shipping options) name the cart too. Django
+			// no longer serves it, and no retry reaches it again.
 			return nil, zero, errCheckoutCartGone
 		}
 		return nil, zero, upstreamErr(err,
