@@ -63,7 +63,7 @@ func (rl *RateLimiter) Middleware() func(http.Handler) http.Handler {
 					rl.metrics.RateLimited.Inc()
 				}
 				w.Header().Set("Retry-After", "60")
-				WriteJSONError(w, http.StatusTooManyRequests,
+				WriteError(w, r, http.StatusTooManyRequests,
 					"rate limited, retry later")
 				return
 			}

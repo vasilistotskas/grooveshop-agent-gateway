@@ -7,8 +7,9 @@ import (
 	"runtime/debug"
 )
 
-// Recover turns a handler panic into a 500 instead of tearing down the
-// connection. A response already under way keeps the status it sent;
+// Recover turns a handler panic into a 500, in the surface's error shape
+// (WithErrorWriter), instead of tearing down the connection. A response
+// already under way keeps the status it sent;
 // the panic is logged either way. http.ErrAbortHandler is re-raised:
 // net/http aborts the response with it and logs nothing.
 func Recover(log *slog.Logger) func(http.Handler) http.Handler {
@@ -29,10 +30,15 @@ func Recover(log *slog.Logger) func(http.Handler) http.Handler {
 					slog.String("path", r.URL.Path),
 					slog.String("stack", string(debug.Stack())),
 				)
-				if !sw.started() {
-					http.Error(sw, "internal server error",
-						http.StatusInternalServerError)
+				if sw.started() {
+					return
 				}
+				const msg = "internal server error"
+				if write, ok := SurfaceErrorWriter(r); ok {
+					write(sw, http.StatusInternalServerError, msg)
+					return
+				}
+				http.Error(sw, msg, http.StatusInternalServerError)
 			}()
 			next.ServeHTTP(sw, r)
 		})

@@ -3,6 +3,7 @@
 package httpmw
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -15,6 +16,39 @@ func WriteJSONError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// ErrorWriter writes an error answer in one surface's own shape, keeping
+// the status and saying no more than msg.
+type ErrorWriter func(w http.ResponseWriter, status int, msg string)
+
+type errorWriterKey struct{}
+
+// WithErrorWriter returns ctx carrying the error shape of the surface
+// its request is for. The server mounts it by path, before the rate
+// limiter, so what answers before the surface's handler (the limiter,
+// the tenant middleware, Recover, the mux) takes the surface's shape
+// without importing it.
+func WithErrorWriter(ctx context.Context, write ErrorWriter) context.Context {
+	return context.WithValue(ctx, errorWriterKey{}, write)
+}
+
+// SurfaceErrorWriter is the ErrorWriter r's surface mounted, if any.
+func SurfaceErrorWriter(r *http.Request) (ErrorWriter, bool) {
+	write, ok := r.Context().Value(errorWriterKey{}).(ErrorWriter)
+	return write, ok
+}
+
+// WriteError answers r with an error in its surface's shape, or with
+// WriteJSONError's where the surface mounted none.
+func WriteError(
+	w http.ResponseWriter, r *http.Request, status int, msg string,
+) {
+	if write, ok := SurfaceErrorWriter(r); ok {
+		write(w, status, msg)
+		return
+	}
+	WriteJSONError(w, status, msg)
 }
 
 // BearerToken extracts the credential from an Authorization header. The

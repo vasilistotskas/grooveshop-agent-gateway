@@ -124,18 +124,29 @@ func requestCounts(t *testing.T, m *obs.Metrics) map[string]float64 {
 }
 
 // gateway is the full mux in front of a Django that knows two stores:
-// shop.example.test sells to agents, off.example.test does not.
+// shop.example.test sells to agents, off.example.test does not. It
+// fails for down.example.test and knows no other.
 func gateway(t *testing.T) http.Handler {
+	t.Helper()
+	return limitedGateway(t, 6000, 1000)
+}
+
+// limitedGateway is gateway with the global rate limit given.
+func limitedGateway(t *testing.T, perMin, burst int) http.Handler {
 	t.Helper()
 	upstream := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			switch domain := r.URL.Query().Get("domain"); domain {
 			case "shop.example.test", "off.example.test":
+				// With the credentials Django adds for the gateway's token.
 				_, _ = w.Write([]byte(`{"schemaName": "demostore",` +
 					`"storeName": "Demo Store", "primaryDomain": "` +
 					domain + `", "agentCommerceEnabled": ` +
-					strconv.FormatBool(domain == "shop.example.test") + `}`))
+					strconv.FormatBool(domain == "shop.example.test") +
+					`, "chatApiKey": "", "acpBearerToken": ""}`))
+			case "down.example.test":
+				w.WriteHeader(http.StatusInternalServerError)
 			default:
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"detail": "Store not found."}`))
@@ -148,7 +159,7 @@ func gateway(t *testing.T) http.Handler {
 	rdb := unreachableRedis()
 	metrics := obs.NewMetrics()
 	return New(Deps{
-		Cfg:     config.Config{RateLimitPerMin: 6000, RateLimitBurst: 1000},
+		Cfg:     config.Config{RateLimitPerMin: perMin, RateLimitBurst: burst},
 		Log:     quietLog(),
 		Metrics: metrics,
 		Redis:   rdb,

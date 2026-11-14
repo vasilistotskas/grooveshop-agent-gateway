@@ -341,12 +341,13 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 
 | Case | Expected and observed |
 |---|---|
-| Unknown `Host` on `/mcp`, `/.well-known/ucp`, `/acp`, `/feeds` | 404 on all four |
+| Unknown `Host` on `/mcp`, `/.well-known/ucp`, `/acp`, `/feeds` | 404 on all four; on `/acp` the spec's `Error`, `not_found` |
 | `X-Forwarded-Host` spoofed | Ignored: the real `Host` decides |
 | One store's ACP token on another store | 401 |
 | One store's checkout id on another store | "that checkout no longer exists here", as for any id no session is stored for: the answer says an order may exist and how to check, never only "start a new one" (ACP: 404 `not_found`, with the same meaning in its message) |
 | A UCP checkout's id on an ACP route, or an ACP session's id on a UCP tool | The same missing-session answer: a session answers only on the surface that created it. It is not written or locked. `checkout_surface_test.go` in the integration suite |
-| Cart and catalogue off (staging fyteia) | 4 tools, and 404 on UCP, ACP and feeds |
+| Cart and catalogue off (staging fyteia) | 4 tools, and 404 on UCP, ACP and feeds. ACP's is the spec's `Error`, `not_found`, the same answer as an unknown `/acp/` path |
+| Any answer on `/acp/*` before the ACP handler (store unavailable 503, rate limit 429 with `Retry-After`, a panic's 500, the mux's 404 and 405 with `Allow`) | The spec's `Error` (`type`, `code`, `message`) as `application/json`, with the same status, `Retry-After` and `Allow`. `TestACPAnswersBeforeTheHandlerAreSpecErrors` in `internal/server` |
 
 ### Stock
 
@@ -356,6 +357,7 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | Quantity above 999 | Refused: `quantity_too_large` |
 | Stock gone between ready and complete, UCP | Refused, naming the product. The session stays `ready_for_complete`, and a retry succeeds once stock returns |
 | Stock gone, ACP | 400 `out_of_stock`, naming the product |
+| UCP or ACP create or update the store refuses at a lookup (region, payment, an item id that is not a number) | Refused before the cart is written (an id that is a number but names no product is refused by the store when the line is added, after the cart exists): a create leaves no guest cart in Django, an update leaves the cart and the stored session as they were. `TestRefusedPaymentLeavesTheCartAlone`, `TestRegionLookupFailureLeavesTheCartAlone` and `TestARefusedACPCallLeavesTheCartAlone` in the integration suite |
 
 ### Idempotency
 
@@ -510,7 +512,6 @@ These were checked and left as they are:
 - **The challenge asks for every account scope at once.** Tokens are opaque to the gateway, so it could not step a grant up later. The shopper can narrow it on the consent screen.
 - **Line ids change when a checkout completes.** Before the order they are cart item ids, after it product ids, as `get_order` names them. The cart ids no longer exist by then.
 - **An update can leave the cart half-changed.** `SyncCartLines` writes line by line, so if Django refuses a later line, earlier ones stay. The update answers an error and the session is not saved. Line lists are full-state, so the next update corrects it, and a render always shows the real cart.
-- **A checkout create fills its cart before the region lookup.** If the lookup fails, the lines stay in the cart and no session is saved. An update looks the region up first, so a failure there changes nothing.
 - **Tool schemas use `type: ["null","array"]` and similar.** Inspector `--strict` warns about them, 124 times across 21 tools on 2026-11-06. It is legal JSON Schema and no client has failed on it, so nothing changed. Look again if a client fails.
 - **If an order's outcome is unknown, the checkout cannot render.** When Django's answer to `POST /order` is lost, the session stays `complete_in_progress` with no order id, so a read goes to a cart that may be gone and fails. It is safe: it cannot place a second order. A platform that hangs up during `complete` does not cause it: the gateway waits for Django's answer without the platform, saves the checkout as placed and links the order, so the platform's retry with the same key answers the order. Not exercised here.
 

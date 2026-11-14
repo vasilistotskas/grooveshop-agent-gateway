@@ -113,6 +113,31 @@ func writeError(w http.ResponseWriter, status int, e Error) {
 	_ = json.NewEncoder(w).Encode(e)
 }
 
+// PathPrefix is where the ACP routes live: the server mounts
+// WriteRouteError (httpmw.WithErrorWriter) on every path under it.
+const PathPrefix = "/acp/"
+
+// WriteRouteError is the spec's Error for an answer written before the
+// handler: the rate limiter, the tenant middleware, Recover, the mux's
+// own 404 and 405. The status and message are the writer's, so the
+// answer says no more about the store than the writer did.
+func WriteRouteError(w http.ResponseWriter, status int, msg string) {
+	e := Error{Type: "invalid_request", Code: "invalid", Message: msg}
+	switch {
+	case status == http.StatusNotFound:
+		e.Code = "not_found"
+	case status == http.StatusMethodNotAllowed:
+		e.Code = "method_not_allowed"
+	case status == http.StatusTooManyRequests:
+		e.Type, e.Code = "service_unavailable", "rate_limited"
+	case status == http.StatusServiceUnavailable:
+		e.Type, e.Code = "service_unavailable", "unavailable"
+	case status >= http.StatusInternalServerError:
+		e.Type, e.Code = "processing_error", "internal_error"
+	}
+	writeError(w, status, e)
+}
+
 // msgRecordsUnavailable answers a checkout store (Redis) that could not
 // be read or written: sessions, locks, idempotency keys. It names the
 // gateway's own records, never the store's backend.
@@ -570,12 +595,8 @@ func cartLines(items []ItemRef) ([]checkout.Line, error) {
 }
 
 func (h *Handler) syncCart(
-	r *http.Request, t *tenant.Tenant, cartID string, items []ItemRef,
+	r *http.Request, t *tenant.Tenant, cartID string, lines []checkout.Line,
 ) error {
-	lines, err := cartLines(items)
-	if err != nil {
-		return err
-	}
 	return checkout.SyncCartLines(
 		r.Context(), h.dj, t, checkout.ProtocolACP, cartID, lines)
 }
@@ -672,19 +693,40 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cart, err := h.dj.GetCart(r.Context(), t.Domain, t.DefaultLocale, "")
-	if err != nil {
+	// Every lookup and refusal before the first cart write, which here is
+	// creating the cart: an item, a region or a pay way the store refuses
+	// leaves no cart behind. A line sync failing after it does.
+	refused := func(err error) {
 		h.releaseIdem(r, claim, createScope)
 		upstreamError(w, err)
+	}
+	lines, err := cartLines(req.LineItems)
+	if err != nil {
+		refused(err)
 		return
 	}
-	if err := h.syncCart(r, t, cart.UUID, req.LineItems); err != nil {
-		h.releaseIdem(r, claim, createScope)
-		upstreamError(w, err)
+	s := checkout.NewSession(t.SchemaName, t.Domain, checkout.ProtocolACP, "")
+	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
+	applyFulfillment(s, req.FulfillmentDetails, nil)
+	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
+		refused(err)
+		return
+	}
+	if err := h.selectPayWay(r, t, s); err != nil {
+		refused(err)
 		return
 	}
 
-	s := checkout.NewSession(t.SchemaName, t.Domain, checkout.ProtocolACP, cart.UUID)
+	cart, err := h.dj.GetCart(r.Context(), t.Domain, t.DefaultLocale, "")
+	if err != nil {
+		refused(err)
+		return
+	}
+	s.CartID = cart.UUID
+	if err := h.syncCart(r, t, s.CartID, lines); err != nil {
+		refused(err)
+		return
+	}
 	// Discounts apply after the lines exist (eligibility can depend on
 	// the cart subtotal). A refused code is not a request failure — it
 	// renders in discounts.rejected.
@@ -692,22 +734,9 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		if err := checkout.ApplyDiscountCodes(
 			r.Context(), h.dj, t, s, req.Discounts.Codes,
 		); err != nil {
-			h.releaseIdem(r, claim, createScope)
-			upstreamError(w, err)
+			refused(err)
 			return
 		}
-	}
-	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
-	applyFulfillment(s, req.FulfillmentDetails, nil)
-	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
-		h.releaseIdem(r, claim, createScope)
-		upstreamError(w, err)
-		return
-	}
-	if err := h.selectPayWay(r, t, s); err != nil {
-		h.releaseIdem(r, claim, createScope)
-		upstreamError(w, err)
-		return
 	}
 	s.Recompute()
 	// Rendered before the save, which it does not read: a session that
@@ -904,12 +933,23 @@ func (h *Handler) updateSession(
 		})
 	}
 
-	// Before any cart write: a failed lookup must leave the cart and the
-	// stored session agreeing. Nothing here is saved until the end.
+	// Every lookup and refusal before any cart write: one that fails must
+	// leave the cart and the stored session agreeing. Nothing here is
+	// saved until the end.
+	var lines []checkout.Line
+	if req.LineItems != nil {
+		var err error
+		if lines, err = cartLines(req.LineItems); err != nil {
+			return refused(err)
+		}
+	}
 	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
 	applyFulfillment(s, req.FulfillmentDetails,
 		req.SelectedFulfillmentOptions)
 	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
+		return refused(err)
+	}
+	if err := h.selectPayWay(r, t, s); err != nil {
 		return refused(err)
 	}
 	hasCodes := req.Discounts != nil && req.Discounts.Codes != nil
@@ -925,7 +965,7 @@ func (h *Handler) updateSession(
 		}
 	}
 	if req.LineItems != nil {
-		if err := h.syncCart(r, t, s.CartID, req.LineItems); err != nil {
+		if err := h.syncCart(r, t, s.CartID, lines); err != nil {
 			return refused(err)
 		}
 	}
@@ -935,9 +975,6 @@ func (h *Handler) updateSession(
 		); err != nil {
 			return refused(err)
 		}
-	}
-	if err := h.selectPayWay(r, t, s); err != nil {
-		return refused(err)
 	}
 	s.Recompute()
 	// The lookups above can outlast the lock, and another request may
