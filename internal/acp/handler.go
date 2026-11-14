@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
@@ -247,8 +248,18 @@ func bodyHash(raw []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// maxIdempotencyKeyLen is the spec's bound on the header.
+// maxIdempotencyKeyLen is the spec's bound on an Idempotency-Key:
+// "Opaque string, max 255 characters. UUID v4 recommended." (the
+// IdempotencyKey parameter, maxLength 255). Any string within it is a
+// key; the bound keeps the Redis key built from it short.
 const maxIdempotencyKeyLen = 255
+
+// errKeyForm refuses an Idempotency-Key longer than the spec allows.
+var errKeyForm = Error{
+	Type: "invalid_request", Code: "invalid", Param: "Idempotency-Key",
+	Message: fmt.Sprintf("The Idempotency-Key header must be 1 to %d "+
+		"characters, such as a UUID.", maxIdempotencyKeyLen),
+}
 
 // idemRetryAfter is the Retry-After sent with a 409 for a key whose first
 // request, or another request on the same session, is still running.
@@ -327,12 +338,8 @@ func (h *Handler) claimKey(
 			Message: "The Idempotency-Key header is required.",
 		})
 	}
-	if len(key) > maxIdempotencyKeyLen {
-		return "", nil, nil, refusal(http.StatusBadRequest, Error{
-			Type: "invalid_request", Code: "invalid",
-			Param:   "Idempotency-Key",
-			Message: "The Idempotency-Key header exceeds 255 characters.",
-		})
+	if utf8.RuneCountInString(key) > maxIdempotencyKeyLen {
+		return "", nil, nil, refusal(http.StatusBadRequest, errKeyForm)
 	}
 	inFlight := func(w http.ResponseWriter) {
 		writeInFlight(w, idemRetryAfter, msgKeyInFlight)
@@ -770,7 +777,8 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s, err := h.store.Load(r.Context(), t.SchemaName, r.PathValue("id"))
+	s, err := h.store.Load(r.Context(), t.SchemaName, checkout.ProtocolACP,
+		r.PathValue("id"))
 	if err != nil {
 		h.sessionError(w, err)
 		return
@@ -827,7 +835,8 @@ func (h *Handler) finish(
 	}
 	// The body may be answering a caller that left; the read is short
 	// and its answer goes nowhere then.
-	now, err := h.store.Load(r.Context(), t.SchemaName, s.ID)
+	now, err := h.store.Load(r.Context(), t.SchemaName, checkout.ProtocolACP,
+		s.ID)
 	switch {
 	case err != nil:
 		h.sessionError(w, err)
@@ -973,20 +982,23 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 
 // completeClosed answers a complete of a session that is not open, and
 // reports whether it did. One that placed its order is answered with
-// the session: completed, or awaiting the payment its continue_url
-// leads to (a session placed over UCP with a hosted pay way is driven
-// here too). The order is what a complete asks for, and it exists.
+// the completed session: the order is what a complete asks for, and it
+// exists. An ACP session never awaits a payment: it completes only with
+// a collect-later pay way (checkout.Flow.Complete).
 func (h *Handler) completeClosed(
 	w http.ResponseWriter, r *http.Request, t *tenant.Tenant,
 	s *checkout.Session,
 ) bool {
-	switch s.Status {
-	case checkout.StatusCompleted, checkout.StatusRequiresEscalation:
-		h.render(w, r, t, s)
-	case checkout.StatusCompleteInProgress:
+	switch {
+	case s.Status == checkout.StatusCompleteInProgress:
 		h.writeCompletionPending(w, r, s)
-	case checkout.StatusCanceled:
+	case s.Status == checkout.StatusCanceled:
 		writeClosed(w, "", "Session is canceled and cannot be completed.")
+	case s.MayHaveOrder():
+		// Its order is placed: the session is the answer. Every session
+		// that is not open is answered here, so no complete of one is
+		// left without an answer.
+		h.render(w, r, t, s)
 	default:
 		return false
 	}
@@ -1189,18 +1201,13 @@ func (h *Handler) cancelSession(
 func (h *Handler) lockSession(
 	w http.ResponseWriter, r *http.Request, t *tenant.Tenant, id string,
 ) (*checkout.Session, func(), bool) {
-	release, err := h.store.Lock(r.Context(), t.SchemaName, id)
-	if err != nil {
-		if errors.Is(err, checkout.ErrLocked) {
-			writeInFlight(w, idemRetryAfter, msgSessionBusy)
-			return nil, nil, false
-		}
-		h.sessionError(w, err)
+	s, release, err := h.store.LockSession(r.Context(), t.SchemaName,
+		checkout.ProtocolACP, id)
+	switch {
+	case errors.Is(err, checkout.ErrLocked):
+		writeInFlight(w, idemRetryAfter, msgSessionBusy)
 		return nil, nil, false
-	}
-	s, err := h.store.Load(r.Context(), t.SchemaName, id)
-	if err != nil {
-		release()
+	case err != nil:
 		h.sessionError(w, err)
 		return nil, nil, false
 	}
@@ -1234,8 +1241,8 @@ const updateAllow = http.MethodGet + ", " + http.MethodHead
 
 // refuseChange answers an update or a cancel (what names it: "change",
 // "be canceled") of a session that takes neither, and reports whether it
-// did: one whose order is being placed, and one that is canceled or may
-// have an order (405, with what the target still serves).
+// did: one whose order is being placed, and one that is canceled or
+// completed (405, with what the target still serves).
 func (h *Handler) refuseChange(
 	w http.ResponseWriter, r *http.Request, s *checkout.Session,
 	allow, what string,
@@ -1245,9 +1252,6 @@ func (h *Handler) refuseChange(
 		return false
 	case s.Status == checkout.StatusCompleteInProgress:
 		h.writeCompletionPending(w, r, s)
-	case s.Status == checkout.StatusRequiresEscalation:
-		writeClosed(w, allow, "Session has placed an order that awaits "+
-			"its payment and cannot "+what+".")
 	default:
 		writeClosed(w, allow,
 			fmt.Sprintf("Session is %s and cannot %s.", s.Status, what))
@@ -1304,6 +1308,10 @@ func (h *Handler) completeError(
 	case errors.Is(err, checkout.ErrUnavailable),
 		errors.Is(err, checkout.ErrCartHeld):
 		writeUnavailable(w, msgRecordsUnavailable)
+	// ErrInvalidIdempotencyKey is UCP's completion claim's, and is
+	// answered as claimKey answers a header out of its bound.
+	case errors.Is(err, checkout.ErrInvalidIdempotencyKey):
+		writeError(w, http.StatusBadRequest, errKeyForm)
 	case errors.Is(err, checkout.ErrPayWayUnavailable),
 		errors.Is(err, checkout.ErrPaymentMethodUnsupported):
 		writeError(w, http.StatusBadRequest, Error{

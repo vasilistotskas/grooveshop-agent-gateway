@@ -164,6 +164,9 @@ func TestRoutesAnswerSpecErrors(t *testing.T) {
 			headers: map[string]string{"Idempotency-Key": ""},
 			status:  http.StatusBadRequest, code: "idempotency_key_required",
 		},
+		// A key longer than the spec's 255 characters is refused before
+		// Redis is asked: with Redis down it is still invalid. Any key
+		// within it is the spec's opaque string, and reaches Redis.
 		{
 			name:   "an Idempotency-Key over 255 characters",
 			method: http.MethodPost, path: "/acp/checkout_sessions",
@@ -172,6 +175,36 @@ func TestRoutesAnswerSpecErrors(t *testing.T) {
 				"Idempotency-Key": strings.Repeat("k", 256),
 			},
 			status: http.StatusBadRequest, code: "invalid",
+		},
+		{
+			name:   "an Idempotency-Key with a space",
+			method: http.MethodPost, path: "/acp/checkout_sessions",
+			body:    createBody,
+			headers: map[string]string{"Idempotency-Key": "key one"},
+			status:  http.StatusServiceUnavailable, code: "unavailable",
+		},
+		{
+			name:   "an Idempotency-Key with a byte outside ASCII",
+			method: http.MethodPost, path: session + "/cancel", body: "{}",
+			headers: map[string]string{"Idempotency-Key": "κλειδί"},
+			status:  http.StatusServiceUnavailable, code: "unavailable",
+		},
+		{
+			name:   "255 characters outside ASCII are 255 characters",
+			method: http.MethodPost, path: session + "/cancel", body: "{}",
+			headers: map[string]string{
+				"Idempotency-Key": strings.Repeat("κ", 255),
+			},
+			status: http.StatusServiceUnavailable, code: "unavailable",
+		},
+		{
+			name:   "a UUID Idempotency-Key reaches Redis",
+			method: http.MethodPost, path: "/acp/checkout_sessions",
+			body: createBody,
+			headers: map[string]string{
+				"Idempotency-Key": "550e8400-e29b-41d4-a716-446655440000",
+			},
+			status: http.StatusServiceUnavailable, code: "unavailable",
 		},
 		{
 			name: "Redis down on a create", method: http.MethodPost,
@@ -292,6 +325,9 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 		"checkout.ErrCompletionInProgress": {
 			checkout.ErrCompletionInProgress, http.StatusConflict,
 			"idempotency_in_flight"},
+		"checkout.ErrInvalidIdempotencyKey": {
+			checkout.ErrInvalidIdempotencyKey, http.StatusBadRequest,
+			"invalid"},
 		"checkout.ErrNotReady": {
 			checkout.ErrNotReady, http.StatusBadRequest, "missing"},
 		"checkout.ErrPaymentMethodUnsupported": {
@@ -444,4 +480,28 @@ func TestAMissingSessionMayHavePlacedAnOrder(t *testing.T) {
 	body := specError(t, rec, http.StatusNotFound, "not_found")
 	assert.Contains(t, body["message"], "an order may exist")
 	assert.Contains(t, body["message"], "before creating another session")
+}
+
+// A session that is not open takes no update and no cancel, whatever
+// state it is in: refuseChange decides on Session.Open alone, the
+// predicate UCP's closedTo decides on too.
+func TestRefuseChangeRefusesWhatIsNotOpen(t *testing.T) {
+	h := testHandler(t, unreachableRedis(t))
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	for _, status := range []checkout.Status{
+		checkout.StatusIncomplete, checkout.StatusReadyForComplete,
+		checkout.StatusCompleteInProgress, checkout.StatusRequiresEscalation,
+		checkout.StatusCompleted, checkout.StatusCanceled,
+	} {
+		s := checkout.NewSession("public", "shop.example.test",
+			checkout.ProtocolACP, "29eb4495-e018-45e7-b59c-6646302bd4ef")
+		s.Status = status
+		for _, what := range []string{"change", "be canceled"} {
+			rec := httptest.NewRecorder()
+			refused := h.refuseChange(rec, req, s, updateAllow, what)
+			assert.Equal(t, !s.Open(), refused, "%s %s", status, what)
+			assert.Equal(t, refused, rec.Code >= http.StatusBadRequest,
+				"%s %s", status, what)
+		}
+	}
 }

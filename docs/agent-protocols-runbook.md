@@ -345,6 +345,7 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | `X-Forwarded-Host` spoofed | Ignored: the real `Host` decides |
 | One store's ACP token on another store | 401 |
 | One store's checkout id on another store | "that checkout no longer exists here", as for any id no session is stored for: the answer says an order may exist and how to check, never only "start a new one" (ACP: 404 `not_found`, with the same meaning in its message) |
+| A UCP checkout's id on an ACP route, or an ACP session's id on a UCP tool | The same missing-session answer: a session answers only on the surface that created it. It is not written or locked. `checkout_surface_test.go` in the integration suite |
 | Cart and catalogue off (staging fyteia) | 4 tools, and 404 on UCP, ACP and feeds |
 
 ### Stock
@@ -361,9 +362,11 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | Case | Expected and observed |
 |---|---|
 | UCP complete or cancel with no key | Refused: "meta.idempotency-key is required" |
+| UCP complete or cancel with a key that is not 1 to 255 visible ASCII characters (longer, a space, non-ASCII) | Refused: "meta.idempotency-key must be 1 to 255 visible ASCII characters (no spaces), such as a UUID". Nothing is read or written. `ucp_idempotency_key_test.go` in the integration suite |
 | UCP complete replayed, same key | Same order, none added |
 | UCP complete again with a new key, after completing | Same order, none added |
 | ACP POST with no key | 400 `idempotency_key_required` |
+| ACP POST with a key longer than 255 characters | 400 `invalid` at `Idempotency-Key`, "must be 1 to 255 characters, such as a UUID". Nothing is read or written. ACP's spec makes the key an opaque string of at most 255 characters, so any key within that is accepted (UCP's key is bounded to visible ASCII, `checkout.ValidIdempotencyKey`) |
 | ACP create replayed, same key and body | 201 with `Idempotent-Replayed: true` |
 | ACP same key, different body | 422 `idempotency_conflict`, except a complete of an already completed session, which answers 200 with the session whatever the body (#128) |
 | ACP create replayed after its session expired, same key and body | 201 with the original body and `Idempotent-Replayed: true` |
@@ -429,12 +432,11 @@ Two limits. Redis can evict the record while its session lives. Every read of a 
 | Case | Expected and observed |
 |---|---|
 | Update or cancel a completed checkout | Refused, naming the order |
-| Update or cancel a checkout whose order awaits its payment (UCP `requires_escalation`) | Refused, naming the order: the buyer could still pay a checkout that read cancelled. ACP: 405 `conflict` |
+| Update or cancel a checkout whose order awaits its payment (UCP `requires_escalation`) | Refused, naming the order: the buyer could still pay a checkout that read cancelled. No ACP session reaches it: ACP completes only with a collect-later pay way, checked again when the order is placed |
 | Update, complete or cancel while the order is being placed | UCP: "a completion of this checkout is in progress or unconfirmed; check its status shortly". ACP: 409 `idempotency_in_flight` with `Retry-After` |
 | Update, complete or cancel once that completion can no longer be running and the store never confirmed the order | UCP: "the store never confirmed whether this checkout's order was placed, and that will not change", with what a person can do (the store's order confirmation email, or asking the store) and not to start another checkout. ACP: 502 `order_outcome_unknown` |
 | A read (`get_checkout`, ACP GET) of a session in either of those two states | It renders while the cart still reads: status `complete_in_progress`, no link back to the cart. On UCP the text beside the status is the same guidance the other tools give for that state. When the cart no longer reads (it may have gone with the order), the read gets the answer of the two rows above |
 | Any call on a session in progress whose order is known: the completion placed it and could not save the session | UCP: "the order was placed but checkout state could not be saved; track it with track_order using orderUuid …". ACP: 500 `order_placed`, naming the order. The order was recorded beside the session when Django returned it; the next order event records it on the session |
-| ACP read or complete of a session whose order awaits its payment | 200 with the session: `requires_escalation`; `continue_url` is the payment page the store opened for the order, as on UCP (the order page when no payment page could be opened); a message names the order and says not to start another checkout. Nothing is stored |
 | Complete of a cancelled checkout | UCP: "is canceled and cannot be completed". ACP: 405 |
 | Update a cancelled checkout | Refused |
 | Cancel an ACP session twice | 405 |

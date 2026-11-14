@@ -207,6 +207,11 @@ type checkoutFaults struct {
 	regionLookup atomic.Bool
 	// payWayLookup makes the pay-way list answer 502.
 	payWayLookup atomic.Bool
+	// payWayReads counts the reads of the pay-way list; from the read
+	// numbered codOnlineFrom on (when set), cash on delivery (pay way 1)
+	// reads as a Viva pay way settled online.
+	payWayReads   atomic.Int32
+	codOnlineFrom atomic.Int32
 	// orderRead makes reading a placed order answer 502.
 	orderRead atomic.Bool
 	// orderGone makes reading a placed order answer 404: Django no
@@ -316,6 +321,20 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 		func(w http.ResponseWriter, r *http.Request) {
 			if faults.payWayLookup.Load() {
 				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			read := faults.payWayReads.Add(1)
+			if from := faults.codOnlineFrom.Load(); from > 0 && read >= from {
+				raw, err := os.ReadFile(fixturePath("pay_way.json"))
+				if !assert.NoError(t, err) {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				const cod = `"providerCode":"cash_on_delivery",` +
+					`"settlement":"courier_cash"`
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(strings.Replace(string(raw), cod,
+					`"providerCode":"viva_wallet","settlement":"online"`, 1)))
 				return
 			}
 			inner.ServeHTTP(w, r)

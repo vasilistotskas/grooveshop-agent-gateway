@@ -19,14 +19,15 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 )
 
-// The reads a call makes of its session, counted from the call's start:
-// its load, then the read at its exit when its answer is made from the
-// snapshot. An update that writes the cart reads once more in between,
-// ahead of its first cart write.
+// The reads a call that locks its session makes of it, counted from the
+// call's start: the read that finds it on the call's surface before the
+// lock, its load under the lock, then the read at its exit when its
+// answer is made from the snapshot. An update that writes the cart reads
+// once more in between, ahead of its first cart write.
 const (
-	exitRead         = 2
-	beforeCartWrites = 2
-	exitReadOfLines  = 3
+	exitRead         = 3
+	beforeCartWrites = 3
+	exitReadOfLines  = 4
 )
 
 // onSessionRead runs act ahead of the nth read of session id from now
@@ -90,15 +91,15 @@ func TestACompleteRefusedForAnotherCompletesOrderReadsAgain(t *testing.T) {
 			}()
 			await(t, held, "the first complete")
 			stack.lapse(t, lockRedisKey(id))
-			// The winner pays on the store's hosted page: its order
-			// keeps the cart and awaits payment.
-			require.Equal(t, "requires_escalation", surfaces["ucp"].complete(
-				ctx, id, uuid.NewString(), changeBy("ucp")))
+			// The winner's order keeps the cart.
+			submit, status := keepingCart(name)
+			require.Equal(t, status, surface.complete(
+				ctx, id, uuid.NewString(), submit))
 			placed := stack.storedBytes(t, id)
 			stack.faults.stockShort.Store(true)
 
 			held.open()
-			assertStored(t, <-first, "requires_escalation")
+			assertStored(t, <-first, status)
 			assert.Equal(t, placed, stack.storedBytes(t, id))
 			assert.EqualValues(t, 1, stack.faults.orderCreates.Load())
 		})
@@ -164,7 +165,7 @@ func TestAnUpdateThatCannotReadItsSessionAgainDoesNotCallTheCartGone(
 			for range 2 {
 				scenes = append(scenes, scene{
 					name: name, at: at, read: read,
-					id: surfaces["ucp"].ready(t),
+					id: surfaces[name].ready(t),
 				})
 			}
 		}
@@ -207,16 +208,20 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 	ctx := context.Background()
 	stack := startUCPGateway(t)
 	surfaces := surfacesByName(t, stack)
-	id := surfaces["ucp"].ready(t)
+	ids := map[string]string{}
 	stack.faults.orderCreate.Store(true)
-	require.Empty(t, surfaces["ucp"].complete(ctx, id, uuid.NewString(), nil))
+	for name, surface := range surfaces {
+		id := surface.ready(t)
+		require.Empty(t, surface.complete(ctx, id, uuid.NewString(), nil))
+		require.Equal(t, checkout.StatusCompleteInProgress,
+			stack.storedSession(t, id).Status)
+		ids[name] = id
+	}
 	stack.faults.orderCreate.Store(false)
-	require.Equal(t, checkout.StatusCompleteInProgress,
-		stack.storedSession(t, id).Status)
 
 	t.Run("acp offers no link back to the cart", func(t *testing.T) {
 		resp, body := acpCall(t, http.MethodGet,
-			stack.gw.URL+"/acp/checkout_sessions/"+id, nil, "")
+			stack.gw.URL+"/acp/checkout_sessions/"+ids["acp"], nil, "")
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.NotContains(t, body, "continue_url")
 	})
@@ -226,6 +231,7 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 		stack.faults.namedCartReads.Load() + 1)
 	t.Cleanup(func() { stack.faults.namedCartReadsFailFrom.Store(0) })
 	calls := func(surface completionSurface) map[string]surfaceAnswer {
+		id := ids[surface.name]
 		return map[string]surfaceAnswer{
 			"read":     surface.read(ctx, id),
 			"update":   surface.update(ctx, id),
@@ -244,12 +250,14 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 	})
 
 	// Past its budget the completion cannot be running any more.
-	stored := stack.storedSession(t, id)
-	stored.UpdatedAt = time.Now().Add(-time.Minute)
-	raw, err := json.Marshal(stored)
-	require.NoError(t, err)
-	require.NoError(t, stack.rdb.Set(ctx, sessionRedisKey(id), raw,
-		redis.KeepTTL).Err())
+	for _, id := range ids {
+		stored := stack.storedSession(t, id)
+		stored.UpdatedAt = time.Now().Add(-time.Minute)
+		raw, err := json.Marshal(stored)
+		require.NoError(t, err)
+		require.NoError(t, stack.rdb.Set(ctx, sessionRedisKey(id), raw,
+			redis.KeepTTL).Err())
+	}
 	t.Run("once it cannot be running", func(t *testing.T) {
 		for what, answer := range calls(surfaces["acp"]) {
 			assert.Equal(t, "502 order_outcome_unknown", answer.refusal, what)
@@ -267,11 +275,11 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 
 	// A read that renders carries the same guidance beside the status.
 	stack.faults.namedCartReadsFailFrom.Store(0)
-	read := surfaces["ucp"].read(ctx, id)
+	read := surfaces["ucp"].read(ctx, ids["ucp"])
 	assert.Equal(t, "complete_in_progress", read.status, read.refusal)
 	assert.Contains(t, read.text, "never confirmed")
 	assert.Contains(t, read.text, "order confirmation email")
-	assert.EqualValues(t, 1, stack.faults.orderCreates.Load())
+	assert.EqualValues(t, len(ids), stack.faults.orderCreates.Load())
 }
 
 // A canceled checkout answers what it is to a complete, on UCP as on
@@ -280,13 +288,16 @@ func TestCompleteOfACanceledCheckoutSaysItIsCanceled(t *testing.T) {
 	ctx := context.Background()
 	stack := startUCPGateway(t)
 	surfaces := surfacesByName(t, stack)
-	id := surfaces["ucp"].ready(t)
-	surfaces["ucp"].cancel(t, id)
+	ids := map[string]string{}
+	for name, surface := range surfaces {
+		ids[name] = surface.ready(t)
+		surface.cancel(t, ids[name])
+	}
 
-	answer := surfaces["ucp"].answer(ctx, id, uuid.NewString(), nil)
+	answer := surfaces["ucp"].answer(ctx, ids["ucp"], uuid.NewString(), nil)
 	assert.Contains(t, answer.refusal, "is canceled and cannot be completed")
-	assert.Equal(t, "405 conflict",
-		surfaces["acp"].answer(ctx, id, uuid.NewString(), nil).refusal)
+	assert.Equal(t, "405 conflict", surfaces["acp"].answer(
+		ctx, ids["acp"], uuid.NewString(), nil).refusal)
 }
 
 // A session that never saved its order learns of it from the order

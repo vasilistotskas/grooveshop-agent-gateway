@@ -488,6 +488,10 @@ passes.
   - A request whose `API-Version` is not `acp.Version` gets 400
     `missing_api_version` or `unsupported_api_version` with
     `supported_versions`.
+  - An `Idempotency-Key` longer than the spec's 255 characters is 400
+    `invalid` at `Idempotency-Key`, before Redis is asked
+    (`errKeyForm`). Any string within it is a key: the spec makes it
+    opaque.
   - 409 is only `idempotency_in_flight`, with `Retry-After`: a key or
     the session lock in use, a session another request stored while
     this one ran (`checkout.ErrSessionChanged`), or an order being
@@ -496,15 +500,17 @@ passes.
     `order_outcome_unknown`, no `Retry-After`. A session in progress
     whose order is known (`Flow.PlacedOrder`) answers neither: 500
     `order_placed`, naming the order (`writePlacedUnsaved`).
+  - ACP completes only with a collect-later pay way: the handler
+    chooses one (`checkout.OfflinePayWay`), and `Flow.admit` refuses an
+    online pay way for a session whose platform does not choose it
+    (`payWaySelectionRequired`) on the store's answer when the order is
+    placed, as `ErrPaymentMethodUnsupported`. So no ACP session awaits
+    a payment.
   - A session that is not open refuses update and cancel
-    (`refuseChange`): 405 and an `Allow` header once it is completed,
-    canceled or awaiting its payment, the in-flight answer while its
-    order is being placed. A canceled one refuses complete with 405. A
-    complete of a session whose order is placed (completed, or awaiting
-    payment) answers 200 with the session. The `continue_url` of one
-    awaiting payment is the payment page the store opened for the
-    order (`Session.PaymentURL`), as on UCP, and its message names the
-    order; without a payment page it is the order's page.
+    (`refuseChange`): 405 and an `Allow` header once it is completed or
+    canceled, the in-flight answer while its order is being placed. A
+    canceled one refuses complete with 405. A complete of a completed
+    session answers 200 with the session.
   - A create stores the response it sent (status and body) with its
     key (`createScope`, versioned with that record); a replay with the
     same body answers those bytes for the record's 24 hours, whether
@@ -540,6 +546,24 @@ passes.
   before starting another checkout, with the order id if the caller
   holds one and the store's order confirmation if not. Never answer a
   missing session with only "start a new one".
+- **A checkout session answers only on the surface that created it.**
+  `Session.Protocol` decides. A surface reads a session with
+  `Store.Load(schema, protocol, id)` and locks one with
+  `Store.LockSession(schema, protocol, id)`. A session of another
+  protocol is `ErrNotFound` there, so it gets that surface's
+  missing-session answer (above). `LockSession` reads the session
+  before it writes the lock, which is keyed by the id alone, so a call
+  on the other surface takes no lock. Two readers reach a session
+  through a record of the gateway's own, not a caller's id, and read
+  either protocol with `Store.LoadAnyProtocol`: an order event, through
+  its order link (`Flow.ApplyOrderEvent`), and a cart's holder
+  (`Store.HolderOf`). `Store.Lock` reads nothing: it locks a session
+  being created (`takeCart`) and a cart's holder being superseded.
+  Whether a session takes an update or a cancel is `Session.Open` on
+  both surfaces (`acp.refuseChange`, `mcpsrv.closedTo`); each keeps
+  its own wording and status codes. A complete of a session that is
+  not open is answered before the flow on both (`completeClosed`), so
+  `Flow.Complete` only ever sees an open one.
 - **A completion finishes without its caller.** `checkout.Flow.Complete`
   runs on the caller's context only until the order is about to be
   created. From the in-progress save on it is detached
@@ -664,8 +688,8 @@ passes.
     #637). `docs/agent-protocols-runbook.md` section 11 is the
     operator's side.
   - A complete of one answers what it is, before any lookup: the
-    session when its order is placed (completed, or awaiting payment,
-    on ACP too), in flight while it is being placed, canceled when it
+    session when its order is placed (completed, or on UCP awaiting
+    payment), in flight while it is being placed, canceled when it
     is. A session being placed is "in flight" only until
     `Flow.CompletionDeadline`; past it, both surfaces say the outcome
     was never recorded (ACP `order_outcome_unknown`, UCP
@@ -809,7 +833,8 @@ passes.
     way. A held one there is a fault: logged, answered unavailable,
     and no session is handed out.
   - Redis can lose the record while the session lives (eviction).
-    Every load of a session touches its cart's record (`Store.Load`),
+    Every load of a session touches its cart's record (`Store.Load`,
+    `Store.LoadAnyProtocol`),
     so Redis does not see the record as less recently read than a
     session a platform keeps reading, and a session's next save writes
     a lost record again. A session nobody reads or saves, such as one

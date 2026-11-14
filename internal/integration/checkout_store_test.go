@@ -97,7 +97,7 @@ func TestPlacedSessionCannotBeKeptAlive(t *testing.T) {
 
 	s.PlacedAt = time.Now().Add(-24 * time.Hour)
 	require.NoError(t, store.Save(ctx, s))
-	_, err = store.Load(ctx, s.Schema, s.ID)
+	_, err = store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 	assert.ErrorIs(t, err, checkout.ErrNotFound)
 }
 
@@ -114,23 +114,23 @@ func TestAnEndedSessionIsDeletedOnlyOverTheSessionItsCallerRead(
 	s.Status = checkout.StatusRequiresEscalation
 	s.PlacedAt = time.Now().Add(-23 * time.Hour)
 	require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
-	stale, err := store.Load(ctx, s.Schema, s.ID)
+	stale, err := store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 	require.NoError(t, err)
-	current, err := store.Load(ctx, s.Schema, s.ID)
+	current, err := store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 	require.NoError(t, err)
 	current.Status = checkout.StatusCompleted
 	require.NoError(t, store.Save(ctx, current))
 
 	stale.PlacedAt = time.Now().Add(-25 * time.Hour)
 	require.ErrorIs(t, store.Save(ctx, stale), checkout.ErrSessionChanged)
-	kept, err := store.Load(ctx, s.Schema, s.ID)
+	kept, err := store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 	require.NoError(t, err)
 	assert.Equal(t, checkout.StatusCompleted, kept.Status)
 	assert.Equal(t, current.Revision, kept.Revision)
 
 	current.PlacedAt = time.Now().Add(-25 * time.Hour)
 	require.NoError(t, store.Save(ctx, current))
-	_, err = store.Load(ctx, s.Schema, s.ID)
+	_, err = store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 	assert.ErrorIs(t, err, checkout.ErrNotFound)
 }
 
@@ -141,7 +141,7 @@ func TestCurrentIsTheStoredRevision(t *testing.T) {
 	store, rdb := startStore(t)
 	s := newSession()
 	require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
-	held, err := store.Load(ctx, s.Schema, s.ID)
+	held, err := store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 	require.NoError(t, err)
 	require.NoError(t, store.Current(ctx, held))
 
@@ -161,7 +161,7 @@ func TestSaveWritesOnlyOverTheSessionItRead(t *testing.T) {
 	store, rdb := startStore(t)
 	load := func(t *testing.T, s *checkout.Session) *checkout.Session {
 		t.Helper()
-		got, err := store.Load(ctx, s.Schema, s.ID)
+		got, err := store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 		require.NoError(t, err)
 		return got
 	}
@@ -214,7 +214,7 @@ func TestSaveWritesOnlyOverTheSessionItRead(t *testing.T) {
 
 		require.ErrorIs(t, store.Save(ctx, s), checkout.ErrSessionChanged)
 
-		_, err := store.Load(ctx, s.Schema, s.ID)
+		_, err := store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 		assert.ErrorIs(t, err, checkout.ErrNotFound)
 	})
 
@@ -234,7 +234,7 @@ func TestSaveWritesOnlyOverTheSessionItRead(t *testing.T) {
 		s := newSession()
 		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 		require.NoError(t, store.Discard(ctx, s))
-		_, err := store.Load(ctx, s.Schema, s.ID)
+		_, err := store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 		assert.ErrorIs(t, err, checkout.ErrNotFound)
 	})
 }
@@ -329,7 +329,7 @@ func TestSessionUnderTheOldKeyIsNotThisStores(t *testing.T) {
 	oldKey := "ag:demostore:cs:" + s.ID
 	require.NoError(t, rdb.Rename(ctx, sessionRedisKey(s.ID), oldKey).Err())
 
-	_, err = store.Load(ctx, s.Schema, s.ID)
+	_, err = store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 	require.ErrorIs(t, err, checkout.ErrNotFound)
 	require.ErrorIs(t, store.Save(ctx, s), checkout.ErrSessionChanged)
 	kept, err := rdb.Get(ctx, oldKey).Result()
@@ -357,7 +357,7 @@ func TestACommandSentTwiceIsAnsweredAsDone(t *testing.T) {
 		s.Buyer.Email = "saved@example.test"
 		twice.during(t, func() { err = store.Save(ctx, s) })
 		require.NoError(t, err, "save")
-		stored, err := store.Load(ctx, s.Schema, s.ID)
+		stored, err := store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 		require.NoError(t, err)
 		assert.Equal(t, s.Revision, stored.Revision)
 		assert.Equal(t, "saved@example.test", stored.Buyer.Email)
@@ -374,7 +374,7 @@ func TestACommandSentTwiceIsAnsweredAsDone(t *testing.T) {
 		var err error
 		twice.during(t, func() { err = store.Save(ctx, s) })
 		require.NoError(t, err)
-		_, err = store.Load(ctx, s.Schema, s.ID)
+		_, err = store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 		assert.ErrorIs(t, err, checkout.ErrNotFound)
 	})
 

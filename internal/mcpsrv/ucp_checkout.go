@@ -608,7 +608,8 @@ func (h *handlers) finish(
 		return a.answer()
 	}
 	var zero CheckoutResult
-	now, err := h.deps.Checkout.Load(ctx, t.SchemaName, s.ID)
+	now, err := h.deps.Checkout.Load(
+		ctx, t.SchemaName, checkout.ProtocolUCP, s.ID)
 	switch {
 	case errors.Is(err, checkout.ErrNotFound):
 		return nil, zero, errCheckoutGone
@@ -815,10 +816,13 @@ func (h *handlers) completeSession(
 
 	claim, err := h.deps.Checkout.ClaimCompletion(
 		ctx, t.SchemaName, s.ID, in.Meta.IdempotencyKey)
-	if err != nil {
-		if errors.Is(err, checkout.ErrCompletionInProgress) {
-			return refusedBy(err)
-		}
+	switch {
+	case errors.Is(err, checkout.ErrCompletionInProgress):
+		return refusedBy(err)
+	case errors.Is(err, checkout.ErrInvalidIdempotencyKey):
+		// MetaIn.validate refuses such a key before anything is read.
+		return refusedBy(errIdempotencyKeyForm)
+	case err != nil:
 		return refusedBy(errCheckoutUnavailable)
 	}
 	if claim == nil {
@@ -1122,22 +1126,14 @@ func (h *handlers) lockedSession(
 	if id == "" {
 		return nil, nil, errors.New("id is required")
 	}
-	release, err := h.deps.Checkout.Lock(ctx, t.SchemaName, id)
-	if err != nil {
-		switch {
-		case errors.Is(err, checkout.ErrLocked):
-			return nil, nil, err
-		case errors.Is(err, checkout.ErrNotFound):
-			return nil, nil, errCheckoutGone
-		}
-		return nil, nil, errCheckoutUnavailable
-	}
-	s, err := h.deps.Checkout.Load(ctx, t.SchemaName, id)
-	if err != nil {
-		release()
-		if errors.Is(err, checkout.ErrNotFound) {
-			return nil, nil, errCheckoutGone
-		}
+	s, release, err := h.deps.Checkout.LockSession(
+		ctx, t.SchemaName, checkout.ProtocolUCP, id)
+	switch {
+	case errors.Is(err, checkout.ErrLocked):
+		return nil, nil, err
+	case errors.Is(err, checkout.ErrNotFound):
+		return nil, nil, errCheckoutGone
+	case err != nil:
 		return nil, nil, errCheckoutUnavailable
 	}
 	return s, release, nil
@@ -1247,7 +1243,8 @@ func (h *handlers) getCheckout(
 	if in.ID == "" {
 		return nil, zero, errors.New("id is required")
 	}
-	s, err := h.deps.Checkout.Load(ctx, t.SchemaName, in.ID)
+	s, err := h.deps.Checkout.Load(
+		ctx, t.SchemaName, checkout.ProtocolUCP, in.ID)
 	if err != nil {
 		if errors.Is(err, checkout.ErrNotFound) {
 			return nil, zero, errCheckoutGone

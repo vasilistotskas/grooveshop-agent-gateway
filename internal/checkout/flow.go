@@ -211,7 +211,7 @@ func (f *Flow) Complete(
 // knows more (the payment page it opened), so its outcome is stored over
 // the event's, keeping "completed" if the event said the order is paid.
 func (f *Flow) saveOverEvent(ctx context.Context, s *Session) error {
-	stored, err := f.st.Load(ctx, s.Schema, s.ID)
+	stored, err := f.st.Load(ctx, s.Schema, s.Protocol, s.ID)
 	if err != nil {
 		return err
 	}
@@ -279,6 +279,16 @@ func (f *Flow) admit(
 		)
 	}
 	if payWay.IsOnlineSettlement() {
+		// A surface whose platform does not choose the pay way (ACP)
+		// completes only with a collect-later one. Its handler chose one,
+		// and the store's answer read here is what the order is placed
+		// with, so the rule is checked again on that answer.
+		if !s.payWaySelectionRequired() {
+			return nil, fmt.Errorf(
+				"%w: pay way %d is settled online, and this surface "+
+					"completes only with a collect-later one",
+				ErrPaymentMethodUnsupported, payWay.ID)
+		}
 		if payWay.ProviderCode != django.ProviderVivaWallet {
 			return nil, ErrPaymentMethodUnsupported
 		}
@@ -436,7 +446,8 @@ func (f *Flow) PlacedOrder(ctx context.Context, s *Session) string {
 func (f *Flow) ApplyOrderEvent(
 	ctx context.Context, schema, checkoutID, orderUUID, paymentStatus string,
 ) error {
-	s, err := f.st.Load(ctx, schema, checkoutID)
+	// The order's link names the checkout, of either protocol.
+	s, err := f.st.LoadAnyProtocol(ctx, schema, checkoutID)
 	if errors.Is(err, ErrNotFound) {
 		return nil
 	}

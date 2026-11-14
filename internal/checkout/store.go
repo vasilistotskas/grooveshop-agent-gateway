@@ -37,6 +37,11 @@ var (
 		"checkout: a completion of this checkout is in progress or " +
 			"unconfirmed; check its status shortly instead of starting " +
 			"another")
+	// ErrInvalidIdempotencyKey marks an idempotency key outside
+	// ValidIdempotencyKey. Nothing was written.
+	ErrInvalidIdempotencyKey = fmt.Errorf(
+		"checkout: an idempotency key is 1 to %d visible ASCII "+
+			"characters, such as a UUID", MaxIdempotencyKeyLen)
 )
 
 const (
@@ -125,6 +130,27 @@ func CanonicalCartID(id string) (string, bool) {
 	return u.String(), true
 }
 
+// MaxIdempotencyKeyLen bounds an idempotency key, which ends a Redis key.
+// ACP's spec sets it ("max 255 characters"); UCP's sets no maximum.
+const MaxIdempotencyKeyLen = 255
+
+// ValidIdempotencyKey is the one rule for an idempotency key on both
+// surfaces: 1 to MaxIdempotencyKeyLen visible US-ASCII characters (0x21
+// to 0x7E). ACP's spec calls the key an "Opaque string" and recommends a
+// UUID v4; UCP's asks for at least 128 bits of entropy, "e.g., UUID v4,
+// 22+ char alphanumeric". Both carry it as an Idempotency-Key header.
+func ValidIdempotencyKey(key string) bool {
+	if key == "" || len(key) > MaxIdempotencyKeyLen {
+		return false
+	}
+	for i := range len(key) {
+		if key[i] < '!' || key[i] > '~' {
+			return false
+		}
+	}
+	return true
+}
+
 func idemKey(schema, id, key string) string {
 	return "ag:" + schema + ":idem:" + id + ":" + key
 }
@@ -156,7 +182,39 @@ func ValidID(id string) bool {
 	return err == nil && u.String() == id
 }
 
-func (st *Store) Load(ctx context.Context, schema, id string) (*Session, error) {
+// Load reads a session for the surface that serves protocol. A session
+// answers only on the surface that created it: one of another protocol
+// is ErrNotFound, as a missing one is, and nothing about it is written.
+func (st *Store) Load(
+	ctx context.Context, schema, protocol, id string,
+) (*Session, error) {
+	s, err := st.read(ctx, schema, id)
+	if err != nil {
+		return nil, err
+	}
+	if s.Protocol != protocol {
+		return nil, ErrNotFound
+	}
+	st.touchCart(ctx, s)
+	return s, nil
+}
+
+// LoadAnyProtocol reads a session whatever surface created it. It is for
+// what reaches a session through a record of the gateway's own rather
+// than a caller's id: an order event through its order link, a cart's
+// holder through the cart's record.
+func (st *Store) LoadAnyProtocol(
+	ctx context.Context, schema, id string,
+) (*Session, error) {
+	s, err := st.read(ctx, schema, id)
+	if err != nil {
+		return nil, err
+	}
+	st.touchCart(ctx, s)
+	return s, nil
+}
+
+func (st *Store) read(ctx context.Context, schema, id string) (*Session, error) {
 	if !ValidID(id) {
 		return nil, ErrNotFound
 	}
@@ -171,14 +229,17 @@ func (st *Store) Load(ctx context.Context, schema, id string) (*Session, error) 
 	if err := json.Unmarshal([]byte(raw), &s); err != nil {
 		return nil, fmt.Errorf("%w: corrupt session: %w", ErrUnavailable, err)
 	}
-	// Redis evicts keys one by one, by how recently each was read. A
-	// session is read by every call on it; its cart's record only by a
-	// create. So a read of the session counts as one of the record:
-	// Redis then does not see the record as less recently read than a
-	// session that is still being read. Best effort: the session was
-	// read.
-	_ = st.rdb.Touch(ctx, cartKey(schema, s.CartID)).Err()
 	return &s, nil
+}
+
+// touchCart counts a read of s as one of its cart's record. Redis evicts
+// keys one by one, by how recently each was read. A session is read by
+// every call on it; its cart's record only by a create. So a read of the
+// session counts as one of the record: Redis then does not see the
+// record as less recently read than a session that is still being read.
+// Best effort: the session was read.
+func (st *Store) touchCart(ctx context.Context, s *Session) {
+	_ = st.rdb.Touch(ctx, cartKey(s.Schema, s.CartID)).Err()
 }
 
 // The answers of saveScript.
@@ -282,7 +343,9 @@ func (st *Store) HolderOf(
 		return CartHolder{},
 			fmt.Errorf("%w: cart holder: %w", ErrUnavailable, err)
 	}
-	s, err := st.Load(ctx, schema, id)
+	// A cart's holder may be of either protocol: the cart rule is the
+	// same on both surfaces.
+	s, err := st.LoadAnyProtocol(ctx, schema, id)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return CartHolder{record: id}, nil
@@ -376,7 +439,7 @@ func (st *Store) store(
 // behalf (a cart write in Django), so that it does none for a session it
 // can already see has moved on.
 func (st *Store) Current(ctx context.Context, s *Session) error {
-	stored, err := st.Load(ctx, s.Schema, s.ID)
+	stored, err := st.Load(ctx, s.Schema, s.Protocol, s.ID)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return ErrSessionChanged
@@ -415,7 +478,8 @@ func (st *Store) Discard(ctx context.Context, s *Session) error {
 // lock expires while its holder may still be working, and Save alone
 // decides whether a session may be written. release frees the lock only
 // while this call still holds it. An id no session can have is
-// ErrNotFound, and no lock is written for it.
+// ErrNotFound, and no lock is written for it. It reads no session: a
+// surface locks the session a caller names with LockSession.
 func (st *Store) Lock(ctx context.Context, schema, id string) (func(), error) {
 	if !ValidID(id) {
 		return nil, ErrNotFound
@@ -436,13 +500,43 @@ func (st *Store) Lock(ctx context.Context, schema, id string) (func(), error) {
 	}, nil
 }
 
+// LockSession takes a session's lock for the surface that serves
+// protocol and reads the session under it; release frees the lock. A
+// session of another protocol, like a missing one, is ErrNotFound, and
+// is read before any lock is written: the lock is keyed by the id alone,
+// and a call on another surface must not hold it while the session's own
+// surface needs it. A session never changes its protocol, so the read
+// under the lock checks again only that the session is still stored.
+func (st *Store) LockSession(
+	ctx context.Context, schema, protocol, id string,
+) (*Session, func(), error) {
+	if _, err := st.Load(ctx, schema, protocol, id); err != nil {
+		return nil, nil, err
+	}
+	release, err := st.Lock(ctx, schema, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	s, err := st.Load(ctx, schema, protocol, id)
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	return s, release, nil
+}
+
 // ClaimCompletion makes complete idempotent: the first caller for a key
 // gets its claim and places the order; a caller whose key has placed an
 // order gets no claim and renders the session's current state; a caller
-// whose key another attempt still holds gets ErrCompletionInProgress.
+// whose key another attempt still holds gets ErrCompletionInProgress. A
+// key outside ValidIdempotencyKey is ErrInvalidIdempotencyKey, and
+// nothing is written for it.
 func (st *Store) ClaimCompletion(
 	ctx context.Context, schema, id, idempotencyKey string,
 ) (*Claim, error) {
+	if !ValidIdempotencyKey(idempotencyKey) {
+		return nil, ErrInvalidIdempotencyKey
+	}
 	claim, settled, err := st.Claim(ctx,
 		idemKey(schema, id, idempotencyKey))
 	switch {

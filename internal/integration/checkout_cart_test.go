@@ -89,7 +89,7 @@ func TestACartIsTakenWithItsSession(t *testing.T) {
 
 	refused := func(t *testing.T, second *checkout.Session) {
 		t.Helper()
-		_, err := store.Load(ctx, second.Schema, second.ID)
+		_, err := store.LoadAnyProtocol(ctx, second.Schema, second.ID)
 		assert.ErrorIs(t, err, checkout.ErrNotFound,
 			"a refused create stored its session")
 		assert.Empty(t, second.Revision)
@@ -181,7 +181,7 @@ func TestWhoHoldsACart(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, next.ID, heldBy(t, rdb, holder.CartID))
 			// The old holder is still read by its own id.
-			kept, err := store.Load(ctx, holder.Schema, holder.ID)
+			kept, err := store.LoadAnyProtocol(ctx, holder.Schema, holder.ID)
 			require.NoError(t, err)
 			assert.Equal(t, holder.Revision, kept.Revision)
 		})
@@ -227,7 +227,7 @@ func TestWhoHoldsACart(t *testing.T) {
 		require.ErrorIs(t, store.Create(ctx, loser, seen),
 			checkout.ErrCartHeld)
 		assert.Equal(t, winner.ID, heldBy(t, rdb, holder.CartID))
-		_, err = store.Load(ctx, loser.Schema, loser.ID)
+		_, err = store.LoadAnyProtocol(ctx, loser.Schema, loser.ID)
 		assert.ErrorIs(t, err, checkout.ErrNotFound)
 	})
 }
@@ -298,7 +298,7 @@ func TestACartsRecordLivesAsLongAsItsSession(t *testing.T) {
 				return err == nil && idle >= idleLongEnough
 			}, 15*time.Second, 200*time.Millisecond)
 
-			_, err := store.Load(ctx, s.Schema, s.ID)
+			_, err := store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 			require.NoError(t, err)
 
 			idle, err := rdb.ObjectIdleTime(ctx, record).Result()
@@ -372,7 +372,7 @@ func TestAnEndingSessionFreesOnlyItsOwnCart(t *testing.T) {
 		s.PlacedAt = time.Now().Add(-25 * time.Hour)
 		require.NoError(t, store.Save(ctx, s))
 
-		_, err := store.Load(ctx, s.Schema, s.ID)
+		_, err := store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 		require.ErrorIs(t, err, checkout.ErrNotFound)
 		assert.Empty(t, heldBy(t, rdb, s.CartID))
 	})
@@ -383,7 +383,7 @@ func TestAnEndingSessionFreesOnlyItsOwnCart(t *testing.T) {
 			old.PlacedAt = time.Now().Add(-25 * time.Hour)
 			require.NoError(t, store.Save(ctx, old))
 
-			_, err := store.Load(ctx, old.Schema, old.ID)
+			_, err := store.LoadAnyProtocol(ctx, old.Schema, old.ID)
 			require.ErrorIs(t, err, checkout.ErrNotFound)
 			assert.Equal(t, next.ID, heldBy(t, rdb, old.CartID))
 		})
@@ -409,7 +409,7 @@ func TestACartCommandSentTwiceIsAnsweredAsDone(t *testing.T) {
 	twice.during(t, func() { err = store.Create(ctx, next, seen) })
 	require.NoError(t, err, "a create over an old holder")
 	assert.Equal(t, next.ID, heldBy(t, rdb, old.CartID))
-	stored, err := store.Load(ctx, next.Schema, next.ID)
+	stored, err := store.LoadAnyProtocol(ctx, next.Schema, next.ID)
 	require.NoError(t, err)
 	assert.Equal(t, next.Revision, stored.Revision)
 
@@ -500,7 +500,7 @@ func (stack ucpStack) become(
 	t.Helper()
 	ctx := context.Background()
 	store := checkout.NewStore(stack.rdb, ucpUpstreamTimeout)
-	s, err := store.Load(ctx, "demostore", id)
+	s, err := store.LoadAnyProtocol(ctx, "demostore", id)
 	require.NoError(t, err)
 	change(s)
 	require.NoError(t, store.Save(ctx, s))
@@ -836,7 +836,7 @@ func TestCreateCheckoutOnACartInACheckout(t *testing.T) {
 			marked := make(chan error, 1)
 			stack.beforeScriptOn(t, sessionRedisKey(holder), func() {
 				store := checkout.NewStore(stack.rdb, ucpUpstreamTimeout)
-				s, err := store.Load(ctx, "demostore", holder)
+				s, err := store.LoadAnyProtocol(ctx, "demostore", holder)
 				if err == nil {
 					s.Status = checkout.StatusCompleteInProgress
 					err = store.Save(ctx, s)

@@ -392,7 +392,7 @@ func (stack ucpStack) bookkeeping(
 	t.Helper()
 	ctx := context.Background()
 	store := checkout.NewStore(stack.rdb, ucpUpstreamTimeout)
-	s, err := store.Load(ctx, "demostore", id)
+	s, err := store.LoadAnyProtocol(ctx, "demostore", id)
 	require.NoError(t, err)
 	out := bookkeeping{Session: s.Status, Key: keySpent}
 
@@ -670,12 +670,24 @@ func changeBy(surface string) map[string]any {
 	return otherBuyer()
 }
 
+// keepingCart is what a complete over surface submits to place an order
+// whose cart Django keeps, and the status the checkout is left in. UCP's
+// buyer pays on the store's hosted page, and the checkout awaits that
+// payment. ACP places pay-later orders only, whose cart the fake keeps
+// unless cartDeletedOnOrder is set.
+func keepingCart(surface string) (map[string]any, string) {
+	if surface == "ucp" {
+		return changeBy("ucp"), "requires_escalation"
+	}
+	return nil, "completed"
+}
+
 func (stack ucpStack) storedSession(
 	t *testing.T, id string,
 ) *checkout.Session {
 	t.Helper()
 	s, err := checkout.NewStore(stack.rdb, ucpUpstreamTimeout).
-		Load(context.Background(), "demostore", id)
+		LoadAnyProtocol(context.Background(), "demostore", id)
 	require.NoError(t, err)
 	return s
 }
@@ -863,9 +875,8 @@ func TestCompleteWithoutItsClaimWritesNothing(t *testing.T) {
 	}
 }
 
-// A checkout that is canceled, or that has placed its order, is closed:
-// a complete that submits something new is refused and changes nothing
-// in it.
+// A canceled checkout is closed: a complete that submits something new
+// is refused and changes nothing in it.
 func TestCompleteLeavesAClosedSessionAsItIs(t *testing.T) {
 	stack := startUCPGateway(t)
 	ctx := context.Background()
@@ -886,27 +897,4 @@ func TestCompleteLeavesAClosedSessionAsItIs(t *testing.T) {
 			assert.Equal(t, before, stack.storedBytes(t, id))
 		})
 	}
-
-	// A checkout answers on either surface by its id. UCP retries the
-	// payment link of an escalated one, so ACP is where a complete could
-	// write to it.
-	t.Run("awaiting payment, over acp", func(t *testing.T) {
-		id := surfaces["ucp"].ready(t)
-		require.Equal(t, "requires_escalation", surfaces["ucp"].complete(
-			ctx, id, uuid.NewString(), changeBy("ucp")))
-		before := stack.storedBytes(t, id)
-
-		// The order a complete asks for exists: the session is answered
-		// as it is, and what the call submitted is not stored.
-		answer := surfaces["acp"].answer(
-			ctx, id, uuid.NewString(), changeBy("acp"))
-		require.Equal(t, "requires_escalation", answer.status)
-		// continue_url is the payment page the store opened for the
-		// order, as its message says, and the message names the order.
-		assert.Equal(t, vivaCheckoutURL, answer.continueURL)
-		assert.Contains(t, answer.text, "Order "+fixtureOrderUUID+
-			" is placed and awaits its payment")
-
-		assert.Equal(t, before, stack.storedBytes(t, id))
-	})
 }

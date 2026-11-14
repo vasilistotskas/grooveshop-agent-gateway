@@ -84,7 +84,7 @@ func (stack ucpStack) storedMeanwhile(t *testing.T, id string) {
 			return nil
 		}
 		ctx := context.Background()
-		other, err := store.Load(ctx, "demostore", id)
+		other, err := store.LoadAnyProtocol(ctx, "demostore", id)
 		if err != nil {
 			return err
 		}
@@ -195,37 +195,49 @@ func TestACheckoutThatMayHaveAnOrderTakesNoChange(t *testing.T) {
 	surfaces := surfacesByName(t, stack)
 	states := []struct {
 		name string
-		// reach returns a checkout in the state.
-		reach func(t *testing.T) string
+		// reach returns a checkout of surface in the state.
+		reach func(t *testing.T, surface completionSurface) string
 		want  checkout.Status
-		// acp is how ACP refuses a change of it.
+		// acp is how ACP refuses a change of it; "" for a state no ACP
+		// session reaches.
 		acp string
 	}{
-		{"an order the store did not confirm", func(t *testing.T) string {
+		{"an order the store did not confirm", func(
+			t *testing.T, surface completionSurface,
+		) string {
 			t.Helper()
-			id := surfaces["ucp"].ready(t)
+			id := surface.ready(t)
 			stack.faults.orderCreate.Store(true)
 			defer stack.faults.orderCreate.Store(false)
-			require.Empty(t, surfaces["ucp"].complete(
+			require.Empty(t, surface.complete(
 				ctx, id, uuid.NewString(), nil))
 			return id
 		}, checkout.StatusCompleteInProgress, "409 idempotency_in_flight"},
-		{"an order that awaits its payment", func(t *testing.T) string {
+		// ACP completes only with a collect-later pay way: no ACP order
+		// awaits a payment.
+		{"an order that awaits its payment", func(
+			t *testing.T, surface completionSurface,
+		) string {
 			t.Helper()
-			return awaitingPayment(t, surfaces["ucp"])
-		}, checkout.StatusRequiresEscalation, "405 conflict"},
-		{"a placed order", func(t *testing.T) string {
+			return awaitingPayment(t, surface)
+		}, checkout.StatusRequiresEscalation, ""},
+		{"a placed order", func(
+			t *testing.T, surface completionSurface,
+		) string {
 			t.Helper()
-			id := surfaces["ucp"].ready(t)
-			require.Equal(t, "completed", surfaces["ucp"].complete(
+			id := surface.ready(t)
+			require.Equal(t, "completed", surface.complete(
 				ctx, id, uuid.NewString(), nil))
 			return id
 		}, checkout.StatusCompleted, "405 conflict"},
 	}
 	for _, state := range states {
 		for name, surface := range surfaces {
+			if name == "acp" && state.acp == "" {
+				continue
+			}
 			t.Run(state.name+" over "+name, func(t *testing.T) {
-				id := state.reach(t)
+				id := state.reach(t, surface)
 				require.Equal(t, state.want,
 					stack.storedSession(t, id).Status)
 				stored := stack.storedBytes(t, id)
@@ -309,8 +321,10 @@ func TestAnUpdatePastItsLockIsNotToldToStartOver(t *testing.T) {
 		ctx := context.Background()
 		stack := startUCPGateway(t)
 		surfaces := surfacesByName(t, stack)
-		id := surfaces["ucp"].ready(t)
-		// An order that is not this checkout's takes the cart: the fake
+		ids := map[string]string{
+			"acp": surfaces["acp"].ready(t), "ucp": surfaces["ucp"].ready(t),
+		}
+		// An order that is not these checkouts' takes the cart: the fake
 		// deletes every cart with the first order it places.
 		other := surfaces["ucp"].ready(t)
 		stack.faults.cartDeletedOnOrder.Store(true)
@@ -318,8 +332,8 @@ func TestAnUpdatePastItsLockIsNotToldToStartOver(t *testing.T) {
 			ctx, other, uuid.NewString(), nil))
 
 		assert.Equal(t, "400 not_found",
-			surfaces["acp"].updateLines(ctx, id).refusal)
-		gone := surfaces["ucp"].updateLines(ctx, id).refusal
+			surfaces["acp"].updateLines(ctx, ids["acp"]).refusal)
+		gone := surfaces["ucp"].updateLines(ctx, ids["ucp"]).refusal
 		assert.Contains(t, gone, "the checkout's cart no longer exists")
 		assert.Contains(t, gone, "The checkout was not updated")
 	})

@@ -294,3 +294,78 @@ func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
 		}
 	}
 }
+
+// complete_checkout and cancel_checkout take an idempotency key of 1 to
+// 255 visible ASCII characters, which ends a Redis key. One outside that
+// form is refused, saying what form is expected, before the store is
+// asked: these handlers' store cannot be reached, so a call that asked
+// it would answer unavailable, as one with a key inside the bound does.
+func TestCompleteAndCancelBoundTheIdempotencyKey(t *testing.T) {
+	id := uuid.NewString()
+	calls := map[string]func(
+		context.Context, *handlers, *MetaIn,
+	) error{
+		"complete_checkout": func(
+			ctx context.Context, h *handlers, meta *MetaIn,
+		) error {
+			_, _, err := h.completeCheckout(ctx, nil,
+				CompleteCheckoutIn{Meta: meta, ID: id})
+			return err
+		},
+		"cancel_checkout": func(
+			ctx context.Context, h *handlers, meta *MetaIn,
+		) error {
+			_, _, err := h.cancelCheckout(ctx, nil,
+				CancelCheckoutIn{Meta: meta, ID: id})
+			return err
+		},
+	}
+	outside := []string{
+		strings.Repeat("k", checkout.MaxIdempotencyKeyLen+1),
+		"a key with spaces", "tab\there", "line\nbreak", "κλειδί",
+	}
+	inside := []string{
+		uuid.NewString(), "Zk3pQ9wL2mX7vB4nR8tY1c",
+		strings.Repeat("~", checkout.MaxIdempotencyKeyLen),
+	}
+	for tool, call := range calls {
+		t.Run(tool, func(t *testing.T) {
+			dj, _ := ucpDjango(t)
+			h := ucpHandlers(t, dj)
+			ctx := tenant.NewContext(context.Background(), cartTenant())
+			for _, key := range outside {
+				err := call(ctx, h, ucpMeta(t, key))
+				require.ErrorIs(t, err, errIdempotencyKeyForm, key)
+				assert.Contains(t, err.Error(),
+					"1 to 255 visible ASCII characters", key)
+			}
+			for _, key := range inside {
+				err := call(ctx, h, ucpMeta(t, key))
+				assert.ErrorIs(t, err, errCheckoutUnavailable, key)
+			}
+		})
+	}
+}
+
+// A checkout that is not open takes no update and no cancel, whatever
+// state it is in: closedTo decides on Session.Open alone, the predicate
+// ACP's refuseChange decides on too.
+func TestClosedToRefusesWhatIsNotOpen(t *testing.T) {
+	dj, _ := ucpDjango(t)
+	h := ucpHandlers(t, dj)
+	h.deps.Flow = checkout.NewFlow(dj, h.deps.Checkout, testSite,
+		slog.New(slog.DiscardHandler))
+	for _, status := range []checkout.Status{
+		checkout.StatusIncomplete, checkout.StatusReadyForComplete,
+		checkout.StatusCompleteInProgress, checkout.StatusRequiresEscalation,
+		checkout.StatusCompleted, checkout.StatusCanceled,
+	} {
+		s := checkout.NewSession("demostore", "shop.test",
+			checkout.ProtocolUCP, fixtureCartID)
+		s.Status = status
+		for _, action := range []string{"updated", "canceled"} {
+			err := h.closedTo(context.Background(), s, action)
+			assert.Equal(t, !s.Open(), err != nil, "%s %s", status, action)
+		}
+	}
+}
