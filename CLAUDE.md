@@ -817,9 +817,11 @@ passes.
     then get a second checkout: the gateway cannot close that alone.
     What holds whatever Redis lost is Django, which refuses an
     agent's order from a cart whose earlier order still awaits its
-    online payment (django-api #693; `code`
-    `cart_has_unpaid_order`, which reaches the caller as Django
-    wrote it).
+    online payment (django-api #693, `code`
+    `cart_has_unpaid_order`). A UCP caller gets that code and
+    Django's sentence; ACP answers 400 `invalid_request` with the
+    sentence and its generic code (#154 gives the refusal its own
+    answer on both).
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before
