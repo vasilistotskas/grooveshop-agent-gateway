@@ -206,8 +206,8 @@ func (s *Session) ttl(now time.Time) time.Duration {
 
 // payWaySelectionRequired reports whether readiness includes an explicit
 // payment-method choice. UCP agents pick a pay way before complete; on
-// ACP payment is the platform's concern — the merchant resolves the pay
-// way at completion time (delegated token, or cash on delivery).
+// ACP the merchant resolves a collect-later pay way at completion time,
+// and Flow.admit refuses an online one there.
 func (s *Session) payWaySelectionRequired() bool {
 	return s.Protocol != ProtocolACP
 }

@@ -875,9 +875,8 @@ func TestCompleteWithoutItsClaimWritesNothing(t *testing.T) {
 	}
 }
 
-// A checkout that is canceled, or that has placed its order, is closed:
-// a complete that submits something new is refused and changes nothing
-// in it.
+// A canceled checkout is closed: a complete that submits something new
+// is refused and changes nothing in it.
 func TestCompleteLeavesAClosedSessionAsItIs(t *testing.T) {
 	stack := startUCPGateway(t)
 	ctx := context.Background()
@@ -898,24 +897,4 @@ func TestCompleteLeavesAClosedSessionAsItIs(t *testing.T) {
 			assert.Equal(t, before, stack.storedBytes(t, id))
 		})
 	}
-
-	// UCP retries the payment link of an escalated checkout, so ACP is
-	// where a complete could write to one.
-	t.Run("awaiting payment, over acp", func(t *testing.T) {
-		id := stack.awaitingPaymentOn(t, surfaces["acp"])
-		before := stack.storedBytes(t, id)
-
-		// The order a complete asks for exists: the session is answered
-		// as it is, and what the call submitted is not stored.
-		answer := surfaces["acp"].answer(
-			ctx, id, uuid.NewString(), changeBy("acp"))
-		require.Equal(t, "requires_escalation", answer.status)
-		// continue_url is the payment page the store opened for the
-		// order, as its message says, and the message names the order.
-		assert.Equal(t, vivaCheckoutURL, answer.continueURL)
-		assert.Contains(t, answer.text, "Order "+fixtureOrderUUID+
-			" is placed and awaits its payment")
-
-		assert.Equal(t, before, stack.storedBytes(t, id))
-	})
 }

@@ -425,12 +425,11 @@ Two limits. Redis can evict the record while its session lives. Every read of a 
 | Case | Expected and observed |
 |---|---|
 | Update or cancel a completed checkout | Refused, naming the order |
-| Update or cancel a checkout whose order awaits its payment (UCP `requires_escalation`) | Refused, naming the order: the buyer could still pay a checkout that read cancelled. ACP: 405 `conflict` |
+| Update or cancel a checkout whose order awaits its payment (UCP `requires_escalation`) | Refused, naming the order: the buyer could still pay a checkout that read cancelled. No ACP session reaches it: ACP completes only with a collect-later pay way, checked again when the order is placed |
 | Update, complete or cancel while the order is being placed | UCP: "a completion of this checkout is in progress or unconfirmed; check its status shortly". ACP: 409 `idempotency_in_flight` with `Retry-After` |
 | Update, complete or cancel once that completion can no longer be running and the store never confirmed the order | UCP: "the store never confirmed whether this checkout's order was placed, and that will not change", with what a person can do (the store's order confirmation email, or asking the store) and not to start another checkout. ACP: 502 `order_outcome_unknown` |
 | A read (`get_checkout`, ACP GET) of a session in either of those two states | It renders while the cart still reads: status `complete_in_progress`, no link back to the cart. On UCP the text beside the status is the same guidance the other tools give for that state. When the cart no longer reads (it may have gone with the order), the read gets the answer of the two rows above |
 | Any call on a session in progress whose order is known: the completion placed it and could not save the session | UCP: "the order was placed but checkout state could not be saved; track it with track_order using orderUuid …". ACP: 500 `order_placed`, naming the order. The order was recorded beside the session when Django returned it; the next order event records it on the session |
-| ACP read or complete of a session whose order awaits its payment | 200 with the session: `requires_escalation`; `continue_url` is the payment page the store opened for the order, as on UCP (the order page when no payment page could be opened); a message names the order and says not to start another checkout. Nothing is stored |
 | Complete of a cancelled checkout | UCP: "is canceled and cannot be completed". ACP: 405 |
 | Update a cancelled checkout | Refused |
 | Cancel an ACP session twice | 405 |

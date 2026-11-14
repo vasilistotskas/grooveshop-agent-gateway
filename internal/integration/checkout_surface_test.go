@@ -169,3 +169,34 @@ func TestACartsHolderIsReadOnEitherProtocol(t *testing.T) {
 		assert.False(t, seen.Free(), protocol)
 	}
 }
+
+// ACP completes only with a collect-later pay way, checked again on the
+// pay ways the store answers when the order is placed. A pay way that
+// reads as settled online by then places no order: the complete is
+// refused, the session stays ready, and its key is free for the same
+// call.
+func TestACPCompletesOnlyWithACollectLaterPayWay(t *testing.T) {
+	ctx := context.Background()
+	stack := startUCPGateway(t)
+	surface := surfacesByName(t, stack)["acp"]
+	id := surface.ready(t)
+	creates := stack.faults.orderCreates.Load()
+	key := uuid.NewString()
+	// The complete reads the pay ways twice: to choose one, then when
+	// the order is about to be placed. Only the second reads online.
+	stack.faults.codOnlineFrom.Store(stack.faults.payWayReads.Load() + 2)
+
+	answer := surface.answer(ctx, id, key, nil)
+
+	assert.Equal(t, "400 unsupported", answer.refusal)
+	assert.Equal(t, creates, stack.faults.orderCreates.Load())
+	assert.Equal(t, checkout.StatusReadyForComplete,
+		stack.storedSession(t, id).Status)
+	n, err := stack.rdb.Exists(ctx, surface.keyName(id, key)).Result()
+	require.NoError(t, err)
+	assert.Zero(t, n, "the key is still held")
+
+	stack.faults.codOnlineFrom.Store(0)
+	assert.Equal(t, "completed", surface.complete(ctx, id, key, nil))
+	assert.Equal(t, creates+1, stack.faults.orderCreates.Load())
+}

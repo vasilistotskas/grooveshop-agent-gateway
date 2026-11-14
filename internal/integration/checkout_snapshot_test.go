@@ -152,25 +152,21 @@ func TestAnUpdatePastItsLockWritesNoCartOfACheckoutStoredSince(
 func TestARenderFromAStaleSnapshotAnswersTheStoredCheckout(t *testing.T) {
 	ctx := context.Background()
 	stack := startUCPGateway(t)
-	surfaces := surfacesByName(t, stack)
-	for _, name := range []string{"acp", "ucp"} {
-		t.Run(name, func(t *testing.T) {
-			id := stack.awaitingPaymentOn(t, surfaces[name])
-			stack.onSessionRead(t, id, exitRead, func() error {
-				status, err := stack.orderEvent("COMPLETED")
-				if err == nil && status != http.StatusNoContent {
-					err = fmt.Errorf("the payment event answered %d", status)
-				}
-				return err
-			})
+	surface := surfacesByName(t, stack)["ucp"]
+	id := awaitingPayment(t, surface)
+	stack.onSessionRead(t, id, exitRead, func() error {
+		status, err := stack.orderEvent("COMPLETED")
+		if err == nil && status != http.StatusNoContent {
+			err = fmt.Errorf("the payment event answered %d", status)
+		}
+		return err
+	})
 
-			answer := surfaces[name].answer(ctx, id, uuid.NewString(), nil)
+	answer := surface.answer(ctx, id, uuid.NewString(), nil)
 
-			assert.Equal(t, "completed", answer.status, answer.refusal)
-			assert.Equal(t, checkout.StatusCompleted,
-				stack.storedSession(t, id).Status)
-		})
-	}
+	assert.Equal(t, "completed", answer.status, answer.refusal)
+	assert.Equal(t, checkout.StatusCompleted,
+		stack.storedSession(t, id).Status)
 }
 
 // The save that marks a session in progress is what guards the order.

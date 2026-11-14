@@ -499,15 +499,17 @@ passes.
     `order_outcome_unknown`, no `Retry-After`. A session in progress
     whose order is known (`Flow.PlacedOrder`) answers neither: 500
     `order_placed`, naming the order (`writePlacedUnsaved`).
+  - ACP completes only with a collect-later pay way: the handler
+    chooses one (`checkout.OfflinePayWay`), and `Flow.admit` refuses an
+    online pay way for a session whose platform does not choose it
+    (`payWaySelectionRequired`) on the store's answer when the order is
+    placed, as `ErrPaymentMethodUnsupported`. So no ACP session awaits
+    a payment.
   - A session that is not open refuses update and cancel
-    (`refuseChange`): 405 and an `Allow` header once it is completed,
-    canceled or awaiting its payment, the in-flight answer while its
-    order is being placed. A canceled one refuses complete with 405. A
-    complete of a session whose order is placed (completed, or awaiting
-    payment) answers 200 with the session. The `continue_url` of one
-    awaiting payment is the payment page the store opened for the
-    order (`Session.PaymentURL`), as on UCP, and its message names the
-    order; without a payment page it is the order's page.
+    (`refuseChange`): 405 and an `Allow` header once it is completed or
+    canceled, the in-flight answer while its order is being placed. A
+    canceled one refuses complete with 405. A complete of a completed
+    session answers 200 with the session.
   - A create stores the response it sent (status and body) with its
     key (`createScope`, versioned with that record); a replay with the
     same body answers those bytes for the record's 24 hours, whether
@@ -685,8 +687,8 @@ passes.
     #637). `docs/agent-protocols-runbook.md` section 11 is the
     operator's side.
   - A complete of one answers what it is, before any lookup: the
-    session when its order is placed (completed, or awaiting payment,
-    on ACP too), in flight while it is being placed, canceled when it
+    session when its order is placed (completed, or on UCP awaiting
+    payment), in flight while it is being placed, canceled when it
     is. A session being placed is "in flight" only until
     `Flow.CompletionDeadline`; past it, both surfaces say the outcome
     was never recorded (ACP `order_outcome_unknown`, UCP

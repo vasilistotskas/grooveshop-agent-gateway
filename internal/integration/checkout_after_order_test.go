@@ -105,27 +105,6 @@ func awaitingPayment(
 	return id
 }
 
-// awaitingPaymentOn returns a checkout of surface whose order is placed
-// and awaits its hosted payment. ACP places pay-later orders only, so an
-// ACP checkout is placed and then stored as one awaiting the payment page
-// the fake store opens.
-func (stack ucpStack) awaitingPaymentOn(
-	t *testing.T, surface completionSurface,
-) string {
-	t.Helper()
-	if surface.name == "ucp" {
-		return awaitingPayment(t, surface)
-	}
-	id := surface.ready(t)
-	require.Equal(t, "completed", surface.complete(
-		context.Background(), id, uuid.NewString(), nil))
-	stack.become(t, id, func(s *checkout.Session) {
-		s.Status = checkout.StatusRequiresEscalation
-		s.PaymentURL = vivaCheckoutURL
-	})
-	return id
-}
-
 // A save that lost to another request wrote nothing, and its request
 // must say so: answered as done, a cancel would be believed, a payment
 // link lost, and a payment event never delivered again.
@@ -219,7 +198,8 @@ func TestACheckoutThatMayHaveAnOrderTakesNoChange(t *testing.T) {
 		// reach returns a checkout of surface in the state.
 		reach func(t *testing.T, surface completionSurface) string
 		want  checkout.Status
-		// acp is how ACP refuses a change of it.
+		// acp is how ACP refuses a change of it; "" for a state no ACP
+		// session reaches.
 		acp string
 	}{
 		{"an order the store did not confirm", func(
@@ -233,8 +213,14 @@ func TestACheckoutThatMayHaveAnOrderTakesNoChange(t *testing.T) {
 				ctx, id, uuid.NewString(), nil))
 			return id
 		}, checkout.StatusCompleteInProgress, "409 idempotency_in_flight"},
-		{"an order that awaits its payment", stack.awaitingPaymentOn,
-			checkout.StatusRequiresEscalation, "405 conflict"},
+		// ACP completes only with a collect-later pay way: no ACP order
+		// awaits a payment.
+		{"an order that awaits its payment", func(
+			t *testing.T, surface completionSurface,
+		) string {
+			t.Helper()
+			return awaitingPayment(t, surface)
+		}, checkout.StatusRequiresEscalation, ""},
 		{"a placed order", func(
 			t *testing.T, surface completionSurface,
 		) string {
@@ -247,6 +233,9 @@ func TestACheckoutThatMayHaveAnOrderTakesNoChange(t *testing.T) {
 	}
 	for _, state := range states {
 		for name, surface := range surfaces {
+			if name == "acp" && state.acp == "" {
+				continue
+			}
 			t.Run(state.name+" over "+name, func(t *testing.T) {
 				id := state.reach(t, surface)
 				require.Equal(t, state.want,

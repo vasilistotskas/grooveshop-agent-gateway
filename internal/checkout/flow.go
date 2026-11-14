@@ -279,6 +279,16 @@ func (f *Flow) admit(
 		)
 	}
 	if payWay.IsOnlineSettlement() {
+		// A surface whose platform does not choose the pay way (ACP)
+		// completes only with a collect-later one. Its handler chose one,
+		// and the store's answer read here is what the order is placed
+		// with, so the rule is checked again on that answer.
+		if !s.payWaySelectionRequired() {
+			return nil, fmt.Errorf(
+				"%w: pay way %d is settled online, and this surface "+
+					"completes only with a collect-later one",
+				ErrPaymentMethodUnsupported, payWay.ID)
+		}
 		if payWay.ProviderCode != django.ProviderVivaWallet {
 			return nil, ErrPaymentMethodUnsupported
 		}

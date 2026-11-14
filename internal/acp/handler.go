@@ -979,14 +979,15 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 
 // completeClosed answers a complete of a session that is not open, and
 // reports whether it did. One that placed its order is answered with
-// the session: completed, or awaiting the payment its continue_url
-// leads to. The order is what a complete asks for, and it exists.
+// the completed session: the order is what a complete asks for, and it
+// exists. An ACP session never awaits a payment: it completes only with
+// a collect-later pay way (checkout.Flow.Complete).
 func (h *Handler) completeClosed(
 	w http.ResponseWriter, r *http.Request, t *tenant.Tenant,
 	s *checkout.Session,
 ) bool {
 	switch s.Status {
-	case checkout.StatusCompleted, checkout.StatusRequiresEscalation:
+	case checkout.StatusCompleted:
 		h.render(w, r, t, s)
 	case checkout.StatusCompleteInProgress:
 		h.writeCompletionPending(w, r, s)
@@ -1234,8 +1235,8 @@ const updateAllow = http.MethodGet + ", " + http.MethodHead
 
 // refuseChange answers an update or a cancel (what names it: "change",
 // "be canceled") of a session that takes neither, and reports whether it
-// did: one whose order is being placed, and one that is canceled or may
-// have an order (405, with what the target still serves).
+// did: one whose order is being placed, and one that is canceled or
+// completed (405, with what the target still serves).
 func (h *Handler) refuseChange(
 	w http.ResponseWriter, r *http.Request, s *checkout.Session,
 	allow, what string,
@@ -1245,9 +1246,6 @@ func (h *Handler) refuseChange(
 		return false
 	case s.Status == checkout.StatusCompleteInProgress:
 		h.writeCompletionPending(w, r, s)
-	case s.Status == checkout.StatusRequiresEscalation:
-		writeClosed(w, allow, "Session has placed an order that awaits "+
-			"its payment and cannot "+what+".")
 	default:
 		writeClosed(w, allow,
 			fmt.Sprintf("Session is %s and cannot %s.", s.Status, what))
