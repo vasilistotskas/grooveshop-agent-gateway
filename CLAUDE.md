@@ -644,7 +644,11 @@ passes.
     Django's wording. The in-progress save and the save after the
     order call each get one more attempt when Redis fails them, with
     the same write: a first that was stored and lost only its reply is
-    recognised as this call's.
+    recognised as this call's. When Redis fails both attempts of the
+    in-progress save, the completion reads the session once
+    (`Store.wasStored`): if it holds the save's revision, which no other
+    write can carry, the save is this call's and the order is placed;
+    if not, or if the read fails too, `NothingPlaced`.
   - **The lock only orders requests** (`Store.Lock`, `ErrLocked`). It
     lasts `lockSteps` upstream timeouts: what a completion does under
     it when Django answers every call just inside its timeout. A
