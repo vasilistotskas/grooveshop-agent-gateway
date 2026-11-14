@@ -164,6 +164,8 @@ func TestRoutesAnswerSpecErrors(t *testing.T) {
 			headers: map[string]string{"Idempotency-Key": ""},
 			status:  http.StatusBadRequest, code: "idempotency_key_required",
 		},
+		// A key outside 1 to 255 visible ASCII characters is refused
+		// before Redis is asked: with Redis down it is still invalid.
 		{
 			name:   "an Idempotency-Key over 255 characters",
 			method: http.MethodPost, path: "/acp/checkout_sessions",
@@ -172,6 +174,28 @@ func TestRoutesAnswerSpecErrors(t *testing.T) {
 				"Idempotency-Key": strings.Repeat("k", 256),
 			},
 			status: http.StatusBadRequest, code: "invalid",
+		},
+		{
+			name:   "an Idempotency-Key with a space",
+			method: http.MethodPost, path: "/acp/checkout_sessions",
+			body:    createBody,
+			headers: map[string]string{"Idempotency-Key": "key one"},
+			status:  http.StatusBadRequest, code: "invalid",
+		},
+		{
+			name:   "an Idempotency-Key with a byte outside ASCII",
+			method: http.MethodPost, path: session + "/cancel", body: "{}",
+			headers: map[string]string{"Idempotency-Key": "κλειδί"},
+			status:  http.StatusBadRequest, code: "invalid",
+		},
+		{
+			name:   "a UUID Idempotency-Key reaches Redis",
+			method: http.MethodPost, path: "/acp/checkout_sessions",
+			body: createBody,
+			headers: map[string]string{
+				"Idempotency-Key": "550e8400-e29b-41d4-a716-446655440000",
+			},
+			status: http.StatusServiceUnavailable, code: "unavailable",
 		},
 		{
 			name: "Redis down on a create", method: http.MethodPost,

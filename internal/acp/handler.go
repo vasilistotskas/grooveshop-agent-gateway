@@ -247,8 +247,16 @@ func bodyHash(raw []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// maxIdempotencyKeyLen is the spec's bound on the header.
-const maxIdempotencyKeyLen = 255
+// errKeyForm refuses an Idempotency-Key outside
+// checkout.ValidIdempotencyKey: the spec's "Opaque string, max 255
+// characters. UUID v4 recommended.", in visible ASCII, the rule UCP's key
+// follows too.
+var errKeyForm = Error{
+	Type: "invalid_request", Code: "invalid", Param: "Idempotency-Key",
+	Message: fmt.Sprintf("The Idempotency-Key header must be 1 to %d "+
+		"visible ASCII characters, such as a UUID.",
+		checkout.MaxIdempotencyKeyLen),
+}
 
 // idemRetryAfter is the Retry-After sent with a 409 for a key whose first
 // request, or another request on the same session, is still running.
@@ -327,12 +335,8 @@ func (h *Handler) claimKey(
 			Message: "The Idempotency-Key header is required.",
 		})
 	}
-	if len(key) > maxIdempotencyKeyLen {
-		return "", nil, nil, refusal(http.StatusBadRequest, Error{
-			Type: "invalid_request", Code: "invalid",
-			Param:   "Idempotency-Key",
-			Message: "The Idempotency-Key header exceeds 255 characters.",
-		})
+	if !checkout.ValidIdempotencyKey(key) {
+		return "", nil, nil, refusal(http.StatusBadRequest, errKeyForm)
 	}
 	inFlight := func(w http.ResponseWriter) {
 		writeInFlight(w, idemRetryAfter, msgKeyInFlight)
@@ -1303,11 +1307,7 @@ func (h *Handler) completeError(
 	// ErrInvalidIdempotencyKey is UCP's completion claim's, and is
 	// answered as claimKey answers a header out of its bound.
 	case errors.Is(err, checkout.ErrInvalidIdempotencyKey):
-		writeError(w, http.StatusBadRequest, Error{
-			Type: "invalid_request", Code: "invalid",
-			Param:   "Idempotency-Key",
-			Message: "The Idempotency-Key header is not of an accepted form.",
-		})
+		writeError(w, http.StatusBadRequest, errKeyForm)
 	case errors.Is(err, checkout.ErrPayWayUnavailable),
 		errors.Is(err, checkout.ErrPaymentMethodUnsupported):
 		writeError(w, http.StatusBadRequest, Error{

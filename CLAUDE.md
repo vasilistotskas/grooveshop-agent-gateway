@@ -488,6 +488,9 @@ passes.
   - A request whose `API-Version` is not `acp.Version` gets 400
     `missing_api_version` or `unsupported_api_version` with
     `supported_versions`.
+  - An `Idempotency-Key` outside `checkout.ValidIdempotencyKey` (1 to
+    255 visible ASCII characters, the rule UCP's key follows) is 400
+    `invalid` at `Idempotency-Key`, before Redis is asked (`errKeyForm`).
   - 409 is only `idempotency_in_flight`, with `Retry-After`: a key or
     the session lock in use, a session another request stored while
     this one ran (`checkout.ErrSessionChanged`), or an order being

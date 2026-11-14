@@ -130,14 +130,15 @@ func CanonicalCartID(id string) (string, bool) {
 	return u.String(), true
 }
 
-// MaxIdempotencyKeyLen bounds a completion's idempotency key, which ends
-// a Redis key. The UCP spec sets no maximum; this is ACP's header bound.
+// MaxIdempotencyKeyLen bounds an idempotency key, which ends a Redis key.
+// ACP's spec sets it ("max 255 characters"); UCP's sets no maximum.
 const MaxIdempotencyKeyLen = 255
 
-// ValidIdempotencyKey reports whether key is 1 to MaxIdempotencyKeyLen
-// visible US-ASCII characters (0x21 to 0x7E). The UCP spec asks for at
-// least 128 bits of entropy, "e.g., UUID v4, 22+ char alphanumeric", and
-// carries the key as a signed Idempotency-Key header too: both fit.
+// ValidIdempotencyKey is the one rule for an idempotency key on both
+// surfaces: 1 to MaxIdempotencyKeyLen visible US-ASCII characters (0x21
+// to 0x7E). ACP's spec calls the key an "Opaque string" and recommends a
+// UUID v4; UCP's asks for at least 128 bits of entropy, "e.g., UUID v4,
+// 22+ char alphanumeric". Both carry it as an Idempotency-Key header.
 func ValidIdempotencyKey(key string) bool {
 	if key == "" || len(key) > MaxIdempotencyKeyLen {
 		return false
