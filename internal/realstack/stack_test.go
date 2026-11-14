@@ -59,6 +59,18 @@ const (
 // startupDeadline bounds a service coming up; a management command gets longer.
 const startupDeadline = 5 * time.Minute
 
+// gatewayRedisDB is the Redis database the gateway keeps its records in;
+// Django's are in another.
+const gatewayRedisDB = "1"
+
+// paymentHosts are where Django opens a payment page for the store's online
+// pay way. The stack leads them to a container that serves nothing there, so
+// an order is placed and its payment page is refused at once, and no run
+// reaches the provider.
+var paymentHosts = []string{
+	"demo-accounts.vivapayments.com", "demo-api.vivapayments.com",
+}
+
 //go:embed testdata/seed.py
 var seedScript string
 
@@ -77,6 +89,7 @@ type stack struct {
 	profileURL string
 	django     testcontainers.Container
 	gateway    testcontainers.Container
+	redis      testcontainers.Container
 	seeded     seeded
 }
 
@@ -170,18 +183,24 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 	}
 	removeNetwork = func() { _ = nw.Remove(ctx) }
 
-	start := func(
-		image, alias string, opts ...testcontainers.ContainerCustomizer,
+	startAs := func(
+		image string, aliases []string,
+		opts ...testcontainers.ContainerCustomizer,
 	) (testcontainers.Container, error) {
 		c, err := testcontainers.Run(ctx, image, append(opts,
-			network.WithNetwork([]string{alias}, nw))...)
+			network.WithNetwork(aliases, nw))...)
 		if c != nil {
 			containers = append(containers, c)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", alias, err)
+			return nil, fmt.Errorf("%s: %w", aliases[0], err)
 		}
 		return c, nil
+	}
+	start := func(
+		image, alias string, opts ...testcontainers.ContainerCustomizer,
+	) (testcontainers.Container, error) {
+		return startAs(image, []string{alias}, opts...)
 	}
 
 	meiliKey := randomHex()
@@ -205,10 +224,11 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 	); err != nil {
 		return nil, cleanup, err
 	}
-	if _, err := start(redisImage, "redis",
+	redis, err := start(redisImage, "redis",
 		testcontainers.WithWaitStrategyAndDeadline(startupDeadline,
 			wait.ForLog("Ready to accept connections")),
-	); err != nil {
+	)
+	if err != nil {
 		return nil, cleanup, err
 	}
 	if _, err := start(rabbitImage, "rabbitmq",
@@ -358,7 +378,9 @@ with schema_context("demostore"):
 		return nil, cleanup, err
 	}
 	defer func() { _ = profile.Close() }()
-	if _, err := start(profileImage, "profile",
+	// It answers for the payment provider's hosts too, with nothing on 443.
+	if _, err := startAs(profileImage,
+		append([]string{"profile"}, paymentHosts...),
 		testcontainers.WithFiles(testcontainers.ContainerFile{
 			Reader:            profile,
 			ContainerFilePath: "/srv/profile.json",
@@ -378,7 +400,7 @@ with schema_context("demostore"):
 			"ENV":                       "development",
 			"DJANGO_BASE_URL":           "http://backend:8000/api/v1",
 			"DJANGO_PUBLIC_HOST":        platformHost,
-			"REDIS_URL":                 "redis://redis:6379/1",
+			"REDIS_URL":                 "redis://redis:6379/" + gatewayRedisDB,
 			"INTERNAL_EVENTS_SECRET":    secret,
 			"ASSETS_HOST":               "assets.localhost",
 			"STAFF_CONNECT_HOST":        connectHost,
@@ -400,6 +422,7 @@ with schema_context("demostore"):
 		profileURL: "http://profile:8090/profile.json",
 		django:     django,
 		gateway:    gateway,
+		redis:      redis,
 		seeded:     data,
 	}, cleanup, nil
 }

@@ -43,6 +43,12 @@ func (h hostTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func connect(t *testing.T, token string) *mcp.ClientSession {
 	t.Helper()
+	return connectVia(t, hostTransport{storeHost, token})
+}
+
+// connectVia opens a session with the store's MCP server over transport.
+func connectVia(t *testing.T, transport http.RoundTripper) *mcp.ClientSession {
+	t.Helper()
 	client := mcp.NewClient(
 		&mcp.Implementation{Name: "real-stack", Version: "test"}, nil)
 	session, err := client.Connect(context.Background(),
@@ -50,7 +56,7 @@ func connect(t *testing.T, token string) *mcp.ClientSession {
 			Endpoint: running.gatewayURL + "/mcp",
 			HTTPClient: &http.Client{
 				Timeout:   requestTimeout,
-				Transport: hostTransport{storeHost, token},
+				Transport: transport,
 			},
 			DisableStandaloneSSE: true,
 		}, nil)
@@ -116,6 +122,22 @@ var cashOnDelivery = map[string]any{"instruments": []any{map[string]any{
 	"type":       "cash_on_delivery", "selected": true,
 }}}
 
+var buyer = map[string]any{
+	"first_name": "Real", "last_name": "Stack",
+	"email":        "real-stack@example.test",
+	"phone_number": "+306912345678",
+}
+
+// homeDelivery is a complete delivery to an address in country.
+func homeDelivery(country string) map[string]any {
+	return map[string]any{
+		"kind": "home_delivery", "providerCode": "flat_rate",
+		"countryCode": country, "city": "Αθήνα", "zipcode": "10431",
+		"street": "Πανεπιστημίου", "streetNumber": "12",
+		"regionId": "GR-14",
+	}
+}
+
 // placeUCPOrder buys one unit through the canonical tools.
 func placeUCPOrder(
 	t *testing.T, s *mcp.ClientSession, product, country string,
@@ -133,18 +155,9 @@ func placeUCPOrder(
 	updated := structured(t, call(t, s, "update_checkout", map[string]any{
 		"meta": meta(""), "id": checkoutID,
 		"checkout": map[string]any{
-			"buyer": map[string]any{
-				"first_name": "Real", "last_name": "Stack",
-				"email":        "real-stack@example.test",
-				"phone_number": "+306912345678",
-			},
-			"fulfillment": map[string]any{
-				"kind": "home_delivery", "providerCode": "flat_rate",
-				"countryCode": country, "city": "Αθήνα", "zipcode": "10431",
-				"street": "Πανεπιστημίου", "streetNumber": "12",
-				"regionId": "GR-14",
-			},
-			"payment": cashOnDelivery,
+			"buyer":       buyer,
+			"fulfillment": homeDelivery(country),
+			"payment":     cashOnDelivery,
 		},
 	}))
 	require.Equal(t, "ready_for_complete", updated["status"], "%v", updated["messages"])
