@@ -211,6 +211,12 @@ func TestFailedFeedRefreshIsNotRetriedByEveryRequest(t *testing.T) {
 	first, err := svc.Meta(ctx, ten, feeds.KindGoogle)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, g.sweeps.Load())
+	// meta.xml is another document, from the same sweep; read without a
+	// request, which would start a refresh of the stale entry.
+	var firstMeta feeds.Meta
+	require.NoError(t, json.Unmarshal(
+		[]byte(rdb.Get(ctx, "ag:demostore:feed:rss:meta").Val()), &firstMeta))
+	require.NotEqual(t, first.ETag, firstMeta.ETag)
 
 	g.broken.Store(true)
 	served, err := svc.Meta(ctx, ten, feeds.KindGoogle)
@@ -228,7 +234,7 @@ func TestFailedFeedRefreshIsNotRetriedByEveryRequest(t *testing.T) {
 	for _, s := range []*feeds.Service{svc, other, svc} {
 		served, err = s.Meta(ctx, ten, feeds.KindMeta)
 		require.NoError(t, err)
-		assert.Equal(t, first.ETag, served.ETag)
+		assert.Equal(t, firstMeta.ETag, served.ETag)
 	}
 	assert.EqualValues(t, 2, g.sweeps.Load(),
 		"no request starts a sweep while the backoff runs")
