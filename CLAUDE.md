@@ -344,8 +344,9 @@ passes.
   request id as `X-Correlation-ID`, the id Django logs the call under
   (`core/middleware/correlation_id.py`).
 - `internal/httpmw` — request-id, access log, rate limit, RED metrics,
-  recover, outermost first (`server.withGlobalChain`). Recover wraps the
-  mux directly, so a handler panic is logged and still gets its access
+  recover, outermost first (`server.withGlobalChain`), inside the
+  server's `surfaceErrors` ("ACP errors are the spec's"). Recover wraps
+  the mux (through `server.unrouted`), so a handler panic is logged and still gets its access
   line and metric: a 500, or the status already sent if the response
   had begun (the status writer keeps the first one). An MCP tool
   handler is the exception: the SDK runs it on a goroutine of its own,
@@ -534,6 +535,10 @@ passes.
     `ag:{schema}:acp:idem:create.v2:{key}`, while the session itself
     lives 30 minutes: the spec requires a key's response to be kept at
     least 24 hours (§6.6). Nothing else reads it.
+  - A create settles every lookup and refusal (the item ids, the
+    region, the pay way) before its first cart write, creating the cart
+    included, as UCP's `create_checkout` does: a create refused there
+    leaves no cart in Django. A line sync failing after it does.
   - A create is rendered before it is saved, and a 4xx or 5xx releases
     its key: a create that failed leaves no session and no record. A
     create that ran past its key's claim, with another create holding

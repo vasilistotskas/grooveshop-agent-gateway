@@ -697,19 +697,41 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cart, err := h.dj.GetCart(r.Context(), t.Domain, t.DefaultLocale, "")
-	if err != nil {
+	// Every lookup and refusal before the first cart write, which here is
+	// creating the cart: an item, a region or a pay way the store refuses
+	// leaves no cart behind. A line sync failing after it does.
+	refused := func(err error) {
 		h.releaseIdem(r, claim, createScope)
 		upstreamError(w, err)
+	}
+	lines, err := cartLines(req.LineItems)
+	if err != nil {
+		refused(err)
 		return
 	}
-	if err := h.syncCart(r, t, cart.UUID, req.LineItems); err != nil {
-		h.releaseIdem(r, claim, createScope)
-		upstreamError(w, err)
+	s := checkout.NewSession(t.SchemaName, t.Domain, checkout.ProtocolACP, "")
+	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
+	applyFulfillment(s, req.FulfillmentDetails, nil)
+	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
+		refused(err)
+		return
+	}
+	if err := h.selectPayWay(r, t, s); err != nil {
+		refused(err)
 		return
 	}
 
-	s := checkout.NewSession(t.SchemaName, t.Domain, checkout.ProtocolACP, cart.UUID)
+	cart, err := h.dj.GetCart(r.Context(), t.Domain, t.DefaultLocale, "")
+	if err != nil {
+		refused(err)
+		return
+	}
+	s.CartID = cart.UUID
+	if err := checkout.SyncCartLines(r.Context(), h.dj, t,
+		checkout.ProtocolACP, s.CartID, lines); err != nil {
+		refused(err)
+		return
+	}
 	// Discounts apply after the lines exist (eligibility can depend on
 	// the cart subtotal). A refused code is not a request failure — it
 	// renders in discounts.rejected.
@@ -717,22 +739,9 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		if err := checkout.ApplyDiscountCodes(
 			r.Context(), h.dj, t, s, req.Discounts.Codes,
 		); err != nil {
-			h.releaseIdem(r, claim, createScope)
-			upstreamError(w, err)
+			refused(err)
 			return
 		}
-	}
-	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
-	applyFulfillment(s, req.FulfillmentDetails, nil)
-	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
-		h.releaseIdem(r, claim, createScope)
-		upstreamError(w, err)
-		return
-	}
-	if err := h.selectPayWay(r, t, s); err != nil {
-		h.releaseIdem(r, claim, createScope)
-		upstreamError(w, err)
-		return
 	}
 	s.Recompute()
 	// Rendered before the save, which it does not read: a session that

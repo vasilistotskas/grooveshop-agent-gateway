@@ -919,6 +919,66 @@ func TestRefusedPaymentLeavesTheCartAlone(t *testing.T) {
 	})
 }
 
+// An ACP create settles its lookups and refusals before it makes its
+// cart: one the store refuses there leaves no cart behind.
+func TestARefusedACPCreateLeavesNoCart(t *testing.T) {
+	stack := startUCPGateway(t)
+	base := stack.gw.URL + "/acp/checkout_sessions"
+	create := func(itemID string) map[string]any {
+		return map[string]any{
+			"line_items":   []map[string]any{{"id": itemID, "quantity": 1}},
+			"currency":     "EUR",
+			"capabilities": map[string]any{},
+			"fulfillment_details": map[string]any{
+				"name": "Μαρία Παπαδοπούλου",
+				"address": map[string]any{
+					"name":     "Μαρία Παπαδοπούλου",
+					"line_one": "Πανεπιστημίου 12", "city": "Αθήνα",
+					"state": "GR-14", "country": "GR",
+					"postal_code": "10431",
+				},
+			},
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		item   string
+		fault  *atomic.Bool
+		status int
+		code   string
+	}{
+		{"a region lookup that fails", "1", &stack.faults.regionLookup,
+			http.StatusServiceUnavailable, "upstream_unavailable"},
+		{"an item that is not a product id", "x", nil,
+			http.StatusBadRequest, "not_found"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.fault != nil {
+				tc.fault.Store(true)
+				t.Cleanup(func() { tc.fault.Store(false) })
+			}
+			writes := stack.faults.cartWrites.Load()
+			creates := stack.faults.cartCreates.Load()
+			resp, body := acpCall(t, http.MethodPost, base,
+				create(tc.item), uuid.NewString())
+			require.Equal(t, tc.status, resp.StatusCode, "%v", body)
+			assert.Equal(t, tc.code, body["code"])
+			assert.Equal(t, creates, stack.faults.cartCreates.Load())
+			assert.Equal(t, writes, stack.faults.cartWrites.Load())
+		})
+	}
+
+	t.Run("a create the store takes", func(t *testing.T) {
+		writes := stack.faults.cartWrites.Load()
+		creates := stack.faults.cartCreates.Load()
+		resp, body := acpCall(t, http.MethodPost, base, create("1"),
+			uuid.NewString())
+		require.Equal(t, http.StatusCreated, resp.StatusCode, "%v", body)
+		assert.Equal(t, creates+1, stack.faults.cartCreates.Load())
+		assert.Greater(t, stack.faults.cartWrites.Load(), writes)
+	})
+}
+
 func TestUCPEndToEnd(t *testing.T) {
 	stack := startUCPGateway(t)
 	gw, key := stack.gw, stack.key
