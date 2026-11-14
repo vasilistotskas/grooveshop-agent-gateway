@@ -133,6 +133,8 @@ func (h *handlers) createCheckout(
 		if errors.Is(err, checkout.ErrCartHeld) {
 			h.deps.Log.ErrorContext(ctx,
 				"ucp: a cart just made is already in a checkout")
+		} else {
+			h.discard(ctx, s)
 		}
 		return nil, zero, errCheckoutUnavailable
 	}
@@ -327,6 +329,7 @@ func (h *handlers) takeCart(
 			return release, nil
 		}
 		if !errors.Is(err, checkout.ErrCartHeld) {
+			h.discard(ctx, s)
 			return release, errCheckoutUnavailable
 		}
 		// Another create took the cart since it was read.
@@ -360,7 +363,10 @@ func (h *handlers) supersede(
 
 // discard removes a checkout its create stored and never answered, on
 // a context the caller cannot end: the caller hanging up is one way a
-// create fails after its checkout was stored.
+// create fails after its checkout was stored. It also follows a store
+// that failed the create itself: whether the checkout was stored is not
+// known then (the script may have run and its reply been lost), and
+// discarding one that was not stored removes nothing.
 func (h *handlers) discard(ctx context.Context, s *checkout.Session) {
 	ctx, cancel := context.WithTimeout(
 		context.WithoutCancel(ctx), h.deps.Django.Timeout())

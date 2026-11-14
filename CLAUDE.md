@@ -583,8 +583,12 @@ passes.
     unconditional write of a session. The delete of a placed one past
     its lifetime is the save script's own, under the same check.
     `Store.Discard` is the one delete outside it: it removes a session
-    its create stored and never handed out (the create's key turned
-    out to be another request's), whose id no other request can hold.
+    its create stored, or may have stored, and gave to nobody (the
+    create's key turned out to be another request's, the create could
+    not answer, or the store failed the create itself). No caller
+    holds its id. A later create can have read it as its cart's
+    holder: that create's cancel then loses its compare-and-set, and
+    it looks again.
     The revision is random, not a counter or a time: two
     requests that read one state and save in the same clock tick would
     otherwise write the same bytes, and neither could tell its own
@@ -805,11 +809,17 @@ passes.
     way. A held one there is a fault: logged, answered unavailable,
     and no session is handed out.
   - Redis can lose the record while the session lives (eviction).
-    The session's next save writes it again; until then the cart can
-    get a second checkout, and the gateway cannot close that alone.
-    The guard that holds whatever Redis lost is Django refusing a
-    second order from a cart whose order awaits its payment: the
-    other half of #141, in Django.
+    Every load of a session touches its cart's record (`Store.Load`),
+    so Redis does not see the record as less recently read than a
+    session a platform keeps reading, and a session's next save writes
+    a lost record again. A session nobody reads or saves, such as one
+    left awaiting its payment, can still lose it, and the cart can
+    then get a second checkout: the gateway cannot close that alone.
+    What holds whatever Redis lost is Django, which refuses an
+    agent's order from a cart whose earlier order still awaits its
+    online payment (django-api #693; `code`
+    `cart_has_unpaid_order`, which reaches the caller as Django
+    wrote it).
 - **UCP** (negotiation, the canonical checkout tools' wire shapes, the
   OpenRPC `schema` URL, `get_order`, order webhooks): the conventions are in
   `.claude/rules/ucp.md`, which loads with `internal/ucp/**`. Read it before
