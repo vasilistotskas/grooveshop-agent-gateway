@@ -116,7 +116,9 @@ type Attribution struct {
 }
 
 // CreateOrder places a guest order from the cart. Never retried: the
-// caller owns idempotency (checkout sessions guard completion).
+// caller owns idempotency (checkout sessions guard completion). Django's
+// refusal of a cart whose earlier order awaits its payment is
+// ErrCartHasUnpaidOrder.
 func (c *Client) CreateOrder(
 	ctx context.Context, host, lang, cartID string, body OrderCreate,
 ) (*Order, error) {
@@ -129,6 +131,10 @@ func (c *Client) CreateOrder(
 		body:     body,
 		out:      &out,
 	})
+	if apiErr, ok := errors.AsType[*APIError](err); ok &&
+		apiErr.Code == CodeCartHasUnpaidOrder {
+		return nil, fmt.Errorf("%w: %w", ErrCartHasUnpaidOrder, err)
+	}
 	if err != nil {
 		return nil, err
 	}

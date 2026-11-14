@@ -41,6 +41,12 @@ var (
 	// it is ErrCartUnreachable too.
 	ErrCartTokenRefused = fmt.Errorf(
 		"django: cart token refused: %w", ErrCartUnreachable)
+	// ErrCartHasUnpaidOrder: Django refused an agent's order because an
+	// earlier order from the same cart still awaits its online payment
+	// (CodeCartHasUnpaidOrder). Nothing was created. The error also
+	// carries Django's *APIError, so it is ErrValidation too.
+	ErrCartHasUnpaidOrder = errors.New(
+		"django: an order from this cart awaits its payment")
 )
 
 // APIError is a Django error response (docs/error-contract.md in the

@@ -181,6 +181,10 @@ type checkoutFaults struct {
 	orderCreates atomic.Int32
 	// orderRefuse makes order creation answer 400: nothing is created.
 	orderRefuse atomic.Bool
+	// orderUnpaid makes order creation answer Django's 400 for a cart
+	// whose earlier order still awaits its online payment: nothing is
+	// created.
+	orderUnpaid atomic.Bool
 	// orderConflict makes order creation answer a 409 that is not a
 	// stock shortfall: nothing is created.
 	orderConflict atomic.Bool
@@ -421,6 +425,20 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(
 					`{"detail": "The cart can no longer be ordered."}`))
+				return
+			}
+			if faults.orderUnpaid.Load() {
+				// order/views/order.py, CartHasUnpaidOrderError, through
+				// core/api/exception_handler.py.
+				raw, err := os.ReadFile(
+					fixturePath("order_cart_has_unpaid_order.json"))
+				if !assert.NoError(t, err) {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write(raw)
 				return
 			}
 			if faults.orderConflict.Load() {

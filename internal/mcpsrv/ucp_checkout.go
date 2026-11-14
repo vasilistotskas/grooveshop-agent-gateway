@@ -138,19 +138,23 @@ func (h *handlers) createCheckout(
 		}
 		return nil, zero, errCheckoutUnavailable
 	}
-	return h.created(ctx, t, s, neg, hasCodes)
+	return h.created(ctx, t, s, neg, hasCodes, cartGone)
 }
 
 // created answers a create with the checkout it just stored. One that
 // cannot be rendered was given to nobody, so it is discarded: a create
-// that fails leaves no checkout.
+// that fails leaves no checkout. gone is the hint for a cart Django no
+// longer serves, which the render is the first to find.
 func (h *handlers) created(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
-	neg ucp.Negotiated, hasCodes bool,
+	neg ucp.Negotiated, hasCodes bool, gone string,
 ) (*mcp.CallToolResult, CheckoutResult, error) {
 	res, out, err := h.checkoutResult(ctx, t, s, neg)
 	if err != nil {
 		h.discard(ctx, s)
+		if errors.Is(err, errCheckoutCartGone) {
+			err = &mcptool.ToolError{Code: mcptool.CodeNotFound, Hint: gone}
+		}
 		return nil, CheckoutResult{}, withHint(err, checkoutNotCreated)
 	}
 	return h.discountAnnotated(res, out, nil, s, hasCodes)
@@ -273,7 +277,9 @@ func (h *handlers) createFromCart(
 					"on the cart")
 		}
 	}
-	return h.created(ctx, t, s, neg, hasCodes)
+	// A cart Django no longer serves: a guest cart its order emptied is
+	// usually removed. The create is answered as the cart tools answer it.
+	return h.created(ctx, t, s, neg, hasCodes, mcpCartGone)
 }
 
 // cartCreateRounds bounds how often a create naming a cart decides
@@ -875,6 +881,8 @@ func completeErr(s *checkout.Session, err error) error {
 		return errCheckoutUnavailable
 	case errors.As(err, new(*django.StockShortfall)):
 		return stockShortfallErr(err)
+	case errors.Is(err, django.ErrCartHasUnpaidOrder):
+		return cartOrderUnpaidErr(err)
 	case errors.Is(err, checkout.ErrSessionChanged):
 		return saveFailed(err)
 	case errors.Is(err, checkout.ErrNotReady),
@@ -892,6 +900,25 @@ func completeErr(s *checkout.Session, err error) error {
 				"get_checkout_link instead")
 	}
 	return upstreamErr(err, "order placement failed; the cart is unchanged")
+}
+
+// cartOrderUnpaidErr answers a completion Django refused because an
+// earlier order from the checkout's cart still awaits its online payment:
+// Django's code and sentence, and what to do. Nothing in the call was
+// wrong, and the checkout stays ready. Once that order is paid the cart
+// is emptied; once Django cancels it unpaid, this checkout can be placed.
+// Django names no order, and neither does the answer.
+func cartOrderUnpaidErr(err error) error {
+	e := &mcptool.ToolError{Code: django.CodeCartHasUnpaidOrder,
+		Hint: "an order placed from this checkout's cart already awaits " +
+			"its payment, so this checkout placed no order: do not start " +
+			"another checkout for this cart. The buyer pays that order, " +
+			"or the store cancels it when its payment window ends; once " +
+			"it is canceled, this checkout can be completed"}
+	if apiErr, ok := errors.AsType[*django.APIError](err); ok {
+		e.Detail = apiErr.Detail
+	}
+	return e
 }
 
 // placedUnsavedErr answers for an order that is placed while its
@@ -1048,6 +1075,12 @@ const (
 		"with create_checkout"
 )
 
+// errCheckoutCartGone answers a checkout without an order whose cart
+// Django no longer serves (checkoutResult). It is shared and never
+// changed: withHint copies it.
+var errCheckoutCartGone = &mcptool.ToolError{Code: mcptool.CodeNotFound,
+	Hint: cartGone}
+
 // unrenderedErr is the answer for an order that exists while its
 // checkout is not rendered: the agent must read it again, not order
 // again.
@@ -1126,6 +1159,11 @@ func (h *handlers) checkoutResult(
 			// with the order, so it is answered as what it is, not as a
 			// checkout to read again until it renders.
 			return nil, zero, h.pending(ctx, s)
+		case isCartGone(err):
+			// Without an order the render reads the cart, and its other
+			// reads (pay way, shipping options) name the cart too. Django
+			// no longer serves it, and no retry reaches it again.
+			return nil, zero, errCheckoutCartGone
 		}
 		return nil, zero, upstreamErr(err,
 			"checkout state could not be rendered; retry")
