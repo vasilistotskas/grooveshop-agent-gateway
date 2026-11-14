@@ -220,23 +220,54 @@ func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
 	h := ucpHandlers(t, dj)
 	ctx := tenant.NewContext(context.Background(), cartTenant())
 
-	// An id that is not a session id is known to be missing without the
-	// store being asked. update, complete and cancel take the session
-	// lock in Redis before they load, which this package's tests do not
-	// run: the integration suite covers their answer
-	// (TestAMissingCheckoutMayHavePlacedAnOrder).
-	_, _, err := h.getCheckout(ctx, nil, GetCheckoutIn{
-		Meta: ucpMeta(t, ""), ID: "not-a-session-id",
-	})
-
-	require.ErrorIs(t, err, errCheckoutGone)
-	for _, part := range []string{
-		"an order may exist",
-		"do not start another checkout before checking",
-		"get_order or track_order",
-		"ask the shopper for the store's order confirmation",
-		"Only if it was never completed, start a new one",
+	// An id no session can have is known to be missing without the store
+	// being asked, by the tools that lock the session too: these handlers'
+	// store cannot be reached, so any of them that asked it would answer
+	// unavailable. What a well-formed id no session is stored for gets is
+	// the integration suite's (TestAMissingCheckoutMayHavePlacedAnOrder).
+	for _, id := range []string{
+		"not-a-session-id",
+		// Another spelling of a UUID: sessions are stored under one.
+		"6F1C2A52-3D8E-4C55-9A0F-0C6A2B9E1D11",
 	} {
-		assert.Contains(t, err.Error(), part)
+		for name, call := range map[string]func() error{
+			"get_checkout": func() error {
+				_, _, err := h.getCheckout(ctx, nil,
+					GetCheckoutIn{Meta: ucpMeta(t, ""), ID: id})
+				return err
+			},
+			"update_checkout": func() error {
+				_, _, err := h.updateCheckout(ctx, nil,
+					UpdateCheckoutIn{Meta: ucpMeta(t, ""), ID: id})
+				return err
+			},
+			"complete_checkout": func() error {
+				_, _, err := h.completeCheckout(ctx, nil, CompleteCheckoutIn{
+					Meta: ucpMeta(t, uuid.NewString()), ID: id,
+				})
+				return err
+			},
+			"cancel_checkout": func() error {
+				_, _, err := h.cancelCheckout(ctx, nil, CancelCheckoutIn{
+					Meta: ucpMeta(t, uuid.NewString()), ID: id,
+				})
+				return err
+			},
+		} {
+			t.Run(name+" "+id, func(t *testing.T) {
+				err := call()
+
+				require.ErrorIs(t, err, errCheckoutGone)
+				for _, part := range []string{
+					"an order may exist",
+					"do not start another checkout before checking",
+					"get_order or track_order",
+					"ask the shopper for the store's order confirmation",
+					"Only if it was never completed, start a new one",
+				} {
+					assert.Contains(t, err.Error(), part)
+				}
+			})
+		}
 	}
 }

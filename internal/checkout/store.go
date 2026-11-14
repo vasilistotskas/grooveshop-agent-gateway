@@ -119,11 +119,13 @@ func NewSession(schema, domain, protocol, cartID string) *Session {
 	}
 }
 
-// ValidID reports whether id can name a session: sessions are minted
-// with a UUID, so anything else is ErrNotFound before a Redis key is
-// built from it. A caller's id must not become a key the gateway writes.
+// ValidID reports whether id can name a session. Sessions are minted
+// with uuid.NewString and keyed by that string, so only that spelling
+// can be stored: anything else, another spelling of a UUID included, is
+// ErrNotFound before a Redis key is built from it.
 func ValidID(id string) bool {
-	return uuid.Validate(id) == nil
+	u, err := uuid.Parse(id)
+	return err == nil && u.String() == id
 }
 
 func (st *Store) Load(ctx context.Context, schema, id string) (*Session, error) {

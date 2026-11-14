@@ -1,6 +1,7 @@
 package checkout
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -17,13 +18,29 @@ func TestSessionKeyIsVersioned(t *testing.T) {
 
 // A caller's id that no session can have is not found before any key is
 // built from it: the store has no Redis client here, so a lock attempt
-// would panic.
+// would panic. Only the spelling a session is minted with can name one,
+// so the other spellings of a UUID are refused with everything else.
 func TestAnIDNoSessionCanHaveTakesNoLock(t *testing.T) {
+	const minted = "6f1c2a52-3d8e-4c55-9a0f-0c6a2b9e1d11"
+	assert.True(t, ValidID(minted))
+	assert.True(t, ValidID(NewSession("alpha", "a.test", "ucp", "").ID))
+
 	st := NewStore(nil, time.Second)
-	_, err := st.Lock(t.Context(), "alpha", "not-a-session-id")
-	assert.ErrorIs(t, err, ErrNotFound)
-	_, err = st.Load(t.Context(), "alpha", "not-a-session-id")
-	assert.ErrorIs(t, err, ErrNotFound)
+	for _, id := range []string{
+		"",
+		"not-a-session-id",
+		minted + ":order",
+		strings.ToUpper(minted),
+		"urn:uuid:" + minted,
+		"{" + minted + "}",
+		strings.ReplaceAll(minted, "-", ""),
+	} {
+		assert.False(t, ValidID(id), id)
+		_, err := st.Lock(t.Context(), "alpha", id)
+		assert.ErrorIs(t, err, ErrNotFound, id)
+		_, err = st.Load(t.Context(), "alpha", id)
+		assert.ErrorIs(t, err, ErrNotFound, id)
+	}
 }
 
 // The lock covers what a completion does under it when Django answers
