@@ -398,6 +398,20 @@ func (st *Store) put(
 	return st.store(ctx, s, stored, w, "")
 }
 
+// wasStored reads s back after Redis failed put of w: when the stored
+// session is w, its reply was lost, and s takes w as put does and nil
+// is returned. Otherwise, the read failing included, it returns failed.
+func (st *Store) wasStored(
+	ctx context.Context, s *Session, w write, failed error,
+) error {
+	now, err := st.read(ctx, s.Schema, s.ID)
+	if err != nil || now.Revision != w.revision {
+		return failed
+	}
+	s.Revision, s.UpdatedAt = w.revision, w.at
+	return nil
+}
+
 // store is put, and a create's taking of the cart: holder is the
 // cart's record as the create's caller saw it.
 func (st *Store) store(

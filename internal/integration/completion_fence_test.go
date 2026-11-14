@@ -205,6 +205,36 @@ func TestConcurrentCompletesPlaceOneOrder(t *testing.T) {
 	}
 }
 
+// The mark that guards the order can be stored with its reply lost on
+// both attempts. The completion finds its own mark and places the order:
+// the platform is answered with it and the key is spent, and no later
+// complete, with that key or another, sends a second one.
+func TestAMarkWhoseRepliesWereLostIsAnsweredWithTheOrder(t *testing.T) {
+	stack := startUCPGateway(t)
+	for _, surface := range completionSurfaces(t, stack) {
+		t.Run(surface.name, func(t *testing.T) {
+			ctx := context.Background()
+			id := surface.ready(t)
+			creates := stack.faults.orderCreates.Load()
+			lost := fenceRepliesLost(stack.rdb, id)
+			key := uuid.NewString()
+
+			first := surface.answer(ctx, id, key, nil)
+
+			require.EqualValues(t, 2, lost.Load(), "both replies were lost")
+			assert.Equal(t, "completed", first.status, first.refusal)
+			assert.Equal(t, bookkeeping{
+				Session: checkout.StatusCompleted, Linked: true, Key: keySpent,
+			}, stack.bookkeeping(t, id, surface.keyName(id, key)))
+			for _, again := range []string{key, uuid.NewString()} {
+				assert.Equal(t, "completed",
+					surface.complete(ctx, id, again, nil))
+			}
+			assert.Equal(t, creates+1, stack.faults.orderCreates.Load())
+		})
+	}
+}
+
 // For a pay way that is not settled online Django deletes the cart with
 // the order, and refuses a second order from it. That refusal used to
 // reset the loser's snapshot to ready and save it over the placed
