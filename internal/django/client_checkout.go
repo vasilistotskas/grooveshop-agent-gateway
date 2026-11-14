@@ -152,7 +152,9 @@ type CheckoutSessionResult struct {
 
 // CreateOrderCheckoutSession mints the hosted payment session for an
 // online order (Viva Smart Checkout URL; Stripe hosted checkout). Guest
-// authorization rides the ?uuid= query parameter.
+// authorization rides the ?uuid= query parameter. X-Internal-Gateway
+// lets Django's anonymous payment throttle key on the order instead of
+// the caller the gateway relays, as its cart and order calls do.
 func (c *Client) CreateOrderCheckoutSession(
 	ctx context.Context, host, lang string,
 	orderID int64, orderUUID, successURL, cancelURL string,
@@ -164,6 +166,7 @@ func (c *Client) CreateOrderCheckoutSession(
 		host:     host,
 		language: lang,
 		query:    url.Values{"uuid": {orderUUID}},
+		headers:  map[string]string{"X-Internal-Gateway": c.internalSecret},
 		body: checkoutSessionCreate{
 			SuccessURL: successURL,
 			CancelURL:  cancelURL,
