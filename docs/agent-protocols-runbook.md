@@ -366,7 +366,7 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | UCP complete replayed, same key | Same order, none added |
 | UCP complete again with a new key, after completing | Same order, none added |
 | ACP POST with no key | 400 `idempotency_key_required` |
-| ACP POST with a key that is not 1 to 255 visible ASCII characters (longer, a space, non-ASCII) | 400 `invalid` at `Idempotency-Key`, "must be 1 to 255 visible ASCII characters, such as a UUID". Nothing is read or written. The same rule as UCP's key (`checkout.ValidIdempotencyKey`) |
+| ACP POST with a key longer than 255 characters | 400 `invalid` at `Idempotency-Key`, "must be 1 to 255 characters, such as a UUID". Nothing is read or written. ACP's spec makes the key an opaque string of at most 255 characters, so any key within that is accepted (UCP's key is bounded to visible ASCII, `checkout.ValidIdempotencyKey`) |
 | ACP create replayed, same key and body | 201 with `Idempotent-Replayed: true` |
 | ACP same key, different body | 422 `idempotency_conflict`, except a complete of an already completed session, which answers 200 with the session whatever the body (#128) |
 | ACP create replayed after its session expired, same key and body | 201 with the original body and `Idempotent-Replayed: true` |

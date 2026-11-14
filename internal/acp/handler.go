@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
@@ -247,15 +248,17 @@ func bodyHash(raw []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// errKeyForm refuses an Idempotency-Key outside
-// checkout.ValidIdempotencyKey: the spec's "Opaque string, max 255
-// characters. UUID v4 recommended.", in visible ASCII, the rule UCP's key
-// follows too.
+// maxIdempotencyKeyLen is the spec's bound on an Idempotency-Key:
+// "Opaque string, max 255 characters. UUID v4 recommended." (the
+// IdempotencyKey parameter, maxLength 255). Any string within it is a
+// key; the bound keeps the Redis key built from it short.
+const maxIdempotencyKeyLen = 255
+
+// errKeyForm refuses an Idempotency-Key longer than the spec allows.
 var errKeyForm = Error{
 	Type: "invalid_request", Code: "invalid", Param: "Idempotency-Key",
 	Message: fmt.Sprintf("The Idempotency-Key header must be 1 to %d "+
-		"visible ASCII characters, such as a UUID.",
-		checkout.MaxIdempotencyKeyLen),
+		"characters, such as a UUID.", maxIdempotencyKeyLen),
 }
 
 // idemRetryAfter is the Retry-After sent with a 409 for a key whose first
@@ -335,7 +338,7 @@ func (h *Handler) claimKey(
 			Message: "The Idempotency-Key header is required.",
 		})
 	}
-	if !checkout.ValidIdempotencyKey(key) {
+	if utf8.RuneCountInString(key) > maxIdempotencyKeyLen {
 		return "", nil, nil, refusal(http.StatusBadRequest, errKeyForm)
 	}
 	inFlight := func(w http.ResponseWriter) {
@@ -986,13 +989,16 @@ func (h *Handler) completeClosed(
 	w http.ResponseWriter, r *http.Request, t *tenant.Tenant,
 	s *checkout.Session,
 ) bool {
-	switch s.Status {
-	case checkout.StatusCompleted:
-		h.render(w, r, t, s)
-	case checkout.StatusCompleteInProgress:
+	switch {
+	case s.Status == checkout.StatusCompleteInProgress:
 		h.writeCompletionPending(w, r, s)
-	case checkout.StatusCanceled:
+	case s.Status == checkout.StatusCanceled:
 		writeClosed(w, "", "Session is canceled and cannot be completed.")
+	case s.MayHaveOrder():
+		// Its order is placed: the session is the answer. Every session
+		// that is not open is answered here, so no complete of one is
+		// left without an answer.
+		h.render(w, r, t, s)
 	default:
 		return false
 	}

@@ -188,3 +188,31 @@ func TestUpstreamErrorReportsAnUnreachableCartAsNotFound(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"code":"not_found"`)
 }
+
+// A complete of a session that is not open is answered by what the
+// session is, before any lookup, whatever its state: never with an empty
+// answer.
+func TestACompleteOfASessionThatIsNotOpenIsAnswered(t *testing.T) {
+	h := testHandler(t, unreachableRedis(t))
+	tn := testTenant()
+	for _, status := range []checkout.Status{
+		checkout.StatusCompleteInProgress, checkout.StatusCompleted,
+		checkout.StatusRequiresEscalation, checkout.StatusCanceled,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			s := checkout.NewSession("public", tn.Domain, checkout.ProtocolACP,
+				"29eb4495-e018-45e7-b59c-6646302bd4ef")
+			s.Status = status
+			if s.MayHaveOrder() && status != checkout.StatusCompleteInProgress {
+				s.OrderID, s.OrderUUID = 684, "b9be45e5-6062-4976-ae7b-2c31eb2ad689"
+			}
+			r := httptest.NewRequest(http.MethodPost,
+				"/acp/checkout_sessions/"+s.ID+"/complete", nil)
+			var echo string
+			a := h.completeSession(r, tn, s, CompleteRequest{}, nil, &echo)
+			w := httptest.NewRecorder()
+			a.write(w)
+			assert.NotEmpty(t, w.Body.String(), "an empty answer")
+		})
+	}
+}

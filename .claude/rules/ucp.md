@@ -32,8 +32,8 @@ wins over this page.
   255 visible ASCII characters, `checkout.ValidIdempotencyKey`, refused
   in `MetaIn.validate` before anything is read or written; the spec asks
   for 128 bits of entropy, "e.g., UUID v4, 22+ char alphanumeric", and
-  sets no maximum; 255 is ACP's, and ACP's `Idempotency-Key` follows the
-  same rule), `id`
+  sets no maximum; 255 is ACP's bound, while ACP's own key is any
+  string of 1 to 255 characters, as its spec makes it opaque), `id`
   for the target session, and `checkout` for the domain object with
   snake_case members. Extensions compose FLAT onto `checkout`
   (`fulfillment`, `discounts`), never nested under capability names.
