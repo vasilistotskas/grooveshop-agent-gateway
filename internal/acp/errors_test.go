@@ -315,6 +315,9 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 			django.ErrCartUnreachable, http.StatusBadRequest, "not_found"},
 		"django.ErrCartTokenRefused": {
 			django.ErrCartTokenRefused, http.StatusBadRequest, "not_found"},
+		"django.ErrCartHasUnpaidOrder": {
+			django.ErrCartHasUnpaidOrder, http.StatusBadRequest,
+			"cart_has_unpaid_order"},
 		"django.ErrValidation": {
 			django.ErrValidation, http.StatusBadRequest, "invalid"},
 		"django.ErrInvalidCartToken": {

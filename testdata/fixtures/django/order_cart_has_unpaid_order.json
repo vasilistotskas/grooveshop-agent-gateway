@@ -1,0 +1,14 @@
+{
+  "cart": [
+    "An order placed from this cart is already waiting for its payment. Pay for it or cancel it before placing another."
+  ],
+  "code": "cart_has_unpaid_order",
+  "fields": {
+    "cart": [
+      {
+        "message": "An order placed from this cart is already waiting for its payment. Pay for it or cancel it before placing another.",
+        "code": "cart_has_unpaid_order"
+      }
+    ]
+  }
+}

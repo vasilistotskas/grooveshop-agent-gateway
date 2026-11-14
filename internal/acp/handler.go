@@ -1311,6 +1311,17 @@ func (h *Handler) completeError(
 			Message: "No agent-completable payment method serves this " +
 				"delivery; send the buyer to continue_url.",
 		})
+	// Django names no order, and neither does the answer. The session
+	// stays ready: once that order is canceled unpaid it can be completed.
+	case errors.Is(err, django.ErrCartHasUnpaidOrder):
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: "cart_has_unpaid_order",
+			Message: "An order placed from this session's cart already " +
+				"awaits its payment, so this session placed no order. Do " +
+				"not create another session for this cart: the buyer pays " +
+				"that order, or the store cancels it when its payment " +
+				"window ends, and this session can then be completed.",
+		})
 	default:
 		upstreamError(w, err)
 	}

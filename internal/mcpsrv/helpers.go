@@ -95,11 +95,7 @@ const featureOff = "the store does not offer this right now; tell the " +
 // shopperCartUnreachable in the chat, which serves no create_cart, and
 // mcpCartGone on /mcp. Any other 404 is a feature gate's (featureOff).
 func (h *handlers) cartGoneErr(err error) error {
-	apiErr, _ := errors.AsType[*django.APIError](err)
-	gone := errors.Is(err, django.ErrCartUnreachable) ||
-		errors.Is(err, django.ErrForbidden) ||
-		(apiErr != nil && errors.Is(err, django.ErrNotFound) &&
-			apiErr.Code == django.CodeCartNotFound)
+	gone := isCartGone(err)
 	switch {
 	case gone && h.surface == chatSurface:
 		return shopperCartErr()
@@ -107,6 +103,17 @@ func (h *handlers) cartGoneErr(err error) error {
 		return upstreamErr(err, mcpCartGone)
 	}
 	return upstreamErr(err, featureOff)
+}
+
+// isCartGone reports whether Django answered a call on a cart with a cart
+// it no longer serves for that id: it served another (ErrCartUnreachable),
+// answered cart_not_found, or refused it (403). An outage is none of these.
+func isCartGone(err error) bool {
+	apiErr, _ := errors.AsType[*django.APIError](err)
+	return errors.Is(err, django.ErrCartUnreachable) ||
+		errors.Is(err, django.ErrForbidden) ||
+		(apiErr != nil && errors.Is(err, django.ErrNotFound) &&
+			apiErr.Code == django.CodeCartNotFound)
 }
 
 // shopperCartErr is the chat's answer for the shopper's cart the store
