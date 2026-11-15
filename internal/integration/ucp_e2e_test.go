@@ -1423,6 +1423,25 @@ func TestUCPEndToEnd(t *testing.T) {
 			assert.EqualValues(t, 2, (*stack.faults.lastOrder.Load())["payWayId"])
 		})
 
+	// A first method the store does not have is the caller's mistake, not
+	// an outage to retry: refused, nothing stored, nothing placed.
+	t.Run("an unknown method named only at complete time is refused",
+		func(t *testing.T) {
+			created := unready(t, nil)
+			id := created["id"].(string)
+			orders := stack.faults.orderCreates.Load()
+
+			res := complete(t, id, uuid.NewString(), map[string]any{
+				"payment": map[string]any{}, "pay_way_id": 99999,
+			})
+			require.True(t, res.IsError)
+			said := res.Content[0].(*mcp.TextContent).Text
+			assert.Contains(t, said, `"code":"not_found"`)
+			assert.Contains(t, said, "names no payment method")
+			assert.Zero(t, stack.storedSession(t, id).PayWayID)
+			assert.Equal(t, orders, stack.faults.orderCreates.Load())
+		})
+
 	// The method a complete names first is the buyer's choice whether or
 	// not that call places the order: a refused one keeps it, and the next
 	// complete, which names none, places the order with it.

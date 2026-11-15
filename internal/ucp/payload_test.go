@@ -75,6 +75,23 @@ func TestCheckoutRendersTheDiscountExtension(t *testing.T) {
 	assert.Equal(t, &Discounts{Applied: []AppliedDiscount{
 		{Title: "Summer", Amount: 500, Automatic: true},
 	}}, auto.Discounts)
+
+	// A coupon the cart held before this checkout (attached on the store
+	// or with the cart tools) is one of its codes, so a platform that
+	// sends the checkout back keeps it. So is one the store now refuses,
+	// with its warning at its place.
+	held := &Checkout{}
+	renderDiscounts(s, &checkout.Pricing{
+		Discounts: []checkout.PricedDiscount{
+			{PromotionID: 4, Name: "Save 10%", Code: "SAVE10", Amount: 900},
+		},
+		RefusedCoupons: []checkout.DiscountRejection{{
+			Code: "OLD5", Reason: "discount_code_expired",
+		}},
+	}, held)
+	assert.Equal(t, []string{"SAVE10", "OLD5"}, held.Discounts.Codes)
+	require.Len(t, held.Messages, 1)
+	assert.Equal(t, "$.discounts.codes[1]", held.Messages[0].Path)
 }
 
 // Without the extension negotiated the checkout has no `discounts` and
@@ -99,13 +116,13 @@ func TestCheckoutWithoutTheExtensionRendersNoDiscounts(t *testing.T) {
 	})
 }
 
-// continue_url is in every non-terminal status the spec asks it for and
-// in no terminal one. An open checkout's is the claim page of its cart.
-// One being placed gets none: its order may exist, and the cart could be
-// ordered again.
+// continue_url is where the spec requires it, requires_escalation, and in
+// no terminal status. An open checkout gets none: the only page is its
+// cart's claim, and a link handed out then would still claim the cart once
+// an order awaiting its payment holds it. One being placed gets none: its
+// order may exist.
 func TestContinueURLFollowsTheStatus(t *testing.T) {
 	b := testBuilder(t)
-	claim := "https://shop.example.test/cart/claim?uuid=" + fixtureCart
 	order := "https://shop.example.test/checkout/success/" +
 		"b9be45e5-6062-4976-ae7b-2c31eb2ad689"
 	for _, tc := range []struct {
@@ -113,8 +130,8 @@ func TestContinueURLFollowsTheStatus(t *testing.T) {
 		placed bool
 		want   string
 	}{
-		{checkout.StatusIncomplete, false, claim},
-		{checkout.StatusReadyForComplete, false, claim},
+		{checkout.StatusIncomplete, false, ""},
+		{checkout.StatusReadyForComplete, false, ""},
 		{checkout.StatusCompleteInProgress, false, ""},
 		{checkout.StatusRequiresEscalation, true, order},
 		{checkout.StatusCompleted, true, ""},

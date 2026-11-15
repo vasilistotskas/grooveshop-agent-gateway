@@ -525,9 +525,9 @@ func toolset(h *handlers) []tool {
 				"checkout.line_items (or cart_id for a cart built with the " +
 				"cart tools). A cart has one checkout at a time: cart_id " +
 				"for a cart in an open checkout cancels that checkout " +
-				"and starts this one. Collect buyer, fulfillment and " +
-				"payment with update_checkout until status is " +
-				"ready_for_complete. Requires meta.ucp-agent.profile.",
+				"and starts this one. Then send update_checkout with the " +
+				"whole checkout until status is ready_for_complete. " +
+				"Requires meta.ucp-agent.profile.",
 		}, h.createCheckout))),
 
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
@@ -546,9 +546,14 @@ func toolset(h *handlers) []tool {
 			InputSchema:  updateCheckoutInput,
 			Annotations:  mcptool.Changes("Update a checkout"),
 			OutputSchema: checkoutResultSchema,
-			Description: "UCP: add or change buyer details, delivery " +
-				"(address or ACS/BOX NOW pickup point), payment and " +
-				"discount codes on a checkout session. Requires " +
+			Description: "UCP: replace a checkout session with the " +
+				"checkout sent, so send all of it each time: " +
+				"line_items and buyer as they should now be (an omitted " +
+				"buyer is cleared), and discounts.codes to keep its " +
+				"codes (omitted, they are cleared once the discount " +
+				"extension is negotiated). The delivery (fulfillment: " +
+				"an address or an ACS/BOX NOW pickup point) and the " +
+				"payment selection are kept when omitted. Requires " +
 				"meta.ucp-agent.profile.",
 		}, h.updateCheckout))),
 
@@ -557,9 +562,12 @@ func toolset(h *handlers) []tool {
 			InputSchema:  completeCheckoutInput,
 			Annotations:  mcptool.Changes("Place the order"),
 			OutputSchema: checkoutResultSchema,
-			Description: "UCP: place the order. Send " +
-				"checkout.payment.instruments naming one instrument the " +
-				"checkout advertised. Offline methods (cash on delivery) " +
+			Description: "UCP: place the order as the checkout " +
+				"stands. Send checkout.payment {} to keep the payment " +
+				"method the checkout holds; a checkout that holds none " +
+				"may name one instrument it advertised in " +
+				"checkout.payment.instruments, taken when it adds no " +
+				"fee. Offline methods (cash on delivery) " +
 				"complete immediately; card payment via Viva returns " +
 				"continue_url where the buyer authorizes on the store's " +
 				"hosted page. Requires meta.ucp-agent.profile and " +

@@ -350,9 +350,8 @@ func TestBuildCheckoutPaymentParity(t *testing.T) {
 				out.Status)
 			assert.Empty(t, out.UCP.PaymentHandlers,
 				"registry present but empty: nothing an agent can settle")
-			assert.Equal(t, "https://shop.example.test/cart/claim?uuid="+
-				"29eb4495-e018-45e7-b59c-6646302bd4ef", out.ContinueURL,
-				"the handoff of an open checkout is its cart, not a PSP")
+			assert.Empty(t, out.ContinueURL,
+				"an open checkout hands out no link to its cart")
 		})
 
 	t.Run("hosted payment page wins as the handoff target",

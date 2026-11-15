@@ -110,9 +110,9 @@ wins over this page.
   send the entire checkout resource"). `line_items` is required and
   replaces the cart's lines; `buyer` is what the request carries, none
   if omitted; with the discount extension negotiated, so are the codes:
-  an omitted `discounts` (or `codes`) is no codes, and the codes the
-  checkout holds are cleared with their coupon (no call when it holds
-  none). The spec is silent on an omitted member under replacement;
+  an omitted `discounts` (or `codes`) is no codes, and the cart's
+  coupon is cleared (Django's removal is idempotent, so it is asked
+  whatever the checkout submitted). The spec is silent on an omitted member under replacement;
   the rule is that a member the response renders is replaced, and one
   it does not render cannot be sent back, so it is kept when omitted:
   the flat `fulfillment`, and the payment selection
@@ -135,21 +135,28 @@ wins over this page.
     `payment_fee_added` saying the fee and the new total. The fee is the
     render's own (`checkout.ComputePricing` on the checkout as it would
     be with the method, `firstMethodFee`); a fee that cannot be read is
-    `unavailable`, never "no fee".
+    `unavailable`, never "no fee", and a `pay_way_id` the store does not
+    have is `not_found`, read before the fee.
 
   An `incomplete` answer stores nothing, claims no completion (the same
   key can be used again) and places nothing; the stored checkout keeps
   its status. The platform selects the method with update_checkout,
   which shows the new fee and total.
-- **continue_url** is in every non-terminal status the spec asks it for
-  and in no terminal one: an open checkout (`incomplete`,
-  `ready_for_complete`) gets its cart's claim link (`Links.CartClaim`);
-  `requires_escalation` the PSP's page, else the order's, else the cart
-  claim; `complete_in_progress` none, deliberately: its order may exist,
-  and the cart could order again.
-- **`discounts` in the response** (extension negotiated): `codes` the
-  checkout holds, echoed so a platform sending the checkout back keeps
-  them; `applied` from Django's per-offer breakdown (`automatic` without
+- **continue_url** is only where the spec requires it,
+  `requires_escalation`: the PSP's page, else the order's, else the cart
+  claim. Not in an open checkout (`incomplete`, `ready_for_complete`),
+  though the spec SHOULDs one there: the only page is the cart's claim
+  link, and a link handed out outlives the status. Once the checkout
+  places an order that awaits its online payment, Django keeps the cart
+  and refuses a second order from it only from an agent (django-api
+  #693), so a buyer who opened that link could order the cart again on
+  the web. Not in `complete_in_progress` (its order may exist) or a
+  terminal status.
+- **`discounts` in the response** (extension negotiated): `codes` are
+  the cart's: those the checkout submitted, then a coupon the cart holds
+  that it did not (attached on the store or with the cart tools, applied
+  or refused now), so a platform sending the checkout back keeps them
+  and one leaving them out clears them; `applied` from Django's per-offer breakdown (`automatic` without
   a `code`; none for a placed order, whose discounts are one sum); each
   refused code a `warning` message with its rejection code and `path`
   `$.discounts.codes[i]` (`checkout.Rejections`).

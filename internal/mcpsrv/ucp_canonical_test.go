@@ -102,21 +102,23 @@ func TestCheckoutInDiscountCodes(t *testing.T) {
 }
 
 // Update replaces the checkout: with the extension negotiated, a request
-// without codes clears the codes the checkout holds. One that holds none
-// asks the store nothing, and without the extension nothing is read.
+// without codes clears the cart's coupon, whatever this checkout
+// submitted (a checkout's codes are its cart's). Without the extension
+// nothing is read.
 func TestUpdateReplacesTheDiscountCodes(t *testing.T) {
-	holding := &checkout.Session{DiscountCodes: []string{"SAVE10"}}
 	codes, present := (&UCPCheckoutIn{}).replacedDiscountCodes(
-		holding, discountNegotiated(t, true))
+		discountNegotiated(t, true))
 	assert.True(t, present)
 	assert.Empty(t, codes)
 
-	_, present = (&UCPCheckoutIn{}).replacedDiscountCodes(
-		&checkout.Session{}, discountNegotiated(t, true))
-	assert.False(t, present)
+	codes, present = (&UCPCheckoutIn{Discounts: &UCPDiscountsIn{
+		Codes: []string{"SAVE10"}}}).replacedDiscountCodes(
+		discountNegotiated(t, true))
+	assert.True(t, present)
+	assert.Equal(t, []string{"SAVE10"}, codes)
 
 	_, present = (&UCPCheckoutIn{}).replacedDiscountCodes(
-		holding, discountNegotiated(t, false))
+		discountNegotiated(t, false))
 	assert.False(t, present)
 }
 

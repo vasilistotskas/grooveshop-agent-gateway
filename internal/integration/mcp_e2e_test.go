@@ -79,6 +79,13 @@ func fakeDjangoMux(t *testing.T) http.Handler {
 	route("GET /api/v1/pay_way", "pay_way.json")
 	route("GET /api/v1/pay_way/1", "pay_way_1.json")
 	route("GET /api/v1/pay_way/2", "pay_way_2.json")
+	// A pay way the store does not have.
+	mux.HandleFunc("GET /api/v1/pay_way/99999",
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"detail": "No PayWay matches the given query."}`))
+		})
 	route("GET /api/v1/region/GR/get_regions_by_country_alpha_2",
 		"regions_gr.json")
 	route("GET /api/v1/shipping/options", "shipping_options.json")

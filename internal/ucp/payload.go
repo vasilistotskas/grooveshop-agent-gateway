@@ -307,17 +307,17 @@ func (b *Builder) BuildCheckout(
 					"checkout on the store.",
 			})
 		}
-	case checkout.StatusIncomplete, checkout.StatusReadyForComplete:
-		// The spec asks for continue_url in every non-terminal status. An
-		// open checkout's is the claim page for its cart, where the buyer
-		// finishes on the store. A checkout whose order is being placed
-		// gets none: the order may exist, and the cart could order again.
-		out.ContinueURL = links.CartClaim(s.CartID)
-		if s.Status == checkout.StatusIncomplete {
-			for _, m := range s.Missing() {
-				out.Messages = append(out.Messages,
-					Message{Type: "info", Code: "missing_input", Text: m})
-			}
+	case checkout.StatusIncomplete:
+		// No continue_url while the checkout is open, though the spec
+		// SHOULDs one: the only page there is the claim page for its
+		// cart, and a link handed out outlives the status. Once this
+		// checkout places an order that awaits its online payment, Django
+		// keeps the cart, and refuses a second order from it only when
+		// an agent places it: a buyer who opened the earlier link could
+		// order the same cart again on the web.
+		for _, m := range s.Missing() {
+			out.Messages = append(out.Messages,
+				Message{Type: "info", Code: "missing_input", Text: m})
 		}
 	}
 	if s.OrderUUID != "" && s.Status == checkout.StatusCompleted {
@@ -338,7 +338,24 @@ func (b *Builder) BuildCheckout(
 func renderDiscounts(
 	s *checkout.Session, pricing *checkout.Pricing, out *Checkout,
 ) {
-	d := &Discounts{Codes: s.DiscountCodes}
+	// The codes are the cart's: those this checkout submitted, then a
+	// coupon the cart holds that it did not (one attached on the store
+	// or with the cart tools), so a platform that sends the checkout
+	// back keeps it, and one that leaves it out clears it.
+	d := &Discounts{Codes: slices.Clone(s.DiscountCodes)}
+	held := func(code string) {
+		if code != "" && !slices.ContainsFunc(d.Codes, func(c string) bool {
+			return strings.EqualFold(strings.TrimSpace(c), code)
+		}) {
+			d.Codes = append(d.Codes, code)
+		}
+	}
+	for _, disc := range pricing.Discounts {
+		held(disc.Code)
+	}
+	for _, refused := range pricing.RefusedCoupons {
+		held(refused.Code)
+	}
 	for _, disc := range pricing.Discounts {
 		title := disc.Name
 		if title == "" {
@@ -356,7 +373,7 @@ func renderDiscounts(
 				"Discount code %q could not be applied.", rej.Code)
 		}
 		m := Message{Type: "warning", Code: rej.Reason, Text: content}
-		if i := slices.IndexFunc(s.DiscountCodes, func(c string) bool {
+		if i := slices.IndexFunc(d.Codes, func(c string) bool {
 			return strings.EqualFold(strings.TrimSpace(c), rej.Code)
 		}); i >= 0 {
 			m.Path = fmt.Sprintf("$.discounts.codes[%d]", i)

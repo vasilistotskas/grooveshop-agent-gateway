@@ -264,13 +264,16 @@ func (c *UCPCheckoutIn) discountCodes(neg ucp.Negotiated) ([]string, bool) {
 
 // replacedDiscountCodes is discountCodes for an update, which replaces the
 // checkout: with the extension negotiated, a request without codes holds
-// none, and the codes the checkout held are cleared with their coupon. A
-// checkout that holds none makes no call to the store.
+// none, and the cart's coupon is cleared. A checkout's codes are its
+// cart's, a coupon the cart held before the checkout included
+// (ucp.renderDiscounts lists it), so the clear does not depend on what
+// this checkout submitted; the store's removal changes nothing on a cart
+// without one.
 func (c *UCPCheckoutIn) replacedDiscountCodes(
-	s *checkout.Session, neg ucp.Negotiated,
+	neg ucp.Negotiated,
 ) ([]string, bool) {
 	codes, ok := c.discountCodes(neg)
-	if !ok && neg.Has(ucp.CapabilityDiscount) && len(s.DiscountCodes) > 0 {
+	if !ok && neg.Has(ucp.CapabilityDiscount) {
 		return []string{}, true
 	}
 	return codes, ok

@@ -82,13 +82,15 @@ func TestAnUpdateReplacesTheCheckout(t *testing.T) {
 	assert.Equal(t, "home_delivery", stored.Fulfillment.Kind)
 	assert.Positive(t, stored.PayWayID)
 
-	// A checkout that holds no codes asks the store nothing.
+	// A checkout's codes are its cart's, a coupon attached elsewhere
+	// included, so every update without codes clears the cart's coupon;
+	// Django's removal changes nothing on a cart without one.
 	res = callTool(t, session, "update_checkout", map[string]any{
 		"meta": meta, "id": id,
 		"checkout": map[string]any{"line_items": lines},
 	})
 	require.False(t, res.IsError, "%v", res.Content)
-	assert.EqualValues(t, 1, removed.Load())
+	assert.EqualValues(t, 2, removed.Load())
 }
 
 // A member of an extension the platform did not negotiate is ignored, not

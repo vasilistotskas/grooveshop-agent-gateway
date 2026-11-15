@@ -694,7 +694,7 @@ func (h *handlers) updateSession(
 	if err != nil {
 		return refusedBy(err)
 	}
-	codes, hasCodes := in.Checkout.replacedDiscountCodes(s, neg)
+	codes, hasCodes := in.Checkout.replacedDiscountCodes(neg)
 	// The lookups above can outlast the lock. A checkout another call
 	// stored meanwhile, a completion included, gets none of this
 	// update's cart writes; finish answers by what is stored.
@@ -918,8 +918,9 @@ func paymentChanged() ucp.Message {
 		Text: "checkout.payment selects a different payment method than " +
 			"this checkout holds, which would change its fee and its " +
 			"total, so no order was placed. Select that method with " +
-			"update_checkout and confirm the new total, or complete with " +
-			"the instrument the checkout holds."}
+			"update_checkout and confirm the new total, or complete " +
+			"with checkout.payment {} to keep the method the checkout " +
+			"holds."}
 }
 
 // firstMethodFee is the recoverable error of a complete that names the
@@ -933,6 +934,14 @@ func paymentChanged() ucp.Message {
 func (h *handlers) firstMethodFee(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session, payWayID int64,
 ) (*ucp.Message, error) {
+	// ComputePricing reads past a pay way it cannot read; here a method
+	// the store does not have is the caller's to hear about, not an
+	// outage to retry.
+	if _, err := h.deps.Django.PayWayByID(
+		ctx, t.Domain, t.DefaultLocale, payWayID); err != nil {
+		return nil, upstreamErr(err, "checkout.pay_way_id names no "+
+			"payment method this store offers; see get_payment_methods")
+	}
 	with := *s
 	with.PayWayID = payWayID
 	pricing, _, err := checkout.ComputePricing(ctx, h.deps.Django, t, &with)
@@ -999,7 +1008,8 @@ func completeErr(s *checkout.Session, err error) error {
 	case errors.Is(err, checkout.ErrPayWayUnavailable):
 		return errors.New(
 			"the selected payment method is not offered for this " +
-				"delivery; submit another advertised instrument")
+				"delivery; select another advertised instrument with " +
+				"update_checkout, then complete")
 	case errors.Is(err, checkout.ErrPaymentMethodUnsupported):
 		return errors.New(
 			"this payment method needs the buyer to pay on the " +
