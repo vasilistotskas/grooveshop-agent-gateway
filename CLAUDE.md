@@ -37,11 +37,14 @@ go test ./internal/...                           # Unit tests
 go test -tags integration ./internal/integration/...  # Docker-backed tests
 go test -tags realstack ./internal/realstack/...      # A real Django; see below
 golangci-lint run                                # Lint (v2 config)
+go tool govulncheck ./...                        # Known vulnerabilities the code reaches
+go mod tidy -diff                                # go.mod and go.sum are tidy
 go run ./cmd/gateway                             # Run (needs .env vars exported)
 docker build -t agent-gateway .                  # Production image
 ```
 
-CI runs lint → unit+integration (with `-race`) → build. `-race` requires
+CI runs lint (with the vulnerability and tidy checks) → unit+integration
+(with `-race`) → build. `-race` requires
 cgo; the local Go builds with `CGO_ENABLED=0` and has no C compiler, so
 `go test -race` fails at once with `-race requires cgo`. Run it in CI.
 
@@ -63,7 +66,7 @@ the code and not with your conclusions, and read it before you tag. CodeRabbit
 and PR Lens read one pull request at a time and have passed bugs a full read
 found. A test written with its fix does not prove the contract: check the other
 side's code. `release.yml` also refuses to publish unless the real-stack test
-passes.
+passes, and runs CI's tidy, image and vulnerability checks again.
 
 ## Architecture
 
