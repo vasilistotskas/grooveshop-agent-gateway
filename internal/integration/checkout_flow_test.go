@@ -603,7 +603,10 @@ func TestAMarkReadBackPastTheBudgetSendsNoOrder(t *testing.T) {
 	f := startFlow(t, upstream)
 	s := f.readySession(t)
 	lost := fenceRepliesLost(f.rdb, s.ID)
-	var paused atomic.Bool
+	// The hook runs on the flow's goroutine: it records what it did and
+	// asserts nothing.
+	var paused, injected atomic.Bool
+	var fault atomic.Pointer[string]
 	f.rdb.AddHook(redisAt(
 		func(ctx context.Context, cmd redis.Cmder, send func() error) error {
 			if args := cmd.Args(); cmd.Name() != "get" || len(args) < 2 ||
@@ -613,12 +616,17 @@ func TestAMarkReadBackPastTheBudgetSendsNoOrder(t *testing.T) {
 			}
 			deadline, ok := ctx.Deadline()
 			if !ok {
-				return errors.New("the read-back has no deadline")
+				msg := "the read-back has no deadline"
+				fault.Store(&msg)
+				return send()
 			}
 			time.Sleep(time.Until(deadline) - 100*time.Millisecond)
 			if err := pauseRedis(t, f.rdb, time.Second); err != nil {
-				return err
+				msg := "pausing Redis failed: " + err.Error()
+				fault.Store(&msg)
+				return send()
 			}
+			injected.Store(true)
 			return send()
 		}))
 
@@ -627,6 +635,10 @@ func TestAMarkReadBackPastTheBudgetSendsNoOrder(t *testing.T) {
 	took := time.Since(began)
 
 	require.True(t, paused.Load(), "the session was not read back")
+	if msg := fault.Load(); msg != nil {
+		require.Fail(t, *msg)
+	}
+	require.True(t, injected.Load(), "Redis was not paused before the read")
 	require.ErrorIs(t, err, checkout.ErrUnavailable)
 	assert.Equal(t, checkout.NothingPlaced, placement)
 	assert.Zero(t, f.faults.orderCreates.Load())
