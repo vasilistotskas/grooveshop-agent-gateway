@@ -40,6 +40,12 @@ jobs:
       # go.mod and go.sum hold exactly what the code imports.
       - name: go.mod is tidy
         run: go mod tidy -diff
+      # The Dockerfile names its Go by hand. One newer than go.mod's
+      # would build a binary the vulnerability check below never read.
+      - name: The image's Go is go.mod's
+        run: |
+          want="$(go list -m -f "{{.GoVersion}}")"
+          grep -qx "FROM golang:${want}-alpine AS build" Dockerfile
       # The version is go.mod's (a tool directive), so Dependabot moves
       # it. It fails on a known vulnerability the code can reach, in a
       # dependency or in the Go release go.mod names.

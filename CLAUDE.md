@@ -66,7 +66,7 @@ the code and not with your conclusions, and read it before you tag. CodeRabbit
 and PR Lens read one pull request at a time and have passed bugs a full read
 found. A test written with its fix does not prove the contract: check the other
 side's code. `release.yml` also refuses to publish unless the real-stack test
-passes.
+passes, and runs CI's tidy, image and vulnerability checks again.
 
 ## Architecture
 

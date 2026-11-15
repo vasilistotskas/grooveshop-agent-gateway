@@ -74,6 +74,8 @@ go build ./...                                        # Compile
 go test ./internal/...                                # Unit tests
 go test -tags integration ./internal/integration/...  # Integration tests (Docker)
 golangci-lint run                                     # Lint
+go tool govulncheck ./...                             # Known vulnerabilities the code reaches
+go mod tidy -diff                                     # go.mod and go.sum are tidy
 docker build -t agent-gateway .                       # Production image
 ```
 
