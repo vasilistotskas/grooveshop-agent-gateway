@@ -370,6 +370,8 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 		"checkout.ErrPaymentSessionFailed": {
 			checkout.ErrPaymentSessionFailed, http.StatusBadGateway,
 			"payment_link_failed"},
+		"checkout.ErrInvalidQuantity": {
+			checkout.ErrInvalidQuantity, http.StatusBadRequest, "invalid"},
 		"checkout.ErrSessionNotSaved": {
 			checkout.ErrSessionNotSaved, http.StatusInternalServerError,
 			"order_placed"},

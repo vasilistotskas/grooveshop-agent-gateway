@@ -119,13 +119,22 @@ fi
 
 # A store with the catalogue and cart off serves only the order tools: names,
 # not a count, so a catalogue tool in place of one of them still fails.
+# my_orders is among them only while the store has customer accounts, which
+# is the store's own switch, so either list passes and the line says which.
 for h in $OFF; do
   echo "== $h (cart and catalogue off)"
   want 'UCP profile is gone' 404 "$(code "https://$h/.well-known/ucp")"
   want 'ACP is gone' 404 "$(code -X POST "https://$h/acp/checkout_sessions" -d '{}')"
   want 'feeds are gone' 404 "$(code "https://$h/feeds/google.xml")"
   n=$(mcp "$h" tools/list '{}' | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{console.log(JSON.parse(s).result.tools.map(t=>t.name).sort().join(" "))}catch{console.log("unreadable")}})')
-  want 'tools/list' 'get_order get_store_policies my_orders track_order' "$n"
+  case "$n" in
+    'get_order get_store_policies my_orders track_order')
+      ok "tools/list -> $n (customer accounts on)" ;;
+    'get_order get_store_policies track_order')
+      ok "tools/list -> $n (customer accounts off)" ;;
+    *)
+      bad "tools/list: expected get_order get_store_policies track_order, with my_orders only while the store has customer accounts, got $n" ;;
+  esac
 done
 
 echo

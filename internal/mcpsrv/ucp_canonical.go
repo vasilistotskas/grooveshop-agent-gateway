@@ -170,7 +170,7 @@ func (c *UCPCheckoutIn) lines() ([]checkout.Line, error) {
 		out = append(out,
 			checkout.Line{ProductID: id, Quantity: li.Quantity})
 	}
-	return out, nil
+	return checkout.MergeLines(out)
 }
 
 // resolvePayWay maps a submitted instrument onto the merchant pay-way
