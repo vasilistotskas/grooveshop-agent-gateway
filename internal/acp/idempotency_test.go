@@ -30,7 +30,8 @@ func TestFingerprintFollowsTheSpecsEquivalence(t *testing.T) {
 		{"an extension field", `{"a":1}`, `{"a":1,"ext":{"x":true}}`,
 			false},
 		{"whitespace", "{\n  \"a\" : [ 1 , 2 ]\n}", `{"a":[1,2]}`, true},
-		{"a string's escapes", `{"s":"é"}`, `{"s":"é"}`, true},
+		// The first spells é as a JSON escape: backslash, u, 00e9.
+		{"a string's escapes", "{\"s\":\"\x5cu00e9\"}", `{"s":"é"}`, true},
 		{"another value", `{"a":1}`, `{"a":2}`, false},
 	}
 	for _, tc := range cases {
