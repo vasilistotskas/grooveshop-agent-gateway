@@ -99,9 +99,9 @@ func awaitingPayment(
 	t *testing.T, ucpSurface completionSurface,
 ) string {
 	t.Helper()
-	id := ucpSurface.ready(t)
+	id := ucpSurface.readyKeeping(t)
 	require.Equal(t, "requires_escalation", ucpSurface.complete(
-		context.Background(), id, uuid.NewString(), changeBy("ucp")))
+		context.Background(), id, uuid.NewString(), nil))
 	return id
 }
 
@@ -148,8 +148,8 @@ func TestALostSaveIsNeverAnsweredAsDone(t *testing.T) {
 		ucpSurface := surfaces["ucp"]
 		stack.faults.paymentLink.Store(true)
 		t.Cleanup(func() { stack.faults.paymentLink.Store(false) })
-		id := ucpSurface.ready(t)
-		first := ucpSurface.answer(ctx, id, uuid.NewString(), changeBy("ucp"))
+		id := ucpSurface.readyKeeping(t)
+		first := ucpSurface.answer(ctx, id, uuid.NewString(), nil)
 		require.Contains(t, first.refusal, "is placed")
 		stack.faults.paymentLink.Store(false)
 		require.Empty(t, stack.storedSession(t, id).PaymentURL)

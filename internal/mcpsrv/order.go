@@ -114,7 +114,7 @@ func (h *handlers) trackOrder(
 // GetOrderIn is the get_order tool's arguments.
 type GetOrderIn struct {
 	Meta *MetaIn `json:"meta"`
-	ID   string  `json:"id" jsonschema:"the order id from the completed checkout"`
+	ID   string  `json:"id"`
 }
 
 // getOrder renders the canonical UCP order object.

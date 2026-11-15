@@ -512,6 +512,7 @@ func toolset(h *handlers) []tool {
 		// assistant hands the shopper a checkout link instead.
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "create_checkout",
+			InputSchema:  createCheckoutInput,
 			Annotations:  mcptool.Replaces("Start a checkout"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: start a checkout session. Send " +
@@ -525,6 +526,7 @@ func toolset(h *handlers) []tool {
 
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "get_checkout",
+			InputSchema:  getCheckoutInput,
 			Annotations:  mcptool.ReadOnly("Get a checkout"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: read the current state of a checkout " +
@@ -535,6 +537,7 @@ func toolset(h *handlers) []tool {
 
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "update_checkout",
+			InputSchema:  updateCheckoutInput,
 			Annotations:  mcptool.Changes("Update a checkout"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: add or change buyer details, delivery " +
@@ -545,6 +548,7 @@ func toolset(h *handlers) []tool {
 
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "complete_checkout",
+			InputSchema:  completeCheckoutInput,
 			Annotations:  mcptool.Changes("Place the order"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: place the order. Send " +
@@ -560,6 +564,7 @@ func toolset(h *handlers) []tool {
 		// binding. Its conformance section requires exactly this tool.
 		mcpOnly(toolOf(&mcp.Tool{
 			Name:         "get_order",
+			InputSchema:  getOrderInput,
 			Annotations:  mcptool.ReadOnly("Get an order"),
 			OutputSchema: orderResultSchema,
 			Description: "UCP: the current state of an order placed through " +
@@ -571,6 +576,7 @@ func toolset(h *handlers) []tool {
 
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{
 			Name:         "cancel_checkout",
+			InputSchema:  cancelCheckoutInput,
 			Annotations:  mcptool.Changes("Cancel a checkout"),
 			OutputSchema: checkoutResultSchema,
 			Description: "UCP: abandon a checkout session the buyer is no " +

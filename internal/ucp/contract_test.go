@@ -25,18 +25,30 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
-// vendoredLoader resolves https://ucp.dev/schemas/* refs against the
-// vendored spec snapshot so contract tests never touch the network.
-// checkoutCaps is the declaration a negotiated checkout response carries.
-var checkoutCaps = map[string][]CapabilityRef{
-	CapabilityCheckout: {{Version: Version}},
-}
+// checkoutCaps is the declaration a negotiated checkout response carries,
+// with the discount extension; plainCaps is one without it.
+var (
+	checkoutCaps = map[string][]CapabilityRef{
+		CapabilityCheckout: {{Version: Version}},
+		CapabilityDiscount: {{Version: Version}},
+	}
+	plainCaps = map[string][]CapabilityRef{
+		CapabilityCheckout: {{Version: Version}},
+	}
+)
 
 func compileUCP(t *testing.T, ref string) *jsonschema.Schema {
 	t.Helper()
 	schema, err := CompileSpec(ref)
 	require.NoError(t, err)
 	return schema
+}
+
+// checkoutSchema is checkout.json composed with the discount extension,
+// as the extension's own schema composes it.
+func checkoutSchema(t *testing.T) *jsonschema.Schema {
+	t.Helper()
+	return compileUCP(t, "shopping/discount.json#/$defs/dev.ucp.shopping.checkout")
 }
 
 // roundTrip re-decodes a payload the way a platform receives it.
@@ -138,7 +150,7 @@ func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
 }
 
 func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
-	schema := compileUCP(t, "shopping/checkout.json")
+	schema := checkoutSchema(t)
 	tn := testTenant()
 	b := NewBuilder(
 		fixtureDjango(t),
@@ -287,7 +299,7 @@ func TestProfileAdvertisesResolvableUCPDocuments(t *testing.T) {
 // cases pin both, and each payload is validated against the real
 // checkout schema so the escalation branch cannot drift out of spec.
 func TestBuildCheckoutPaymentParity(t *testing.T) {
-	schema := compileUCP(t, "shopping/checkout.json")
+	schema := checkoutSchema(t)
 	dj := fixtureDjango(t)
 
 	build := func(t *testing.T, tn *tenant.Tenant, st checkout.Status,
@@ -338,8 +350,9 @@ func TestBuildCheckoutPaymentParity(t *testing.T) {
 				out.Status)
 			assert.Empty(t, out.UCP.PaymentHandlers,
 				"registry present but empty: nothing an agent can settle")
-			assert.Empty(t, out.ContinueURL,
-				"no handoff until completion produces one")
+			assert.Equal(t, "https://shop.example.test/cart/claim?uuid="+
+				"29eb4495-e018-45e7-b59c-6646302bd4ef", out.ContinueURL,
+				"the handoff of an open checkout is its cart, not a PSP")
 		})
 
 	t.Run("hosted payment page wins as the handoff target",

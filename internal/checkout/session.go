@@ -64,7 +64,9 @@ type Fulfillment struct {
 	Zipcode      string `json:"zipcode"`
 	Street       string `json:"street"`
 	StreetNumber string `json:"streetNumber"`
-	RegionID     string `json:"regionId,omitempty" jsonschema:"the delivery region's code or name, required when the country has regions; a checkout without one lists them in its messages"`
+	// RegionID is the delivery region's code or name, required when the
+	// country has regions (ResolveRegion).
+	RegionID string `json:"regionId,omitempty"`
 
 	AcsStationExternalID string `json:"acsStationExternalId,omitempty"`
 	AcsStationBranch     string `json:"acsStationBranch,omitempty"`

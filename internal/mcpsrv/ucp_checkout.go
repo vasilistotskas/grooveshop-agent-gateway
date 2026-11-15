@@ -19,8 +19,8 @@ import (
 )
 
 // The UCP checkout tools return the spec's checkout session object as
-// structuredContent (the MCP transport binding requirement). Inputs are
-// MCP-self-describing: platforms read the input schema from tools/list.
+// structuredContent (the MCP transport binding requirement). Their input
+// schemas are the spec's (ucp_inputs.go), read from tools/list.
 
 // CreateCheckoutIn is the create_checkout tool's arguments.
 type CreateCheckoutIn struct {
@@ -29,43 +29,43 @@ type CreateCheckoutIn struct {
 	// CartID starts the checkout from a cart built with the cart tools.
 	// UCP models that in its cart capability (dev.ucp.shopping.cart),
 	// as a cart_id member of the checkout object. This business does
-	// not advertise that capability, so a canonical caller sends
-	// line_items, and the member stays here, beside `checkout`, outside
-	// the negotiated shape: consumers ignore members they do not
-	// recognise. The capability's aim is kept, a cart has one
-	// incomplete checkout, but not its means: a checkout is not bound
-	// to its platform yet, so the spec's "return the existing checkout"
-	// is not offered. The newest create holds the cart, and an open
-	// checkout on it is canceled (createFromCart). (Order webhooks are
-	// discovered from the platform profile, never taken from a request.)
-	CartID string `json:"cart_id,omitempty" jsonschema:"the cartId of an existing cart from the cart tools; omit when sending line_items. A cart has one checkout at a time: an open checkout that already holds the cart is canceled, and this one replaces it"`
+	// not advertise that capability, so the member is the gateway's own:
+	// the create schema names it beside `checkout`, outside the
+	// negotiated shape, and a caller sends it or checkout.line_items. The
+	// capability's aim is kept, a cart has one incomplete checkout, but
+	// not its means: a checkout is not bound to its platform yet, so the
+	// spec's "return the existing checkout" is not offered. The newest
+	// create holds the cart, and an open checkout on it is canceled
+	// (createFromCart). (Order webhooks are discovered from the platform
+	// profile, never taken from a request.)
+	CartID string `json:"cart_id"`
 }
 
 // GetCheckoutIn is the get_checkout tool's arguments.
 type GetCheckoutIn struct {
 	Meta *MetaIn `json:"meta"`
-	ID   string  `json:"id" jsonschema:"the checkout session id"`
+	ID   string  `json:"id"`
 }
 
 // UpdateCheckoutIn is the update_checkout tool's arguments.
 type UpdateCheckoutIn struct {
 	Meta     *MetaIn       `json:"meta"`
-	ID       string        `json:"id" jsonschema:"the checkout session id to update"`
+	ID       string        `json:"id"`
 	Checkout UCPCheckoutIn `json:"checkout"`
 }
 
 // CompleteCheckoutIn is the complete_checkout tool's arguments.
 type CompleteCheckoutIn struct {
 	Meta *MetaIn `json:"meta"`
-	ID   string  `json:"id" jsonschema:"the checkout session id to place"`
+	ID   string  `json:"id"`
 	// Checkout carries the payment object the business needs to settle.
-	Checkout UCPCheckoutIn `json:"checkout"`
+	Checkout UCPPaymentChoice `json:"checkout"`
 }
 
 // CancelCheckoutIn is the cancel_checkout tool's arguments.
 type CancelCheckoutIn struct {
 	Meta *MetaIn `json:"meta"`
-	ID   string  `json:"id" jsonschema:"the checkout session id to cancel"`
+	ID   string  `json:"id"`
 }
 
 func (h *handlers) createCheckout(
@@ -121,7 +121,7 @@ func (h *handlers) createCheckout(
 			"the cart made for this checkout could not be reached; "+
 				"start again"), checkoutNotCreated)
 	}
-	hasCodes, err := h.applyCodes(ctx, t, s, &in.Checkout,
+	hasCodes, err := h.applyCodes(ctx, t, s, &in.Checkout, neg,
 		"the cart was not found; start a new checkout with line_items")
 	if err != nil {
 		return nil, zero, err
@@ -177,7 +177,7 @@ func (h *handlers) newSession(
 	if err := h.applyRegion(ctx, t, s, in); err != nil {
 		return nil, err
 	}
-	if err := h.applyPayment(ctx, t, s, in, neg); err != nil {
+	if err := h.applyPayment(ctx, t, s, &in.UCPPaymentChoice, neg); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -188,9 +188,9 @@ func (h *handlers) newSession(
 // serves, which the coupon call can be the first to find.
 func (h *handlers) applyCodes(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
-	in *UCPCheckoutIn, gone string,
+	in *UCPCheckoutIn, neg ucp.Negotiated, gone string,
 ) (bool, error) {
-	codes, hasCodes := in.discountCodes()
+	codes, hasCodes := in.discountCodes(neg)
 	if !hasCodes {
 		return false, nil
 	}
@@ -257,7 +257,7 @@ func (h *handlers) createFromCart(
 	}
 	defer release()
 
-	hasCodes, err := h.applyCodes(ctx, t, s, &in.Checkout, cartIDGone)
+	hasCodes, err := h.applyCodes(ctx, t, s, &in.Checkout, neg, cartIDGone)
 	if err != nil {
 		h.discard(ctx, s)
 		return nil, zero, err
@@ -516,11 +516,12 @@ func (h *handlers) applyRegion(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
 	in *UCPCheckoutIn,
 ) error {
-	if in.Fulfillment == nil {
+	f := in.fulfillment()
+	if f == nil {
 		return nil
 	}
 	if err := checkout.ResolveRegion(
-		ctx, h.deps.Django, t, s, in.Fulfillment.RegionID,
+		ctx, h.deps.Django, t, s, f.RegionID,
 	); err != nil {
 		return upstreamErr(err,
 			"the delivery regions are unavailable; retry shortly")
@@ -528,21 +529,23 @@ func (h *handlers) applyRegion(
 	return nil
 }
 
-// applyPayment honours a payment selection submitted before completion:
-// it changes the totals through the method's fee. A hosted pay_way_id
-// and an advertised instrument are mutually exclusive.
+// applyPayment honours a payment selection: it changes the totals
+// through the method's fee. A hosted pay_way_id and an advertised
+// instrument are mutually exclusive. A request that names neither keeps
+// the selection the checkout holds: the response does not carry it, so
+// a platform sending the checkout back cannot repeat it.
 func (h *handlers) applyPayment(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
-	in *UCPCheckoutIn, neg ucp.Negotiated,
+	in *UCPPaymentChoice, neg ucp.Negotiated,
 ) error {
 	if err := in.applyHostedSelection(s, neg); err != nil {
 		return err
 	}
-	if in.Payment == nil {
+	if in.Payment == nil || len(in.Payment.Instruments) == 0 {
 		return nil
 	}
 	payWayID, err := resolvePayWay(
-		ctx, h.deps.Django, t, s.Fulfillment, in.Payment)
+		ctx, h.deps.Django, t, s.Fulfillment, in.Payment.Instruments)
 	if err != nil {
 		return err
 	}
@@ -665,16 +668,19 @@ func (h *handlers) updateSession(
 	if err := h.closedTo(ctx, s, "updated"); err != nil {
 		return refusedBy(err)
 	}
-	// line_items is full-state on update: the submitted list replaces
-	// the cart's lines. Ignoring it would complete the old order.
+	// Update replaces the checkout ("the entire checkout resource"): the
+	// submitted lines replace the cart's, the buyer is what the request
+	// carries, and so are the discount codes. What the response does not
+	// carry (the gateway's own fulfillment member, the payment selection)
+	// is kept when omitted (applyTo, applyPayment).
 	lines, err := in.Checkout.lines()
 	if err != nil {
 		return refusedBy(err)
 	}
-	if in.Checkout.LineItems != nil && len(lines) == 0 {
+	if len(lines) == 0 {
 		return refusedBy(errors.New(
-			"checkout.line_items must not be empty; cancel the " +
-				"checkout to abandon it"))
+			"checkout.line_items is required and must not be empty; " +
+				"cancel the checkout to abandon it"))
 	}
 	// Every lookup and refusal before the first cart write: a refused
 	// update must leave the cart and the stored session agreeing.
@@ -683,25 +689,22 @@ func (h *handlers) updateSession(
 	if err := h.applyRegion(ctx, t, s, &in.Checkout); err != nil {
 		return refusedBy(err)
 	}
-	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
+	err = h.applyPayment(ctx, t, s, &in.Checkout.UCPPaymentChoice, neg)
+	if err != nil {
 		return refusedBy(err)
 	}
-	codes, hasCodes := in.Checkout.discountCodes()
-	if in.Checkout.LineItems != nil || hasCodes {
-		// The lookups above can outlast the lock. A checkout another call
-		// stored meanwhile, a completion included, gets none of this
-		// update's cart writes; finish answers by what is stored.
-		if err := h.deps.Checkout.Current(ctx, s); err != nil {
-			return refusedBy(saveFailed(err))
-		}
+	codes, hasCodes := in.Checkout.replacedDiscountCodes(s, neg)
+	// The lookups above can outlast the lock. A checkout another call
+	// stored meanwhile, a completion included, gets none of this
+	// update's cart writes; finish answers by what is stored.
+	if err := h.deps.Checkout.Current(ctx, s); err != nil {
+		return refusedBy(saveFailed(err))
 	}
-	if in.Checkout.LineItems != nil {
-		if err := checkout.SyncCartLines(
-			ctx, h.deps.Django, t, s.Protocol, s.CartID, lines,
-		); err != nil {
-			return refusedBy(withHint(upstreamErr(err, cartGone),
-				checkoutNotUpdated))
-		}
+	if err := checkout.SyncCartLines(
+		ctx, h.deps.Django, t, s.Protocol, s.CartID, lines,
+	); err != nil {
+		return refusedBy(withHint(upstreamErr(err, cartGone),
+			checkoutNotUpdated))
 	}
 	if hasCodes {
 		if err := checkout.ApplyDiscountCodes(
@@ -797,21 +800,26 @@ func (h *handlers) completeSession(
 		return fromSnapshot(closed)
 	}
 
-	// The submitted instrument decides how this order settles. Resolving
-	// it here — rather than trusting a pay-way set earlier — is what
-	// makes the payment object authoritative, and it rejects an
-	// instrument the store cannot honour instead of placing an order the
-	// buyer has no way to pay for.
-	payWay, status := s.PayWayID, s.Status
+	// Complete is a command, not an update: it places the checkout as it
+	// stands. The submitted instrument is resolved, which refuses one the
+	// store cannot honour, and must select the method the checkout holds:
+	// another would change the fee, and the total, at placement. That is
+	// answered incomplete, and nothing is stored or placed.
+	held := s.PayWayID
 	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
 		return refusedBy(err)
 	}
-	if s.PayWayID <= 0 {
-		return refusedBy(errors.New(
-			"checkout.payment.instruments is required to complete: " +
-				"submit one of the instruments the checkout advertised"))
+	if s.PayWayID != held {
+		s.PayWayID = held
+		return fromSnapshot(func() (*mcp.CallToolResult, CheckoutResult,
+			error) {
+			res, out, err := h.checkoutResult(ctx, t, s, neg)
+			return incompleteBy(res, out, err, paymentChanged(held))
+		})
 	}
-	s.Recompute()
+	if s.PayWayID <= 0 {
+		return refusedBy(errNoPaymentMethod)
+	}
 
 	claim, err := h.deps.Checkout.ClaimCompletion(
 		ctx, t.SchemaName, s.ID, in.Meta.IdempotencyKey)
@@ -829,17 +837,6 @@ func (h *handlers) completeSession(
 		// checkout is what is stored now, which finish answers with:
 		// this call's snapshot may predate it.
 		return fromSnapshot(render)
-	}
-
-	// What this call submitted is the buyer's latest choice whether or
-	// not the call places the order. It is stored now, because a refused
-	// completion stores nothing: a later complete that omits the payment
-	// would otherwise place the order with the choice before this one.
-	if s.Open() && (s.PayWayID != payWay || s.Status != status) {
-		if err := h.deps.Checkout.Save(ctx, s); err != nil {
-			h.settleCompletion(ctx, s, claim, checkout.NothingPlaced)
-			return refusedBy(saveFailed(err))
-		}
 	}
 
 	placement, err := h.deps.Flow.Complete(ctx, t, s)
@@ -869,6 +866,45 @@ func (h *handlers) completeSession(
 		}
 		return render()
 	})
+}
+
+// errNoPaymentMethod refuses a complete of a checkout that holds no
+// payment method and names none.
+var errNoPaymentMethod = errors.New(
+	"this checkout holds no payment method: select one of the " +
+		"instruments it advertises with update_checkout, then complete " +
+		"it with that instrument")
+
+// paymentChanged is the recoverable error of a complete whose payment
+// selects another method than the checkout holds (held, none at 0).
+func paymentChanged(held int64) ucp.Message {
+	text := "checkout.payment selects a different payment method than " +
+		"this checkout holds, which would change its fee and its total, " +
+		"so no order was placed. Select that method with update_checkout " +
+		"and confirm the new total, or complete with the instrument the " +
+		"checkout holds."
+	if held <= 0 {
+		text = "this checkout holds no payment method, and completing " +
+			"does not choose one, so no order was placed. Select it with " +
+			"update_checkout and confirm the total, then complete with " +
+			"the same instrument."
+	}
+	return ucp.Message{Type: "error", Code: "payment_method_changed",
+		Text: text, Severity: "recoverable"}
+}
+
+// incompleteBy answers a complete that placed nothing because of what it
+// submitted: the checkout as it is stored, as incomplete ("incomplete for
+// a recoverable change"), with the error that says what to do.
+func incompleteBy(
+	res *mcp.CallToolResult, out CheckoutResult, err error, m ucp.Message,
+) (*mcp.CallToolResult, CheckoutResult, error) {
+	if err != nil {
+		return res, out, err
+	}
+	out.checkout.Status = string(checkout.StatusIncomplete)
+	out.checkout.Messages = append([]ucp.Message{m}, out.checkout.Messages...)
+	return textResult("%s", m.Text), out, nil
 }
 
 // completeErr is the tool's answer for an error of Flow.Complete.

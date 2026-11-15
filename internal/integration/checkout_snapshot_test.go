@@ -47,7 +47,7 @@ func (stack ucpStack) beforeScriptOn(t *testing.T, key string, act func()) {
 func TestAnUpdateWhoseLineWriteMeetsAnotherCompletesOrder(t *testing.T) {
 	cases := []struct {
 		name string
-		// keepsCart: the winner's order keeps the cart (keepingCart),
+		// keepsCart: the winner's order keeps the cart (readyKeeping),
 		// else it is a cash-on-delivery order.
 		keepsCart bool
 		// refuse makes the fake answer the held line write as Django
@@ -65,11 +65,12 @@ func TestAnUpdateWhoseLineWriteMeetsAnotherCompletesOrder(t *testing.T) {
 				ctx := context.Background()
 				stack := startUCPGateway(t)
 				surfaces := surfacesByName(t, stack)
-				id := surfaces[name].ready(t)
-				submit, status := map[string]any(nil), "completed"
+				ready, status := surfaces[name].ready, "completed"
 				if tc.keepsCart {
-					submit, status = keepingCart(name)
+					ready = surfaces[name].readyKeeping
+					status = surfaces[name].keepingStatus
 				}
+				id := ready(t)
 				// The update has read the cart and changes its line.
 				held := stack.hold(t, "PUT /api/v1/cart/item/410", 1)[0]
 				updated := make(chan surfaceAnswer, 1)
@@ -77,7 +78,7 @@ func TestAnUpdateWhoseLineWriteMeetsAnotherCompletesOrder(t *testing.T) {
 				await(t, held, "the update's line write")
 				stack.lapse(t, lockRedisKey(id))
 				require.Equal(t, status, surfaces[name].complete(
-					ctx, id, uuid.NewString(), submit))
+					ctx, id, uuid.NewString(), nil))
 				placed := stack.storedBytes(t, id)
 				tc.refuse(stack.faults)
 
@@ -108,16 +109,15 @@ func TestAnUpdatePastItsLockWritesNoCartOfACheckoutStoredSince(
 			stack := startUCPGateway(t)
 			surfaces := surfacesByName(t, stack)
 			surface := surfaces[name]
-			id := surface.ready(t)
+			// The order keeps its cart.
+			id := surface.readyKeeping(t)
 			held := stack.hold(t, surface.asked, 1)[0]
 			updated := make(chan surfaceAnswer, 1)
 			go func() { updated <- surface.updateAsking(ctx, id) }()
 			await(t, held, "what the update asks the store")
 			stack.lapse(t, lockRedisKey(id))
-			// The order keeps its cart.
-			submit, status := keepingCart(name)
-			require.Equal(t, status, surface.complete(
-				ctx, id, uuid.NewString(), submit))
+			require.Equal(t, surface.keepingStatus, surface.complete(
+				ctx, id, uuid.NewString(), nil))
 			placed := stack.storedBytes(t, id)
 			writes := stack.faults.cartWrites.Load()
 
@@ -451,7 +451,7 @@ func TestAnOrderEventDuringItsCompletionCostsNeitherTheirResult(t *testing.T) {
 	ctx := context.Background()
 	stack := startUCPGateway(t)
 	surface := surfacesByName(t, stack)["ucp"]
-	id := surface.ready(t)
+	id := surface.readyKeeping(t)
 	// The event reads its order, placed a moment ago.
 	placed := time.Now()
 	stack.faults.orderCreatedAt.Store(&placed)
@@ -459,7 +459,7 @@ func TestAnOrderEventDuringItsCompletionCostsNeitherTheirResult(t *testing.T) {
 		"POST /api/v1/order/684/create_checkout_session", 1)[0]
 	completed := make(chan surfaceAnswer, 1)
 	go func() {
-		completed <- surface.answer(ctx, id, uuid.NewString(), changeBy("ucp"))
+		completed <- surface.answer(ctx, id, uuid.NewString(), nil)
 	}()
 	await(t, held, "the completion's payment page")
 

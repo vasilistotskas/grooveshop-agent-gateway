@@ -23,16 +23,16 @@ import (
 // UCPAgentIn identifies the calling platform. Maps to the UCP-Agent HTTP
 // header on the REST binding.
 type UCPAgentIn struct {
-	Profile string `json:"profile" jsonschema:"URL of the calling platform's UCP profile document"`
+	Profile string `json:"profile"`
 }
 
 // MetaIn is the request metadata every canonical tool carries.
 type MetaIn struct {
-	UCPAgent *UCPAgentIn `json:"ucp-agent" jsonschema:"REQUIRED; identifies the calling platform for capability negotiation"`
+	UCPAgent *UCPAgentIn `json:"ucp-agent"`
 	// IdempotencyKey is required on complete_checkout and
 	// cancel_checkout, where a retried call must not place or cancel a
 	// second order.
-	IdempotencyKey string `json:"idempotency-key,omitempty" jsonschema:"a UUID, or up to 255 visible ASCII characters; REQUIRED on complete_checkout and cancel_checkout, repeat it to retry safely"`
+	IdempotencyKey string `json:"idempotency-key,omitempty"`
 }
 
 // errIdempotencyKeyForm refuses a key outside checkout.ValidIdempotencyKey.
@@ -71,58 +71,70 @@ func (m *MetaIn) validate(needIdempotency bool) error {
 // business owns title, pricing and imagery, so the item schema omits
 // them in the request direction.
 type UCPItemIn struct {
-	ID string `json:"id" jsonschema:"the product id from the catalog tools"`
+	ID string `json:"id"`
 }
 
-// UCPLineItemReqIn is one requested line. `id` and `totals` are omitted
-// on create (the business assigns them); `id` addresses an existing line
-// on update.
+// UCPLineItemReqIn is one requested line. The business assigns line ids,
+// and a line's product names it, so a line's `id` is not read.
 type UCPLineItemReqIn struct {
-	ID       string    `json:"id,omitempty" jsonschema:"existing line id; omit when creating"`
 	Item     UCPItemIn `json:"item"`
 	Quantity int       `json:"quantity"`
 }
 
 // UCPBuyerReqIn carries the buyer's contact details.
 type UCPBuyerReqIn struct {
-	FirstName   string `json:"first_name,omitempty"`
-	LastName    string `json:"last_name,omitempty"`
-	Email       string `json:"email,omitempty"`
-	PhoneNumber string `json:"phone_number,omitempty"`
+	FirstName   string `json:"first_name"`
+	LastName    string `json:"last_name"`
+	Email       string `json:"email"`
+	PhoneNumber string `json:"phone_number"`
 }
 
 // UCPInstrumentIn is a submitted payment instrument. Its `type` must be
 // one the authoritative response advertised for this checkout, and
 // `handler_id` must match the handler that advertised it. No credential
-// member exists: the only instrument this business accepts forbids one.
+// member is read: the only instrument this business accepts forbids one.
 type UCPInstrumentIn struct {
-	ID        string `json:"id,omitempty"`
-	HandlerID string `json:"handler_id" jsonschema:"the id of the payment handler that advertised this instrument"`
-	Type      string `json:"type" jsonschema:"instrument type from the checkout's available_instruments"`
-	Selected  bool   `json:"selected,omitempty"`
+	HandlerID string `json:"handler_id"`
+	Type      string `json:"type"`
+	Selected  bool   `json:"selected"`
 }
 
 // UCPPaymentIn is the payment object, required when completing.
 type UCPPaymentIn struct {
-	Instruments []UCPInstrumentIn `json:"instruments,omitempty"`
+	Instruments []UCPInstrumentIn `json:"instruments"`
 }
 
-// UCPDiscountsIn carries submitted discount codes. The store applies one
-// code per order; extra codes come back rejected in `messages`.
+// UCPDiscountsIn is the discount extension's member: the codes to apply,
+// replacing those submitted before. The store applies one code per
+// order; extra codes come back rejected in `messages`.
 type UCPDiscountsIn struct {
-	Codes []string `json:"codes,omitempty"`
+	Codes []string `json:"codes"`
 }
 
-// UCPCheckoutIn is the `checkout` request payload. `fulfillment` and
-// `discounts` are contributed by the fulfillment and discount
-// extensions, which compose FLAT onto the checkout object rather than
-// nesting under their capability names.
+// UCPCheckoutIn is the `checkout` of a create or an update, decoded from
+// what the spec's request schema accepts (ucp_inputs.go). Extensions
+// compose FLAT onto the checkout object rather than nesting under their
+// capability names: `discounts` is the discount extension's, read only
+// while that extension is negotiated.
 type UCPCheckoutIn struct {
-	LineItems   []UCPLineItemReqIn    `json:"line_items,omitempty"`
-	Buyer       *UCPBuyerReqIn        `json:"buyer,omitempty"`
-	Fulfillment *checkout.Fulfillment `json:"fulfillment,omitempty" jsonschema:"delivery details; kind home_delivery or pickup_point with providerCode acs/boxnow"`
-	Discounts   *UCPDiscountsIn       `json:"discounts,omitempty"`
-	Payment     *UCPPaymentIn         `json:"payment,omitempty"`
+	LineItems []UCPLineItemReqIn `json:"line_items"`
+	Buyer     *UCPBuyerReqIn     `json:"buyer"`
+	// Fulfillment is the gateway's own delivery shape, not the spec's
+	// fulfillment extension, which this business does not implement yet:
+	// it is accepted, and not in the published schema, until that
+	// extension replaces it. It is read only when it names its `kind`;
+	// the extension's own member (`methods`) is ignored, as a member of
+	// an extension that was not negotiated.
+	Fulfillment *checkout.Fulfillment `json:"fulfillment"`
+	Discounts   *UCPDiscountsIn       `json:"discounts"`
+	UCPPaymentChoice
+}
+
+// UCPPaymentChoice is how a request selects its payment method, and all a
+// complete_checkout reads of its `checkout`: the spec omits every other
+// member from the complete request.
+type UCPPaymentChoice struct {
+	Payment *UCPPaymentIn `json:"payment"`
 	// PayWayID selects a payment method UCP cannot currently name.
 	//
 	// `payment.instruments` can only carry a type the checkout
@@ -134,23 +146,34 @@ type UCPCheckoutIn struct {
 	// in its own right, an agent choosing card payment has no canonical
 	// way to say so, and this member is how it does.
 	//
-	// A canonical caller never sends it; consumers ignore members they
-	// do not recognise.
-	PayWayID int64 `json:"pay_way_id,omitempty" jsonschema:"selects an ONLINE payment method (see get_payment_methods); omit and use payment.instruments for methods the checkout advertises"`
+	// It is the member of the business's declared extension
+	// space.grooveshop.payments.hosted_selection. Unlike other members of
+	// an extension that was not negotiated, it is refused rather than
+	// ignored (applyHostedSelection).
+	PayWayID int64 `json:"pay_way_id"`
 }
 
-// buyer converts the request buyer into the session shape, reporting
-// whether anything was supplied.
-func (c *UCPCheckoutIn) buyer() (checkout.Buyer, bool) {
+// buyer converts the request buyer into the session shape: none when
+// the request carries none.
+func (c *UCPCheckoutIn) buyer() checkout.Buyer {
 	if c == nil || c.Buyer == nil {
-		return checkout.Buyer{}, false
+		return checkout.Buyer{}
 	}
 	return checkout.Buyer{
 		FirstName: c.Buyer.FirstName,
 		LastName:  c.Buyer.LastName,
 		Email:     c.Buyer.Email,
 		Phone:     c.Buyer.PhoneNumber,
-	}, true
+	}
+}
+
+// fulfillment is the gateway's own delivery member, when the request
+// carries one (see UCPCheckoutIn.Fulfillment).
+func (c *UCPCheckoutIn) fulfillment() *checkout.Fulfillment {
+	if c == nil || c.Fulfillment == nil || c.Fulfillment.Kind == "" {
+		return nil
+	}
+	return c.Fulfillment
 }
 
 // lines flattens the requested line items into product lines. Item ids
@@ -186,17 +209,11 @@ func (c *UCPCheckoutIn) lines() ([]checkout.Line, error) {
 // than by Django at order creation.
 func resolvePayWay(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant,
-	f checkout.Fulfillment, payment *UCPPaymentIn,
+	f checkout.Fulfillment, instruments []UCPInstrumentIn,
 ) (int64, error) {
-	if payment == nil || len(payment.Instruments) == 0 {
-		return 0, errors.New(
-			"checkout.payment.instruments is required to complete: " +
-				"submit one of the instruments the checkout advertised")
-	}
-
 	// Honour the platform's selection when it marks one, else the first.
-	chosen := payment.Instruments[0]
-	for _, in := range payment.Instruments {
+	chosen := instruments[0]
+	for _, in := range instruments {
 		if in.Selected {
 			chosen = in
 			break
@@ -232,35 +249,44 @@ func resolvePayWay(
 		chosen.Type)
 }
 
-// discountCodes reports the submitted codes and whether the member was
-// present at all. Absent means "leave the coupon alone"; an empty array
-// means "remove it", so the two cannot be collapsed.
-func (c *UCPCheckoutIn) discountCodes() ([]string, bool) {
-	if c == nil || c.Discounts == nil {
+// discountCodes reports the submitted codes, and whether the request
+// names any: `discounts.codes`, read only while the discount extension
+// is negotiated. An empty array names none, and clears them.
+func (c *UCPCheckoutIn) discountCodes(neg ucp.Negotiated) ([]string, bool) {
+	if c == nil || c.Discounts == nil || c.Discounts.Codes == nil ||
+		!neg.Has(ucp.CapabilityDiscount) {
 		return nil, false
-	}
-	if c.Discounts.Codes == nil {
-		return []string{}, true
 	}
 	return c.Discounts.Codes, true
 }
 
+// replacedDiscountCodes is discountCodes for an update, which replaces the
+// checkout: with the extension negotiated, a request without codes holds
+// none, and the codes the checkout held are cleared with their coupon. A
+// checkout that holds none makes no call to the store.
+func (c *UCPCheckoutIn) replacedDiscountCodes(
+	s *checkout.Session, neg ucp.Negotiated,
+) ([]string, bool) {
+	codes, ok := c.discountCodes(neg)
+	if !ok && neg.Has(ucp.CapabilityDiscount) && len(s.DiscountCodes) > 0 {
+		return []string{}, true
+	}
+	return codes, ok
+}
+
 // applyTo copies the submitted buyer and fulfillment onto the session.
-// Absent members leave the stored value untouched, so a platform can
-// update one field without resending the rest.
+// An update replaces the checkout, so the buyer is what the request
+// carries, none included. The gateway's own fulfillment member is not
+// in the response a platform sends back, so one the request omits keeps
+// the stored delivery.
 //
 // Payment is deliberately NOT applied here: resolving an instrument to a
 // pay-way needs the merchant's catalogue, so it happens where a client
 // is available.
 func (c *UCPCheckoutIn) applyTo(s *checkout.Session) {
-	if c == nil {
-		return
-	}
-	if b, ok := c.buyer(); ok {
-		s.Buyer = b
-	}
-	if c.Fulfillment != nil {
-		s.Fulfillment = *c.Fulfillment
+	s.Buyer = c.buyer()
+	if f := c.fulfillment(); f != nil {
+		s.Fulfillment = *f
 	}
 }
 
@@ -272,7 +298,7 @@ func (c *UCPCheckoutIn) applyTo(s *checkout.Session) {
 // Refusing beats ignoring: a platform that named a method and got a
 // silent no-op would complete against whatever was selected before, and
 // the buyer could be charged a different way than the agent chose.
-func (c *UCPCheckoutIn) applyHostedSelection(
+func (c *UCPPaymentChoice) applyHostedSelection(
 	s *checkout.Session, neg ucp.Negotiated,
 ) error {
 	if c == nil || c.PayWayID <= 0 {

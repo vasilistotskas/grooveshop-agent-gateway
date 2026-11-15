@@ -137,18 +137,20 @@ func placeUCPOrder(
 	t *testing.T, s *mcp.ClientSession, product, country string,
 ) (checkoutID, orderID string) {
 	t.Helper()
+	lines := []any{map[string]any{
+		"item": map[string]any{"id": product}, "quantity": 1,
+	}}
 	created := structured(t, call(t, s, "create_checkout", map[string]any{
-		"meta": meta(""),
-		"checkout": map[string]any{"line_items": []any{map[string]any{
-			"item": map[string]any{"id": product}, "quantity": 1,
-		}}},
+		"meta": meta(""), "checkout": map[string]any{"line_items": lines},
 	}))
 	assert.Equal(t, "incomplete", created["status"])
 	checkoutID = created["id"].(string)
 
+	// An update replaces the checkout: it carries the lines again.
 	updated := structured(t, call(t, s, "update_checkout", map[string]any{
 		"meta": meta(""), "id": checkoutID,
 		"checkout": map[string]any{
+			"line_items":  lines,
 			"buyer":       buyer,
 			"fulfillment": homeDelivery(country),
 			"payment":     cashOnDelivery,
