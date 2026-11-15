@@ -365,6 +365,11 @@ type ReviewsOut struct {
 	Reviews []ReviewOut `json:"reviews"`
 }
 
+// reviewCommentMax bounds a review's comment in a tool result, in runes.
+// A shopper wrote it and the store sets no length on it; whole, one long
+// review would go into every chat turn that reads the product's reviews.
+const reviewCommentMax = 600
+
 type ReviewOut struct {
 	Reviewer string `json:"reviewer"`
 	Rating   int    `json:"rating"`
@@ -412,8 +417,10 @@ func (h *handlers) getProductReviews(
 		out.Reviews = append(out.Reviews, ReviewOut{
 			Reviewer: r.User.FirstName,
 			Rating:   r.Rate,
-			Comment:  django.Localized(r.Translations, lang).Comment,
-			Date:     r.CreatedAt,
+			Comment: truncate(
+				django.Localized(r.Translations, lang).Comment,
+				reviewCommentMax),
+			Date: r.CreatedAt,
 		})
 	}
 	return textResult(

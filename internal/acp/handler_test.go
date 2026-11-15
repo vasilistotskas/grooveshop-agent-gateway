@@ -26,21 +26,32 @@ func authTenant(schema, token string) *tenant.Tenant {
 }
 
 // The spec's request item has no quantity, so omitting one buys one. One
-// that is sent reaches Django, which refuses it below 1.
+// that is sent is a count, and the lines of one product are one line of
+// their sum (checkout.MergeLines).
 func TestCartLinesQuantity(t *testing.T) {
 	lines, err := cartLines([]ItemRef{
 		{ID: "1"},
 		{ID: "2", Quantity: new(3)},
-		{ID: "3", Quantity: new(0)},
-		{ID: "4", Quantity: new(-1)},
+		{ID: "1", Quantity: new(2)},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []checkout.Line{
-		{ProductID: 1, Quantity: 1},
+		{ProductID: 1, Quantity: 3},
 		{ProductID: 2, Quantity: 3},
-		{ProductID: 3, Quantity: 0},
-		{ProductID: 4, Quantity: -1},
 	}, lines)
+
+	for _, q := range []int{0, -1} {
+		_, err := cartLines([]ItemRef{{ID: "1", Quantity: new(2)},
+			{ID: "1", Quantity: new(q)}})
+		require.ErrorIs(t, err, checkout.ErrInvalidQuantity, q)
+		rec := httptest.NewRecorder()
+		upstreamError(rec, err)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.JSONEq(t, `{"type":"invalid_request","code":"invalid",`+
+			`"param":"$.line_items","message":"Every line item's quantity `+
+			`must be at least 1, and a product's lines together at most `+
+			`9007199254740991."}`, rec.Body.String())
+	}
 }
 
 func TestAuthPerTenantBearer(t *testing.T) {
