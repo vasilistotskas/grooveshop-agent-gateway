@@ -559,6 +559,10 @@ func (r *tenantResolve) UnmarshalJSON(b []byte) error {
 // StoreFeatures is the part of TenantConfig.features the gateway reads:
 // the features some tool or surface of it serves.
 type StoreFeatures struct {
+	// CustomerAccounts: shoppers can sign in, so an agent can link one's
+	// account. Django folds it into every feature that needs an account
+	// (reviews, favourites, loyalty), which read off with it.
+	CustomerAccounts bool `json:"customerAccounts"`
 	// Catalogue: the store publishes its products (listings, product
 	// pages, search).
 	Catalogue bool `json:"catalogue"`

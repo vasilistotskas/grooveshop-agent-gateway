@@ -2805,6 +2805,9 @@
           "catalogue": {
             "type": "boolean"
           },
+          "customerAccounts": {
+            "type": "boolean"
+          },
           "favourites": {
             "type": "boolean"
           },
@@ -2827,6 +2830,7 @@
         "required": [
           "cart",
           "catalogue",
+          "customerAccounts",
           "favourites",
           "loyalty",
           "productAlerts",

@@ -155,7 +155,10 @@ passes.
     - anything else: a 503, logged with `server` (mcp or mcp_admin).
   - On /mcp a present `Authorization: Bearer` is verified against Django
     `/agent/me` (`NewShopperVerifier`; a 403 there is a valid token
-    without the `profile` scope).
+    without the `profile` scope). On a store with `customerAccounts` off
+    it is ignored, as Django ignores it: the call is a guest's, with no
+    probe and no challenge. That store serves no account tool, so an
+    anonymous call to one is the SDK's unknown tool, unchallenged.
   - Anonymous requests pass through, except a call to an account tool.
     That gets the challenge naming the scopes of every account tool the
     store serves (`mcpsrv.RequireLinkedAccount`), because a client starts
@@ -919,9 +922,11 @@ passes.
   checkout tools need `cart` (which Django folds the catalogue into);
   `get_product_reviews`, `subscribe_product_alert` and `my_favourites`
   need `catalogue` and `productReviews` / `productAlerts` /
-  `favourites`; `my_loyalty_points` `loyalty`. The order tools and
-  `get_store_policies` stay open (return terms bind orders already
-  placed). The UCP profile and `/acp/*` need `cart` (`CheckoutOn`), the
+  `favourites`; `my_loyalty_points` `loyalty`. Every account tool
+  (`account`) also needs `customerAccounts`, so `my_orders` too; Django
+  folds it into reviews, favourites and loyalty as well. The other order
+  tools and `get_store_policies` stay open (return terms bind orders
+  already placed). The UCP profile and `/acp/*` need `cart` (`CheckoutOn`), the
   feeds `catalogue` (`ProductFeedsOn`). The per-store server (cached per feature set) neither
   lists nor serves it, discovery does not advertise it, and the chat
   bridge, which shares one server built with `EveryFeature`, filters

@@ -150,6 +150,8 @@ tool get_checkout_link "{\"cartId\":\"$CART\"}" | j 't.url'
 
 The chain: an anonymous `my_orders` gets 401 with a challenge, the client reads the store's metadata, registers itself (DCR), sends the shopper to sign in, redeems the code with PKCE, and retries.
 
+A store with customer accounts off (`features.customerAccounts` false) has no `my_*` tools: `tools/list` leaves them out, a call to one is the MCP SDK's `unknown tool` error (`-32602`) with no challenge, and a bearer the client still sends is ignored.
+
 **To repeat it in Claude Code:**
 
 ```bash

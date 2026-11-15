@@ -51,6 +51,7 @@ func testTenant() *tenant.Tenant {
 	return &tenant.Tenant{
 		SchemaName:    "demostore",
 		DefaultLocale: "el",
+		Features:      django.StoreFeatures{CustomerAccounts: true},
 		Domain:        "shop.example.test",
 	}
 }
@@ -203,6 +204,36 @@ func TestMiddlewareInvalidBearerGets401WithChallenge(t *testing.T) {
 		`resource_metadata="https://shop.example.test`+
 		`/.well-known/oauth-protected-resource/mcp"`,
 		rec.Header().Get("WWW-Authenticate"))
+}
+
+// A store without customer accounts links no account: any bearer, valid
+// or not, is ignored, as Django ignores it. The call goes on as a
+// guest's, Django is not asked, and no challenge points the client at an
+// authorization server the store does not run.
+func TestMiddlewareIgnoresABearerWithoutCustomerAccounts(t *testing.T) {
+	v, hits, done := newHarness(t)
+	defer done()
+	noAccounts := testTenant()
+	noAccounts.Features.CustomerAccounts = false
+
+	for _, token := range []string{"good", "expired"} {
+		linked := true
+		h := Middleware(v, testLogger())(http.HandlerFunc(
+			func(w http.ResponseWriter, r *http.Request) {
+				_, linked = FromContext(r.Context())
+				w.WriteHeader(http.StatusOK)
+			}))
+		req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req.WithContext(
+			tenant.NewContext(req.Context(), noAccounts)))
+
+		assert.Equal(t, http.StatusOK, rec.Code, token)
+		assert.False(t, linked, token)
+		assert.Empty(t, rec.Header().Get("WWW-Authenticate"), token)
+	}
+	assert.Equal(t, int64(0), hits.Load())
 }
 
 // otherTenant is a second store served by the same gateway pod pool —

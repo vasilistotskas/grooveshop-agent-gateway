@@ -70,6 +70,10 @@ func NewShopperVerifier(
 // inside the tenant middleware (it needs the tenant for the upstream
 // probe). Invalid tokens get the RFC 9728 challenge so MCP clients can
 // discover the authorization server and re-run their OAuth flow.
+//
+// A store without customer accounts links none: its bearer is ignored,
+// as Django ignores it, so a client still sending an old token shops as
+// a guest and is pointed at no authorization server.
 func Middleware(
 	v *Verifier[*django.AgentProfile], log *slog.Logger,
 ) func(http.Handler) http.Handler {
@@ -81,7 +85,7 @@ func Middleware(
 				return
 			}
 			t, tOK := tenant.FromContext(r.Context())
-			if !tOK {
+			if !tOK || !t.Features.CustomerAccounts {
 				next.ServeHTTP(w, r)
 				return
 			}
