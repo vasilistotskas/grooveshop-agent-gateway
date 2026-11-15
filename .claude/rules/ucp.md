@@ -78,10 +78,15 @@ wins over this page.
   discount extension), checked in beside the vendored spec by
   `scripts/ucp-request-schemas.sh`; `TestRequestSchemasAreCurrent`
   refuses files generated from another spec tree. They are open: a
-  member no handler reads is dropped at decode, never refused, and
+  member no handler reads is dropped at decode, never refused. The
+  generated files are used as they are; the business's own members are
+  composed onto them where the schemas are assembled (`checkoutRequest`:
+  `allOf` of the spec's schema and the own members, as an extension
+  composes), each described as the business's own: `cart_id` beside
+  `checkout` on create, `fulfillment` in `checkout` on create and
+  update, `pay_way_id` in `checkout`.
   `TestRequestStructsDecodeWhatTheSchemasAccept` keeps each request
-  struct to members its schema describes, plus the gateway's own
-  (`cart_id`, the flat `fulfillment`, `pay_way_id`). The `ucp-schema`
+  struct to members its schema describes. The `ucp-schema`
   that made them (`spec/requests/generator`) bundles an instrument's
   `{"$ref": "#"}` onto the Payment object, so the schema accepts any
   instrument: `resolvePayWay` checks it.
@@ -90,12 +95,17 @@ wins over this page.
   only while `dev.ucp.shopping.discount` is negotiated; the profile
   advertises it while the store's promotions are on.
 - **The gateway's own flat `fulfillment`** (`checkout.Fulfillment`,
-  camelCase) stays accepted and is read only when it names its `kind`,
-  but is not in the published schema: the spec's fulfillment extension
-  (`methods`) is not implemented and is ignored as not negotiated. It
-  leaves the wire with that extension (#109 step B, after Django #641);
-  ship B soon after this, since until then a caller of the flat shape
-  has no published description of it.
+  camelCase) is how a delivery is sent until the spec's fulfillment
+  extension is implemented (#109 step B, after Django #641), and it
+  stays in the published create and update schemas until then
+  (`ownFulfillment`): inferred from the struct, so its fields, their
+  descriptions (the struct's `jsonschema` tags) and which are required
+  cannot drift from what is decoded, and marked in its description as
+  the business's own shape the extension will replace. It is read only
+  when it names its `kind`, and the schema requires the carrier and the
+  whole postal address only then (`if`/`then`): the extension's own
+  member has the same name and another shape (`methods`), and is
+  accepted and ignored as not negotiated.
 - **update_checkout replaces the checkout** ("the platform is REQUIRED to
   send the entire checkout resource"). `line_items` is required and
   replaces the cart's lines; `buyer` is what the request carries, none
@@ -108,14 +118,29 @@ wins over this page.
   the flat `fulfillment`, and the payment selection
   (`payment.instruments`, `pay_way_id`; `payment: {}` names none).
   Without the extension, `discounts` is ignored and the codes are kept.
-- **complete_checkout is a command, not an update** (the spec's `main`;
-  the tag requires `payment` on complete). It places the checkout as it
-  stands: its instrument must select the pay way the checkout holds. A
-  different one, or any for a checkout that holds none, is answered with
-  the checkout as stored, `status: incomplete`, and a `recoverable` error
-  `payment_method_changed`; nothing is stored or placed and no
-  completion is claimed. The platform selects the method with
-  update_checkout, which shows the new fee and total.
+- **complete_checkout is a command, not an update** (the spec's `main`):
+  it never places an order at a total the checkout did not show. The
+  tag requires `payment` on complete, so a platform may first name its
+  method there. By the pay way the complete's instrument (or
+  `pay_way_id`) selects (`completeSession`):
+  - the one the checkout holds, or none named (`payment: {}`) while it
+    holds one: the order is placed;
+  - another than the one it holds: the checkout as stored, `status:
+    incomplete`, and a `recoverable` error `payment_method_changed`;
+  - the first one, for a checkout that holds none, with no fee for this
+    cart (its free threshold included): the method is taken. It is
+    stored after the completion is claimed and before the flow, so a
+    refused complete keeps it;
+  - the first one, with a fee: `incomplete` and a `recoverable` error
+    `payment_fee_added` saying the fee and the new total. The fee is the
+    render's own (`checkout.ComputePricing` on the checkout as it would
+    be with the method, `firstMethodFee`); a fee that cannot be read is
+    `unavailable`, never "no fee".
+
+  An `incomplete` answer stores nothing, claims no completion (the same
+  key can be used again) and places nothing; the stored checkout keeps
+  its status. The platform selects the method with update_checkout,
+  which shows the new fee and total.
 - **continue_url** is in every non-terminal status the spec asks it for
   and in no terminal one: an open checkout (`incomplete`,
   `ready_for_complete`) gets its cart's claim link (`Links.CartClaim`);

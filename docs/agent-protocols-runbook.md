@@ -243,7 +243,7 @@ tool track_order "{\"orderUuid\":\"$ORDER\"}" | j 't.status'
 
 **Expected:** `incomplete`, `ready_for_complete`, `completed` with an order, then the same totals from `get_order`.
 
-An update replaces the checkout, so it carries the lines and the buyer every time; the delivery and the payment selection are kept when omitted. A `complete_checkout` whose instrument selects another method than the checkout holds places nothing and answers `incomplete` with the error `payment_method_changed`.
+An update replaces the checkout, so it carries the lines and the buyer every time; the delivery and the payment selection are kept when omitted. A `complete_checkout` never places an order at a total the checkout did not show. One whose instrument selects another method than the checkout holds places nothing and answers `incomplete` with the error `payment_method_changed`. One that names the first method of a checkout that holds none places the order when the method adds no fee for that cart; when it adds one, it places nothing and answers `incomplete` with the error `payment_fee_added`, which says the fee and the new total. Either way the platform selects the method with `update_checkout`, which shows the total, and completes again; the same idempotency key can be used.
 
 **Observed on local:** PASS. Totals `subtotal=3958 fulfillment=300 fee=200 total=4458`, equal to the order's own breakdown. No ERROR logged.
 
