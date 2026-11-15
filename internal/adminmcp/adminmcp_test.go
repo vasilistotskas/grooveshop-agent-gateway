@@ -385,6 +385,34 @@ func TestAStoreWithAccessOffServesNothing(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// The store's team is not its customers: a store without customer
+// accounts still serves its staff every tool and the metadata naming the
+// staff issuer.
+func TestAStoreWithoutCustomerAccountsStillServesItsStaff(t *testing.T) {
+	f := &fakeDjango{granted: ReadScopes}
+	store := acme()
+	store.Features = django.StoreFeatures{
+		CustomerAccounts: false, StaffAIAccess: true,
+	}
+	session := connect(t, stack(f.serve(t), store))
+
+	listed, err := session.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Len(t, listed.Tools, 9)
+	res, err := session.CallTool(context.Background(),
+		&mcp.CallToolParams{Name: "list_reviews"})
+	require.NoError(t, err)
+	assert.False(t, res.IsError)
+	assert.Equal(t, "Bearer "+goodToken, f.dataAuth.Load())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/.well-known/oauth-protected-resource"+Path, nil)
+	ResourceMetadataHandler("connect.platform.test").ServeHTTP(rec,
+		req.WithContext(tenant.NewContext(req.Context(), store)))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 // The store switched access off and this pod has not caught up: Django's
 // 404 is passed on, not reported as an outage.
 func TestDjangosNotFoundIsPassedOn(t *testing.T) {
