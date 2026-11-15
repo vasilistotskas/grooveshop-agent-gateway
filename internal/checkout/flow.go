@@ -89,8 +89,9 @@ func CompletionBudget(upstreamTimeout time.Duration) time.Duration {
 
 // settleSteps counts what a completion's request does on its own once
 // Complete has returned, each step on a context of its own from
-// Store.Settling: settle its idempotency key by the placement, then
-// release the session lock (Store.Lock). A step added there is counted
+// Store.Settling: settle its idempotency key (UCP's by the placement,
+// ACP's by the answer it sent), then release the session lock
+// (Store.Lock). A step added there is counted
 // here, or the shutdown window does not hold it.
 const settleSteps = 2
 
