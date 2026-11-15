@@ -147,9 +147,13 @@ passes.
     verify:
     - invalid: a 401 and the RFC 9728 `WWW-Authenticate` challenge
       (`WriteChallenge`, naming the server's own metadata);
-    - Django's 404: a 404. The store switched the surface off and this
-      pod's copy has not caught up; it is the answer the gateway's own
-      gate gives once it has;
+    - Django's 404: a 404. The store switched something off and this
+      pod's copy has not caught up. For a surface (agent commerce,
+      staff access) it is the answer the gateway's own gate gives once
+      it has. For customer accounts it is not: Django names no gate in
+      its 404, so until this pod's copy says accounts are off (about
+      two `TENANT_CACHE_TTL`s at most) a request that still carries a
+      bearer is a 404 on /mcp, and a guest's 200 after;
     - Django's 429: a 429 with its `Retry-After`;
     - a caller that hung up: a 503 with no error line;
     - anything else: a 503, logged with `server` (mcp or mcp_admin).
@@ -158,7 +162,9 @@ passes.
     without the `profile` scope). On a store with `customerAccounts` off
     it is ignored, as Django ignores it: the call is a guest's, with no
     probe and no challenge. That store serves no account tool, so an
-    anonymous call to one is the SDK's unknown tool, unchallenged.
+    anonymous call to one is the SDK's unknown tool, unchallenged, and
+    an order that cannot be opened is not answered "sign in"
+    (`orderNotOpened`).
   - Anonymous requests pass through, except a call to an account tool.
     That gets the challenge naming the scopes of every account tool the
     store serves (`mcpsrv.RequireLinkedAccount`), because a client starts

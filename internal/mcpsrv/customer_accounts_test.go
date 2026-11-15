@@ -109,3 +109,12 @@ func TestAnAccountToolWithoutCustomerAccountsIsAnUnknownTool(t *testing.T) {
 		})
 	}
 }
+
+// An order that cannot be opened is not answered "sign in" by a store
+// that has no sign-in: Django answers 404 for it there.
+func TestAnOrderThatCannotBeOpenedNamesNoSignInWithoutAccounts(t *testing.T) {
+	assert.Contains(t, orderNotOpened(EveryFeature), "sign in")
+	without := orderNotOpened(noAccounts())
+	assert.NotContains(t, without, "sign")
+	assert.Contains(t, without, "contact the store")
+}
