@@ -245,6 +245,10 @@ type checkoutFaults struct {
 	promotions atomic.Bool
 	// couponWrite makes applying a coupon answer 502.
 	couponWrite atomic.Bool
+	// couponHeld is the coupon the cart holds, as Django keeps it: an
+	// applied coupon is on every later read of the cart until it is
+	// removed.
+	couponHeld atomic.Bool
 	// cartCreates counts the carts created: a cart read naming none.
 	cartCreates atomic.Int32
 	// namedCartReads counts the reads of a named cart; from the read
@@ -317,6 +321,10 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"uuid": "` + uuid.NewString() +
 					`", "items": []}`))
+				return
+			}
+			if faults.couponHeld.Load() {
+				serveFixture(t, w, "cart_with_coupon.json")
 				return
 			}
 			inner.ServeHTTP(w, r)
@@ -420,6 +428,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				return
 			}
 			faults.cartWrites.Add(1)
+			faults.couponHeld.Store(true)
 			serveFixture(t, w, "cart_with_coupon.json")
 		})
 	outer.HandleFunc("GET /api/v1/tenant/resolve",
@@ -439,6 +448,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	outer.HandleFunc("DELETE /api/v1/cart/coupon",
 		func(w http.ResponseWriter, _ *http.Request) {
 			faults.cartWrites.Add(1)
+			faults.couponHeld.Store(false)
 			serveFixture(t, w, "cart_with_items.json")
 		})
 	outer.HandleFunc("POST /api/v1/cart/reserve-stock",
