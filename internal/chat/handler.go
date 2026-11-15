@@ -112,9 +112,17 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The widget's session cart wins: the bot must operate on the cart the
-	// shopper sees in the UI.
-	if req.CartID != "" {
+	switch {
+	// A signed-in shopper's cart is reached through their token alone,
+	// and a conversation keeps none for them: its id, kept, would be
+	// named to the turn that follows a sign-out, and the store serves
+	// that cart to its owner only. A guest cart an earlier turn made is
+	// dropped too: a sign-in merges it away.
+	case cartToken != nil:
+		conv.CartID = ""
+	// The widget's session cart wins: the bot must operate on the cart
+	// the shopper sees in the UI.
+	case req.CartID != "":
 		conv.CartID = req.CartID
 	}
 
@@ -129,56 +137,82 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	assistantText, cartID, cartMutated, err := s.runTurn(r, t, conv, req.Message, sse)
-	if err != nil &&
-		errors.Is(context.Cause(r.Context()), httpmw.ErrShuttingDown) {
-		// The pod is stopping: the widget offers the retry, which
-		// another pod serves.
-		s.log.InfoContext(r.Context(), "chat turn cut by shutdown",
-			slog.String("conversation", conv.ID))
-		sse.event("error", errorEvent{
-			Message: messageFor(lang, msgTurnFailed),
-		})
-		return
+	res, err := s.runTurn(r, t, conv, req.Message, sse)
+	// The cart a visitor's cart tool named is the conversation's from
+	// here on, whether or not the turn finished: the store has it.
+	filled := cartToken == nil && res.cartID != ""
+	if filled {
+		conv.CartID = res.cartID
 	}
-	if err != nil && r.Context().Err() != nil {
-		// The shopper pressed stop or left: nobody is reading the stream,
-		// and a disconnect is not a server fault.
-		s.log.InfoContext(r.Context(), "chat turn abandoned by client",
-			slog.String("conversation", conv.ID))
-		return
+	cart := turnCart{
+		// A signed-in shopper's cart is already their session's: an id
+		// for the widget to adopt belongs to guest carts only, and their
+		// conversation holds none.
+		CartID:           conv.CartID,
+		CartMutated:      res.cartMutated,
+		CartTokenRefused: cartToken != nil && cartToken.Refused(),
 	}
 	if err != nil {
-		s.failTurn(r.Context(), lang, conv, sse, err)
+		s.endFailed(r.Context(), t, lang, conv, sse, cart, filled, err)
 		return
 	}
 
 	conv.Turns = append(conv.Turns,
 		Turn{Role: "user", Text: req.Message},
-		Turn{Role: "assistant", Text: assistantText},
+		Turn{Role: "assistant", Text: res.text},
 	)
-	if cartID != "" {
-		conv.CartID = cartID
+	s.save(r.Context(), t, conv)
+	sse.event("done", doneEvent{ConversationID: conv.ID, turnCart: cart})
+}
+
+// endFailed ends a turn that failed. Whoever still reads the stream gets
+// the error event, which says what the turn's tools did to the cart as
+// done would. A turn whose tools filled a visitor's cart stores its
+// conversation, so the cart is the next turn's too and not one nobody
+// claims, and names the conversation in the event; its messages are not
+// stored, the retry sends them again. The event is sent first: a turn cut
+// by shutdown has only the server's final window for it.
+func (s *Service) endFailed(
+	ctx context.Context, t *tenant.Tenant, lang string, conv *Conversation,
+	sse *sseWriter, cart turnCart, filled bool, err error,
+) {
+	failure := errorEvent{
+		Message:  messageFor(lang, msgTurnFailed),
+		turnCart: cart,
 	}
-	// The turn's cart changes already happened upstream; a client that
-	// disconnects after the last delta must not leave history behind
-	// them.
-	if err := s.store.Save(context.WithoutCancel(r.Context()),
+	if filled {
+		failure.ConversationID = conv.ID
+	}
+	switch {
+	case errors.Is(context.Cause(ctx), httpmw.ErrShuttingDown):
+		// The pod is stopping: the widget offers the retry, which
+		// another pod serves.
+		s.log.InfoContext(ctx, "chat turn cut by shutdown",
+			slog.String("conversation", conv.ID))
+		sse.event("error", failure)
+	case ctx.Err() != nil:
+		// The shopper pressed stop or left: nobody is reading the stream,
+		// and a disconnect is not a server fault.
+		s.log.InfoContext(ctx, "chat turn abandoned by client",
+			slog.String("conversation", conv.ID))
+	default:
+		s.failTurn(ctx, lang, conv, sse, failure, err)
+	}
+	if filled {
+		s.save(ctx, t, conv)
+	}
+}
+
+// save stores the conversation on a context its caller cannot end. The
+// turn's cart changes already happened upstream: a client that
+// disconnects, or a pod that is stopping, must not leave the
+// conversation behind them.
+func (s *Service) save(
+	ctx context.Context, t *tenant.Tenant, conv *Conversation,
+) {
+	if err := s.store.Save(context.WithoutCancel(ctx),
 		t.SchemaName, conv); err != nil {
-		s.log.ErrorContext(r.Context(), "chat save failed",
+		s.log.ErrorContext(ctx, "chat save failed",
 			slog.String("error", err.Error()))
 	}
-
-	// A signed-in shopper's cart is already their session's: an id for
-	// the widget to adopt belongs to guest carts only.
-	doneCartID := conv.CartID
-	if cartToken != nil {
-		doneCartID = ""
-	}
-	sse.event("done", doneEvent{
-		ConversationID:   conv.ID,
-		CartID:           doneCartID,
-		CartMutated:      cartMutated,
-		CartTokenRefused: cartToken != nil && cartToken.Refused(),
-	})
 }

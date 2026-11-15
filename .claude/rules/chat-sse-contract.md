@@ -21,13 +21,46 @@ cross-repo change. The code wins over this page.
   SSE events: `delta {text}`, `tool {name, status: running|done|error}`
   (`error`: the call failed, and the model was told why),
   `products {tool, query?, total?, products: [{id}]}`,
-  `error {message, code?, retryAfter?}` (`code: rate_limited` when the
+  `error {message, code?, retryAfter?, conversationId?, cartId?,
+  cartMutated, cartTokenRefused}` (`code: rate_limited` when the
   model provider throttled the turn, with a 429 or an error inside its
   stream, `retryAfter` its wait in seconds; a turn past
   `CHAT_TURN_TIMEOUT`, or still running when the pod's shutdown drain
   ends, gets the `turn_failed` message with no code, and the widget's
   retry, on another pod after a shutdown, resends it),
   `done {conversationId, cartId?, cartMutated, cartTokenRefused}`.
+  - **A turn that fails says what `done` would about the cart.** The
+    store keeps a cart change it accepted whatever became of the turn,
+    so `error` carries `cartId?`, `cartMutated` and `cartTokenRefused`
+    with `done`'s meaning and rules (`chat.turnCart`, one struct in both
+    events), however the turn failed: a provider error or throttle, the
+    turn's deadline, the pod's shutdown (`Service.endFailed`). The
+    widget acts on them as on `done`: it drops a refused cart token, and
+    on `cartMutated` it claims `cartId` (a visitor's turn that sent no
+    cart) or refreshes the cart. A widget that reads only `message`,
+    `code` and `retryAfter` ignores the rest.
+  - **A failed turn stores its conversation only to keep a cart.** When
+    a visitor's cart tool named a cart, the conversation is stored with
+    it and `error.conversationId` names the conversation, for the widget
+    to go on with. None of the failed turn's messages are stored: the
+    retry sends them again. So a later turn of that conversation that
+    sends no `cartId` is told to use that cart and creates no other,
+    also after a shopper pressed stop or left, when nobody reads an
+    event. A first turn's widget that read no event holds no
+    conversation id, so its next turn starts another conversation and
+    that cart stays unclaimed. Any other failed
+    turn stores nothing and names no conversation. The save runs on a
+    context the shopper's hang-up and the shutdown cannot end
+    (`Service.save`), after the event: a turn cut by shutdown has only
+    the server's final window to write it.
+  - The cart members are what the turn's tools had recorded when it
+    ended. A cart call still running when the shopper leaves or the
+    shutdown cuts the turn is not in them, though the store may accept
+    it (an add is sent to its end). The retry with the same `turnId`
+    reports it for a cart the shopper has (a sent `cartId`, a
+    `cartToken`); a cart that call created for a visitor without one
+    stays unclaimed.
+
   The request is `{message, conversationId?, cartId?, cartToken?,
   turnId?, locale?, attribution?}`. `attribution` is the tab's first
   touch exactly as the storefront's `useOrderAttribution().read()`
@@ -76,10 +109,18 @@ cross-repo change. The code wins over this page.
   (expired, revoked), and the widget mints a new token. It does not mean
   nothing changed: a change Django accepted before a refused read-back
   still counts, so `cartMutated` and `cartTokenRefused` can both be true.
-  `done.cartId` is sent on anonymous turns only, and the widget adopts
-  it only then: a turn that sent a `cartToken` gets none, and the
-  widget ignores `done.cartId` whenever it sent one, refreshing the
-  shopper's own cart through their session on `cartMutated`. A cart the
+  `cartId`, on `done` and on `error`, is sent on anonymous turns only,
+  and the widget adopts it only then: a turn that sent a `cartToken`
+  gets none, and the widget ignores `cartId` whenever it sent one,
+  refreshing the shopper's own cart through their session on
+  `cartMutated`. A turn that sent a `cartToken` keeps no cart in the
+  stored conversation either: the id a tool result names is not stored,
+  and one an earlier anonymous turn stored is dropped (a sign-in merges
+  that guest cart away). The widget keeps its conversation across a
+  sign-out, so the next turn comes without a token, and a signed-in
+  cart's id named to it would be one Django serves to its owner only
+  (an anonymous call naming it is served a new guest cart,
+  `django.ErrCartUnreachable`). A cart the
   model created while the widget sent one would never reach the shopper,
   so a sent cart the store no longer serves is answered `cart_unreachable`
   with "reload the page and try again", never "create a new one"

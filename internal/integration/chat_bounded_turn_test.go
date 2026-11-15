@@ -99,7 +99,8 @@ func TestChatStalledProviderIsCutAtTheTurnDeadline(t *testing.T) {
 
 // Once the turn's deadline has passed, no further tool call of the batch
 // starts: the one running finishes (a cart call is never cut midway),
-// the next does not run, and the turn ends with the retryable failure.
+// the next does not run, and the turn ends with the retryable failure,
+// which says the cart changed and which cart it is.
 func TestChatTurnDeadlineStopsTheToolCallsNotYetStarted(t *testing.T) {
 	var batch strings.Builder
 	for i, id := range []string{"call_slow", "call_next"} {
@@ -136,6 +137,10 @@ func TestChatTurnDeadlineStopsTheToolCallsNotYetStarted(t *testing.T) {
 	failure := lastEvent(t, events, "error")
 	assert.Nil(t, failure["code"])
 	assert.Contains(t, failure["message"], "διακόπηκε")
+	assert.Equal(t, true, failure["cartMutated"],
+		"the add that finished changed the cart")
+	assert.Equal(t, chatCartID, failure["cartId"])
+	assert.NotEmpty(t, failure["conversationId"])
 	assert.EqualValues(t, 1, fake.calls.Load())
 	assert.Contains(t, logs.String(), "chat: turn ended before tool "+
 		"add_to_cart: context deadline exceeded")
