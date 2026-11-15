@@ -37,9 +37,9 @@ type PricedDiscount struct {
 // the session has selected the option they derive from.
 //
 // DiscountTotal is the promotion/coupon discount Django evaluated on the
-// cart — it reduces Total. MarkdownTotal is the product-markdown savings
-// already baked into the line prices (informational only: emitting it as
-// a totals row would double-count). FreeShipping zeroes the delivery fee.
+// cart — it reduces Total. The product-markdown saving is already in the
+// line prices and is no row here: one would count it twice. FreeShipping
+// zeroes the delivery fee.
 //
 // Discounts says which offer earned what, so no coupon is credited with
 // an automatic promotion's money; RefusedCoupons are the attached codes
@@ -51,7 +51,6 @@ type Pricing struct {
 	DiscountTotal  int64
 	Discounts      []PricedDiscount
 	RefusedCoupons []DiscountRejection
-	MarkdownTotal  int64
 	FreeShipping   bool
 	DeliveryFee    int64
 	HasDelivery    bool
@@ -112,10 +111,6 @@ func ComputePricing(
 		return nil, nil, err
 	}
 	if err := p.addDiscounts(cart); err != nil {
-		return nil, nil, err
-	}
-	p.MarkdownTotal, err = money.MinorUnits(cart.TotalDiscountValue.String())
-	if err != nil {
 		return nil, nil, err
 	}
 	p.FreeShipping = cart.PromotionFreeShipping

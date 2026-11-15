@@ -286,7 +286,6 @@ func TestDecodeAcsStations(t *testing.T) {
 	s := stations[0]
 	assert.Equal(t, "AAT", s.ExternalID)
 	assert.Equal(t, "502", s.BranchCode)
-	assert.Equal(t, 8, s.ShopKind)
 	assert.Equal(t, "10434", s.PostalCode)
 	assert.NotEmpty(t, s.Lat)
 	assert.True(t, s.IsActive)

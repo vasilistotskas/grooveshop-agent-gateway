@@ -113,7 +113,6 @@ func TestComputePricingDiscounts(t *testing.T) {
 
 		wantSubtotal int64
 		wantDiscount int64
-		wantMarkdown int64
 		wantFreeShip bool
 		wantFee      int64
 		wantHasDel   bool
@@ -123,7 +122,6 @@ func TestComputePricingDiscounts(t *testing.T) {
 			name:         "no promotion",
 			cart:         pricingCart("0.0", false, nil),
 			wantSubtotal: 20000,
-			wantMarkdown: 1200,
 			wantTotal:    20000,
 		},
 		{
@@ -131,7 +129,6 @@ func TestComputePricingDiscounts(t *testing.T) {
 			cart:         pricingCart("20.00", false, []string{"SAVE20"}),
 			wantSubtotal: 20000,
 			wantDiscount: 2000,
-			wantMarkdown: 1200,
 			wantTotal:    18000,
 		},
 		{
@@ -141,7 +138,6 @@ func TestComputePricingDiscounts(t *testing.T) {
 			withDelivery:  true,
 			wantSubtotal:  20000,
 			wantDiscount:  2000,
-			wantMarkdown:  1200,
 			wantHasDel:    true,
 			wantFee:       350,
 			wantTotal:     18350,
@@ -153,7 +149,6 @@ func TestComputePricingDiscounts(t *testing.T) {
 			withDelivery:  true,
 			wantSubtotal:  20000,
 			wantDiscount:  2000,
-			wantMarkdown:  1200,
 			wantFreeShip:  true,
 			wantHasDel:    true,
 			wantFee:       0,
@@ -167,7 +162,6 @@ func TestComputePricingDiscounts(t *testing.T) {
 			overWeight:    true,
 			wantSubtotal:  20000,
 			wantDiscount:  2000,
-			wantMarkdown:  1200,
 			wantTotal:     18000,
 		},
 		{
@@ -178,7 +172,6 @@ func TestComputePricingDiscounts(t *testing.T) {
 			tooLarge:      true,
 			wantSubtotal:  20000,
 			wantDiscount:  2000,
-			wantMarkdown:  1200,
 			wantTotal:     18000,
 		},
 		{
@@ -186,7 +179,6 @@ func TestComputePricingDiscounts(t *testing.T) {
 			cart:         pricingCart("250.00", false, []string{"MEGA"}),
 			wantSubtotal: 20000,
 			wantDiscount: 25000,
-			wantMarkdown: 1200,
 			wantTotal:    0,
 		},
 	}
@@ -215,7 +207,6 @@ func TestComputePricingDiscounts(t *testing.T) {
 
 			assert.Equal(t, tc.wantSubtotal, p.ItemsSubtotal, "subtotal")
 			assert.Equal(t, tc.wantDiscount, p.DiscountTotal, "discount")
-			assert.Equal(t, tc.wantMarkdown, p.MarkdownTotal, "markdown")
 			assert.Equal(t, tc.wantFreeShip, p.FreeShipping, "free shipping")
 			assert.Equal(t, tc.wantHasDel, p.HasDelivery, "has delivery")
 			assert.Equal(t, tc.wantFee, p.DeliveryFee, "delivery fee")

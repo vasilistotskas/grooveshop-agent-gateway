@@ -69,8 +69,6 @@ type Product struct {
 	Attributes    []ProductAttribute `json:"attributes"`
 	ReviewAverage json.Number        `json:"reviewAverage"`
 	ReviewCount   int                `json:"reviewCount"`
-	LikesCount    int                `json:"likesCount"`
-	ViewCount     int                `json:"viewCount"`
 	UUID          string             `json:"uuid"`
 	// VariantGroupTitle is the variant group's name in the request
 	// language; null without a group or a name.
@@ -147,8 +145,6 @@ type SearchHit struct {
 	ContentType   string `json:"contentType"`
 	Pricing
 	Stock         int         `json:"stock"`
-	LikesCount    int         `json:"likesCount"`
-	ViewCount     int         `json:"viewCount"`
 	ReviewAverage json.Number `json:"reviewAverage" contract:"nullable"`
 	VatPercent    json.Number `json:"vatPercent" contract:"nullable"`
 }
@@ -178,7 +174,6 @@ type Category struct {
 	Active       bool                   `json:"active" contract:"optional"`
 	Parent       *int64                 `json:"parent"`
 	Level        int                    `json:"level"`
-	TreeID       int64                  `json:"treeId"`
 }
 
 // RegionTranslation is a region's name in one language. A store may hold
@@ -210,7 +205,6 @@ type PayWay struct {
 	Active        bool                         `json:"active" contract:"optional"`
 	Cost          json.Number                  `json:"cost"`
 	FreeThreshold json.Number                  `json:"freeThreshold"`
-	SortOrder     int                          `json:"sortOrder" contract:"nullable"`
 	ProviderCode  string                       `json:"providerCode" contract:"optional"`
 	// How the money changes hands. See the Settlement* constants in
 	// enums.go for why this replaced the isOnlinePayment /
@@ -302,7 +296,6 @@ type AcsStation struct {
 	ID           int64  `json:"id"`
 	ExternalID   string `json:"externalId"`
 	BranchCode   string `json:"branchCode"`
-	ShopKind     int    `json:"shopKind"`
 	Name         string `json:"name"`
 	AddressLine1 string `json:"addressLine1"`
 	City         string `json:"city"`
@@ -368,7 +361,6 @@ type Cart struct {
 	UUID                  string             `json:"uuid"`
 	Items                 []CartItem         `json:"items"`
 	TotalPrice            json.Number        `json:"totalPrice"`
-	TotalVatValue         json.Number        `json:"totalVatValue"`
 	TotalDiscountValue    json.Number        `json:"totalDiscountValue"`
 	PromotionDiscount     json.Number        `json:"promotionDiscount"`
 	FreeThresholdValue    json.Number        `json:"freeThresholdValue"`
@@ -376,7 +368,6 @@ type Cart struct {
 	AppliedPromotions     []AppliedPromotion `json:"appliedPromotions"`
 	AppliedCoupons        []AppliedCoupon    `json:"appliedCoupons"`
 	TotalItems            int                `json:"totalItems" contract:"untyped"`
-	TotalItemsUnique      int                `json:"totalItemsUnique"`
 	TotalWeightGrams      int                `json:"totalWeightGrams"`
 	Currency              string             `json:"currency"`
 }
@@ -446,7 +437,6 @@ type Order struct {
 	PaymentStatus        string           `json:"paymentStatus" contract:"optional,untyped"`
 	PaymentStatusDisplay string           `json:"paymentStatusDisplay"`
 	IsPaid               bool             `json:"isPaid"`
-	CanBeCanceled        bool             `json:"canBeCanceled"`
 	Items                []OrderItem      `json:"items"`
 	TrackingDetails      *TrackingDetails `json:"trackingDetails"`
 	PricingBreakdown     PricingBreakdown `json:"pricingBreakdown"`
@@ -465,14 +455,11 @@ type ProductAlert struct {
 // TenantConfig mirrors the tenant/resolve wire shape (camelCase, produced
 // by djangorestframework-camel-case from TenantConfigSerializer).
 type TenantConfig struct {
-	SchemaName       string `json:"schemaName"`
-	Name             string `json:"name"`
-	StoreName        string `json:"storeName"`
-	StoreDescription string `json:"storeDescription"`
-	LogoLightURL     string `json:"logoLightUrl"`
-	LogoDarkURL      string `json:"logoDarkUrl"`
-	FaviconURL       string `json:"faviconUrl"`
-	DefaultLocale    string `json:"defaultLocale"`
+	SchemaName    string `json:"schemaName"`
+	Name          string `json:"name"`
+	StoreName     string `json:"storeName"`
+	FaviconURL    string `json:"faviconUrl"`
+	DefaultLocale string `json:"defaultLocale"`
 	// AvailableLocales are the languages the storefront serves the
 	// store in; empty means its default alone (ServedLocales).
 	AvailableLocales []string `json:"availableLocales" contract:"optional"`
@@ -484,8 +471,7 @@ type TenantConfig struct {
 	// media.Host so an empty value falls back to the platform origin
 	// instead of producing assets.<tenant-domain>, a hostname standard
 	// onboarding never creates.
-	AssetsDomain         string `json:"assetsDomain"`
-	StripePublishableKey string `json:"stripePublishableKey"`
+	AssetsDomain string `json:"assetsDomain"`
 	// Features is each optional store feature's EFFECTIVE state (the
 	// plan flag AND the store's own settings), resolved by Django from
 	// one table (tenant/features.py). A tool or surface that serves a
