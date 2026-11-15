@@ -3,7 +3,6 @@ package acp
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -291,16 +290,7 @@ func renderDiscounts(
 			Amount: disc.Amount,
 		})
 	}
-	rejections := slices.Clone(s.RejectedDiscounts)
-	for _, refused := range pricing.RefusedCoupons {
-		if !slices.ContainsFunc(rejections,
-			func(r checkout.DiscountRejection) bool {
-				return r.Code == refused.Code
-			}) {
-			rejections = append(rejections, refused)
-		}
-	}
-	for _, rej := range rejections {
+	for _, rej := range checkout.Rejections(s, pricing) {
 		d.Rejected = append(d.Rejected, RejectedDiscount{
 			Code: rej.Code, Reason: rej.Reason, Message: rej.Message,
 		})

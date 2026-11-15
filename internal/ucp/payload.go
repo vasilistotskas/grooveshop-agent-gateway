@@ -3,7 +3,9 @@ package ucp
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
@@ -111,10 +113,31 @@ type OrderConfirmation struct {
 type Message struct {
 	Type string `json:"type"`
 	Code string `json:"code,omitempty"`
+	// Path is the RFC 9535 JSONPath, into the response, of what the
+	// message is about.
+	Path string `json:"path,omitempty"`
 	Text string `json:"content,omitempty"`
 	// Severity is required on error messages (message_error.json) and
-	// absent on info ones.
+	// absent on info and warning ones.
 	Severity string `json:"severity,omitempty"`
+}
+
+// Discounts is the discount extension's member (shopping/discount.json
+// discounts_object), on a checkout whose platform negotiated it.
+type Discounts struct {
+	// Codes are the codes the checkout holds, echoed so that a platform
+	// sending the checkout back on update keeps them.
+	Codes   []string          `json:"codes,omitempty"`
+	Applied []AppliedDiscount `json:"applied,omitempty"`
+}
+
+// AppliedDiscount is one discount the store applies: Code is empty for an
+// automatic one. Amount is positive; its totals row is negative.
+type AppliedDiscount struct {
+	Code      string `json:"code,omitempty"`
+	Title     string `json:"title"`
+	Amount    int64  `json:"amount"`
+	Automatic bool   `json:"automatic,omitempty"`
 }
 
 // Checkout is the UCP checkout session response payload.
@@ -126,6 +149,7 @@ type Checkout struct {
 	Status      string             `json:"status"`
 	Currency    string             `json:"currency"`
 	Totals      []LineItemTotal    `json:"totals"`
+	Discounts   *Discounts         `json:"discounts,omitempty"`
 	Links       []Link             `json:"links"`
 	ContinueURL string             `json:"continue_url,omitempty"`
 	Order       *OrderConfirmation `json:"order,omitempty"`
@@ -246,6 +270,9 @@ func (b *Builder) BuildCheckout(
 	}
 	out.Totals = append(out.Totals,
 		LineItemTotal{Type: "total", Amount: pricing.Total})
+	if _, ok := capabilities[CapabilityDiscount]; ok {
+		renderDiscounts(s, pricing, out)
+	}
 
 	switch s.Status {
 	case checkout.StatusRequiresEscalation:
@@ -281,6 +308,13 @@ func (b *Builder) BuildCheckout(
 			})
 		}
 	case checkout.StatusIncomplete:
+		// No continue_url while the checkout is open, though the spec
+		// SHOULDs one: the only page there is the claim page for its
+		// cart, and a link handed out outlives the status. Once this
+		// checkout places an order that awaits its online payment, Django
+		// keeps the cart, and refuses a second order from it only when
+		// an agent places it: a buyer who opened the earlier link could
+		// order the same cart again on the web.
 		for _, m := range s.Missing() {
 			out.Messages = append(out.Messages,
 				Message{Type: "info", Code: "missing_input", Text: m})
@@ -294,4 +328,73 @@ func (b *Builder) BuildCheckout(
 		}
 	}
 	return out, nil
+}
+
+// renderDiscounts fills the discount extension's member: the codes the
+// checkout holds, and the discounts the cart applies, each with its own
+// amount (a placed order's arrive as one sum, so none are listed then).
+// Each refused code is a warning message at its place in codes, as the
+// extension has it, carrying the rejection's code.
+func renderDiscounts(
+	s *checkout.Session, pricing *checkout.Pricing, out *Checkout,
+) {
+	d := &Discounts{}
+	held := func(code string) {
+		if code != "" && !slices.ContainsFunc(d.Codes, func(c string) bool {
+			return strings.EqualFold(strings.TrimSpace(c), code)
+		}) {
+			d.Codes = append(d.Codes, code)
+		}
+	}
+	if s.OrderUUID != "" {
+		// A placed order's discounts are one sum: its codes are those the
+		// checkout submitted.
+		for _, code := range s.DiscountCodes {
+			held(code)
+		}
+	} else {
+		// The codes are the cart's, so a platform that sends the checkout
+		// back keeps exactly them, and one that leaves them out clears
+		// them: the coupon the cart holds first (applied, or refused
+		// now), whoever attached it, then the codes the store refused
+		// when they were submitted, which their warnings point at. A
+		// submitted code the cart no longer holds is not listed: sent
+		// back, it would replace the coupon the cart holds now.
+		for _, disc := range pricing.Discounts {
+			held(disc.Code)
+		}
+		for _, refused := range pricing.RefusedCoupons {
+			held(refused.Code)
+		}
+		for _, rejected := range s.RejectedDiscounts {
+			held(rejected.Code)
+		}
+	}
+	for _, disc := range pricing.Discounts {
+		title := disc.Name
+		if title == "" {
+			title = disc.Code
+		}
+		d.Applied = append(d.Applied, AppliedDiscount{
+			Code: disc.Code, Title: title, Amount: disc.Amount,
+			Automatic: disc.Code == "",
+		})
+	}
+	for _, rej := range checkout.Rejections(s, pricing) {
+		content := rej.Message
+		if content == "" {
+			content = fmt.Sprintf(
+				"Discount code %q could not be applied.", rej.Code)
+		}
+		m := Message{Type: "warning", Code: rej.Reason, Text: content}
+		if i := slices.IndexFunc(d.Codes, func(c string) bool {
+			return strings.EqualFold(strings.TrimSpace(c), rej.Code)
+		}); i >= 0 {
+			m.Path = fmt.Sprintf("$.discounts.codes[%d]", i)
+		}
+		out.Messages = append(out.Messages, m)
+	}
+	if len(d.Codes)+len(d.Applied) > 0 {
+		out.Discounts = d
+	}
 }

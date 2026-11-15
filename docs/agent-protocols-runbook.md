@@ -229,9 +229,11 @@ FUL='{"kind":"home_delivery","providerCode":"flat_rate","countryCode":"GR","city
 COD='{"instruments":[{"handler_id":"grooveshop_payments","type":"cash_on_delivery","selected":true}]}'
 PID=$(tool search_products '{"query":"θήκη","limit":1}' | j 't.products[0].id')
 
-R=$(tool create_checkout "{\"meta\":$(ucp_meta),\"checkout\":{\"line_items\":[{\"item\":{\"id\":\"$PID\"},\"quantity\":1}]}}")
+LINES="[{\"item\":{\"id\":\"$PID\"},\"quantity\":1}]"
+
+R=$(tool create_checkout "{\"meta\":$(ucp_meta),\"checkout\":{\"line_items\":$LINES}}")
 ID=$(j 't.id' <<<"$R"); j 't.status' <<<"$R"
-tool update_checkout "{\"meta\":$(ucp_meta),\"id\":\"$ID\",\"checkout\":{\"buyer\":$BUYER,\"fulfillment\":$FUL,\"payment\":$COD}}" | j 't.status'
+tool update_checkout "{\"meta\":$(ucp_meta),\"id\":\"$ID\",\"checkout\":{\"line_items\":$LINES,\"buyer\":$BUYER,\"fulfillment\":$FUL,\"payment\":$COD}}" | j 't.status'
 KEY=$(uuid)
 R=$(tool complete_checkout "{\"meta\":$(ucp_meta "$KEY"),\"id\":\"$ID\",\"checkout\":{\"payment\":$COD}}")
 ORDER=$(j 't.order.id' <<<"$R"); j 't.status+" "+t.order.label' <<<"$R"
@@ -240,6 +242,8 @@ tool track_order "{\"orderUuid\":\"$ORDER\"}" | j 't.status'
 ```
 
 **Expected:** `incomplete`, `ready_for_complete`, `completed` with an order, then the same totals from `get_order`.
+
+An update replaces the checkout, so it carries the lines and the buyer every time; the delivery and the payment selection are kept when omitted. A `complete_checkout` never places an order at a total the checkout did not show. One whose instrument selects another method than the checkout holds places nothing and answers `incomplete` with the error `payment_method_changed`. One that names the first method of a checkout that holds none places the order when the method adds no fee for that cart; when it adds one, it places nothing and answers `incomplete` with the error `payment_fee_added`, which says the fee and the new total. Either way the platform selects the method with `update_checkout`, which shows the total, and completes again; the same idempotency key can be used.
 
 **Observed on local:** PASS. Totals `subtotal=3958 fulfillment=300 fee=200 total=4458`, equal to the order's own breakdown. No ERROR logged.
 
@@ -258,10 +262,10 @@ FUL='{"kind":"home_delivery","providerCode":"flat_rate","countryCode":"GR","city
 PID=$(tool search_products '{"query":"θήκη","limit":1}' | j 't.products[0].id')
 R=$(tool create_checkout "{\"meta\":$(ucp_meta),\"checkout\":{\"line_items\":[{\"item\":{\"id\":\"$PID\"},\"quantity\":1}],\"buyer\":$BUYER,\"fulfillment\":$FUL,\"pay_way_id\":$VIVA}}")
 ID=$(j 't.id' <<<"$R")
-tool complete_checkout "{\"meta\":$(ucp_meta "$(uuid)"),\"id\":\"$ID\",\"checkout\":{}}" | j 'JSON.stringify({status:t.status,continue_url:t.continue_url,messages:(t.messages||[]).map(m=>m.code)})'
+tool complete_checkout "{\"meta\":$(ucp_meta "$(uuid)"),\"id\":\"$ID\",\"checkout\":{\"payment\":{}}}" | j 'JSON.stringify({status:t.status,continue_url:t.continue_url,messages:(t.messages||[]).map(m=>m.code)})'
 ```
 
-**Expected:** `requires_escalation`, with a `continue_url` on Viva's **demo** host and the code `requires_buyer_review`.
+**Expected:** `requires_escalation`, with a `continue_url` on Viva's **demo** host and the code `requires_buyer_review`. The spec requires `payment` on a complete; `{}` names no instrument, so the method the checkout holds is used.
 
 **Observed on staging:** PASS, 2026-11-06. `requires_escalation`, `continue_url` on `demo.vivapayments.com`, code `requires_buyer_review`. The link was not opened.
 

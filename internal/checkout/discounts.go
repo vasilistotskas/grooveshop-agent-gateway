@@ -3,6 +3,7 @@ package checkout
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
@@ -47,6 +48,21 @@ func mapDiscountReason(reason string) string {
 		return reason
 	}
 	return DiscountCodeInvalid
+}
+
+// Rejections are the discount codes a checkout reports refused: those of
+// the last submission, then the codes attached to the cart that Django
+// refuses now (Pricing.RefusedCoupons) and the submission did not name.
+func Rejections(s *Session, p *Pricing) []DiscountRejection {
+	out := slices.Clone(s.RejectedDiscounts)
+	for _, refused := range p.RefusedCoupons {
+		if !slices.ContainsFunc(out, func(r DiscountRejection) bool {
+			return r.Code == refused.Code
+		}) {
+			out = append(out, refused)
+		}
+	}
+	return out
 }
 
 // ApplyDiscountCodes reconciles the cart's coupon with a submitted code

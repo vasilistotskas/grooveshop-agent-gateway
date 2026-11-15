@@ -28,3 +28,23 @@ Validate the snapshot with the official CLI (`cargo install ucp-schema`):
 ```bash
 ucp-schema lint internal/ucp/spec/2026-08-25
 ```
+
+## Request schemas
+
+`requests/` holds the canonical tools' `checkout` request schemas, one per
+operation (`checkout_create.json`, `checkout_update.json`,
+`checkout_complete.json`), as `ucp-schema` composes and resolves them from
+this tree: checkout composed with the extensions `requests/compose.json`
+declares, then resolved for the request direction and bundled.
+`internal/mcpsrv/ucp_inputs.go` publishes them as the tools' input schemas.
+Regenerate them after every re-vendor (and update `version` in the script
+when the directory is renamed):
+
+```bash
+UCP_SCHEMA=/path/to/ucp-schema scripts/ucp-request-schemas.sh
+```
+
+The script also writes `requests/digest`, a digest of this tree and of
+`compose.json`, and `requests/generator`, the tool's version.
+`TestRequestSchemasAreCurrent` recomputes the digest, so schemas generated
+from another tree fail the build.
