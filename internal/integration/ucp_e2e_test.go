@@ -34,6 +34,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
@@ -220,6 +221,9 @@ type checkoutFaults struct {
 	// reads as a Viva pay way settled online.
 	payWayReads   atomic.Int32
 	codOnlineFrom atomic.Int32
+	// codFee makes cash on delivery (pay way 1) read without its free
+	// threshold, so its 4.50 fee applies to the fixture cart.
+	codFee atomic.Bool
 	// orderRead makes reading a placed order answer 502.
 	orderRead atomic.Bool
 	// orderGone makes reading a placed order answer 404: Django no
@@ -346,6 +350,26 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				return
 			}
 			inner.ServeHTTP(w, r)
+		})
+	outer.HandleFunc("GET /api/v1/pay_way/1",
+		func(w http.ResponseWriter, r *http.Request) {
+			if !faults.codFee.Load() {
+				inner.ServeHTTP(w, r)
+				return
+			}
+			raw, err := os.ReadFile(fixturePath("pay_way_1.json"))
+			if !assert.NoError(t, err) {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			const threshold = `"freeThreshold": 100.0`
+			if !assert.Contains(t, string(raw), threshold) {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(strings.Replace(string(raw), threshold,
+				`"freeThreshold": 0.0`, 1)))
 		})
 	for _, write := range []string{
 		"POST /api/v1/cart/item", "PUT /api/v1/cart/item/{id}",
@@ -1303,86 +1327,172 @@ func TestUCPEndToEnd(t *testing.T) {
 			late.header.Get("Webhook-Id"), "each event is its own delivery")
 	})
 
-	// Complete is a command, not an update: a payment that selects another
-	// method than the checkout holds, or any for one that holds none,
-	// would change the fee and the total at placement. It places nothing
-	// and answers incomplete with a recoverable error; the checkout stays
-	// as it was, and the key is not spent.
+	// Complete is a command, not an update: it never places an order at a
+	// total the checkout did not show. A payment that selects another
+	// method than the checkout holds places nothing and answers incomplete
+	// with a recoverable error; the checkout stays as it was, and the key
+	// is not spent.
+	unready := func(t *testing.T, payment map[string]any) map[string]any {
+		t.Helper()
+		submit := map[string]any{"buyer": buyer, "fulfillment": fulfillment}
+		if payment != nil {
+			submit["payment"] = payment
+		}
+		res := callTool(t, session, "create_checkout", map[string]any{
+			"meta":     meta(""),
+			"cart_id":  stack.faults.carts.mint(),
+			"checkout": submit,
+		})
+		require.False(t, res.IsError, "%v", res.Content)
+		return structured(t, res)
+	}
+	complete := func(
+		t *testing.T, id any, key string, submit map[string]any,
+	) *mcp.CallToolResult {
+		t.Helper()
+		return callTool(t, session, "complete_checkout", map[string]any{
+			"meta": meta(key), "id": id, "checkout": submit,
+		})
+	}
+	// placedNothing checks the answer of a complete that changed nothing:
+	// incomplete, the recoverable error with code, no order, and the
+	// checkout as created.
+	placedNothing := func(
+		t *testing.T, res *mcp.CallToolResult, created map[string]any,
+		code string, orders int32,
+	) string {
+		t.Helper()
+		require.False(t, res.IsError, "%v", res.Content)
+		out := structured(t, res)
+		assert.Equal(t, "incomplete", out["status"])
+		assert.NotContains(t, out, "order")
+		msg := out["messages"].([]any)[0].(map[string]any)
+		assert.Equal(t, "error", msg["type"])
+		assert.Equal(t, code, msg["code"])
+		assert.Equal(t, "recoverable", msg["severity"])
+		assert.Contains(t, msg["content"], "no order was placed")
+		assert.Equal(t, orders, stack.faults.orderCreates.Load())
+
+		res = callTool(t, session, "get_checkout", map[string]any{
+			"meta": meta(""), "id": created["id"],
+		})
+		require.False(t, res.IsError)
+		stored := structured(t, res)
+		assert.Equal(t, created["status"], stored["status"])
+		assert.Equal(t, created["totals"], stored["totals"])
+		return msg["content"].(string)
+	}
+
 	t.Run("a complete that names another payment method places nothing",
 		func(t *testing.T) {
-			for name, tc := range map[string]struct {
-				held   map[string]any
-				submit map[string]any
-				status string
-			}{
-				"one the checkout does not hold": {
-					held: codInstrument,
-					submit: map[string]any{
-						"payment": map[string]any{}, "pay_way_id": 2,
-					},
-					status: "ready_for_complete",
+			created := unready(t, codInstrument)
+			require.Equal(t, "ready_for_complete", created["status"])
+			id := created["id"].(string)
+			orders := stack.faults.orderCreates.Load()
+			key := uuid.NewString()
+
+			placedNothing(t, complete(t, id, key, map[string]any{
+				"payment": map[string]any{}, "pay_way_id": 2,
+			}), created, "payment_method_changed", orders)
+			assert.EqualValues(t, 1, stack.storedSession(t, id).PayWayID)
+
+			// The checkout's own method, under the same key.
+			res := complete(t, id, key, map[string]any{"payment": codInstrument})
+			require.False(t, res.IsError, "%v", res.Content)
+			assert.Equal(t, "completed", structured(t, res)["status"])
+		})
+
+	// The spec requires `payment` on a complete, so a platform may first
+	// name its method there. One that leaves the total as the checkout
+	// showed it (here the hosted card, free for this cart) is taken, and
+	// the order is placed.
+	t.Run("an online method named only at complete time places the order",
+		func(t *testing.T) {
+			created := unready(t, nil)
+			require.Equal(t, "incomplete", created["status"])
+
+			res := complete(t, created["id"], uuid.NewString(), map[string]any{
+				"payment": map[string]any{}, "pay_way_id": 2,
+			})
+			require.False(t, res.IsError, "%v", res.Content)
+			escalated := structured(t, res)
+			assert.Equal(t, "requires_escalation", escalated["status"])
+			assert.Equal(t, vivaCheckoutURL, escalated["continue_url"])
+			assert.EqualValues(t, 2,
+				stack.storedSession(t, created["id"].(string)).PayWayID)
+			assert.EqualValues(t, 2, (*stack.faults.lastOrder.Load())["payWayId"])
+		})
+
+	// The method a complete names first is the buyer's choice whether or
+	// not that call places the order: a refused one keeps it, and the next
+	// complete, which names none, places the order with it.
+	t.Run("a refused complete keeps the method it named first",
+		func(t *testing.T) {
+			created := unready(t, nil)
+			id := created["id"].(string)
+			orders := stack.faults.orderCreates.Load()
+
+			stack.faults.stockShort.Store(true)
+			t.Cleanup(func() { stack.faults.stockShort.Store(false) })
+			res := complete(t, id, uuid.NewString(),
+				map[string]any{"payment": codInstrument})
+			require.True(t, res.IsError, "refused: the stock ran out")
+			stack.faults.stockShort.Store(false)
+			stored := stack.storedSession(t, id)
+			assert.EqualValues(t, 1, stored.PayWayID)
+			assert.Equal(t, checkout.StatusReadyForComplete, stored.Status)
+			require.Equal(t, orders, stack.faults.orderCreates.Load())
+
+			res = complete(t, id, uuid.NewString(),
+				map[string]any{"payment": map[string]any{}})
+			require.False(t, res.IsError, "%v", res.Content)
+			assert.Equal(t, "completed", structured(t, res)["status"])
+			assert.EqualValues(t, 1, (*stack.faults.lastOrder.Load())["payWayId"])
+		})
+
+	// A method named first that adds a fee would place the order at a
+	// total the checkout never showed. It places nothing, stores nothing,
+	// and says the fee and the new total; the platform selects the method
+	// with update_checkout, which shows them, and then completes.
+	t.Run("a method named only at complete time that adds a fee places nothing",
+		func(t *testing.T) {
+			stack.faults.codFee.Store(true)
+			t.Cleanup(func() { stack.faults.codFee.Store(false) })
+			created := unready(t, nil)
+			require.Equal(t, "incomplete", created["status"])
+			id := created["id"].(string)
+			orders := stack.faults.orderCreates.Load()
+			key := uuid.NewString()
+
+			said := placedNothing(t, complete(t, id, key,
+				map[string]any{"payment": codInstrument}),
+				created, "payment_fee_added", orders)
+			assert.Contains(t, said, "a fee of 4.50 EUR")
+			assert.Contains(t, said, "the total 933.86 EUR")
+			assert.Zero(t, stack.storedSession(t, id).PayWayID)
+
+			res := callTool(t, session, "update_checkout", map[string]any{
+				"meta": meta(""), "id": id,
+				"checkout": map[string]any{
+					"line_items": cartLines, "buyer": buyer,
+					"payment": codInstrument,
 				},
-				"one for a checkout that holds none": {
-					submit: map[string]any{"payment": codInstrument},
-					status: "incomplete",
-				},
-			} {
-				t.Run(name, func(t *testing.T) {
-					submit := map[string]any{
-						"buyer": buyer, "fulfillment": fulfillment,
-					}
-					if tc.held != nil {
-						submit["payment"] = tc.held
-					}
-					res := callTool(t, session, "create_checkout",
-						map[string]any{
-							"meta":     meta(""),
-							"cart_id":  stack.faults.carts.mint(),
-							"checkout": submit,
-						})
-					require.False(t, res.IsError, "%v", res.Content)
-					created := structured(t, res)
-					require.Equal(t, tc.status, created["status"])
-					orders := stack.faults.orderCreates.Load()
-					key := uuid.NewString()
+			})
+			require.False(t, res.IsError, "%v", res.Content)
+			updated := structured(t, res)
+			require.Equal(t, "ready_for_complete", updated["status"])
+			assert.Contains(t, updated["totals"], map[string]any{
+				"type": "fee", "display_text": "Payment method fee",
+				"amount": float64(450),
+			})
+			assert.Contains(t, updated["totals"], map[string]any{
+				"type": "total", "amount": float64(93386),
+			})
 
-					res = callTool(t, session, "complete_checkout",
-						map[string]any{
-							"meta": meta(key), "id": created["id"],
-							"checkout": tc.submit,
-						})
-					require.False(t, res.IsError, "%v", res.Content)
-					out := structured(t, res)
-					assert.Equal(t, "incomplete", out["status"])
-					assert.NotContains(t, out, "order")
-					msg := out["messages"].([]any)[0].(map[string]any)
-					assert.Equal(t, "error", msg["type"])
-					assert.Equal(t, "payment_method_changed", msg["code"])
-					assert.Equal(t, "recoverable", msg["severity"])
-					assert.Contains(t, msg["content"], "no order was placed")
-					assert.Equal(t, orders, stack.faults.orderCreates.Load())
-
-					res = callTool(t, session, "get_checkout", map[string]any{
-						"meta": meta(""), "id": created["id"],
-					})
-					require.False(t, res.IsError)
-					stored := structured(t, res)
-					assert.Equal(t, created["status"], stored["status"])
-					assert.Equal(t, created["totals"], stored["totals"])
-
-					if tc.held == nil {
-						return
-					}
-					// The checkout's own method, under the same key.
-					res = callTool(t, session, "complete_checkout",
-						map[string]any{
-							"meta": meta(key), "id": created["id"],
-							"checkout": map[string]any{"payment": tc.held},
-						})
-					require.False(t, res.IsError, "%v", res.Content)
-					assert.Equal(t, "completed", structured(t, res)["status"])
-				})
-			}
+			// The same key: the refused complete claimed nothing.
+			res = complete(t, id, key, map[string]any{"payment": codInstrument})
+			require.False(t, res.IsError, "%v", res.Content)
+			assert.Equal(t, "completed", structured(t, res)["status"])
 		})
 
 	t.Run("a failed payment link keeps the order and retries the link",

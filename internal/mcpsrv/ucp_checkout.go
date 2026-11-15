@@ -13,6 +13,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
@@ -801,24 +802,44 @@ func (h *handlers) completeSession(
 	}
 
 	// Complete is a command, not an update: it places the checkout as it
-	// stands. The submitted instrument is resolved, which refuses one the
-	// store cannot honour, and must select the method the checkout holds:
-	// another would change the fee, and the total, at placement. That is
-	// answered incomplete, and nothing is stored or placed.
+	// stands, and never at a total the checkout did not show. The
+	// submitted instrument is resolved, which refuses one the store
+	// cannot honour. Then:
+	//   - it selects the method the checkout holds: the order is placed;
+	//   - it selects another: the fee, and the total, would change at
+	//     placement;
+	//   - the checkout holds none (the spec requires `payment` on a
+	//     complete, so a platform may first name its instrument here):
+	//     the method is taken when it leaves the total as the checkout
+	//     showed it, and not when it adds a fee.
+	// A change is answered incomplete, and nothing is stored or placed.
 	held := s.PayWayID
 	if err := h.applyPayment(ctx, t, s, &in.Checkout, neg); err != nil {
 		return refusedBy(err)
 	}
-	if s.PayWayID != held {
-		s.PayWayID = held
+	// The snapshot stays the stored checkout until this call saves it.
+	named := s.PayWayID
+	s.PayWayID = held
+	placedNothing := func(m ucp.Message) sessionAnswer {
 		return fromSnapshot(func() (*mcp.CallToolResult, CheckoutResult,
 			error) {
 			res, out, err := h.checkoutResult(ctx, t, s, neg)
-			return incompleteBy(res, out, err, paymentChanged(held))
+			return incompleteBy(res, out, err, m)
 		})
 	}
-	if s.PayWayID <= 0 {
+	switch {
+	case named <= 0:
 		return refusedBy(errNoPaymentMethod)
+	case named != held && held > 0:
+		return placedNothing(paymentChanged())
+	case named != held:
+		fee, err := h.firstMethodFee(ctx, t, s, named)
+		if err != nil {
+			return refusedBy(err)
+		}
+		if fee != nil {
+			return placedNothing(*fee)
+		}
 	}
 
 	claim, err := h.deps.Checkout.ClaimCompletion(
@@ -837,6 +858,20 @@ func (h *handlers) completeSession(
 		// checkout is what is stored now, which finish answers with:
 		// this call's snapshot may predate it.
 		return fromSnapshot(render)
+	}
+
+	// The method a complete names first is the buyer's choice whether or
+	// not the call places the order. It is stored now, on a checkout
+	// that is still open (completeClosed), because a refused completion
+	// stores nothing: a later complete that names none would otherwise
+	// find the checkout without it.
+	if named != held {
+		s.PayWayID = named
+		s.Recompute()
+		if err := h.deps.Checkout.Save(ctx, s); err != nil {
+			h.settleCompletion(ctx, s, claim, checkout.NothingPlaced)
+			return refusedBy(saveFailed(err))
+		}
 	}
 
 	placement, err := h.deps.Flow.Complete(ctx, t, s)
@@ -871,26 +906,60 @@ func (h *handlers) completeSession(
 // errNoPaymentMethod refuses a complete of a checkout that holds no
 // payment method and names none.
 var errNoPaymentMethod = errors.New(
-	"this checkout holds no payment method: select one of the " +
-		"instruments it advertises with update_checkout, then complete " +
-		"it with that instrument")
+	"this checkout holds no payment method and this call names none: " +
+		"submit one of the instruments the checkout advertises in " +
+		"checkout.payment.instruments")
 
 // paymentChanged is the recoverable error of a complete whose payment
-// selects another method than the checkout holds (held, none at 0).
-func paymentChanged(held int64) ucp.Message {
-	text := "checkout.payment selects a different payment method than " +
-		"this checkout holds, which would change its fee and its total, " +
-		"so no order was placed. Select that method with update_checkout " +
-		"and confirm the new total, or complete with the instrument the " +
-		"checkout holds."
-	if held <= 0 {
-		text = "this checkout holds no payment method, and completing " +
-			"does not choose one, so no order was placed. Select it with " +
-			"update_checkout and confirm the total, then complete with " +
-			"the same instrument."
-	}
+// selects another method than the checkout holds.
+func paymentChanged() ucp.Message {
 	return ucp.Message{Type: "error", Code: "payment_method_changed",
-		Text: text, Severity: "recoverable"}
+		Severity: "recoverable",
+		Text: "checkout.payment selects a different payment method than " +
+			"this checkout holds, which would change its fee and its " +
+			"total, so no order was placed. Select that method with " +
+			"update_checkout and confirm the new total, or complete with " +
+			"the instrument the checkout holds."}
+}
+
+// firstMethodFee is the recoverable error of a complete that names the
+// first payment method of a checkout, when the method adds a fee: the
+// total would then differ from the one the checkout showed. It is nil
+// for a method that leaves the total as it was (no fee for this cart,
+// its free threshold included), which the complete takes.
+//
+// The fee is the render's own: checkout.ComputePricing on the checkout as
+// it would be with the method, not a second calculation.
+func (h *handlers) firstMethodFee(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session, payWayID int64,
+) (*ucp.Message, error) {
+	with := *s
+	with.PayWayID = payWayID
+	pricing, _, err := checkout.ComputePricing(ctx, h.deps.Django, t, &with)
+	switch {
+	case err != nil && isCartGone(err):
+		return nil, errCheckoutCartGone
+	case err != nil:
+		return nil, upstreamErr(err,
+			"the checkout's totals could not be read; retry")
+	case pricing.PayWay == nil:
+		// A render goes on without a fee it could not read. A placement
+		// does not: the fee decides whether the order is placed.
+		return nil, upstreamErr(django.ErrUpstreamDown, "")
+	case !pricing.HasPaymentFee:
+		return nil, nil
+	}
+	amount := func(minor int64) string {
+		return money.Format(minor) + " " + t.DefaultCurrency
+	}
+	return &ucp.Message{Type: "error", Code: "payment_fee_added",
+		Severity: "recoverable",
+		Text: fmt.Sprintf("this checkout holds no payment method, and "+
+			"the one this call names adds a fee of %s, which makes the "+
+			"total %s, so no order was placed. Select it with "+
+			"update_checkout and confirm the new total, then complete "+
+			"with the same instrument.",
+			amount(pricing.PaymentFee), amount(pricing.Total))}, nil
 }
 
 // incompleteBy answers a complete that placed nothing because of what it
