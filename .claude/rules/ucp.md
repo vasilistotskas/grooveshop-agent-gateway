@@ -36,7 +36,7 @@ wins over this page.
   string of 1 to 255 characters, as its spec makes it opaque), `id`
   for the target session, and `checkout` for the domain object with
   snake_case members. Extensions compose FLAT onto `checkout`
-  (`fulfillment`, `discounts`), never nested under capability names.
+  (`discounts`), never nested under capability names.
   Payment is selected by submitting an ADVERTISED instrument
   (`checkout.payment.instruments`), which the business resolves to a
   pay-way. An ONLINE method is NOT an instrument (nothing for a platform
@@ -60,7 +60,8 @@ wins over this page.
   a cart built with the cart tools. UCP models it in the cart
   capability (`dev.ucp.shopping.cart`), as a member of `checkout`; the
   profile does not advertise that capability, so the member sits beside
-  `checkout`, outside the negotiated shape. The capability's aim is
+  `checkout`, outside the negotiated shape, and the create schema takes
+  it or `checkout.line_items`. The capability's aim is
   kept, a cart has one incomplete checkout, by other means: the newest
   create holds the cart and an open checkout on it is canceled. A
   checkout is not bound to its platform yet, so the spec's "return the
@@ -70,6 +71,63 @@ wins over this page.
   registered on the chat server (`mcpOnly` in
   `internal/mcpsrv/server.go`) — their input requires `meta`, which a
   model cannot supply, and chat hands over a checkout link instead.
+- **The tools' input schemas are the spec's** (`internal/mcpsrv/ucp_inputs.go`).
+  `checkout` is the request schema the spec's `ucp-schema` resolves per
+  operation from checkout composed with every advertised extension that
+  adds request members (`internal/ucp/spec/requests/compose.json`: the
+  discount extension), checked in beside the vendored spec by
+  `scripts/ucp-request-schemas.sh`; `TestRequestSchemasAreCurrent`
+  refuses files generated from another spec tree. They are open: a
+  member no handler reads is dropped at decode, never refused, and
+  `TestRequestStructsDecodeWhatTheSchemasAccept` keeps each request
+  struct to members its schema describes, plus the gateway's own
+  (`cart_id`, the flat `fulfillment`, `pay_way_id`). The `ucp-schema`
+  that made them (`spec/requests/generator`) bundles an instrument's
+  `{"$ref": "#"}` onto the Payment object, so the schema accepts any
+  instrument: `resolvePayWay` checks it.
+- **A member of an extension that was not negotiated is ignored,
+  silently**, except `pay_way_id` (refused, above). `discounts` is read
+  only while `dev.ucp.shopping.discount` is negotiated; the profile
+  advertises it while the store's promotions are on.
+- **The gateway's own flat `fulfillment`** (`checkout.Fulfillment`,
+  camelCase) stays accepted and is read only when it names its `kind`,
+  but is not in the published schema: the spec's fulfillment extension
+  (`methods`) is not implemented and is ignored as not negotiated. It
+  leaves the wire with that extension (#109 step B, after Django #641);
+  ship B soon after this, since until then a caller of the flat shape
+  has no published description of it.
+- **update_checkout replaces the checkout** ("the platform is REQUIRED to
+  send the entire checkout resource"). `line_items` is required and
+  replaces the cart's lines; `buyer` is what the request carries, none
+  if omitted; with the discount extension negotiated, so are the codes:
+  an omitted `discounts` (or `codes`) is no codes, and the codes the
+  checkout holds are cleared with their coupon (no call when it holds
+  none). The spec is silent on an omitted member under replacement;
+  the rule is that a member the response renders is replaced, and one
+  it does not render cannot be sent back, so it is kept when omitted:
+  the flat `fulfillment`, and the payment selection
+  (`payment.instruments`, `pay_way_id`; `payment: {}` names none).
+  Without the extension, `discounts` is ignored and the codes are kept.
+- **complete_checkout is a command, not an update** (the spec's `main`;
+  the tag requires `payment` on complete). It places the checkout as it
+  stands: its instrument must select the pay way the checkout holds. A
+  different one, or any for a checkout that holds none, is answered with
+  the checkout as stored, `status: incomplete`, and a `recoverable` error
+  `payment_method_changed`; nothing is stored or placed and no
+  completion is claimed. The platform selects the method with
+  update_checkout, which shows the new fee and total.
+- **continue_url** is in every non-terminal status the spec asks it for
+  and in no terminal one: an open checkout (`incomplete`,
+  `ready_for_complete`) gets its cart's claim link (`Links.CartClaim`);
+  `requires_escalation` the PSP's page, else the order's, else the cart
+  claim; `complete_in_progress` none, deliberately: its order may exist,
+  and the cart could order again.
+- **`discounts` in the response** (extension negotiated): `codes` the
+  checkout holds, echoed so a platform sending the checkout back keeps
+  them; `applied` from Django's per-offer breakdown (`automatic` without
+  a `code`; none for a placed order, whose discounts are one sum); each
+  refused code a `warning` message with its rejection code and `path`
+  `$.discounts.codes[i]` (`checkout.Rejections`).
 - The service `schema` (OpenRPC) URL may appear ONLY while every method it
   defines for an ADVERTISED capability exists — the five checkout tools
   plus `get_order`. Declaring it asserts a machine-checkable contract.

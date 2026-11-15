@@ -618,14 +618,16 @@ passes.
   returns a `checkout.Placement`: `OrderMayExist` (the zero value)
   spends the caller's idempotency key, `NothingPlaced` releases it. A
   completion refused before the in-progress save stores nothing. So
-  the ACP handler and the UCP tool store what the call itself
-  submitted (ACP's buyer, UCP's payment) before they call it, so that
-  a refused call keeps the buyer's latest choice, and only for a
-  session that is still open (`Session.Open`). After the flow they
-  only settle their own key by the placement (ACP's body-hash record,
-  UCP's completion claim), on a context the caller cannot cancel,
-  bounded by the Django client's timeout, and map the error; neither
-  saves the session again.
+  the ACP handler stores what the call itself submitted (the buyer)
+  before it calls it, so that a refused call keeps the buyer's latest
+  choice, and only for a session that is still open (`Session.Open`).
+  A UCP complete submits nothing to store: it is a command, and a
+  payment that selects another method than the checkout holds is
+  answered `incomplete` before any claim (`.claude/rules/ucp.md`).
+  After the flow both only settle their own key by the placement
+  (ACP's body-hash record, UCP's completion claim), on a context the
+  caller cannot cancel, bounded by the Django client's timeout, and
+  map the error; neither saves the session again.
 - **One completion places a session's order, and no guard that expires
   decides which** (#84). Every guard on a checkout expires while its
   holder may still be working, because Django can take longer than any
@@ -933,8 +935,10 @@ passes.
   With promotions off `checkout.ApplyDiscountCodes` refuses every code
   as `discount_code_invalid` without applying it (Django answers 404
   with the plan flag off, which would fail the request) and clears the
-  cart's old coupon best effort, and ACP sessions do not declare the
-  discount extension.
+  cart's old coupon best effort, ACP sessions do not declare the
+  discount extension, and the UCP profile does not advertise
+  `dev.ucp.shopping.discount` (`ucp.BusinessCapabilities`), so a UCP
+  code is ignored as a member of an extension that was not negotiated.
 - **Store facts come from the store, never a default.**
   `find_pickup_points` searches only the pickup carriers the store's
   `/shipping/options` list as `pickup_point` for the country and the
