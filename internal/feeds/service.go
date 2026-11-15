@@ -79,12 +79,10 @@ const storeAttempts = 3
 // most this long, and an invalidation lifts it at once.
 const failureBackoff = time.Minute
 
-// failureMarkTimeout bounds the retries of the failure mark's write, so a
-// Redis outage does not hold the store's singleflight key behind the
-// client's retry backoff. It does not bound one command's socket I/O:
-// go-redis applies a context deadline there only with
-// ContextTimeoutEnabled, which the gateway's client does not set, so a
-// hung command still returns after the client's read timeout.
+// failureMarkTimeout bounds the failure mark's write, its retries and
+// each command's socket I/O (config.RedisOptions), so a Redis outage
+// does not hold the store's singleflight key behind the client's retry
+// backoff or its read timeout.
 const failureMarkTimeout = 2 * time.Second
 
 // noEpoch stands for an epoch a generation never read: Incr starts the
