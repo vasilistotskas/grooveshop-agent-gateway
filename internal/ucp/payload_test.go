@@ -172,3 +172,14 @@ func TestProfileAdvertisesTheDiscountExtensionWithPromotions(t *testing.T) {
 		Extends: CapabilityCheckout,
 	}}, profile.UCP.Capabilities[CapabilityDiscount])
 }
+
+// A submitted code the cart no longer holds (the coupon was replaced on
+// the store) is not listed: sent back, it would replace the cart's coupon.
+func TestDiscountCodesAreTheCartsNotStaleSubmissions(t *testing.T) {
+	s := checkout.NewSession("public", "shop.example.test", "ucp", fixtureCart)
+	s.DiscountCodes = []string{"OLD10"}
+	out := &Checkout{}
+	renderDiscounts(s, &checkout.Pricing{Discounts: []checkout.PricedDiscount{
+		{PromotionID: 9, Name: "New", Code: "NEW5", Amount: 500}}}, out)
+	assert.Equal(t, []string{"NEW5"}, out.Discounts.Codes)
+}

@@ -360,3 +360,17 @@ func TestApplyHostedSelectionIgnoresAbsentMember(t *testing.T) {
 		assert.EqualValues(t, 7, s.PayWayID)
 	}
 }
+
+// The store sells per item: a line asserting another sale basis is
+// refused, never reinterpreted; C62 or none is a count of items.
+func TestCheckoutInLinesRefusesAnotherSaleBasis(t *testing.T) {
+	line := func(unit string) *UCPCheckoutIn {
+		return &UCPCheckoutIn{LineItems: []UCPLineItemReqIn{{Item: UCPItemIn{
+			ID: "5", QuantityUnit: &UCPQuantityUnitIn{Unit: unit}}, Quantity: 2}}}
+	}
+	_, err := line("KGM").lines()
+	assert.ErrorContains(t, err, "quantity_unit \"KGM\" is not this item's sale basis")
+	lines, err := line("C62").lines()
+	require.NoError(t, err)
+	assert.Equal(t, []checkout.Line{{ProductID: 5, Quantity: 2}}, lines)
+}

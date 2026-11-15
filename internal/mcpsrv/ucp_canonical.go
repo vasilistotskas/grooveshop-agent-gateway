@@ -72,6 +72,17 @@ func (m *MetaIn) validate(needIdempotency bool) error {
 // them in the request direction.
 type UCPItemIn struct {
 	ID string `json:"id"`
+	// QuantityUnit is the sale basis a platform asserts for the line's
+	// quantity. Omitted, it asserts nothing. The store sells every item
+	// per item (ucp.UnitEach), and the spec forbids reinterpreting
+	// another basis, so lines() refuses one.
+	QuantityUnit *UCPQuantityUnitIn `json:"quantity_unit"`
+}
+
+// UCPQuantityUnitIn is the part of a quantity_unit that is its identity:
+// its unit (the schema pins a C62 descriptor's scale to 0).
+type UCPQuantityUnitIn struct {
+	Unit string `json:"unit"`
 }
 
 // UCPLineItemReqIn is one requested line. The business assigns line ids,
@@ -191,6 +202,14 @@ func (c *UCPCheckoutIn) lines() ([]checkout.Line, error) {
 			return nil, fmt.Errorf(
 				"checkout.line_items[%d].item.id %q is not a product id",
 				i, li.Item.ID)
+		}
+		if u := li.Item.QuantityUnit; u != nil && u.Unit != ucp.UnitEach {
+			return nil, fmt.Errorf(
+				"checkout.line_items[%d].item.quantity_unit %q is not this "+
+					"item's sale basis: the store sells it per item (%s). "+
+					"Send the quantity as a count of items, and omit "+
+					"quantity_unit or send %s", i, u.Unit, ucp.UnitEach,
+				ucp.UnitEach)
 		}
 		out = append(out,
 			checkout.Line{ProductID: id, Quantity: li.Quantity})

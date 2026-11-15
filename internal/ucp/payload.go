@@ -338,11 +338,7 @@ func (b *Builder) BuildCheckout(
 func renderDiscounts(
 	s *checkout.Session, pricing *checkout.Pricing, out *Checkout,
 ) {
-	// The codes are the cart's: those this checkout submitted, then a
-	// coupon the cart holds that it did not (one attached on the store
-	// or with the cart tools), so a platform that sends the checkout
-	// back keeps it, and one that leaves it out clears it.
-	d := &Discounts{Codes: slices.Clone(s.DiscountCodes)}
+	d := &Discounts{}
 	held := func(code string) {
 		if code != "" && !slices.ContainsFunc(d.Codes, func(c string) bool {
 			return strings.EqualFold(strings.TrimSpace(c), code)
@@ -350,11 +346,29 @@ func renderDiscounts(
 			d.Codes = append(d.Codes, code)
 		}
 	}
-	for _, disc := range pricing.Discounts {
-		held(disc.Code)
-	}
-	for _, refused := range pricing.RefusedCoupons {
-		held(refused.Code)
+	if s.OrderUUID != "" {
+		// A placed order's discounts are one sum: its codes are those the
+		// checkout submitted.
+		for _, code := range s.DiscountCodes {
+			held(code)
+		}
+	} else {
+		// The codes are the cart's, so a platform that sends the checkout
+		// back keeps exactly them, and one that leaves them out clears
+		// them: the coupon the cart holds first (applied, or refused
+		// now), whoever attached it, then the codes the store refused
+		// when they were submitted, which their warnings point at. A
+		// submitted code the cart no longer holds is not listed: sent
+		// back, it would replace the coupon the cart holds now.
+		for _, disc := range pricing.Discounts {
+			held(disc.Code)
+		}
+		for _, refused := range pricing.RefusedCoupons {
+			held(refused.Code)
+		}
+		for _, rejected := range s.RejectedDiscounts {
+			held(rejected.Code)
+		}
 	}
 	for _, disc := range pricing.Discounts {
 		title := disc.Name
