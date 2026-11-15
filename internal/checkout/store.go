@@ -77,7 +77,7 @@ const (
 type Store struct {
 	rdb *redis.Client
 	// timeout is the Django client's, which sizes the lock and the
-	// claims and bounds a lock's release.
+	// claims and bounds each settle step (Settling).
 	timeout  time.Duration
 	lockTTL  time.Duration
 	claimTTL time.Duration
@@ -506,12 +506,23 @@ func (st *Store) Lock(ctx context.Context, schema, id string) (func(), error) {
 		return nil, ErrLocked
 	}
 	return func() {
-		// Best effort, on a context the request cannot end: expiry
-		// covers a release that fails.
-		ctx, cancel := context.WithTimeout(context.Background(), st.timeout)
+		// Best effort: expiry covers a release that fails.
+		ctx, cancel := st.Settling(ctx)
 		defer cancel()
 		_ = held.Release(ctx)
 	}, nil
+}
+
+// Settling is the context a request writes what it did on, once its
+// caller may have left (a platform that hung up, the server's shutdown
+// cut): ctx's values without its cancellation, ended by one settle
+// step's bound. Each such write after a completion is one of the settle
+// steps CompletionTail counts.
+func (st *Store) Settling(ctx context.Context) (
+	context.Context, context.CancelFunc,
+) {
+	return context.WithTimeout(context.WithoutCancel(ctx),
+		settleTimeout(st.timeout))
 }
 
 // LockSession takes a session's lock for the surface that serves

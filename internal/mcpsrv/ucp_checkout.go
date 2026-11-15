@@ -374,8 +374,7 @@ func (h *handlers) supersede(
 // known then (the script may have run and its reply been lost), and
 // discarding one that was not stored removes nothing.
 func (h *handlers) discard(ctx context.Context, s *checkout.Session) {
-	ctx, cancel := context.WithTimeout(
-		context.WithoutCancel(ctx), h.deps.Django.Timeout())
+	ctx, cancel := h.deps.Checkout.Settling(ctx)
 	defer cancel()
 	if err := h.deps.Checkout.Discard(ctx, s); err != nil {
 		h.deps.Log.ErrorContext(ctx,
@@ -937,10 +936,9 @@ func placedUnsavedErr(orderUUID string) error {
 
 // settleCompletion spends or releases a completion claim by what the
 // attempt did about the order. It runs even when the call's context has
-// ended (a platform that hung up, a shutdown): a retry must find what
-// this attempt did, not a claim left in flight. The Django client's
-// timeout bounds the one Redis write, which go-redis alone would retry
-// against a silent Redis for several times that.
+// ended (a platform that hung up, a shutdown), on
+// checkout.Store.Settling: a retry must find what this attempt did, not
+// a claim left in flight.
 //
 // A claim that lapsed while the attempt ran may be another call's by
 // now, and is left to it. The answer does not depend on it: what this
@@ -950,8 +948,7 @@ func (h *handlers) settleCompletion(
 	ctx context.Context, s *checkout.Session, claim *checkout.Claim,
 	placement checkout.Placement,
 ) {
-	settleCtx, cancel := context.WithTimeout(
-		context.WithoutCancel(ctx), h.deps.Django.Timeout())
+	settleCtx, cancel := h.deps.Checkout.Settling(ctx)
 	defer cancel()
 	var err error
 	if placement == checkout.NothingPlaced {

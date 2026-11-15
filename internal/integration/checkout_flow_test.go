@@ -592,6 +592,60 @@ func TestAMarkThatCannotBeReadBackSendsNoOrder(t *testing.T) {
 	assert.Equal(t, checkout.StatusCompleteInProgress, f.stored(t, s).Status)
 }
 
+// A read-back that starts just before the completion's budget ends, of a
+// Redis gone silent, is cut at the budget's deadline: the completion
+// cannot tell its mark was stored and sends no order. Read after the
+// deadline instead, it would find the mark and try the order on a
+// context already over, which sends nothing, and answer an order never
+// sent as one whose outcome is unknown, with its key spent.
+func TestAMarkReadBackPastTheBudgetSendsNoOrder(t *testing.T) {
+	const upstream = 500 * time.Millisecond
+	f := startFlow(t, upstream)
+	s := f.readySession(t)
+	lost := fenceRepliesLost(f.rdb, s.ID)
+	// The hook runs on the flow's goroutine: it records what it did and
+	// asserts nothing.
+	var paused, injected atomic.Bool
+	var fault atomic.Pointer[string]
+	f.rdb.AddHook(redisAt(
+		func(ctx context.Context, cmd redis.Cmder, send func() error) error {
+			if args := cmd.Args(); cmd.Name() != "get" || len(args) < 2 ||
+				args[1] != sessionRedisKey(s.ID) || lost.Load() != 2 ||
+				!paused.CompareAndSwap(false, true) {
+				return send()
+			}
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				msg := "the read-back has no deadline"
+				fault.Store(&msg)
+				return send()
+			}
+			time.Sleep(time.Until(deadline) - 100*time.Millisecond)
+			if err := pauseRedis(t, f.rdb, time.Second); err != nil {
+				msg := "pausing Redis failed: " + err.Error()
+				fault.Store(&msg)
+				return send()
+			}
+			injected.Store(true)
+			return send()
+		}))
+
+	began := time.Now()
+	placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+	took := time.Since(began)
+
+	require.True(t, paused.Load(), "the session was not read back")
+	if msg := fault.Load(); msg != nil {
+		require.Fail(t, *msg)
+	}
+	require.True(t, injected.Load(), "Redis was not paused before the read")
+	require.ErrorIs(t, err, checkout.ErrUnavailable)
+	assert.Equal(t, checkout.NothingPlaced, placement)
+	assert.Zero(t, f.faults.orderCreates.Load())
+	assert.Less(t, took, checkout.CompletionBudget(upstream)+
+		200*time.Millisecond, "the read-back outlived the budget")
+}
+
 // An order call that went unanswered leaves an order that may exist.
 // The save that says so, and keeps the session a day, gets the same
 // second attempt when Redis fails it.

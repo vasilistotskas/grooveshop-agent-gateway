@@ -87,6 +87,29 @@ func CompletionBudget(upstreamTimeout time.Duration) time.Duration {
 	return completionSteps * upstreamTimeout
 }
 
+// settleSteps counts what a completion's request does on its own once
+// Complete has returned, each step on a context of its own from
+// Store.Settling: settle its idempotency key by the placement, then
+// release the session lock (Store.Lock). A step added there is counted
+// here, or the shutdown window does not hold it.
+const settleSteps = 2
+
+// CompletionTail is the longest an order completion keeps its request
+// once the request's context has ended, for a Django client cut at
+// upstreamTimeout: the part of Complete that runs without its caller and
+// the settle steps after it. Every Redis command in it ends at its
+// context's deadline (config.RedisOptions).
+func CompletionTail(upstreamTimeout time.Duration) time.Duration {
+	return CompletionBudget(upstreamTimeout) +
+		settleSteps*settleTimeout(upstreamTimeout)
+}
+
+// settleTimeout bounds one settle step: one Redis write, which go-redis
+// alone would retry against a silent Redis for several times that.
+func settleTimeout(upstreamTimeout time.Duration) time.Duration {
+	return upstreamTimeout
+}
+
 // Flow orchestrates order creation over the existing Django endpoints.
 type Flow struct {
 	dj     *django.Client

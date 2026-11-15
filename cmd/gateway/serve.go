@@ -52,25 +52,20 @@ func podTiming(completion time.Duration) timing {
 	}
 }
 
-// completionSettles is what a completion's request does on its own after
-// checkout.Flow.Complete, in upstream timeouts, each on a context of its
-// own bounded by one: settle its idempotency key by the placement, then
-// release the session lock.
-const completionSettles = 2
-
 // answerSlack is what writing the answer after the settles takes, so the
 // window does not close the connection under it.
 const answerSlack = time.Second
 
 // completionTail is the longest an order completion keeps its request
-// open once the request's context has ended: the part of
-// checkout.Flow.Complete that runs without its caller, the settles after
-// it and the answer. A completion can detach until the end of the drain,
-// so the final window must hold all of it. upstream is the Django
-// client's timeout.
+// open once the request's context has ended: checkout.CompletionTail
+// (the part of checkout.Flow.Complete that runs without its caller, then
+// the key settle and the lock release, each on a context of its own
+// bounded by one upstream timeout, which its Redis command ends at) and
+// the answer. A completion can detach until the end of the drain, so the
+// final window must hold all of it. upstream is the Django client's
+// timeout.
 func completionTail(upstream time.Duration) time.Duration {
-	return checkout.CompletionBudget(upstream) +
-		completionSettles*upstream + answerSlack
+	return checkout.CompletionTail(upstream) + answerSlack
 }
 
 const (

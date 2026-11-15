@@ -611,7 +611,7 @@ So run the check above before a rollback too, and do not roll back further than 
 
 | What happened | Is there an order? | How long the session stays |
 |---|---|---|
-| The mark was stored, Redis failed its reply and the second attempt's, and the read that looks for the mark failed as well. No order was sent | No | 30 minutes after the mark |
+| The mark was stored, Redis failed its reply and the second attempt's, and the read that looks for the mark failed as well, or did not answer before the completion's budget ended. No order was sent | No | 30 minutes after the mark |
 | Django refused the order, and Redis failed the save that makes the session ready again, twice | No | 30 minutes after the mark |
 | The order was placed, and Redis failed the save that records it, twice | Yes. It is recorded beside the session (`…:order`) unless that write failed as well, which the log says; with the record, every call on the session names the order. The next order event records it on the session either way (it names its order, and Django supplies the rest), which is then kept 24 hours from the placement | 30 minutes after the mark, unless an event comes first |
 | The order call went unanswered, and that was stored (`"unconfirmed":true`) | Unknown | 24 hours |
