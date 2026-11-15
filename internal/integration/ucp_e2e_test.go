@@ -132,6 +132,11 @@ func verifyWebhook(t *testing.T, hook receivedWebhook, jwk map[string]string) {
 	m := signatureInputRe.FindStringSubmatch(input)
 	require.NotNil(t, m, "Signature-Input: %s", input)
 	assert.Contains(t, m[2], `;keyid="`+jwk["kid"]+`"`)
+	// UCP requires an order webhook's signature to cover both, and
+	// platforms to reject one that omits either.
+	for _, name := range []string{`"webhook-id"`, `"webhook-timestamp"`} {
+		assert.Contains(t, strings.Fields(m[1]), name, "covered components")
+	}
 	var base strings.Builder
 	for _, quoted := range strings.Fields(m[1]) {
 		name := strings.Trim(quoted, `"`)

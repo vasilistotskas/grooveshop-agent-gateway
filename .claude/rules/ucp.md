@@ -87,7 +87,10 @@ wins over this page.
   the full UCP order entity rendered at enqueue. They are signed per RFC
   9421 with the tenant's ES256 key (`internal/httpsig`; UCP's baseline
   algorithm), with Standard Webhooks `Webhook-Id`/`Webhook-Timestamp`
-  and `UCP-Agent` naming the tenant profile. The queue is a Redis stream
+  and `UCP-Agent` naming the tenant profile. The signature covers
+  `webhook-id` and `webhook-timestamp` beside UCP's REST components
+  (`signedComponents`), as UCP after 2026-08-25 requires of an order
+  webhook. The queue is a Redis stream
   consumer group (`ag:webhooks:orders`, one consumer per pod name): a
   delivery is acknowledged only on a terminal outcome, a consumer's own
   pending entries replay on restart, and a dead consumer's are claimed
