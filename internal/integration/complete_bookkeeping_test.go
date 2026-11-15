@@ -242,7 +242,7 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			return acpAnswer(ctx, base+"/"+id, "", nil)
 		},
 		keyName: func(id, key string) string {
-			return "ag:demostore:acp:idem:complete:" + id + ":" + key
+			return "ag:demostore:acp:idem:complete.v3:" + id + ":" + key
 		},
 		cancel: func(t *testing.T, id string) {
 			t.Helper()
@@ -376,6 +376,16 @@ const (
 	keySpent    = "spent"
 )
 
+// refusalKey is what a refused completion leaves its key as. ACP's key
+// keeps the refusal, the original response every replay returns (§6.3);
+// UCP's completion claim is released, so the same key runs again.
+func refusalKey(surface string) string {
+	if surface == "acp" {
+		return keySpent
+	}
+	return keyReleased
+}
+
 // bookkeeping is what a completion leaves in Redis.
 type bookkeeping struct {
 	// Session is the stored checkout's status.
@@ -413,9 +423,10 @@ func (stack ucpStack) bookkeeping(
 	return out
 }
 
-// UCP's completion claim and ACP's body-hash record are different
-// stores, but an outcome means the same for both: the same session, the
-// same order link, the key spent or released.
+// UCP's completion claim and ACP's record are different stores, but an
+// outcome means the same for both: the same session, the same order link,
+// the key spent once an order may exist. A refusal differs: ACP's key
+// keeps it as its answer, UCP's is released (refusalKey).
 func TestCompleteBookkeepingIsTheSameOnBothSurfaces(t *testing.T) {
 	stack := startUCPGateway(t)
 	surfaces := completionSurfaces(t, stack)
@@ -423,6 +434,8 @@ func TestCompleteBookkeepingIsTheSameOnBothSurfaces(t *testing.T) {
 		name  string
 		fault *atomic.Bool
 		want  bookkeeping
+		// refusal: the key is left as refusalKey says.
+		refusal bool
 		// untouched: the completion must not write the session at all.
 		untouched bool
 	}{
@@ -434,16 +447,14 @@ func TestCompleteBookkeepingIsTheSameOnBothSurfaces(t *testing.T) {
 				Session: checkout.StatusCompleteInProgress, Key: keySpent,
 			}},
 		{name: "an order the store refused",
-			fault: &stack.faults.orderRefuse, want: bookkeeping{
-				Session: checkout.StatusReadyForComplete, Key: keyReleased,
-			}},
+			fault: &stack.faults.orderRefuse, refusal: true,
+			want: bookkeeping{Session: checkout.StatusReadyForComplete}},
 		// Refused before the order is sent, by a call that submits
 		// nothing new: neither the handler nor the flow has anything
 		// to store.
 		{name: "stock that ran out", fault: &stack.faults.stockShort,
-			untouched: true, want: bookkeeping{
-				Session: checkout.StatusReadyForComplete, Key: keyReleased,
-			}},
+			refusal: true, untouched: true,
+			want: bookkeeping{Session: checkout.StatusReadyForComplete}},
 	}
 	for _, outcome := range outcomes {
 		for _, surface := range surfaces {
@@ -459,7 +470,11 @@ func TestCompleteBookkeepingIsTheSameOnBothSurfaces(t *testing.T) {
 				key := uuid.NewString()
 				surface.complete(ctx, id, key, nil)
 
-				assert.Equal(t, outcome.want,
+				want := outcome.want
+				if outcome.refusal {
+					want.Key = refusalKey(surface.name)
+				}
+				assert.Equal(t, want,
 					stack.bookkeeping(t, id, surface.keyName(id, key)))
 				if outcome.untouched {
 					assert.Equal(t, before, stack.storedBytes(t, id),
@@ -500,9 +515,11 @@ func (w *requestWatch) last() context.Context {
 
 // A platform that gives up while Django is creating the order has still
 // ordered. The gateway finishes what it started: the checkout is saved as
-// placed, the order is linked and the key is spent, so the platform's
-// retry is answered with the order instead of "in flight" until the
-// session expires.
+// placed and the order is linked, so the platform's retry is answered
+// with the order instead of "in flight" until the session expires. UCP
+// spends its claim. ACP answered the platform that had gone with a 503
+// (the order placed, the session not read back), which its key does not
+// keep (§6.5): the retry runs afresh and finds the placed session.
 func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 	watch := new(requestWatch)
 	stack := startUCPGatewayBehind(t, watch.front)
@@ -551,6 +568,9 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 
 			want := bookkeeping{
 				Session: checkout.StatusCompleted, Linked: true, Key: keySpent,
+			}
+			if surface.name == "acp" {
+				want.Key = keyReleased
 			}
 			keyName := surface.keyName(id, key)
 			got := stack.bookkeeping(t, id, keyName)
@@ -767,7 +787,7 @@ func TestRefusedCompleteKeepsWhatItSubmitted(t *testing.T) {
 					"refused: the stock ran out")
 				assert.Equal(t, bookkeeping{
 					Session: checkout.StatusReadyForComplete,
-					Key:     keyReleased,
+					Key:     refusalKey(surface.name),
 				}, stack.bookkeeping(t, id, surface.keyName(id, key)))
 				require.EqualValues(t, refused.stored,
 					tc.read(stack.storedSession(t, id)))
@@ -812,8 +832,9 @@ func TestACPCompleteKeepsTheBuyerItCouldNotOrderFor(t *testing.T) {
 		key := uuid.NewString()
 		require.Empty(t, acpSurface.complete(ctx, id, key, otherBuyer()))
 
+		// The 400 is the key's answer; the 503 below frees its key.
 		assert.Equal(t, bookkeeping{
-			Session: checkout.StatusIncomplete, Key: keyReleased,
+			Session: checkout.StatusIncomplete, Key: keySpent,
 		}, stack.bookkeeping(t, id, acpSurface.keyName(id, key)))
 		assert.Equal(t, otherBuyerEmail,
 			stack.storedSession(t, id).Buyer.Email)

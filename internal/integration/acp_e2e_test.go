@@ -338,9 +338,11 @@ func TestACPEndToEnd(t *testing.T) {
 			assert.Equal(t, "$.currency", refused["param"])
 			assert.Contains(t, refused["message"], "EUR")
 
-			// Nothing was created, so the key is free for the real attempt.
+			// The refusal is the key's answer; the real attempt takes a
+			// new key.
 			other["currency"] = "eur"
-			resp, _ = acpCall(t, http.MethodPost, base, other, key)
+			resp, _ = acpCall(t, http.MethodPost, base, other,
+				uuid.NewString())
 			assert.Equal(t, http.StatusCreated, resp.StatusCode,
 				"the store's own currency, in any case, is accepted")
 		})

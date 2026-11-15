@@ -212,7 +212,7 @@ func TestACheckoutThatMayHaveAnOrderTakesNoChange(t *testing.T) {
 			require.Empty(t, surface.complete(
 				ctx, id, uuid.NewString(), nil))
 			return id
-		}, checkout.StatusCompleteInProgress, "409 idempotency_in_flight"},
+		}, checkout.StatusCompleteInProgress, "502 order_outcome_unknown"},
 		// ACP completes only with a collect-later pay way: no ACP order
 		// awaits a payment.
 		{"an order that awaits its payment", func(

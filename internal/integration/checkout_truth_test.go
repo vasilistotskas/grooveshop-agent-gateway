@@ -202,8 +202,10 @@ func TestAnUpdateThatCannotReadItsSessionAgainDoesNotCallTheCartGone(
 // have an order it does not name. Every operation answers that, on both
 // surfaces: "in flight" while the completion can still be running, and
 // once it cannot, that the outcome was never recorded, with what a
-// person can do about it. No answer says to read again until it
-// renders, and none offers a link that starts the purchase again.
+// person can do about it. One stored unconfirmed was stored by its
+// completion as it ended, so that is the answer from the first call. No
+// answer says to read again until it renders, and none offers a link
+// that starts the purchase again.
 func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 	ctx := context.Background()
 	stack := startUCPGateway(t)
@@ -239,26 +241,8 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 			"cancel":   surface.abandon(ctx, id),
 		}
 	}
-	t.Run("while its completion may still run", func(t *testing.T) {
-		for what, answer := range calls(surfaces["acp"]) {
-			assert.Equal(t, "409 idempotency_in_flight", answer.refusal, what)
-		}
-		for what, answer := range calls(surfaces["ucp"]) {
-			assert.Contains(t, answer.refusal,
-				"in progress or unconfirmed", what)
-		}
-	})
-
-	// Past its budget the completion cannot be running any more.
-	for _, id := range ids {
-		stored := stack.storedSession(t, id)
-		stored.UpdatedAt = time.Now().Add(-time.Minute)
-		raw, err := json.Marshal(stored)
-		require.NoError(t, err)
-		require.NoError(t, stack.rdb.Set(ctx, sessionRedisKey(id), raw,
-			redis.KeepTTL).Err())
-	}
-	t.Run("once it cannot be running", func(t *testing.T) {
+	unknown := func(t *testing.T) {
+		t.Helper()
 		for what, answer := range calls(surfaces["acp"]) {
 			assert.Equal(t, "502 order_outcome_unknown", answer.refusal, what)
 			assert.Empty(t, answer.retryAfter, what)
@@ -271,7 +255,37 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 				"do not start another checkout", what)
 			assert.NotContains(t, answer.refusal, "check its status", what)
 		}
+	}
+	t.Run("stored unconfirmed, at once", unknown)
+
+	// restore stores each session as only marked in progress, saved at
+	// the given time: a completion that may still be running, or one
+	// that ended before it could say what happened.
+	restore := func(saved time.Time) {
+		for _, id := range ids {
+			stored := stack.storedSession(t, id)
+			stored.Unconfirmed = false
+			stored.UpdatedAt = saved
+			raw, err := json.Marshal(stored)
+			require.NoError(t, err)
+			require.NoError(t, stack.rdb.Set(ctx, sessionRedisKey(id), raw,
+				redis.KeepTTL).Err())
+		}
+	}
+	restore(time.Now())
+	t.Run("while its completion may still run", func(t *testing.T) {
+		for what, answer := range calls(surfaces["acp"]) {
+			assert.Equal(t, "409 idempotency_in_flight", answer.refusal, what)
+		}
+		for what, answer := range calls(surfaces["ucp"]) {
+			assert.Contains(t, answer.refusal,
+				"in progress or unconfirmed", what)
+		}
 	})
+
+	// Past its budget the completion cannot be running any more.
+	restore(time.Now().Add(-time.Minute))
+	t.Run("once it cannot be running", unknown)
 
 	// A read that renders carries the same guidance beside the status.
 	stack.faults.namedCartReadsFailFrom.Store(0)
