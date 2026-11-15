@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
@@ -14,7 +15,9 @@ import (
 // and `checkout`, the spec's own request schema for the operation
 // (ucp.CheckoutRequestSchema). So a tool accepts what the spec accepts.
 // The spec's schemas are open: a member no handler reads is dropped when
-// the arguments are decoded, never refused.
+// the arguments are decoded, never refused. The business's own members
+// are described too, beside the spec's: `cart_id` on create, and the
+// delivery (`fulfillment`) and `pay_way_id` in `checkout`.
 //
 // The SDK validates the arguments against these schemas and decodes them
 // into the handlers' request structs, which it does not compare with the
@@ -122,13 +125,63 @@ func createInput() *jsonschema.Schema {
 	}
 }
 
-// checkoutRequest decodes the spec's request schema for op.
+// checkoutRequest is the `checkout` of op: the spec's request schema, and
+// the business's own members composed onto it the way an extension
+// composes its own (allOf), so that tools/list describes them. The spec's
+// schema is used as generated; only what is the business's is added here.
 func checkoutRequest(op ucp.Operation) *jsonschema.Schema {
-	var s jsonschema.Schema
-	if err := json.Unmarshal(ucp.CheckoutRequestSchema(op), &s); err != nil {
+	var spec jsonschema.Schema
+	if err := json.Unmarshal(
+		ucp.CheckoutRequestSchema(op), &spec); err != nil {
 		panic("mcpsrv: request schema for " + string(op) + ": " + err.Error())
 	}
-	return &s
+	own := map[string]*jsonschema.Schema{"pay_way_id": {
+		Type: "integer",
+		Description: "The business's own member, of its declared " +
+			"extension " + ucp.HostedSelectionCapability + ": selects " +
+			"an ONLINE payment method by its id (see " +
+			"get_payment_methods), which the buyer then pays on the " +
+			"store's hosted page. Accepted only while that extension " +
+			"is negotiated, refused otherwise. Omit it and use " +
+			"payment.instruments for a method the checkout advertises.",
+	}}
+	// A complete carries no delivery: the spec omits every member but
+	// the payment from its request.
+	if op != ucp.OpComplete {
+		own["fulfillment"] = ownFulfillment()
+	}
+	return &jsonschema.Schema{AllOf: []*jsonschema.Schema{&spec, {
+		Type:       "object",
+		Title:      "The business's own checkout members",
+		Properties: own,
+	}}}
+}
+
+// ownFulfillment describes the gateway's delivery member
+// (UCPCheckoutIn.Fulfillment), from the struct it decodes into: its
+// fields, their descriptions, and as required the ones the struct always
+// writes. They are required only of a member that names its `kind`: the
+// spec's fulfillment extension uses the same member name with another
+// shape (`methods`), and that one is accepted and ignored.
+func ownFulfillment() *jsonschema.Schema {
+	s, err := jsonschema.For[checkout.Fulfillment](&jsonschema.ForOptions{})
+	if err != nil {
+		panic("mcpsrv: fulfillment schema: " + err.Error())
+	}
+	s.Title = "Delivery (the business's own shape)"
+	s.Description = "Where and how to deliver. This is the business's " +
+		"own member, not the UCP fulfillment extension " +
+		"(dev.ucp.shopping.fulfillment, `methods`), which this business " +
+		"does not implement yet and which will replace this shape. It " +
+		"is read only when it names `kind`. It then needs the carrier " +
+		"and the full postal address, for a pickup_point too, and a " +
+		"pickup_point needs its carrier's pickup ids before the " +
+		"checkout is ready. On update_checkout, omit it to keep the " +
+		"delivery the checkout holds."
+	s.If = &jsonschema.Schema{Required: []string{"kind"}}
+	s.Then = &jsonschema.Schema{Required: s.Required}
+	s.Required, s.AdditionalProperties = nil, nil
+	return s
 }
 
 // dropRequired removes member from the required list of the schema with

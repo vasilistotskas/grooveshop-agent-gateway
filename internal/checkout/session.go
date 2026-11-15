@@ -54,23 +54,25 @@ func (b Buyer) Complete() bool {
 		b.Email != "" && b.Phone != ""
 }
 
-// Fulfillment mirrors the Django order-create fields for delivery.
+// Fulfillment mirrors the Django order-create fields for delivery. It is
+// also the delivery member the UCP checkout tools publish and take until
+// the spec's fulfillment extension replaces it, so each field says what
+// a platform sends (mcpsrv.ownFulfillment reads the descriptions, and
+// takes the fields without omitempty as the required ones).
 type Fulfillment struct {
-	Kind         string `json:"kind"`
-	ProviderCode string `json:"providerCode"`
+	Kind         string `json:"kind" jsonschema:"home_delivery (to the buyer's address) or pickup_point (a locker or shop)"`
+	ProviderCode string `json:"providerCode" jsonschema:"the carrier's providerCode from get_shipping_options; acs or boxnow for a pickup_point"`
 
-	CountryCode  string `json:"countryCode"`
+	CountryCode  string `json:"countryCode" jsonschema:"the delivery country, ISO 3166-1 alpha-2"`
 	City         string `json:"city"`
-	Zipcode      string `json:"zipcode"`
-	Street       string `json:"street"`
+	Zipcode      string `json:"zipcode" jsonschema:"the postal code"`
+	Street       string `json:"street" jsonschema:"the street name, without its number"`
 	StreetNumber string `json:"streetNumber"`
-	// RegionID is the delivery region's code or name, required when the
-	// country has regions (ResolveRegion).
-	RegionID string `json:"regionId,omitempty"`
+	RegionID     string `json:"regionId,omitempty" jsonschema:"the delivery region's code or name, required when the country has regions; a checkout without one lists them in its messages"`
 
-	AcsStationExternalID string `json:"acsStationExternalId,omitempty"`
-	AcsStationBranch     string `json:"acsStationBranch,omitempty"`
-	BoxnowLockerID       string `json:"boxnowLockerId,omitempty"`
+	AcsStationExternalID string `json:"acsStationExternalId,omitempty" jsonschema:"the ACS point's id from find_pickup_points; required for a pickup_point with providerCode acs"`
+	AcsStationBranch     string `json:"acsStationBranch,omitempty" jsonschema:"the ACS point's branchCode from find_pickup_points; required for a pickup_point with providerCode acs"`
+	BoxnowLockerID       string `json:"boxnowLockerId,omitempty" jsonschema:"the BOX NOW point's id from find_pickup_points; required for a pickup_point with providerCode boxnow"`
 }
 
 // Complete reports whether enough is present to place the order. Django

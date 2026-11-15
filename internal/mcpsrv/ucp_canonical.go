@@ -121,10 +121,11 @@ type UCPCheckoutIn struct {
 	Buyer     *UCPBuyerReqIn     `json:"buyer"`
 	// Fulfillment is the gateway's own delivery shape, not the spec's
 	// fulfillment extension, which this business does not implement yet:
-	// it is accepted, and not in the published schema, until that
-	// extension replaces it. It is read only when it names its `kind`;
-	// the extension's own member (`methods`) is ignored, as a member of
-	// an extension that was not negotiated.
+	// it is accepted, and described in the published schema as the
+	// business's own (ownFulfillment), until that extension replaces it.
+	// It is read only when it names its `kind`; the extension's own
+	// member (`methods`) is ignored, as a member of an extension that
+	// was not negotiated.
 	Fulfillment *checkout.Fulfillment `json:"fulfillment"`
 	Discounts   *UCPDiscountsIn       `json:"discounts"`
 	UCPPaymentChoice
@@ -147,8 +148,9 @@ type UCPPaymentChoice struct {
 	// way to say so, and this member is how it does.
 	//
 	// It is the member of the business's declared extension
-	// space.grooveshop.payments.hosted_selection. Unlike other members of
-	// an extension that was not negotiated, it is refused rather than
+	// space.grooveshop.payments.hosted_selection, described in the
+	// published schema beside the spec's members. Unlike other members
+	// of an extension that was not negotiated, it is refused rather than
 	// ignored (applyHostedSelection).
 	PayWayID int64 `json:"pay_way_id"`
 }
