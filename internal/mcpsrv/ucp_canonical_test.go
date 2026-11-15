@@ -55,16 +55,23 @@ func TestMetaValidateRequiresIdempotencyKeyWhereItMatters(t *testing.T) {
 func TestCheckoutInLines(t *testing.T) {
 	in := &UCPCheckoutIn{LineItems: []UCPLineItemReqIn{
 		{Item: UCPItemIn{ID: "5"}, Quantity: 2},
-		// The tool schema requires a quantity, and one below 1 is the
-		// store's to refuse: read as 1, the checkout would hold a line
-		// the platform never asked for.
-		{Item: UCPItemIn{ID: "7"}, Quantity: -3},
+		{Item: UCPItemIn{ID: "7"}, Quantity: 1},
+		{Item: UCPItemIn{ID: "5"}, Quantity: 3},
 	}}
 	lines, err := in.lines()
 	require.NoError(t, err)
-	require.Len(t, lines, 2)
-	assert.Equal(t, checkout.Line{ProductID: 5, Quantity: 2}, lines[0])
-	assert.Equal(t, checkout.Line{ProductID: 7, Quantity: -3}, lines[1])
+	assert.Equal(t, []checkout.Line{{ProductID: 5, Quantity: 5},
+		{ProductID: 7, Quantity: 1}}, lines, "one line per product")
+
+	// One below 1 is refused, never read as 1 or folded into another
+	// line of its product: the checkout would hold a quantity the
+	// platform never asked for.
+	neg := &UCPCheckoutIn{LineItems: []UCPLineItemReqIn{
+		{Item: UCPItemIn{ID: "7"}, Quantity: 4},
+		{Item: UCPItemIn{ID: "7"}, Quantity: -3},
+	}}
+	_, err = neg.lines()
+	require.ErrorIs(t, err, checkout.ErrInvalidQuantity)
 
 	// A non-numeric id is a caller error, not an empty checkout.
 	bad := &UCPCheckoutIn{LineItems: []UCPLineItemReqIn{

@@ -114,3 +114,29 @@ func TestSyncCartLinesSumsTheLinesOfOneProduct(t *testing.T) {
 		})
 	}
 }
+
+// A quantity that is not a count is refused, never folded into another
+// line of its product, and a product's sum stays within MaxQuantity, so
+// it cannot wrap.
+func TestMergeLinesRefusesWhatIsNotACount(t *testing.T) {
+	merged, err := MergeLines([]Line{
+		{ProductID: 7, Quantity: 2}, {ProductID: 3, Quantity: 1},
+		{ProductID: 7, Quantity: 1},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []Line{{ProductID: 7, Quantity: 3},
+		{ProductID: 3, Quantity: 1}}, merged)
+
+	for name, lines := range map[string][]Line{
+		"zero":     {{ProductID: 7, Quantity: 2}, {ProductID: 7}},
+		"negative": {{ProductID: 7, Quantity: 2}, {ProductID: 7, Quantity: -1}},
+		"a sum past the bound": {{ProductID: 7, Quantity: MaxQuantity},
+			{ProductID: 7, Quantity: 1}},
+		"a line past the bound": {{ProductID: 7, Quantity: MaxQuantity + 1}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := MergeLines(lines)
+			assert.ErrorIs(t, err, ErrInvalidQuantity)
+		})
+	}
+}

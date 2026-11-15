@@ -196,9 +196,17 @@ func writeBody(w http.ResponseWriter, status int, body []byte) {
 	_, _ = w.Write(body)
 }
 
-// upstreamError maps Django client failures onto the protocol Error body.
+// upstreamError maps Django client failures, and the line refusal
+// cartLines makes before any of them, onto the protocol Error body.
 func upstreamError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, checkout.ErrInvalidQuantity):
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: "invalid",
+			Param: "$.line_items", Message: "Every line item's quantity " +
+				"must be at least 1, and a product's lines together at " +
+				"most 9007199254740991.",
+		})
 	case errors.Is(err, django.ErrNotFound),
 		errors.Is(err, django.ErrCartUnreachable):
 		writeError(w, http.StatusBadRequest, Error{
@@ -788,7 +796,8 @@ func cartLines(items []ItemRef) ([]checkout.Line, error) {
 				django.ErrNotFound, ref.ID)
 		}
 		// The spec's request item has no quantity, so a platform that
-		// follows it buys one. One it does send is the store's to refuse.
+		// follows it buys one. One it does send must be a count
+		// (checkout.MergeLines).
 		qty := 1
 		if ref.Quantity != nil {
 			qty = *ref.Quantity
@@ -796,7 +805,7 @@ func cartLines(items []ItemRef) ([]checkout.Line, error) {
 		lines = append(lines,
 			checkout.Line{ProductID: productID, Quantity: qty})
 	}
-	return lines, nil
+	return checkout.MergeLines(lines)
 }
 
 func (h *Handler) syncCart(

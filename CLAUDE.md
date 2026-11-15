@@ -609,11 +609,16 @@ passes, and runs CI's tidy, image and vulnerability checks again.
     order responses as long, and a placed session the same data a day.
     Nothing else reads it.
   - A create or an update settles every lookup and refusal it can make
-    without the cart (item ids that are not numbers, the region, the pay
-    way) before its first cart write, creating the cart included, as UCP's `create_checkout` and `update_checkout`
-    do: a create refused there leaves no cart in Django, an update the
-    cart as the stored session knows it. A line sync that fails partway
-    still leaves what it wrote.
+    without the cart (item ids that are not numbers, a quantity that is
+    not a count, the region, the pay way) before its first cart write,
+    creating the cart included, as UCP's `create_checkout` and
+    `update_checkout` do: a create refused there leaves no cart in
+    Django, an update the cart as the stored session knows it. The lines
+    of one product are one cart line of their sum
+    (`checkout.MergeLines`, which refuses a quantity below 1 or a sum
+    past UCP's maximum as `checkout.ErrInvalidQuantity`: 400 `invalid`
+    at `$.line_items` on ACP). A line sync that fails partway still
+    leaves what it wrote.
   - A create is rendered before it is saved: a create that failed (a
     5xx) leaves no session and no record, and one refused (a 4xx)
     leaves no session and its refusal as the key's answer. A
