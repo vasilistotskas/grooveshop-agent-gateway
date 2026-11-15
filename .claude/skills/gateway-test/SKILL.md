@@ -15,11 +15,12 @@ Run the checks for `grooveshop-agent-gateway`. Target: `$target`
 |---|---|
 | `unit` | `go test ./internal/...` |
 | `integration` | `go test -tags integration ./internal/integration/...` |
-| `lint` | `golangci-lint run` |
+| `lint` | `golangci-lint run`, then `go mod tidy -diff` and `go tool govulncheck ./...` |
 | `build` | `go build ./...` |
 | `all` | lint → unit → integration → build, in that order, stopping at the first failure |
 
-CI runs the same sequence: lint → unit + integration → build.
+CI runs the same sequence: lint (with the tidy and vulnerability checks) →
+unit + integration → build.
 
 ## Do not add `-race` locally
 

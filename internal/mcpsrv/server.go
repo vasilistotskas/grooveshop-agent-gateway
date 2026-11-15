@@ -116,13 +116,14 @@ func (s surface) label() string {
 
 // EveryFeature is the feature set the chat server carries tools for.
 var EveryFeature = django.StoreFeatures{
-	Catalogue:      true,
-	Cart:           true,
-	ProductReviews: true,
-	ProductAlerts:  true,
-	Favourites:     true,
-	Loyalty:        true,
-	Promotions:     true,
+	CustomerAccounts: true,
+	Catalogue:        true,
+	Cart:             true,
+	ProductReviews:   true,
+	ProductAlerts:    true,
+	Favourites:       true,
+	Loyalty:          true,
+	Promotions:       true,
 	// No shopper tool reads it: the staff tools are /mcp/admin's alone.
 	StaffAIAccess: true,
 }
@@ -163,9 +164,14 @@ func mcpOnly(t tool) tool {
 
 // account makes t an account tool needing scope. It is served on /mcp
 // alone: its bearer is a linked account's, which a chat shopper, signed
-// in through the storefront, does not carry.
+// in through the storefront, does not carry. A store without customer
+// accounts serves none, whatever feature t also needs.
 func account(scope string, t tool) tool {
 	t.scope = scope
+	feature := t.offered
+	t.offered = func(f django.StoreFeatures) bool {
+		return f.CustomerAccounts && (feature == nil || feature(f))
+	}
 	return mcpOnly(t)
 }
 

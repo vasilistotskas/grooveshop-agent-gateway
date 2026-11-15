@@ -194,9 +194,11 @@ func TestConcurrentCompletesPlaceOneOrder(t *testing.T) {
 					Key: keySpent,
 				}, stack.bookkeeping(t, id, surface.keyName(id, secondKey)))
 				if !sameKey {
-					assert.Equal(t, keyReleased, stack.bookkeeping(t, id,
-						surface.keyName(id, firstKey)).Key,
-						"the loser placed nothing, so its key is free")
+					// The loser placed nothing. UCP frees its claim; ACP's
+					// key keeps the placed session it was answered with.
+					assert.Equal(t, refusalKey(surface.name),
+						stack.bookkeeping(t, id,
+							surface.keyName(id, firstKey)).Key)
 				}
 				assert.Equal(t, fixtureOrderUUID,
 					stack.storedSession(t, id).OrderUUID)
@@ -369,7 +371,7 @@ func TestACPRequestPastItsClaimLeavesTheKeyToItsHolder(t *testing.T) {
 		func(t *testing.T) {
 			id := acpReady(t, base)
 			key := uuid.NewString()
-			claim := "ag:demostore:acp:idem:update:" + id + ":" + key
+			claim := "ag:demostore:acp:idem:update.v3:" + id + ":" + key
 			gates := stack.hold(t, "GET /api/v1/pay_way", 2)
 			update := func() surfaceAnswer {
 				return acpAnswer(ctx, base+"/"+id, key, otherBuyer())
@@ -407,7 +409,7 @@ func TestACPRequestPastItsClaimLeavesTheKeyToItsHolder(t *testing.T) {
 	t.Run("succeeding, it does not record over the holder's response",
 		func(t *testing.T) {
 			key := uuid.NewString()
-			claim := "ag:demostore:acp:idem:create.v2:" + key
+			claim := "ag:demostore:acp:idem:create.v3:" + key
 			body := map[string]any{
 				"line_items":   []map[string]any{{"id": "1", "quantity": 2}},
 				"currency":     "EUR",

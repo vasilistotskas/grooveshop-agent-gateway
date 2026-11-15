@@ -144,6 +144,13 @@ type Session struct {
 	// one that ended before it could say what happened.
 	Unconfirmed bool `json:"unconfirmed,omitempty"`
 
+	// AppliedBy names the keyed request whose change this state holds
+	// (ACP's update and cancel), written by the save that applied it. A
+	// retry of that request finds itself here and is answered with the
+	// session, not run again: its first attempt may have been saved and
+	// then failed to answer. One slot: the latest such request.
+	AppliedBy string `json:"appliedBy,omitempty"`
+
 	// WebhookURL is the platform's order-update delivery target,
 	// registered at create time.
 	WebhookURL string `json:"webhookUrl,omitempty"`

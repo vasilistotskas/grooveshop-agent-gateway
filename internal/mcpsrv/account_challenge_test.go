@@ -25,7 +25,8 @@ func challengeTenant() *tenant.Tenant {
 	return &tenant.Tenant{
 		TenantConfig: django.TenantConfig{
 			Features: django.StoreFeatures{
-				Catalogue: true, Cart: true, Favourites: true,
+				CustomerAccounts: true, Catalogue: true, Cart: true,
+				Favourites: true,
 			},
 		},
 		Domain: "shop.example.test",

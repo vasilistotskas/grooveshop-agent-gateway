@@ -18,6 +18,7 @@
   "loyaltyEnabled": true,
   "blogEnabled": true,
   "features": {
+    "customerAccounts": true,
     "blog": true,
     "blogComments": true,
     "productReviews": true,

@@ -58,8 +58,8 @@ func refused(err error) bool {
 	return false
 }
 
-// Placement is what a completion did about the order. It decides the
-// caller's idempotency key, whatever error came with it.
+// Placement is what a completion did about the order, whatever error
+// came with it. Each surface settles its idempotency key by it.
 type Placement int
 
 const (
@@ -68,8 +68,9 @@ const (
 	// It is the zero value: a Placement nobody set must not release a
 	// key.
 	OrderMayExist Placement = iota
-	// NothingPlaced: refused, and nothing was created. The caller
-	// releases its key, so the same key can try again.
+	// NothingPlaced: refused, and nothing was created. UCP releases its
+	// completion claim, so the same key can try again; ACP's key keeps
+	// a refusal's answer like any other (acp.keptAgainstKey).
 	NothingPlaced
 )
 
@@ -89,8 +90,9 @@ func CompletionBudget(upstreamTimeout time.Duration) time.Duration {
 
 // settleSteps counts what a completion's request does on its own once
 // Complete has returned, each step on a context of its own from
-// Store.Settling: settle its idempotency key by the placement, then
-// release the session lock (Store.Lock). A step added there is counted
+// Store.Settling: settle its idempotency key (UCP's by the placement,
+// ACP's by the answer it sent), then release the session lock
+// (Store.Lock). A step added there is counted
 // here, or the shutdown window does not hold it.
 const settleSteps = 2
 
@@ -266,10 +268,18 @@ func (f *Flow) saveOverEvent(ctx context.Context, s *Session) error {
 // unknown" early, which is the safe wrong answer. A writer ahead stamps a
 // save in the reader's future; no completion runs longer than its budget
 // from now, so the deadline is never further away than that.
+//
+// A session stored unconfirmed was stored by its completion as it ended,
+// once Django left the order unanswered: none is running, so its
+// deadline is that save, and every call is told the outcome is unknown
+// from the first.
 func (f *Flow) CompletionDeadline(s *Session) time.Time {
 	saved := s.UpdatedAt
 	if now := time.Now(); saved.After(now) {
 		saved = now
+	}
+	if s.Unconfirmed {
+		return saved
 	}
 	return saved.Add(f.budget)
 }

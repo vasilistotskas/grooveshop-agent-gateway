@@ -26,9 +26,12 @@ const djangoUnpaidSentence = "An order placed from this cart is already " +
 
 // Django refuses an agent's order from a cart whose earlier order still
 // awaits its online payment. Each surface answers that refusal as what it
-// is, places nothing and keeps the checkout ready, and releases the key:
-// the same key runs again, and once Django lets the order through (the
-// earlier one was canceled unpaid) it places this checkout's order.
+// is, places nothing and keeps the checkout ready. UCP releases its key:
+// the same key runs again. ACP's key keeps the refusal (§6.3), which a
+// retry with it is answered again without reaching the store. Once Django
+// lets the order through (the earlier one was canceled unpaid), a complete
+// places this checkout's order: UCP's with the same key, ACP's with a new
+// one.
 func TestAnUnpaidCartRefusalIsAnsweredAsWhatItIs(t *testing.T) {
 	stack := startUCPGateway(t)
 	for _, surface := range completionSurfaces(t, stack) {
@@ -40,22 +43,30 @@ func TestAnUnpaidCartRefusalIsAnsweredAsWhatItIs(t *testing.T) {
 			creates := stack.faults.orderCreates.Load()
 			key := uuid.NewString()
 
-			for attempt := int32(1); attempt <= 2; attempt++ {
+			reached := int32(0)
+			for attempt := 1; attempt <= 2; attempt++ {
 				a := surface.answer(ctx, id, key, nil)
 
 				assert.Empty(t, a.status, "answered as placed")
 				assertUnpaidRefusal(t, surface.name, a)
 				assert.Equal(t, bookkeeping{
 					Session: checkout.StatusReadyForComplete,
-					Key:     keyReleased,
+					Key:     refusalKey(surface.name),
 				}, stack.bookkeeping(t, id, surface.keyName(id, key)))
-				assert.Equal(t, creates+attempt,
+				if attempt == 1 || surface.name == "ucp" {
+					reached++
+				}
+				assert.Equal(t, creates+reached,
 					stack.faults.orderCreates.Load(),
-					"the key's attempt %d did not reach the store", attempt)
+					"attempt %d with the key", attempt)
 			}
 
 			stack.faults.orderUnpaid.Store(false)
-			assert.Equal(t, "completed", surface.complete(ctx, id, key, nil))
+			next := key
+			if surface.name == "acp" {
+				next = uuid.NewString()
+			}
+			assert.Equal(t, "completed", surface.complete(ctx, id, next, nil))
 		})
 	}
 

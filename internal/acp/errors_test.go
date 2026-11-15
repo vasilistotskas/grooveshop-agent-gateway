@@ -448,6 +448,19 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 			assert.Empty(t, rec.Header().Get("Retry-After"))
 		})
 
+	// A completion that stored its order as unanswered has ended: the
+	// outcome is unknown at once, not "in flight" until its budget ends.
+	t.Run("an unconfirmed order is an unknown outcome at once",
+		func(t *testing.T) {
+			unconfirmed := *session
+			unconfirmed.Unconfirmed = true
+			rec := httptest.NewRecorder()
+			h.completeError(rec, req, &unconfirmed,
+				checkout.ErrCompletionInProgress)
+			specError(t, rec, http.StatusBadGateway, "order_outcome_unknown")
+			assert.Empty(t, rec.Header().Get("Retry-After"))
+		})
+
 	// A save stamped in the future (a writer whose clock runs fast) is in
 	// flight, never an unknown outcome, and waits at most one budget.
 	t.Run("a deadline far ahead waits one budget at most", func(t *testing.T) {
@@ -478,11 +491,17 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 	})
 }
 
-// Create keys live under a versioned scope: a record of another shape,
-// written by an older pod, is under another key and never read.
-func TestCreateKeyIsVersioned(t *testing.T) {
-	assert.Equal(t, "ag:alpha:acp:idem:create.v2:k",
-		idemRedisKey("alpha", createScope, "k"))
+// Every operation's keys live under a versioned scope: a record of
+// another shape or fingerprint, written by an older pod, is under another
+// key and never read.
+func TestIdempotencyKeysAreVersioned(t *testing.T) {
+	const id = "6f1c2a52-3d8e-4c55-9a0f-0c6a2b9e1d11"
+	assert.Equal(t, "ag:alpha:acp:idem:create.v3:k",
+		idemRedisKey("alpha", idemScope(opCreate, ""), "k"))
+	for _, op := range []string{opUpdate, opComplete, opCancel} {
+		assert.Equal(t, "ag:alpha:acp:idem:"+op+".v3:"+id+":k",
+			idemRedisKey("alpha", idemScope(op, id), "k"))
+	}
 }
 
 // A 405 names what its target still serves, even when that is nothing.

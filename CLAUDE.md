@@ -37,11 +37,14 @@ go test ./internal/...                           # Unit tests
 go test -tags integration ./internal/integration/...  # Docker-backed tests
 go test -tags realstack ./internal/realstack/...      # A real Django; see below
 golangci-lint run                                # Lint (v2 config)
+go tool govulncheck ./...                        # Known vulnerabilities the code reaches
+go mod tidy -diff                                # go.mod and go.sum are tidy
 go run ./cmd/gateway                             # Run (needs .env vars exported)
 docker build -t agent-gateway .                  # Production image
 ```
 
-CI runs lint → unit+integration (with `-race`) → build. `-race` requires
+CI runs lint (with the vulnerability and tidy checks) → unit+integration
+(with `-race`) → build. `-race` requires
 cgo; the local Go builds with `CGO_ENABLED=0` and has no C compiler, so
 `go test -race` fails at once with `-race requires cgo`. Run it in CI.
 
@@ -63,7 +66,7 @@ the code and not with your conclusions, and read it before you tag. CodeRabbit
 and PR Lens read one pull request at a time and have passed bugs a full read
 found. A test written with its fix does not prove the contract: check the other
 side's code. `release.yml` also refuses to publish unless the real-stack test
-passes.
+passes, and runs CI's tidy, image and vulnerability checks again.
 
 ## Architecture
 
@@ -147,15 +150,24 @@ passes.
     verify:
     - invalid: a 401 and the RFC 9728 `WWW-Authenticate` challenge
       (`WriteChallenge`, naming the server's own metadata);
-    - Django's 404: a 404. The store switched the surface off and this
-      pod's copy has not caught up; it is the answer the gateway's own
-      gate gives once it has;
+    - Django's 404: a 404. The store switched something off and this
+      pod's copy has not caught up. For a surface (agent commerce,
+      staff access) it is the answer the gateway's own gate gives once
+      it has. For customer accounts it is not: Django names no gate in
+      its 404, so until this pod's copy says accounts are off (about
+      two `TENANT_CACHE_TTL`s at most) a request that still carries a
+      bearer is a 404 on /mcp, and a guest's 200 after;
     - Django's 429: a 429 with its `Retry-After`;
     - a caller that hung up: a 503 with no error line;
     - anything else: a 503, logged with `server` (mcp or mcp_admin).
   - On /mcp a present `Authorization: Bearer` is verified against Django
     `/agent/me` (`NewShopperVerifier`; a 403 there is a valid token
-    without the `profile` scope).
+    without the `profile` scope). On a store with `customerAccounts` off
+    it is ignored, as Django ignores it: the call is a guest's, with no
+    probe and no challenge. That store serves no account tool, so an
+    anonymous call to one is the SDK's unknown tool, unchallenged, and
+    an order that cannot be opened is not answered "sign in"
+    (`orderNotOpened`).
   - Anonymous requests pass through, except a call to an account tool.
     That gets the challenge naming the scopes of every account tool the
     store serves (`mcpsrv.RequireLinkedAccount`), because a client starts
@@ -523,7 +535,9 @@ passes.
     this one ran (`checkout.ErrSessionChanged`), or an order being
     placed until `Flow.CompletionDeadline`. Past it the outcome was
     never recorded and stays so until the session expires: 502
-    `order_outcome_unknown`, no `Retry-After`. A session in progress
+    `order_outcome_unknown`, no `Retry-After`. A session stored
+    unconfirmed (`Session.Unconfirmed`) is past it from the first call:
+    its completion stored that as it ended. A session in progress
     whose order is known (`Flow.PlacedOrder`) answers neither: 500
     `order_placed`, naming the order (`writePlacedUnsaved`).
   - ACP completes only with a collect-later pay way: the handler
@@ -537,25 +551,72 @@ passes.
     canceled, the in-flight answer while its order is being placed. A
     canceled one refuses complete with 405. A complete of a completed
     session answers 200 with the session.
-  - A create stores the response it sent (status and body) with its
-    key (`createScope`, versioned with that record); a replay with the
-    same body answers those bytes for the record's 24 hours, whether
-    or not the session lives. Update, complete and cancel replays
-    render the session as it is now. `Idempotent-Replayed` is set only
-    on a replay's own answer.
-  - So the buyer data a create carried (name, email, phone, address)
-    is kept in Redis for 24 hours under
-    `ag:{schema}:acp:idem:create.v2:{key}`, while the session itself
-    lives 30 minutes: the spec requires a key's response to be kept at
-    least 24 hours (§6.6). Nothing else reads it.
+  - Every POST claims its key (`claimKey`) before it reads a session or
+    takes its lock, complete included: a complete without a key is 400
+    `idempotency_key_required` whatever the session is, and a replay
+    is answered without the lock.
+  - Each key keeps the response that was sent, status and body
+    (`idemRecord`), and a replay with an equivalent body answers those
+    bytes with `Idempotent-Replayed: true` for the record's 24 hours,
+    whatever the session became since, or whether it lives. The answer
+    is written into a `heldResponse` and sent only once the key is
+    settled by it (`settle`). Another body under the key is 422
+    `idempotency_conflict`.
+  - An update or a cancel writes its own mark into the session with
+    the save that applies it (`Session.AppliedBy`, `requestMark`: the
+    endpoint, the key and the body, hashed). A retry that runs afresh
+    (the first attempt was saved and could not render, so its 5xx
+    freed the key; or its pod died before settling) finds the mark and
+    is answered with the session (`alreadyApplied`), changing nothing:
+    a cancel run again would be a 405, kept against the key that
+    canceled. `finish` reads the mark too: a save that was stored
+    while Redis lost its reply leaves the request holding the older
+    revision, and the stored session, which holds its mark, is its
+    answer. One slot: after another key's update, an earlier
+    update's retry applies again.
+  - Equivalence is the body's JSON (§6.2, `fingerprint`): decoded and
+    encoded again, so member order and `1.0` against `1` do not count,
+    `null` against an absent member does, array order does, and an
+    unknown member counts (§6.7). Cancel's body is optional; an absent
+    one has a fingerprint of its own.
+  - What a key keeps (`keptAgainstKey`): every answer that is final
+    for its request, refusals included (400, 404, 405 with its
+    `Allow`), replayed for 24 hours however the conditions that caused
+    it change (§6.3). A platform that wants a new attempt sends a new key,
+    and a kept refusal's message ends by saying so (`noteKept`,
+    `msgRefusalKept`), since its own words may name a condition that
+    changes (stock, an unpaid order, missing data).
+    The key is freed, and the same key runs afresh, only for an answer
+    that asks for the same request again: a 5xx (§6.5), a 409
+    `idempotency_in_flight` (§6.4: the key or the lock in use, a
+    session another request changed) and a 429.
+  - Two 5xx answers are kept, departing from §6.5: 502
+    `order_outcome_unknown` and 500 `order_placed` for an order whose
+    session was not saved. An order may exist behind each and the
+    stored session may not say so, so a retry run afresh could be told
+    otherwise; and the spec has no cacheable status for "an order may
+    exist; do not place another" (a 4xx says the client erred, its 409
+    asks for a retry, a complete's 200 must carry the order).
+  - Keys are `ag:{schema}:acp:idem:create.v3:{key}` and
+    `…:{update|complete|cancel}.v3:{session}:{key}` (`idemScope`,
+    versioned by `idemVersion` with the record and the fingerprint: a
+    record an older release wrote is a miss, and its key runs as after
+    expiry). So the buyer data a request carried and its answer
+    renders (name, email, phone, address) is kept in Redis for 24
+    hours unless evicted, for all four operations, while an open
+    session lives 30 minutes: the spec requires a key's response to be
+    kept at least 24 hours (§6.6). Django's own idempotency cache keeps
+    order responses as long, and a placed session the same data a day.
+    Nothing else reads it.
   - A create or an update settles every lookup and refusal it can make
     without the cart (item ids that are not numbers, the region, the pay
     way) before its first cart write, creating the cart included, as UCP's `create_checkout` and `update_checkout`
     do: a create refused there leaves no cart in Django, an update the
     cart as the stored session knows it. A line sync that fails partway
     still leaves what it wrote.
-  - A create is rendered before it is saved, and a 4xx or 5xx releases
-    its key: a create that failed leaves no session and no record. A
+  - A create is rendered before it is saved: a create that failed (a
+    5xx) leaves no session and no record, and one refused (a 4xx)
+    leaves no session and its refusal as the key's answer. A
     create that ran past its key's claim, with another create holding
     the key by then, discards its session and answers 409: one key
     answers one session. A create whose record could not be written
@@ -616,18 +677,22 @@ passes.
   (`completionTail`, `cmd/gateway`). `Flow.Complete` alone stores
   the session and the order link from the in-progress save on, and
   returns a `checkout.Placement`: `OrderMayExist` (the zero value)
-  spends the caller's idempotency key, `NothingPlaced` releases it. A
+  spends UCP's completion claim, `NothingPlaced` releases it; ACP's key
+  follows its answer (`keptAgainstKey`, above). A
   completion refused before the in-progress save stores nothing. So
-  the ACP handler stores what the call itself submitted (the buyer)
-  before it calls it, so that a refused call keeps the buyer's latest
-  choice, and only for a session that is still open (`Session.Open`).
-  A UCP complete submits nothing to store: it is a command, and a
-  payment that selects another method than the checkout holds is
-  answered `incomplete` before any claim (`.claude/rules/ucp.md`).
-  After the flow both only settle their own key by the placement
-  (ACP's body-hash record, UCP's completion claim), on a context the
-  caller cannot cancel, bounded by the Django client's timeout, and
-  map the error; neither saves the session again.
+  the ACP handler and the UCP tool store what the call itself
+  submitted before they call it, so that a refused call keeps the
+  buyer's latest choice, and only for a session that is still open
+  (`Session.Open`): ACP's buyer, and on UCP the payment method a
+  complete names first, for a checkout that holds none, when it
+  leaves the total as the checkout showed it. A UCP complete is a
+  command: one that would change the method the checkout holds, or
+  add a fee, is answered `incomplete` before any claim, and stores
+  nothing (`.claude/rules/ucp.md`). After the flow they
+  only map the error and settle their own key (UCP's completion claim
+  by the placement, ACP's record by the answer once it is rendered),
+  on a context the caller cannot cancel, bounded by the Django
+  client's timeout; neither saves the session again.
 - **One completion places a session's order, and no guard that expires
   decides which** (#84). Every guard on a checkout expires while its
   holder may still be working, because Django can take longer than any
@@ -731,7 +796,8 @@ passes.
     session when its order is placed (completed, or on UCP awaiting
     payment), in flight while it is being placed, canceled when it
     is. A session being placed is "in flight" only until
-    `Flow.CompletionDeadline`; past it, both surfaces say the outcome
+    `Flow.CompletionDeadline`, which for one stored unconfirmed is the
+    save that said so; past it, both surfaces say the outcome
     was never recorded (ACP `order_outcome_unknown`, UCP
     `errOutcomeUnknown`, which says what a person can do), and that
     holds for a read whose render fails too (`renderBody`,
@@ -753,7 +819,8 @@ passes.
     of one too.
     - `fromSnapshot` (UCP also `refusedBy`) is an answer made from the
       loaded session or from what Django said on its behalf: a
-      refusal, a render, a replayed key. `finish` reads the stored
+      refusal, a render, UCP's replayed key, ACP's retry of a change
+      the session already holds. `finish` reads the stored
       session and gives it only while the revision is the loaded one.
       Otherwise the request is answered by what is stored, through the
       function that answers that state everywhere else
@@ -885,8 +952,9 @@ passes.
     online payment (django-api #693). Its `code` is named once,
     `django.CodeCartHasUnpaidOrder`, and `CreateOrder` reports it as
     `django.ErrCartHasUnpaidOrder` (still Django's `*APIError`, so
-    a refusal: nothing placed, the session left `ready_for_complete`,
-    the key released). Both surfaces branch on that sentinel. UCP
+    a refusal: nothing placed, the session left `ready_for_complete`;
+    UCP's completion claim is released, ACP's key keeps the refusal
+    like any other). Both surfaces branch on that sentinel. UCP
     answers Django's code and sentence with its own hint
     (`cartOrderUnpaidErr`): this checkout placed no order, start no
     other checkout, and once the store cancels that order unpaid this
@@ -921,9 +989,11 @@ passes.
   checkout tools need `cart` (which Django folds the catalogue into);
   `get_product_reviews`, `subscribe_product_alert` and `my_favourites`
   need `catalogue` and `productReviews` / `productAlerts` /
-  `favourites`; `my_loyalty_points` `loyalty`. The order tools and
-  `get_store_policies` stay open (return terms bind orders already
-  placed). The UCP profile and `/acp/*` need `cart` (`CheckoutOn`), the
+  `favourites`; `my_loyalty_points` `loyalty`. Every account tool
+  (`account`) also needs `customerAccounts`, so `my_orders` too; Django
+  folds it into reviews, favourites and loyalty as well. The other order
+  tools and `get_store_policies` stay open (return terms bind orders
+  already placed). The UCP profile and `/acp/*` need `cart` (`CheckoutOn`), the
   feeds `catalogue` (`ProductFeedsOn`). The per-store server (cached per feature set) neither
   lists nor serves it, discovery does not advertise it, and the chat
   bridge, which shares one server built with `EveryFeature`, filters

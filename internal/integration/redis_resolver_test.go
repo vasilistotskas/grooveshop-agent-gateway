@@ -73,7 +73,8 @@ func TestResolverSharesRedisTierAcrossInstances(t *testing.T) {
 					"defaultLocale": "el",
 					"defaultCurrency": "EUR",
 					"primaryDomain": "shop.example.test",
-					"features": {"catalogue": true, "cart": true,
+					"features": {"customerAccounts": true,
+						"catalogue": true, "cart": true,
 						"productReviews": true, "productAlerts": true,
 						"favourites": true, "loyalty": true, "promotions": false}
 				}`))
@@ -107,8 +108,9 @@ func TestResolverSharesRedisTierAcrossInstances(t *testing.T) {
 	// The store's features survive the Redis round trip: a pod served
 	// from the shared tier offers the same tools as the one that asked.
 	assert.Equal(t, django.StoreFeatures{
-		Catalogue: true, Cart: true, ProductReviews: true,
-		ProductAlerts: true, Favourites: true, Loyalty: true,
+		CustomerAccounts: true, Catalogue: true, Cart: true,
+		ProductReviews: true, ProductAlerts: true, Favourites: true,
+		Loyalty: true,
 	}, got.Features)
 
 	// Negative results are shared too.
@@ -121,8 +123,8 @@ func TestResolverSharesRedisTierAcrossInstances(t *testing.T) {
 	assert.Equal(t, callsAfterNegative, calls.Load(),
 		"pod B must see the shared negative sentinel")
 
-	// The Redis entry is namespaced per plan: ag:tenant:v5:{host}.
-	val, err := rdb.Get(ctx, "ag:tenant:v5:nope.example.test").Result()
+	// The Redis entry is namespaced per plan: ag:tenant:v6:{host}.
+	val, err := rdb.Get(ctx, "ag:tenant:v6:nope.example.test").Result()
 	require.NoError(t, err)
 	assert.Equal(t, "!", val)
 }

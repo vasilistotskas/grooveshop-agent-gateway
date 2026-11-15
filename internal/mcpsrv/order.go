@@ -50,9 +50,18 @@ type TrackOrderOut struct {
 // orderNotOpened answers a uuid that opens no order. Django refuses a guest's
 // order once its uuid has expired, so the order may well exist; the same words
 // for an unknown uuid keep that from telling a caller which one it holds.
-const orderNotOpened = "no order can be opened with that id: it may be " +
-	"mistyped, or too old to open without signing in; check it against the " +
-	"confirmation email, then have the shopper sign in or contact the store"
+// A store without customer accounts has no sign-in to send the shopper to.
+func orderNotOpened(f django.StoreFeatures) string {
+	if !f.CustomerAccounts {
+		return "no order can be opened with that id: it may be mistyped, " +
+			"or too old to open here; check it against the confirmation " +
+			"email, then have the shopper contact the store"
+	}
+	return "no order can be opened with that id: it may be mistyped, or " +
+		"too old to open without signing in; check it against the " +
+		"confirmation email, then have the shopper sign in or contact " +
+		"the store"
+}
 
 func (h *handlers) trackOrder(
 	ctx context.Context, _ *mcp.CallToolRequest, in TrackOrderIn,
@@ -69,7 +78,7 @@ func (h *handlers) trackOrder(
 
 	o, err := h.deps.Django.OrderByUUID(ctx, t.Domain, lang, in.OrderUUID)
 	if err != nil {
-		return nil, out, upstreamErr(err, orderNotOpened)
+		return nil, out, upstreamErr(err, orderNotOpened(t.Features))
 	}
 
 	out.OrderUUID = o.UUID
@@ -152,7 +161,7 @@ func (h *handlers) getOrder(
 	order, err := h.deps.Django.OrderByUUID(
 		ctx, t.Domain, lang, in.ID)
 	if err != nil {
-		return nil, zero, upstreamErr(err, orderNotOpened)
+		return nil, zero, upstreamErr(err, orderNotOpened(t.Features))
 	}
 
 	link, err := h.deps.Checkout.OrderLinkFor(ctx, t.SchemaName, in.ID)
