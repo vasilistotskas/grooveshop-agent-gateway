@@ -153,10 +153,13 @@ wins over this page.
   the web. Not in `complete_in_progress` (its order may exist) or a
   terminal status.
 - **`discounts` in the response** (extension negotiated): `codes` are
-  the cart's: those the checkout submitted, then a coupon the cart holds
-  that it did not (attached on the store or with the cart tools, applied
-  or refused now), so a platform sending the checkout back keeps them
-  and one leaving them out clears them; `applied` from Django's per-offer breakdown (`automatic` without
+  the cart's: the coupon the cart holds (applied or refused now),
+  whoever attached it, then the codes the store refused when they were
+  submitted, which their warnings point at. A submitted code the cart no
+  longer holds is not listed: sent back, it would replace the cart's
+  coupon. So a platform sending the checkout back keeps exactly them,
+  and one leaving them out clears them. A placed order lists the codes
+  it was submitted with. `applied` from Django's per-offer breakdown (`automatic` without
   a `code`; none for a placed order, whose discounts are one sum); each
   refused code a `warning` message with its rejection code and `path`
   `$.discounts.codes[i]` (`checkout.Rejections`).
