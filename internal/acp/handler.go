@@ -540,7 +540,10 @@ func (h *Handler) settle(r *http.Request, k *keyed) error {
 		h.releaseIdem(r, k.claim, k.scope)
 		return nil
 	}
-	if status >= http.StatusBadRequest {
+	// A refusal only. The two 5xx answers a completion keeps say not to
+	// complete again: an order may exist behind them.
+	if status >= http.StatusBadRequest &&
+		status < http.StatusInternalServerError {
 		k.rec.noteKept()
 	}
 	rec := idemRecord{
