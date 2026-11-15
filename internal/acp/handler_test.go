@@ -141,7 +141,8 @@ func TestDecodeBodyReadsDiscounts(t *testing.T) {
 			}`))
 		rec := httptest.NewRecorder()
 		var out CreateRequest
-		require.True(t, decodeBody(rec, req, &out))
+		_, ok := decodeBody(rec, req, &out)
+		require.True(t, ok)
 		require.NotNil(t, out.Discounts)
 		assert.Equal(t, []string{"SAVE10", "EXTRA"}, out.Discounts.Codes)
 	})
@@ -151,7 +152,8 @@ func TestDecodeBodyReadsDiscounts(t *testing.T) {
 			strings.NewReader(`{"discounts": {"codes": []}}`))
 		rec := httptest.NewRecorder()
 		var out UpdateRequest
-		require.True(t, decodeBody(rec, req, &out))
+		_, ok := decodeBody(rec, req, &out)
+		require.True(t, ok)
 		require.NotNil(t, out.Discounts)
 		require.NotNil(t, out.Discounts.Codes, "empty array must decode as clear")
 		assert.Empty(t, out.Discounts.Codes)
@@ -159,7 +161,8 @@ func TestDecodeBodyReadsDiscounts(t *testing.T) {
 		req = httptest.NewRequest(http.MethodPost, "/acp/checkout_sessions/x",
 			strings.NewReader(`{"buyer": {"email": "a@b.test"}}`))
 		var untouched UpdateRequest
-		require.True(t, decodeBody(httptest.NewRecorder(), req, &untouched))
+		_, ok = decodeBody(httptest.NewRecorder(), req, &untouched)
+		require.True(t, ok)
 		assert.Nil(t, untouched.Discounts,
 			"absent discounts must not touch the coupon")
 	})
@@ -208,8 +211,7 @@ func TestACompleteOfASessionThatIsNotOpenIsAnswered(t *testing.T) {
 			}
 			r := httptest.NewRequest(http.MethodPost,
 				"/acp/checkout_sessions/"+s.ID+"/complete", nil)
-			var echo string
-			a := h.completeSession(r, tn, s, CompleteRequest{}, nil, &echo)
+			a := h.completeSession(r, tn, s, CompleteRequest{})
 			w := httptest.NewRecorder()
 			a.write(w)
 			assert.NotEmpty(t, w.Body.String(), "an empty answer")

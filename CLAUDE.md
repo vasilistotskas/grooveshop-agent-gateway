@@ -516,7 +516,9 @@ passes.
     this one ran (`checkout.ErrSessionChanged`), or an order being
     placed until `Flow.CompletionDeadline`. Past it the outcome was
     never recorded and stays so until the session expires: 502
-    `order_outcome_unknown`, no `Retry-After`. A session in progress
+    `order_outcome_unknown`, no `Retry-After`. A session stored
+    unconfirmed (`Session.Unconfirmed`) is past it from the first call:
+    its completion stored that as it ended. A session in progress
     whose order is known (`Flow.PlacedOrder`) answers neither: 500
     `order_placed`, naming the order (`writePlacedUnsaved`).
   - ACP completes only with a collect-later pay way: the handler
@@ -530,17 +532,49 @@ passes.
     canceled, the in-flight answer while its order is being placed. A
     canceled one refuses complete with 405. A complete of a completed
     session answers 200 with the session.
-  - A create stores the response it sent (status and body) with its
-    key (`createScope`, versioned with that record); a replay with the
-    same body answers those bytes for the record's 24 hours, whether
-    or not the session lives. Update, complete and cancel replays
-    render the session as it is now. `Idempotent-Replayed` is set only
-    on a replay's own answer.
-  - So the buyer data a create carried (name, email, phone, address)
-    is kept in Redis for 24 hours under
-    `ag:{schema}:acp:idem:create.v2:{key}`, while the session itself
-    lives 30 minutes: the spec requires a key's response to be kept at
-    least 24 hours (§6.6). Nothing else reads it.
+  - Every POST claims its key (`claimKey`) before it reads a session or
+    takes its lock, complete included: a complete without a key is 400
+    `idempotency_key_required` whatever the session is, and a replay
+    is answered without the lock.
+  - Each key keeps the response that was sent, status and body
+    (`idemRecord`), and a replay with an equivalent body answers those
+    bytes with `Idempotent-Replayed: true` for the record's 24 hours,
+    whatever the session became since, or whether it lives. The answer
+    is written into a `heldResponse` and sent only once the key is
+    settled by it (`settle`). Another body under the key is 422
+    `idempotency_conflict`.
+  - Equivalence is the body's JSON (§6.2, `fingerprint`): decoded and
+    encoded again, so member order and `1.0` against `1` do not count,
+    `null` against an absent member does, array order does, and an
+    unknown member counts (§6.7). Cancel's body is optional; an absent
+    one has a fingerprint of its own.
+  - What a key keeps (`keptAgainstKey`): the answer of a request that
+    did what it asked (a create's session, an update's or cancel's
+    accepted save, a completion past its in-progress save), unless it
+    is a 5xx (§6.5), which frees the key so the retry runs afresh. A
+    request that did nothing (refused, busy, failed, or answered by a
+    session another request stored) frees its key too, so the same
+    request runs again once what refused it changed
+    (`TestAnUnpaidCartRefusalIsAnsweredAsWhatItIs`): a departure from
+    §6.3, which asks for the original response of every replay.
+  - Two 5xx answers are kept, departing from §6.5: 502
+    `order_outcome_unknown` and 500 `order_placed` for an order whose
+    session was not saved. An order may exist behind each and the
+    stored session may not say so, so a retry run afresh could be told
+    otherwise; and the spec has no cacheable status for "an order may
+    exist; do not place another" (a 4xx says the client erred, its 409
+    asks for a retry, a complete's 200 must carry the order).
+  - Keys are `ag:{schema}:acp:idem:create.v3:{key}` and
+    `…:{update|complete|cancel}.v3:{session}:{key}` (`idemScope`,
+    versioned by `idemVersion` with the record and the fingerprint: a
+    record an older release wrote is a miss, and its key runs as after
+    expiry). So the buyer data a request carried and its answer
+    renders (name, email, phone, address) is kept in Redis for 24
+    hours unless evicted, for all four operations, while an open
+    session lives 30 minutes: the spec requires a key's response to be
+    kept at least 24 hours (§6.6). Django's own idempotency cache keeps
+    order responses as long, and a placed session the same data a day.
+    Nothing else reads it.
   - A create or an update settles every lookup and refusal it can make
     without the cart (item ids that are not numbers, the region, the pay
     way) before its first cart write, creating the cart included, as UCP's `create_checkout` and `update_checkout`
@@ -609,14 +643,15 @@ passes.
   `cmd/gateway`). `Flow.Complete` alone stores
   the session and the order link from the in-progress save on, and
   returns a `checkout.Placement`: `OrderMayExist` (the zero value)
-  spends the caller's idempotency key, `NothingPlaced` releases it. A
+  spends UCP's completion claim, `NothingPlaced` releases it; ACP's key
+  follows its answer (`keptAgainstKey`, above). A
   completion refused before the in-progress save stores nothing. So
   the ACP handler and the UCP tool store what the call itself
   submitted (ACP's buyer, UCP's payment) before they call it, so that
   a refused call keeps the buyer's latest choice, and only for a
   session that is still open (`Session.Open`). After the flow they
-  only settle their own key by the placement (ACP's body-hash record,
-  UCP's completion claim), on a context the caller cannot cancel,
+  only settle their own key (UCP's completion claim by the placement,
+  ACP's record by the answer), on a context the caller cannot cancel,
   bounded by the Django client's timeout, and map the error; neither
   saves the session again.
 - **One completion places a session's order, and no guard that expires
@@ -720,7 +755,8 @@ passes.
     session when its order is placed (completed, or on UCP awaiting
     payment), in flight while it is being placed, canceled when it
     is. A session being placed is "in flight" only until
-    `Flow.CompletionDeadline`; past it, both surfaces say the outcome
+    `Flow.CompletionDeadline`, which for one stored unconfirmed is the
+    save that said so; past it, both surfaces say the outcome
     was never recorded (ACP `order_outcome_unknown`, UCP
     `errOutcomeUnknown`, which says what a person can do), and that
     holds for a read whose render fails too (`renderBody`,

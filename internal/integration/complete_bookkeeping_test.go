@@ -242,7 +242,7 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			return acpAnswer(ctx, base+"/"+id, "", nil)
 		},
 		keyName: func(id, key string) string {
-			return "ag:demostore:acp:idem:complete:" + id + ":" + key
+			return "ag:demostore:acp:idem:complete.v3:" + id + ":" + key
 		},
 		cancel: func(t *testing.T, id string) {
 			t.Helper()
@@ -500,9 +500,11 @@ func (w *requestWatch) last() context.Context {
 
 // A platform that gives up while Django is creating the order has still
 // ordered. The gateway finishes what it started: the checkout is saved as
-// placed, the order is linked and the key is spent, so the platform's
-// retry is answered with the order instead of "in flight" until the
-// session expires.
+// placed and the order is linked, so the platform's retry is answered
+// with the order instead of "in flight" until the session expires. UCP
+// spends its claim. ACP answered the platform that had gone with a 503
+// (the order placed, the session not read back), which its key does not
+// keep (§6.5): the retry runs afresh and finds the placed session.
 func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 	watch := new(requestWatch)
 	stack := startUCPGatewayBehind(t, watch.front)
@@ -551,6 +553,9 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 
 			want := bookkeeping{
 				Session: checkout.StatusCompleted, Linked: true, Key: keySpent,
+			}
+			if surface.name == "acp" {
+				want.Key = keyReleased
 			}
 			keyName := surface.keyName(id, key)
 			got := stack.bookkeeping(t, id, keyName)

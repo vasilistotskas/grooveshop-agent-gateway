@@ -125,7 +125,7 @@ func TestACreateWhoseRecordIsNotConfirmedHandsOutNoSession(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			key := uuid.NewString()
-			record := "ag:demostore:acp:idem:create.v2:" + key
+			record := "ag:demostore:acp:idem:create.v3:" + key
 			var scripts atomic.Int32
 			stack.rdb.AddHook(redisAround(
 				func(cmd redis.Cmder, send func() error) error {
@@ -308,14 +308,26 @@ func TestACPIdempotencyKeys(t *testing.T) {
 			assertFresh(t, resp, raw)
 		})
 
-	t.Run("an older pod's create record is not read", func(t *testing.T) {
+	// The records the previous release wrote, under its scopes: a key
+	// one of them settled runs afresh here, as after expiry.
+	t.Run("an older pod's records are not read", func(t *testing.T) {
 		key := uuid.NewString()
 		require.NoError(t, stack.rdb.Set(ctx,
-			"ag:demostore:acp:idem:create:"+key,
-			`{"sessionId":"`+uuid.NewString()+`","bodyHash":"x",`+
-				`"status":201}`, time.Hour).Err())
+			"ag:demostore:acp:idem:create.v2:"+key,
+			`{"bodyHash":"x","status":201,"body":"{}"}`, time.Hour).Err())
 		resp, body := create(t, key, createBody)
 		assertFresh(t, resp, body)
+
+		id := acpReady(t, base)
+		require.NoError(t, stack.rdb.Set(ctx,
+			"ag:demostore:acp:idem:update:"+id+":"+key,
+			`{"bodyHash":"x"}`, time.Hour).Err())
+		resp, body = acpRaw(t, acpRequest(t, http.MethodPost, base+"/"+id,
+			map[string]any{"buyer": map[string]any{
+				"email": "other@example.test",
+			}}, key))
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "%s", body)
+		assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
 	})
 
 	// A claim lasts what its request can take when the store answers
@@ -327,7 +339,7 @@ func TestACPIdempotencyKeys(t *testing.T) {
 			resp, body := create(t, key, createBody)
 			assertFresh(t, resp, body)
 			ttl, err := stack.rdb.TTL(ctx,
-				"ag:demostore:acp:idem:create.v2:"+key).Result()
+				"ag:demostore:acp:idem:create.v3:"+key).Result()
 			require.NoError(t, err)
 			assert.InDelta(t, (24 * time.Hour).Seconds(), ttl.Seconds(), 60)
 
@@ -360,7 +372,7 @@ func TestACPIdempotencyKeys(t *testing.T) {
 				t.Fatal("the order was never sent to the store")
 			}
 			ttl, err = stack.rdb.TTL(ctx,
-				"ag:demostore:acp:idem:complete:"+id+":"+completeKey).Result()
+				"ag:demostore:acp:idem:complete.v3:"+id+":"+completeKey).Result()
 			require.NoError(t, err)
 			assert.Positive(t, ttl, "a claim must expire")
 			assert.InDelta(t, (7 * ucpUpstreamTimeout).Seconds(),
@@ -390,8 +402,276 @@ func TestACPIdempotencyKeys(t *testing.T) {
 			assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
 		}
 		n, err := stack.rdb.Exists(ctx,
-			"ag:demostore:acp:idem:cancel:"+id+":"+key).Result()
+			"ag:demostore:acp:idem:cancel.v3:"+id+":"+key).Result()
 		require.NoError(t, err)
 		assert.Zero(t, n)
+	})
+}
+
+// Every POST's key keeps the response it sent: "Same key + identical
+// body → server MUST return the original response with the same HTTP
+// status code" (§6.3). A replay with an equivalent body gets those bytes,
+// whatever the session became since. Equivalence is the body's JSON
+// (§6.2): key order and "1.0" against "1" make no difference, null
+// against an absent member does ("null means clear this field"), and so
+// does any other change.
+func TestEveryACPPostReplaysTheResponseItSent(t *testing.T) {
+	stack := startUCPGateway(t)
+	base := stack.gw.URL + "/acp/checkout_sessions"
+	created := func(t *testing.T) string {
+		t.Helper()
+		resp, body := acpCall(t, http.MethodPost, base, map[string]any{
+			"line_items":   []map[string]any{{"id": "1", "quantity": 2}},
+			"currency":     "EUR",
+			"capabilities": map[string]any{},
+		}, uuid.NewString())
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+		return body["id"].(string)
+	}
+	// Ways to change a session after its first answer.
+	updated := func(t *testing.T, id string) {
+		t.Helper()
+		resp, body := acpCall(t, http.MethodPost, base+"/"+id,
+			map[string]any{"buyer": map[string]any{
+				"email": "later@example.test",
+			}}, uuid.NewString())
+		require.Equal(t, http.StatusOK, resp.StatusCode, "%v", body)
+	}
+	gone := func(t *testing.T, id string) {
+		t.Helper()
+		stack.lapse(t, sessionRedisKey(id))
+	}
+
+	cases := []struct {
+		name string
+		// target prepares a session and names the URL, and the session
+		// when it exists before the call.
+		target                                 func(t *testing.T) (url, id string)
+		status                                 int
+		body, equivalent, nullForAbsent, other string
+		change                                 func(t *testing.T, id string, first []byte)
+	}{
+		{
+			name:   "create",
+			target: func(*testing.T) (string, string) { return base, "" },
+			status: http.StatusCreated,
+			body: `{"line_items":[{"id":"1","quantity":2}],` +
+				`"currency":"EUR","capabilities":{},"ext":{"n":1}}`,
+			equivalent: `{"ext":{"n":1.0},"capabilities":{},` +
+				`"currency":"EUR","line_items":[{"quantity":2,"id":"1"}]}`,
+			nullForAbsent: `{"line_items":[{"id":"1","quantity":2}],` +
+				`"currency":"EUR","capabilities":{},"ext":{"n":1},` +
+				`"buyer":null}`,
+			other: `{"line_items":[{"id":"1","quantity":3}],` +
+				`"currency":"EUR","capabilities":{},"ext":{"n":1}}`,
+			change: func(t *testing.T, _ string, first []byte) {
+				var session map[string]any
+				require.NoError(t, json.Unmarshal(first, &session))
+				updated(t, session["id"].(string))
+			},
+		},
+		{
+			name: "update",
+			target: func(t *testing.T) (string, string) {
+				id := acpReady(t, base)
+				return base + "/" + id, id
+			},
+			status: http.StatusOK,
+			body: `{"line_items":[{"id":"1","quantity":3}],` +
+				`"buyer":{"email":"first@example.test"},"ext":{"n":1}}`,
+			equivalent: `{"ext":{"n":1.0},` +
+				`"buyer":{"email":"first@example.test"},` +
+				`"line_items":[{"quantity":3,"id":"1"}]}`,
+			nullForAbsent: `{"line_items":[{"id":"1","quantity":3}],` +
+				`"buyer":{"email":"first@example.test"},"ext":{"n":1},` +
+				`"discounts":null}`,
+			other: `{"line_items":[{"id":"1","quantity":4}],` +
+				`"buyer":{"email":"first@example.test"},"ext":{"n":1}}`,
+			change: func(t *testing.T, id string, _ []byte) { updated(t, id) },
+		},
+		{
+			name: "complete",
+			target: func(t *testing.T) (string, string) {
+				id := acpReady(t, base)
+				return base + "/" + id + "/complete", id
+			},
+			status: http.StatusOK,
+			body: `{"payment_data":{},` +
+				`"buyer":{"email":"maria@example.test"},"ext":{"n":1}}`,
+			equivalent: `{"ext":{"n":1.0},` +
+				`"buyer":{"email":"maria@example.test"},"payment_data":{}}`,
+			nullForAbsent: `{"payment_data":{},"buyer":{` +
+				`"email":"maria@example.test","phone_number":null},` +
+				`"ext":{"n":1}}`,
+			other: `{"payment_data":{},` +
+				`"buyer":{"email":"maria@example.test"},"ext":{"n":2}}`,
+			change: func(t *testing.T, id string, _ []byte) { gone(t, id) },
+		},
+		{
+			name: "cancel",
+			target: func(t *testing.T) (string, string) {
+				id := created(t)
+				return base + "/" + id + "/cancel", id
+			},
+			status: http.StatusOK,
+			body: `{"intent_trace":` +
+				`{"reason_code":"buyer_cancelled","rank":1}}`,
+			equivalent: `{"intent_trace":` +
+				`{"rank":1.0,"reason_code":"buyer_cancelled"}}`,
+			nullForAbsent: `{"intent_trace":{"reason_code":` +
+				`"buyer_cancelled","rank":1,"description":null}}`,
+			other:  `{"intent_trace":{"reason_code":"other","rank":1}}`,
+			change: func(t *testing.T, id string, _ []byte) { gone(t, id) },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			url, id := tc.target(t)
+			key := uuid.NewString()
+			send := func(body string) (*http.Response, []byte) {
+				return acpRaw(t, acpRequest(t, http.MethodPost, url,
+					json.RawMessage(body), key))
+			}
+			resp, first := send(tc.body)
+			require.Equal(t, tc.status, resp.StatusCode, "%s", first)
+			require.Empty(t, resp.Header.Get("Idempotent-Replayed"))
+			tc.change(t, id, first)
+
+			for _, body := range []string{tc.body, tc.equivalent} {
+				resp, again := send(body)
+				assert.Equal(t, tc.status, resp.StatusCode, body)
+				assert.Equal(t, "true",
+					resp.Header.Get("Idempotent-Replayed"), body)
+				assert.Equal(t, key, resp.Header.Get("Idempotency-Key"))
+				assert.Equal(t, string(first), string(again), body)
+			}
+			for _, body := range []string{tc.other, tc.nullForAbsent} {
+				resp, refusal := send(body)
+				assert.Equal(t, http.StatusUnprocessableEntity,
+					resp.StatusCode, body)
+				assert.Contains(t, string(refusal),
+					`"code":"idempotency_conflict"`, body)
+				assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
+			}
+		})
+	}
+}
+
+// A complete's key is read before its session: after a completion the
+// key replays what it answered and refuses another body (§6.4), and a
+// complete without a key is refused (§6.1), whatever the session is.
+func TestACompleteIsAnsweredByItsKeyFirst(t *testing.T) {
+	stack := startUCPGateway(t)
+	base := stack.gw.URL + "/acp/checkout_sessions"
+	ctx := context.Background()
+	payment := map[string]any{"payment_data": map[string]any{}}
+	complete := func(id string, body any, key string) (
+		*http.Response, []byte,
+	) {
+		return acpRaw(t, acpRequest(t, http.MethodPost,
+			base+"/"+id+"/complete", body, key))
+	}
+
+	completed := acpReady(t, base)
+	key := uuid.NewString()
+	resp, first := complete(completed, payment, key)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "%s", first)
+	creates := stack.faults.orderCreates.Load()
+
+	resp, again := complete(completed, payment, key)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
+	assert.Equal(t, string(first), string(again))
+	resp, refusal := complete(completed, map[string]any{
+		"payment_data": map[string]any{},
+		"buyer":        map[string]any{"email": "other@example.test"},
+	}, key)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Contains(t, string(refusal), `"code":"idempotency_conflict"`)
+
+	resp, created := acpCall(t, http.MethodPost, base, map[string]any{
+		"line_items":   []map[string]any{{"id": "1", "quantity": 2}},
+		"currency":     "EUR",
+		"capabilities": map[string]any{},
+	}, uuid.NewString())
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	canceled := created["id"].(string)
+	resp, _ = acpCall(t, http.MethodPost, base+"/"+canceled+"/cancel", nil,
+		uuid.NewString())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	inProgress := acpReady(t, base)
+	stored := stack.storedSession(t, inProgress)
+	stored.Status = checkout.StatusCompleteInProgress
+	stored.UpdatedAt = time.Now()
+	raw, err := json.Marshal(stored)
+	require.NoError(t, err)
+	require.NoError(t, stack.rdb.Set(ctx, sessionRedisKey(inProgress), raw,
+		redis.KeepTTL).Err())
+
+	for name, id := range map[string]string{
+		"completed": completed, "canceled": canceled,
+		"in progress": inProgress,
+	} {
+		resp, body := complete(id, payment, "")
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, name)
+		assert.Contains(t, string(body),
+			`"code":"idempotency_key_required"`, name)
+	}
+	assert.Equal(t, creates, stack.faults.orderCreates.Load())
+}
+
+// A request that did nothing, and one whose answer is a 5xx ("MUST NOT be
+// cached against the idempotency key", §6.5), leave the key free: the
+// retry with that key runs afresh.
+func TestAnACPKeyIsFreedByWhatItDidNotDo(t *testing.T) {
+	stack := startUCPGateway(t)
+	base := stack.gw.URL + "/acp/checkout_sessions"
+	ctx := context.Background()
+	update := func(id, key string) (*http.Response, map[string]any) {
+		return acpCall(t, http.MethodPost, base+"/"+id,
+			map[string]any{"buyer": map[string]any{
+				"email": "other@example.test",
+			}}, key)
+	}
+	assertFreeThenKept := func(t *testing.T, id, key string) {
+		t.Helper()
+		n, err := stack.rdb.Exists(ctx,
+			"ag:demostore:acp:idem:update.v3:"+id+":"+key).Result()
+		require.NoError(t, err)
+		assert.Zero(t, n, "the key is kept")
+		resp, body := update(id, key)
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "%v", body)
+		assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
+		resp, _ = update(id, key)
+		assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
+	}
+
+	t.Run("refused by the store", func(t *testing.T) {
+		id := acpReady(t, base)
+		key := uuid.NewString()
+		stack.faults.payWayLookup.Store(true)
+		t.Cleanup(func() { stack.faults.payWayLookup.Store(false) })
+		resp, body := update(id, key)
+		require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+		assert.Equal(t, "upstream_unavailable", body["code"])
+		stack.faults.payWayLookup.Store(false)
+		assertFreeThenKept(t, id, key)
+	})
+
+	// The update was saved, and its answer could not be rendered.
+	t.Run("stored, answered with a 5xx", func(t *testing.T) {
+		id := acpReady(t, base)
+		key := uuid.NewString()
+		stack.faults.namedCartReadsFailFrom.Store(
+			stack.faults.namedCartReads.Load() + 1)
+		t.Cleanup(func() { stack.faults.namedCartReadsFailFrom.Store(0) })
+		resp, body := update(id, key)
+		require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+		assert.Equal(t, "unavailable", body["code"])
+		require.Equal(t, "other@example.test",
+			stack.storedSession(t, id).Buyer.Email)
+		stack.faults.namedCartReadsFailFrom.Store(0)
+		assertFreeThenKept(t, id, key)
 	})
 }

@@ -4,9 +4,9 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -85,16 +85,13 @@ func TestACPErrorsFollowTheSpec(t *testing.T) {
 			"the busy answer must not spend the key")
 		assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
 
-		// A replay that cannot be rendered is not answered as one.
+		// A replay is answered from its key, before the session's lock.
 		require.NoError(t, stack.rdb.Set(ctx, lock, "another request",
 			10*time.Second).Err())
 		resp, _ = update(id, key)
-		assert.Equal(t, http.StatusConflict, resp.StatusCode)
-		assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
-		require.NoError(t, stack.rdb.Del(ctx, lock).Err())
-		resp, _ = update(id, key)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
+		require.NoError(t, stack.rdb.Del(ctx, lock).Err())
 	})
 
 	t.Run("a closed session refuses changes with 405", func(t *testing.T) {
@@ -163,35 +160,33 @@ func TestACPErrorsFollowTheSpec(t *testing.T) {
 			assert.Equal(t, "completed", done["status"])
 		})
 
-	t.Run("an unconfirmed order is pending, then unknown for good",
+	// The completion stored the order as unanswered, so none is running:
+	// every call is told the outcome is unknown, from the first, and the
+	// completion's key keeps that answer although it is a 5xx.
+	t.Run("an unconfirmed order is unknown, the same on every call",
 		func(t *testing.T) {
 			id := acpReady(t, base)
 			before := stack.faults.orderCreates.Load()
 			stack.faults.orderCreate.Store(true)
 			t.Cleanup(func() { stack.faults.orderCreate.Store(false) })
-			resp, body := complete(id, uuid.NewString())
-			assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
-			assert.Equal(t, "order_outcome_unknown", body["code"])
+			key := uuid.NewString()
+			send := func() (*http.Response, []byte) {
+				return acpRaw(t, acpRequest(t, http.MethodPost,
+					base+"/"+id+"/complete",
+					map[string]any{"payment_data": map[string]any{}}, key))
+			}
+			resp, first := send()
+			require.Equal(t, http.StatusBadGateway, resp.StatusCode)
+			assert.Contains(t, string(first),
+				`"code":"order_outcome_unknown"`)
 			stack.faults.orderCreate.Store(false)
+			require.True(t, stack.storedSession(t, id).Unconfirmed)
 
-			// Within the completion's budget it may still be running: the
-			// platform waits at most until it must have ended.
-			resp, body = complete(id, uuid.NewString())
-			assert.Equal(t, http.StatusConflict, resp.StatusCode)
-			assert.Equal(t, "idempotency_in_flight", body["code"])
-			assert.InDelta(t, 3*ucpUpstreamTimeout.Seconds(),
-				retryAfter(t, resp), 2)
-			resp, _ = update(id, uuid.NewString())
-			assert.Equal(t, http.StatusConflict, resp.StatusCode)
+			resp, again := send()
+			assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+			assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
+			assert.Equal(t, string(first), string(again))
 
-			// Past it, nothing will record the outcome before the session
-			// expires: no Retry-After, on any route.
-			stored := stack.storedSession(t, id)
-			stored.UpdatedAt = time.Now().Add(-time.Minute)
-			raw, err := json.Marshal(stored)
-			require.NoError(t, err)
-			require.NoError(t, stack.rdb.Set(ctx, sessionRedisKey(id), raw,
-				redis.KeepTTL).Err())
 			for _, call := range []func() (*http.Response, map[string]any){
 				func() (*http.Response, map[string]any) {
 					return complete(id, uuid.NewString())
@@ -211,5 +206,41 @@ func TestACPErrorsFollowTheSpec(t *testing.T) {
 			}
 			assert.EqualValues(t, 1, stack.faults.orderCreates.Load()-before,
 				"no answer may send the order again")
+		})
+
+	// The order was placed and both saves of the session failed: the key
+	// keeps the 500 that names the order, as the 502 above.
+	t.Run("an order whose session was not saved keeps its key",
+		func(t *testing.T) {
+			id := acpReady(t, base)
+			before := stack.faults.orderCreates.Load()
+			var linked atomic.Bool
+			var failures atomic.Int32
+			stack.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+				if setsKey(cmd, ":orderlink:") {
+					linked.Store(true)
+				} else if linked.Load() &&
+					savesKey(cmd, sessionRedisKey(id)) &&
+					failures.Add(1) <= 2 {
+					return errRedisDown
+				}
+				return nil
+			}))
+			key := uuid.NewString()
+			send := func() (*http.Response, []byte) {
+				return acpRaw(t, acpRequest(t, http.MethodPost,
+					base+"/"+id+"/complete",
+					map[string]any{"payment_data": map[string]any{}}, key))
+			}
+			resp, first := send()
+			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+			assert.Contains(t, string(first), `"code":"order_placed"`)
+			assert.Contains(t, string(first), fixtureOrderUUID)
+
+			resp, again := send()
+			assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+			assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
+			assert.Equal(t, string(first), string(again))
+			assert.EqualValues(t, 1, stack.faults.orderCreates.Load()-before)
 		})
 }

@@ -1,6 +1,8 @@
 package acp
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -8,7 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"maps"
 	"math"
 	"net/http"
 	"slices"
@@ -227,50 +231,114 @@ func upstreamError(w http.ResponseWriter, err error) {
 	}
 }
 
-func decodeBody(w http.ResponseWriter, r *http.Request, out any) bool {
-	if err := json.NewDecoder(
-		http.MaxBytesReader(w, r.Body, 256<<10),
-	).Decode(out); err != nil {
+// maxBodyBytes bounds a request body.
+const maxBodyBytes = 256 << 10
+
+// decodeBody reads a POST's JSON body into out, and returns the body's
+// fingerprint for its idempotency key.
+func decodeBody(w http.ResponseWriter, r *http.Request, out any) (
+	string, bool,
+) {
+	return readBody(w, r, out, false)
+}
+
+// decodeOptionalBody is decodeBody for a body the spec makes optional
+// (cancel's): an empty one is accepted, and decodes nothing.
+func decodeOptionalBody(w http.ResponseWriter, r *http.Request, out any) (
+	string, bool,
+) {
+	return readBody(w, r, out, true)
+}
+
+func readBody(
+	w http.ResponseWriter, r *http.Request, out any, optional bool,
+) (string, bool) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err == nil && optional && len(bytes.TrimSpace(raw)) == 0 {
+		raw = nil
+	} else if err == nil {
+		err = json.Unmarshal(raw, out)
+	}
+	var hash string
+	if err == nil {
+		hash, err = fingerprint(raw)
+	}
+	if err != nil {
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "invalid",
 			Message: "The request body is not valid JSON.",
 		})
-		return false
+		return "", false
 	}
-	return true
+	return hash, true
 }
 
 // --- Idempotency -----------------------------------------------------------
 
-// idemRecord is what a settled key did. A create's holds the response it
-// sent, which its replays answer byte for byte; update, complete and
-// cancel replays render the session as it is now.
+// idemRecord is what a settled key answered: the response that was sent,
+// which every replay of the key answers byte for byte, whatever has
+// become of the session since (spec §6.3: "the original response with
+// the same HTTP status code").
 type idemRecord struct {
 	BodyHash string `json:"bodyHash"`
-	Status   int    `json:"status,omitempty"`
-	Body     string `json:"body,omitempty"`
+	Status   int    `json:"status"`
+	Body     string `json:"body"`
 }
 
 const (
 	// idemRecordTTL is the spec's minimum retention of a settled key.
 	idemRecordTTL = 24 * time.Hour
-	// createScope is the create endpoint's scope, versioned with the
-	// record it stores: bump it when that shape changes, so a record an
-	// older pod wrote is a miss, never misread.
-	createScope = "create.v2"
+	// idemVersion versions how every operation's key is recorded: bump it
+	// when the record's shape or the body's fingerprint changes, so a
+	// record an older pod wrote is a miss, never misread.
+	idemVersion = "v3"
 )
 
-// idemRedisKey scopes a key to one endpoint: "create.v2", or an operation
-// on one session ("complete:<id>"). The spec scopes keys per endpoint, and
-// a key reused on another session is a new request, not a replay of the
-// first session's response.
+// The operations a key is scoped to.
+const (
+	opCreate   = "create"
+	opUpdate   = "update"
+	opComplete = "complete"
+	opCancel   = "cancel"
+)
+
+// idemScope scopes a key to one endpoint: "create.v3", or an operation
+// on one session ("complete.v3:<id>"). The spec scopes keys per endpoint,
+// and a key reused on another session is a new request, not a replay of
+// the first session's response.
+func idemScope(op, id string) string {
+	if id == "" {
+		return op + "." + idemVersion
+	}
+	return op + "." + idemVersion + ":" + id
+}
+
 func idemRedisKey(schema, scope, key string) string {
 	return "ag:" + schema + ":acp:idem:" + scope + ":" + key
 }
 
-func bodyHash(raw []byte) string {
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
+// fingerprint identifies a body under the spec's request equivalence
+// (§6.2: "semantic JSON equality of the request body only"). Decoded into
+// plain values and encoded again, an object's members come out sorted
+// and every number as a double, so key order and "1.0" against "1" make
+// no difference, while null stays apart from an absent member and an
+// array keeps its order. RFC 8785, which the spec suggests, compares
+// numbers as doubles too. A body that is absent (nil) has a fingerprint
+// of its own.
+func fingerprint(raw []byte) (string, error) {
+	canonical := raw
+	if raw != nil {
+		var v any
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return "", err
+		}
+		var err error
+		if canonical, err = json.Marshal(v); err != nil {
+			return "", err
+		}
+	}
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // maxIdempotencyKeyLen is the spec's bound on an Idempotency-Key:
@@ -342,76 +410,162 @@ func (h *Handler) writeCompletionPending(
 	writeOutcomeUnknown(w)
 }
 
-// claimKey implements POST idempotency: the first caller claims the key,
-// replays return the stored record, concurrent attempts get 409, and a
-// different body under the same key gets 422. It returns the claim when
-// this request holds the key, the record when an earlier one settled
-// it, and otherwise the refusal to answer with.
+// keyed is a POST whose Idempotency-Key this request holds. Its answer is
+// written to rec, and held there until the key is settled by it.
+type keyed struct {
+	claim *checkout.Claim
+	scope string
+	hash  string
+	rec   *heldResponse
+	// done: the request did what it asked (a create's session, an
+	// update's or a cancel's accepted save, a completion past its
+	// in-progress save), so its answer is the key's.
+	done bool
+	// orderUnsettled: see keptAgainstKey.
+	orderUnsettled bool
+}
+
+// outcome notes what a body's answer says the request did.
+func (k *keyed) outcome(a answer) {
+	k.done, k.orderUnsettled = a.current, a.orderUnsettled
+}
+
+// claimKey implements POST idempotency, before anything else the request
+// reads or writes: the first caller claims the key, a replay answers the
+// stored response, a concurrent attempt gets 409, and a different body
+// under the same key gets 422. It returns the key when this request holds
+// it, and otherwise has answered.
 func (h *Handler) claimKey(
-	r *http.Request, schema, scope string, raw []byte,
-) (
-	key string, claim *checkout.Claim, prior *idemRecord,
-	refuse func(http.ResponseWriter),
-) {
-	refusal := func(status int, e Error) func(http.ResponseWriter) {
-		return func(w http.ResponseWriter) { writeError(w, status, e) }
-	}
-	key = r.Header.Get("Idempotency-Key")
+	w http.ResponseWriter, r *http.Request, schema, scope, hash string,
+) (*keyed, bool) {
+	key := r.Header.Get("Idempotency-Key")
 	if key == "" {
-		return "", nil, nil, refusal(http.StatusBadRequest, Error{
+		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "idempotency_key_required",
 			Message: "The Idempotency-Key header is required.",
 		})
+		return nil, false
 	}
 	if utf8.RuneCountInString(key) > maxIdempotencyKeyLen {
-		return "", nil, nil, refusal(http.StatusBadRequest, errKeyForm)
-	}
-	inFlight := func(w http.ResponseWriter) {
-		writeInFlight(w, idemRetryAfter, msgKeyInFlight)
+		writeError(w, http.StatusBadRequest, errKeyForm)
+		return nil, false
 	}
 	claim, settled, err := h.store.Claim(r.Context(),
 		idemRedisKey(schema, scope, key))
 	if err != nil {
-		return "", nil, nil, func(w http.ResponseWriter) {
-			writeUnavailable(w, msgRecordsUnavailable)
-		}
+		writeUnavailable(w, msgRecordsUnavailable)
+		return nil, false
 	}
 	if claim != nil {
-		return key, claim, nil, nil
+		w.Header().Set("Idempotency-Key", key)
+		return &keyed{
+			claim: claim, scope: scope, hash: hash, rec: newHeldResponse(),
+		}, true
 	}
 	// Held by another request, or settled with something that is not a
 	// record: in flight either way.
 	var rec idemRecord
-	if settled == "" || json.Unmarshal([]byte(settled), &rec) != nil {
-		return "", nil, nil, inFlight
+	if settled == "" || json.Unmarshal([]byte(settled), &rec) != nil ||
+		rec.Status == 0 {
+		writeInFlight(w, idemRetryAfter, msgKeyInFlight)
+		return nil, false
 	}
-	if rec.BodyHash != bodyHash(raw) {
-		return "", nil, nil, refusal(http.StatusUnprocessableEntity, Error{
+	if rec.BodyHash != hash {
+		writeError(w, http.StatusUnprocessableEntity, Error{
 			Type: "invalid_request", Code: "idempotency_conflict",
 			Message: "This Idempotency-Key was used with a different body.",
 		})
-	}
-	return key, nil, &rec, nil
-}
-
-// claimIdem is claimKey for a handler that holds no session yet: it
-// answers the refusal itself, and echoes a key that was accepted.
-func (h *Handler) claimIdem(
-	w http.ResponseWriter, r *http.Request, schema, scope string, raw []byte,
-) (claim *checkout.Claim, prior *idemRecord, handled bool) {
-	key, claim, prior, refuse := h.claimKey(r, schema, scope, raw)
-	if refuse != nil {
-		refuse(w)
-		return nil, nil, true
+		return nil, false
 	}
 	w.Header().Set("Idempotency-Key", key)
-	return claim, prior, false
+	w.Header().Set("Idempotent-Replayed", "true")
+	writeBody(w, rec.Status, []byte(rec.Body))
+	return nil, false
 }
 
-// writeReplay answers a replayed key with what the spec asks of it.
-func writeReplay(w http.ResponseWriter, status int, body []byte) {
-	w.Header().Set("Idempotent-Replayed", "true")
-	writeBody(w, status, body)
+// keptAgainstKey reports whether a key keeps the answer its request was
+// given, which every replay then returns.
+//
+// A request that did what it asked keeps it, unless the answer is a 5xx:
+// "Responses with HTTP 5xx status codes MUST NOT be cached against the
+// idempotency key" (§6.5), so the retry runs afresh. A request that did
+// nothing (refused, busy, failed) frees its key, so the same request can
+// run again once what refused it has changed.
+//
+// Two 5xx answers of a completion are kept all the same, departing from
+// §6.5: the order whose outcome the store never confirmed (502
+// order_outcome_unknown), and the order placed whose session could not
+// be saved (500 order_placed). An order may exist behind each, and the
+// stored session may not say so, since the save that would have said it
+// may be the one that failed: a retry run afresh would be answered by
+// that session. So the key stays spent, and every retry of it is told
+// what the first attempt was. The spec has no answer that says "an
+// order may exist; do not place another" for a server to keep: a 4xx
+// tells the client it erred, its 409 asks for a retry, and a complete's
+// 200 must carry status completed and the order.
+func keptAgainstKey(done, orderUnsettled bool, status int) bool {
+	return orderUnsettled ||
+		done && status < http.StatusInternalServerError
+}
+
+// settle stores the held answer against its key, or frees the key for an
+// answer that is not kept. It returns storeIdem's error.
+func (h *Handler) settle(r *http.Request, k *keyed) error {
+	status := k.rec.statusCode()
+	if !keptAgainstKey(k.done, k.orderUnsettled, status) {
+		h.releaseIdem(r, k.claim, k.scope)
+		return nil
+	}
+	return h.storeIdem(r, k.claim, k.scope, idemRecord{
+		BodyHash: k.hash, Status: status, Body: k.rec.body.String(),
+	})
+}
+
+// settleAndSend settles the key by the held answer, then sends it. A key
+// that could not be recorded is logged; the answer stands, since it
+// says what the request did.
+func (h *Handler) settleAndSend(
+	w http.ResponseWriter, r *http.Request, k *keyed,
+) {
+	_ = h.settle(r, k)
+	k.rec.send(w)
+}
+
+// heldResponse is an answer kept from the wire until its key is settled,
+// so that what a key stores is what was sent.
+type heldResponse struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func newHeldResponse() *heldResponse {
+	return &heldResponse{header: http.Header{}}
+}
+
+func (a *heldResponse) Header() http.Header { return a.header }
+
+func (a *heldResponse) WriteHeader(status int) {
+	if a.status == 0 {
+		a.status = status
+	}
+}
+
+func (a *heldResponse) Write(p []byte) (int, error) {
+	a.WriteHeader(http.StatusOK)
+	return a.body.Write(p)
+}
+
+// statusCode is the status sent: net/http's 200 for an answer that wrote
+// none.
+func (a *heldResponse) statusCode() int {
+	return cmp.Or(a.status, http.StatusOK)
+}
+
+func (a *heldResponse) send(w http.ResponseWriter) {
+	maps.Copy(w.Header(), a.header)
+	w.WriteHeader(a.statusCode())
+	_, _ = w.Write(a.body.Bytes())
 }
 
 // settling is the context a claimed key is recorded or released on. It
@@ -657,75 +811,86 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req CreateRequest
-	if !decodeBody(w, r, &req) {
+	hash, ok := decodeBody(w, r, &req)
+	if !ok {
 		return
 	}
-	raw, _ := json.Marshal(req)
+	k, ok := h.claimKey(w, r, t.SchemaName, idemScope(opCreate, ""), hash)
+	if !ok {
+		return
+	}
+	s := h.createSession(k.rec, r, t, req)
+	k.done = s != nil
+	err := h.settle(r, k)
+	switch {
+	case err == nil, s == nil:
+		k.rec.send(w)
+	case !errors.Is(err, errClaimLapsed):
+		// Whether the key holds this response is not known, so the
+		// session is not handed out: answered 201 without its record, a
+		// retry of the key would create a second one. It is not
+		// discarded either, since the record may name it. The retry
+		// replays it if it was recorded, and creates anew if not.
+		writeUnavailable(w, msgRecordsUnavailable)
+	default:
+		// The key is another create's by now, and one key answers one
+		// session: this one was never handed out, and is not kept.
+		h.discard(r, s)
+		writeInFlight(w, idemRetryAfter, msgKeyInFlight)
+	}
+}
 
-	claim, prior, handled := h.claimIdem(w, r, t.SchemaName,
-		createScope, raw)
-	if handled {
-		return
-	}
-	if claim == nil {
-		// The response that was sent, whether or not its session lives:
-		// a replay re-executes nothing.
-		writeReplay(w, prior.Status, []byte(prior.Body))
-		return
-	}
-
+// createSession is create once its key is held. It answers into w, and
+// returns the session it stored, which it answered 201 with, or nil.
+func (h *Handler) createSession(
+	w http.ResponseWriter, r *http.Request, t *tenant.Tenant,
+	req CreateRequest,
+) *checkout.Session {
 	if len(req.LineItems) == 0 {
-		h.releaseIdem(r, claim, createScope)
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "missing",
 			Param: "$.line_items", Message: "line_items must not be empty.",
 		})
-		return
+		return nil
 	}
 	// Refused, not converted: amounts the platform reads as its own
 	// currency would be the store's.
 	if !strings.EqualFold(req.Currency, t.DefaultCurrency) {
-		h.releaseIdem(r, claim, createScope)
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "invalid", Param: "$.currency",
 			Message: "This store sells in " + t.DefaultCurrency + ".",
 		})
-		return
+		return nil
 	}
 
 	// Every lookup and refusal before the first cart write, which here is
 	// creating the cart: an item, a region or a pay way the store refuses
 	// leaves no cart behind. A line sync failing after it does.
-	refused := func(err error) {
-		h.releaseIdem(r, claim, createScope)
+	refused := func(err error) *checkout.Session {
 		upstreamError(w, err)
+		return nil
 	}
 	lines, err := cartLines(req.LineItems)
 	if err != nil {
-		refused(err)
-		return
+		return refused(err)
 	}
 	s := checkout.NewSession(t.SchemaName, t.Domain, checkout.ProtocolACP, "")
 	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
 	applyFulfillment(s, req.FulfillmentDetails, nil)
 	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
-		refused(err)
-		return
+		return refused(err)
 	}
 	if err := h.selectPayWay(r, t, s); err != nil {
-		refused(err)
-		return
+		return refused(err)
 	}
 
 	cart, err := h.dj.GetCart(r.Context(), t.Domain, t.DefaultLocale, "")
 	if err != nil {
-		refused(err)
-		return
+		return refused(err)
 	}
 	s.CartID = cart.UUID
 	if err := h.syncCart(r, t, s.CartID, lines); err != nil {
-		refused(err)
-		return
+		return refused(err)
 	}
 	// Discounts apply after the lines exist (eligibility can depend on
 	// the cart subtotal). A refused code is not a request failure — it
@@ -734,8 +899,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		if err := checkout.ApplyDiscountCodes(
 			r.Context(), h.dj, t, s, req.Discounts.Codes,
 		); err != nil {
-			refused(err)
-			return
+			return refused(err)
 		}
 	}
 	s.Recompute()
@@ -744,8 +908,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	// the key, so a retry is a new create that leaves nothing behind.
 	body, ok := h.renderBody(w, r, t, s)
 	if !ok {
-		h.releaseIdem(r, claim, createScope)
-		return
+		return nil
 	}
 	// The cart was made for this session, so no checkout holds it.
 	if err := h.store.Create(
@@ -759,32 +922,11 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 			// may have run and its reply been lost.
 			h.discard(r, s)
 		}
-		h.releaseIdem(r, claim, createScope)
 		writeUnavailable(w, msgRecordsUnavailable)
-		return
-	}
-	err = h.storeIdem(r, claim, createScope, idemRecord{
-		BodyHash: bodyHash(raw), Status: http.StatusCreated,
-		Body: string(body),
-	})
-	switch {
-	case err == nil:
-	case !errors.Is(err, errClaimLapsed):
-		// Whether the key holds this response is not known, so the
-		// session is not handed out: answered 201 without its record, a
-		// retry of the key would create a second one. It is not
-		// discarded either, since the record may name it. The retry
-		// replays it if it was recorded, and creates anew if not.
-		writeUnavailable(w, msgRecordsUnavailable)
-		return
-	default:
-		// The key is another create's by now, and one key answers one
-		// session: this one was never handed out, and is not kept.
-		h.discard(r, s)
-		writeInFlight(w, idemRetryAfter, msgKeyInFlight)
-		return
+		return nil
 	}
 	writeBody(w, http.StatusCreated, body)
+	return s
 }
 
 // discard removes a session its create stored, or may have stored, and
@@ -831,6 +973,9 @@ type answer struct {
 	// current: the request's own save of the session was just accepted,
 	// which proves its snapshot was the stored session.
 	current bool
+	// orderUnsettled: a completion whose order may exist while the stored
+	// session may not say so (see keptAgainstKey).
+	orderUnsettled bool
 }
 
 // fromSnapshot is an answer made from the session as the request holds
@@ -881,53 +1026,43 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !checkout.ValidID(r.PathValue("id")) {
+	id := r.PathValue("id")
+	if !checkout.ValidID(id) {
 		h.sessionError(w, checkout.ErrNotFound)
 		return
 	}
 	var req UpdateRequest
-	if !decodeBody(w, r, &req) {
-		return
-	}
-	raw, _ := json.Marshal(req)
-	scope := "update:" + r.PathValue("id")
-	claim, _, handled := h.claimIdem(w, r, t.SchemaName, scope, raw)
-	if handled {
-		return
-	}
-	s, release, ok := h.lockSession(w, r, t, r.PathValue("id"))
+	hash, ok := decodeBody(w, r, &req)
 	if !ok {
-		if claim != nil {
-			h.releaseIdem(r, claim, scope)
-		}
 		return
 	}
-	defer release()
-	h.finish(w, r, t, s, h.updateSession(r, t, s, claim, scope, req, raw),
-		func(w http.ResponseWriter, now *checkout.Session) bool {
-			return h.refuseChange(w, r, now, updateAllow, "change")
-		})
+	k, ok := h.claimKey(w, r, t.SchemaName, idemScope(opUpdate, id), hash)
+	if !ok {
+		return
+	}
+	if s, release, ok := h.lockSession(k.rec, r, t, id); ok {
+		defer release()
+		a := h.updateSession(r, t, s, req)
+		h.finish(k.rec, r, t, s, a,
+			func(w http.ResponseWriter, now *checkout.Session) bool {
+				return h.refuseChange(w, r, now, updateAllow, "change")
+			})
+		k.outcome(a)
+	}
+	h.settleAndSend(w, r, k)
 }
 
 // updateSession is update once its session is loaded.
 func (h *Handler) updateSession(
-	r *http.Request, t *tenant.Tenant, s *checkout.Session,
-	claim *checkout.Claim, scope string, req UpdateRequest, raw []byte,
+	r *http.Request, t *tenant.Tenant, s *checkout.Session, req UpdateRequest,
 ) answer {
-	if claim == nil {
-		return fromSnapshot(func(w http.ResponseWriter) {
-			h.renderReplay(w, r, t, s)
-		})
-	}
-	// refused releases the key and answers with Django's refusal.
+	// refused answers with Django's refusal.
 	refused := func(err error) answer {
-		h.releaseIdem(r, claim, scope)
 		return fromSnapshot(func(w http.ResponseWriter) {
 			upstreamError(w, err)
 		})
 	}
 	if !s.Open() {
-		h.releaseIdem(r, claim, scope)
 		return fromSnapshot(func(w http.ResponseWriter) {
 			h.refuseChange(w, r, s, updateAllow, "change")
 		})
@@ -958,7 +1093,6 @@ func (h *Handler) updateSession(
 		// request stored meanwhile, a completion included, gets none of
 		// this update's cart writes; finish answers by what is stored.
 		if err := h.store.Current(r.Context(), s); err != nil {
-			h.releaseIdem(r, claim, scope)
 			return fromSnapshot(func(w http.ResponseWriter) {
 				saveFailed(w, err)
 			})
@@ -981,12 +1115,10 @@ func (h *Handler) updateSession(
 	// have stored the session meanwhile, a completion included: this
 	// snapshot is then not written over it.
 	if err := h.store.Save(r.Context(), s); err != nil {
-		h.releaseIdem(r, claim, scope)
 		return fromSnapshot(func(w http.ResponseWriter) {
 			saveFailed(w, err)
 		})
 	}
-	_ = h.storeIdem(r, claim, scope, idemRecord{BodyHash: bodyHash(raw)})
 	return afterSave(func(w http.ResponseWriter) { h.render(w, r, t, s) })
 }
 
@@ -995,26 +1127,33 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var req CompleteRequest
-	if !decodeBody(w, r, &req) {
+	id := r.PathValue("id")
+	if !checkout.ValidID(id) {
+		h.sessionError(w, checkout.ErrNotFound)
 		return
 	}
-	raw, _ := json.Marshal(req)
-
-	s, release, ok := h.lockSession(w, r, t, r.PathValue("id"))
+	var req CompleteRequest
+	hash, ok := decodeBody(w, r, &req)
 	if !ok {
 		return
 	}
-	defer release()
-	var key string
-	a := h.completeSession(r, t, s, req, raw, &key)
-	if key != "" {
-		w.Header().Set("Idempotency-Key", key)
+	// The key first, whatever the session is: a replay of a completion is
+	// answered what that completion was, and a complete without a key is
+	// refused on every session.
+	k, ok := h.claimKey(w, r, t.SchemaName, idemScope(opComplete, id), hash)
+	if !ok {
+		return
 	}
-	h.finish(w, r, t, s, a,
-		func(w http.ResponseWriter, now *checkout.Session) bool {
-			return h.completeClosed(w, r, t, now)
-		})
+	if s, release, ok := h.lockSession(k.rec, r, t, id); ok {
+		defer release()
+		a := h.completeSession(r, t, s, req)
+		h.finish(k.rec, r, t, s, a,
+			func(w http.ResponseWriter, now *checkout.Session) bool {
+				return h.completeClosed(w, r, t, now)
+			})
+		k.outcome(a)
+	}
+	h.settleAndSend(w, r, k)
 }
 
 // completeClosed answers a complete of a session that is not open, and
@@ -1042,11 +1181,10 @@ func (h *Handler) completeClosed(
 	return true
 }
 
-// completeSession is complete once its session is loaded. echo is set to
-// the idempotency key when the request holds it or replays it.
+// completeSession is complete once its session is loaded.
 func (h *Handler) completeSession(
 	r *http.Request, t *tenant.Tenant, s *checkout.Session,
-	req CompleteRequest, raw []byte, echo *string,
+	req CompleteRequest,
 ) answer {
 	// Decided by what the session is, before any lookup, and nothing is
 	// written.
@@ -1056,27 +1194,8 @@ func (h *Handler) completeSession(
 		})
 	}
 
-	scope := "complete:" + s.ID
-	key, claim, _, refuse := h.claimKey(r, t.SchemaName, scope, raw)
-	if refuse != nil {
-		return fromSnapshot(refuse)
-	}
-	*echo = key
-	if claim == nil {
-		// A replayed key answers the session as it is stored now: what
-		// its first attempt made of it.
-		return fromSnapshot(func(w http.ResponseWriter) {
-			h.renderReplay(w, r, t, s)
-		})
-	}
-	// refused releases the key: nothing was placed.
-	refused := func(write func(http.ResponseWriter)) answer {
-		h.releaseIdem(r, claim, scope)
-		return fromSnapshot(write)
-	}
-
 	if req.PaymentData == nil {
-		return refused(func(w http.ResponseWriter) {
+		return fromSnapshot(func(w http.ResponseWriter) {
 			writeError(w, http.StatusBadRequest, Error{
 				Type: "invalid_request", Code: "missing",
 				Param: "$.payment_data", Message: "payment_data is required.",
@@ -1090,7 +1209,7 @@ func (h *Handler) completeSession(
 	// works here.
 	if req.PaymentData.HandlerID != "" ||
 		len(req.PaymentData.Instrument) > 0 {
-		return refused(func(w http.ResponseWriter) {
+		return fromSnapshot(func(w http.ResponseWriter) {
 			writeError(w, http.StatusBadRequest, Error{
 				Type: "invalid_request", Code: "unsupported",
 				Message: "Delegated card payment is not supported. To pay " +
@@ -1113,21 +1232,21 @@ func (h *Handler) completeSession(
 	// not part of it: it is looked up again on every call.
 	if s.Open() && (s.Buyer != buyer || s.Status != status) {
 		if err := h.store.Save(r.Context(), s); err != nil {
-			return refused(func(w http.ResponseWriter) { saveFailed(w, err) })
+			return fromSnapshot(func(w http.ResponseWriter) { saveFailed(w, err) })
 		}
 	}
 	// Readiness first, and it needs no pay way on ACP. Without a delivery no
 	// pay way can be chosen, which says nothing about what the store offers.
 	if s.Status == checkout.StatusIncomplete {
-		return refused(func(w http.ResponseWriter) {
+		return fromSnapshot(func(w http.ResponseWriter) {
 			h.completeError(w, r, s, checkout.ErrNotReady)
 		})
 	}
 	if err := h.selectPayWay(r, t, s); err != nil {
-		return refused(func(w http.ResponseWriter) { upstreamError(w, err) })
+		return fromSnapshot(func(w http.ResponseWriter) { upstreamError(w, err) })
 	}
 	if s.PayWayID == 0 {
-		return refused(func(w http.ResponseWriter) {
+		return fromSnapshot(func(w http.ResponseWriter) {
 			writeError(w, http.StatusBadRequest, Error{
 				Type: "invalid_request", Code: "unsupported",
 				Message: "This store has no agent-completable payment " +
@@ -1140,7 +1259,7 @@ func (h *Handler) completeSession(
 	if placement == checkout.NothingPlaced {
 		// Refused before the order was sent, or by Django for the order
 		// itself: either way nothing of this call exists.
-		return refused(func(w http.ResponseWriter) {
+		return fromSnapshot(func(w http.ResponseWriter) {
 			h.completeError(w, r, s, err)
 		})
 	}
@@ -1148,8 +1267,7 @@ func (h *Handler) completeSession(
 	// request passes: what follows is this call's own outcome. A claim
 	// that lapsed changes nothing in it, and the session says so to
 	// whoever holds the key now.
-	_ = h.storeIdem(r, claim, scope, idemRecord{BodyHash: bodyHash(raw)})
-	return afterSave(func(w http.ResponseWriter) {
+	a := afterSave(func(w http.ResponseWriter) {
 		if err != nil {
 			h.completeError(w, r, s, err)
 			return
@@ -1170,6 +1288,9 @@ func (h *Handler) completeSession(
 		}
 		h.render(w, r, t, s)
 	})
+	a.orderUnsettled = errors.Is(err, checkout.ErrOrderOutcomeUnknown) ||
+		errors.Is(err, checkout.ErrSessionNotSaved)
+	return a
 }
 
 func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
@@ -1177,59 +1298,51 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !checkout.ValidID(r.PathValue("id")) {
+	id := r.PathValue("id")
+	if !checkout.ValidID(id) {
 		h.sessionError(w, checkout.ErrNotFound)
 		return
 	}
-	scope := "cancel:" + r.PathValue("id")
-	claim, _, handled := h.claimIdem(w, r, t.SchemaName, scope,
-		[]byte(r.PathValue("id")))
-	if handled {
-		return
-	}
-	s, release, ok := h.lockSession(w, r, t, r.PathValue("id"))
+	// The body is optional (CancelSessionRequest) and read only for the
+	// key: nothing in it changes what a cancel does.
+	hash, ok := decodeOptionalBody(w, r, &struct{}{})
 	if !ok {
-		if claim != nil {
-			h.releaseIdem(r, claim, scope)
-		}
 		return
 	}
-	defer release()
-	h.finish(w, r, t, s, h.cancelSession(r, t, s, claim, scope),
-		func(w http.ResponseWriter, now *checkout.Session) bool {
-			return h.refuseChange(w, r, now, "", "be canceled")
-		})
+	k, ok := h.claimKey(w, r, t.SchemaName, idemScope(opCancel, id), hash)
+	if !ok {
+		return
+	}
+	if s, release, ok := h.lockSession(k.rec, r, t, id); ok {
+		defer release()
+		a := h.cancelSession(r, t, s)
+		h.finish(k.rec, r, t, s, a,
+			func(w http.ResponseWriter, now *checkout.Session) bool {
+				return h.refuseChange(w, r, now, "", "be canceled")
+			})
+		k.outcome(a)
+	}
+	h.settleAndSend(w, r, k)
 }
 
 // cancelSession is cancel once its session is loaded.
 func (h *Handler) cancelSession(
 	r *http.Request, t *tenant.Tenant, s *checkout.Session,
-	claim *checkout.Claim, scope string,
 ) answer {
-	if claim == nil {
-		return fromSnapshot(func(w http.ResponseWriter) {
-			h.renderReplay(w, r, t, s)
-		})
-	}
 	// Once an order exists, or may, canceling the session would not
 	// cancel the order: the buyer could still pay it, and the session
 	// would read canceled over a paid order.
 	if !s.Open() {
-		h.releaseIdem(r, claim, scope)
 		return fromSnapshot(func(w http.ResponseWriter) {
 			h.refuseChange(w, r, s, "", "be canceled")
 		})
 	}
 	s.Status = checkout.StatusCanceled
 	if err := h.store.Save(r.Context(), s); err != nil {
-		h.releaseIdem(r, claim, scope)
 		return fromSnapshot(func(w http.ResponseWriter) {
 			saveFailed(w, err)
 		})
 	}
-	_ = h.storeIdem(r, claim, scope, idemRecord{
-		BodyHash: bodyHash([]byte(r.PathValue("id"))),
-	})
 	return afterSave(func(w http.ResponseWriter) { h.render(w, r, t, s) })
 }
 
@@ -1380,17 +1493,6 @@ func (h *Handler) render(
 ) {
 	if body, ok := h.renderBody(w, r, t, s); ok {
 		writeBody(w, http.StatusOK, body)
-	}
-}
-
-// renderReplay answers a replayed key of update, complete or cancel with
-// the session as it is now.
-func (h *Handler) renderReplay(
-	w http.ResponseWriter, r *http.Request, t *tenant.Tenant,
-	s *checkout.Session,
-) {
-	if body, ok := h.renderBody(w, r, t, s); ok {
-		writeReplay(w, http.StatusOK, body)
 	}
 }
 
