@@ -19,6 +19,10 @@ const (
 	CapabilityOrder    = "dev.ucp.shopping.order"
 )
 
+// CapabilityDiscount is the spec's discount extension of checkout: the
+// `discounts` member, codes in and applied discounts out.
+const CapabilityDiscount = "dev.ucp.shopping.discount"
+
 // PlatformProfile is the part of a platform's UCP profile negotiation
 // reads. The full document is validated against the spec's
 // platform_schema before it is decoded into this.
@@ -68,6 +72,17 @@ func BusinessCapabilities(t *tenant.Tenant) map[string][]Capability {
 			Spec:    specBase + "/specification/shopping/order/",
 			Schema:  specBase + "/schemas/shopping/order.json",
 		}},
+	}
+	// A store with promotions off takes no code, so it declares no
+	// discount extension, as ACP declares none: a code sent anyway is a
+	// member of an extension that was not negotiated, and is ignored.
+	if t.Features.Promotions {
+		caps[CapabilityDiscount] = []Capability{{
+			Version: Version,
+			Spec:    specBase + "/specification/shopping/extensions/discount/",
+			Schema:  specBase + "/schemas/shopping/discount.json",
+			Extends: CapabilityCheckout,
+		}}
 	}
 	// The hosted-payment extension is a per-tenant capability: a store
 	// with the gate off must not declare a member it would then refuse.

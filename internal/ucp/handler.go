@@ -56,6 +56,11 @@ const (
 	// delivery. It carries no credential — the schema forbids one — so
 	// no participant enters PCI scope.
 	InstrumentCashOnDelivery = "cash_on_delivery"
+
+	// UnitEach is the sale basis of every item this business sells: the
+	// UN/CEFACT Rec 20 code for one item (quantity_unit.json, scale 0).
+	// A response leaves quantity_unit out for it, as the spec has it.
+	UnitEach = "C62"
 )
 
 // AvailableInstrument advertises one instrument type a handler accepts.

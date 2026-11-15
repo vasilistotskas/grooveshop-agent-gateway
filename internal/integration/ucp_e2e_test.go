@@ -34,6 +34,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
@@ -220,6 +221,9 @@ type checkoutFaults struct {
 	// reads as a Viva pay way settled online.
 	payWayReads   atomic.Int32
 	codOnlineFrom atomic.Int32
+	// codFee makes cash on delivery (pay way 1) read without its free
+	// threshold, so its 4.50 fee applies to the fixture cart.
+	codFee atomic.Bool
 	// orderRead makes reading a placed order answer 502.
 	orderRead atomic.Bool
 	// orderGone makes reading a placed order answer 404: Django no
@@ -241,6 +245,10 @@ type checkoutFaults struct {
 	promotions atomic.Bool
 	// couponWrite makes applying a coupon answer 502.
 	couponWrite atomic.Bool
+	// couponHeld is the coupon the cart holds, as Django keeps it: an
+	// applied coupon is on every later read of the cart until it is
+	// removed.
+	couponHeld atomic.Bool
 	// cartCreates counts the carts created: a cart read naming none.
 	cartCreates atomic.Int32
 	// namedCartReads counts the reads of a named cart; from the read
@@ -315,6 +323,10 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 					`", "items": []}`))
 				return
 			}
+			if faults.couponHeld.Load() {
+				serveFixture(t, w, "cart_with_coupon.json")
+				return
+			}
 			inner.ServeHTTP(w, r)
 		})
 	outer.HandleFunc("GET /api/v1/region/GR/get_regions_by_country_alpha_2",
@@ -346,6 +358,26 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				return
 			}
 			inner.ServeHTTP(w, r)
+		})
+	outer.HandleFunc("GET /api/v1/pay_way/1",
+		func(w http.ResponseWriter, r *http.Request) {
+			if !faults.codFee.Load() {
+				inner.ServeHTTP(w, r)
+				return
+			}
+			raw, err := os.ReadFile(fixturePath("pay_way_1.json"))
+			if !assert.NoError(t, err) {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			const threshold = `"freeThreshold": 100.0`
+			if !assert.Contains(t, string(raw), threshold) {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(strings.Replace(string(raw), threshold,
+				`"freeThreshold": 0.0`, 1)))
 		})
 	for _, write := range []string{
 		"POST /api/v1/cart/item", "PUT /api/v1/cart/item/{id}",
@@ -396,6 +428,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				return
 			}
 			faults.cartWrites.Add(1)
+			faults.couponHeld.Store(true)
 			serveFixture(t, w, "cart_with_coupon.json")
 		})
 	outer.HandleFunc("GET /api/v1/tenant/resolve",
@@ -415,6 +448,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	outer.HandleFunc("DELETE /api/v1/cart/coupon",
 		func(w http.ResponseWriter, _ *http.Request) {
 			faults.cartWrites.Add(1)
+			faults.couponHeld.Store(false)
 			serveFixture(t, w, "cart_with_items.json")
 		})
 	outer.HandleFunc("POST /api/v1/cart/reserve-stock",
@@ -1071,6 +1105,11 @@ func TestUCPEndToEnd(t *testing.T) {
 		"street": "Πανεπιστημίου", "streetNumber": "12",
 		"regionId": "GR-14",
 	}
+	// An update replaces the checkout, so it carries the lines: the
+	// minted cart's own, product 1 twice.
+	cartLines := []any{map[string]any{
+		"item": map[string]any{"id": "1"}, "quantity": 2,
+	}}
 
 	t.Run("a country with regions blocks completion until one is chosen",
 		func(t *testing.T) {
@@ -1098,10 +1137,11 @@ func TestUCPEndToEnd(t *testing.T) {
 				"meta": meta(""),
 				"id":   created["id"],
 				"checkout": map[string]any{
+					"line_items": cartLines, "buyer": buyer,
 					"fulfillment": fulfillment,
 				},
 			})
-			require.False(t, res.IsError)
+			require.False(t, res.IsError, "%v", res.Content)
 			assert.Equal(t, "ready_for_complete",
 				structured(t, res)["status"])
 		})
@@ -1139,6 +1179,7 @@ func TestUCPEndToEnd(t *testing.T) {
 				"meta": meta(""),
 				"id":   checkoutID,
 				"checkout": map[string]any{
+					"line_items":  cartLines,
 					"buyer":       buyer,
 					"fulfillment": fulfillment,
 					// Selecting the advertised instrument is how an agent
@@ -1146,7 +1187,7 @@ func TestUCPEndToEnd(t *testing.T) {
 					"payment": codInstrument,
 				},
 			})
-			require.False(t, res.IsError)
+			require.False(t, res.IsError, "%v", res.Content)
 			updated := structured(t, res)
 			assert.Equal(t, "ready_for_complete", updated["status"])
 			// Totals: 92936 subtotal; COD fee waived above its threshold.
@@ -1201,7 +1242,7 @@ func TestUCPEndToEnd(t *testing.T) {
 		res = callTool(t, session, "complete_checkout", map[string]any{
 			"meta":     meta("22222222-2222-2222-2222-222222222222"),
 			"id":       checkoutID,
-			"checkout": map[string]any{},
+			"checkout": map[string]any{"payment": map[string]any{}},
 		})
 		require.False(t, res.IsError)
 		escalated := structured(t, res)
@@ -1261,7 +1302,7 @@ func TestUCPEndToEnd(t *testing.T) {
 		res = callTool(t, session, "complete_checkout", map[string]any{
 			"meta":     meta("22222222-2222-2222-2222-222222222222"),
 			"id":       checkoutID,
-			"checkout": map[string]any{},
+			"checkout": map[string]any{"payment": map[string]any{}},
 		})
 		require.False(t, res.IsError)
 		assert.Equal(t, "completed", structured(t, res)["status"])
@@ -1296,28 +1337,191 @@ func TestUCPEndToEnd(t *testing.T) {
 			late.header.Get("Webhook-Id"), "each event is its own delivery")
 	})
 
+	// Complete is a command, not an update: it never places an order at a
+	// total the checkout did not show. A payment that selects another
+	// method than the checkout holds places nothing and answers incomplete
+	// with a recoverable error; the checkout stays as it was, and the key
+	// is not spent.
+	unready := func(t *testing.T, payment map[string]any) map[string]any {
+		t.Helper()
+		submit := map[string]any{"buyer": buyer, "fulfillment": fulfillment}
+		if payment != nil {
+			submit["payment"] = payment
+		}
+		res := callTool(t, session, "create_checkout", map[string]any{
+			"meta":     meta(""),
+			"cart_id":  stack.faults.carts.mint(),
+			"checkout": submit,
+		})
+		require.False(t, res.IsError, "%v", res.Content)
+		return structured(t, res)
+	}
+	complete := func(
+		t *testing.T, id any, key string, submit map[string]any,
+	) *mcp.CallToolResult {
+		t.Helper()
+		return callTool(t, session, "complete_checkout", map[string]any{
+			"meta": meta(key), "id": id, "checkout": submit,
+		})
+	}
+	// placedNothing checks the answer of a complete that changed nothing:
+	// incomplete, the recoverable error with code, no order, and the
+	// checkout as created.
+	placedNothing := func(
+		t *testing.T, res *mcp.CallToolResult, created map[string]any,
+		code string, orders int32,
+	) string {
+		t.Helper()
+		require.False(t, res.IsError, "%v", res.Content)
+		out := structured(t, res)
+		assert.Equal(t, "incomplete", out["status"])
+		assert.NotContains(t, out, "order")
+		msg := out["messages"].([]any)[0].(map[string]any)
+		assert.Equal(t, "error", msg["type"])
+		assert.Equal(t, code, msg["code"])
+		assert.Equal(t, "recoverable", msg["severity"])
+		assert.Contains(t, msg["content"], "no order was placed")
+		assert.Equal(t, orders, stack.faults.orderCreates.Load())
+
+		res = callTool(t, session, "get_checkout", map[string]any{
+			"meta": meta(""), "id": created["id"],
+		})
+		require.False(t, res.IsError)
+		stored := structured(t, res)
+		assert.Equal(t, created["status"], stored["status"])
+		assert.Equal(t, created["totals"], stored["totals"])
+		return msg["content"].(string)
+	}
+
+	t.Run("a complete that names another payment method places nothing",
+		func(t *testing.T) {
+			created := unready(t, codInstrument)
+			require.Equal(t, "ready_for_complete", created["status"])
+			id := created["id"].(string)
+			orders := stack.faults.orderCreates.Load()
+			key := uuid.NewString()
+
+			placedNothing(t, complete(t, id, key, map[string]any{
+				"payment": map[string]any{}, "pay_way_id": 2,
+			}), created, "payment_method_changed", orders)
+			assert.EqualValues(t, 1, stack.storedSession(t, id).PayWayID)
+
+			// The checkout's own method, under the same key.
+			res := complete(t, id, key, map[string]any{"payment": codInstrument})
+			require.False(t, res.IsError, "%v", res.Content)
+			assert.Equal(t, "completed", structured(t, res)["status"])
+		})
+
+	// The spec requires `payment` on a complete, so a platform may first
+	// name its method there. One that leaves the total as the checkout
+	// showed it (here the hosted card, free for this cart) is taken, and
+	// the order is placed.
 	t.Run("an online method named only at complete time places the order",
 		func(t *testing.T) {
-			res := callTool(t, session, "create_checkout", map[string]any{
-				"meta":    meta(""),
-				"cart_id": stack.faults.carts.mint(),
-				"checkout": map[string]any{
-					"buyer": buyer, "fulfillment": fulfillment,
-				},
-			})
-			require.False(t, res.IsError)
-			created := structured(t, res)
+			created := unready(t, nil)
 			require.Equal(t, "incomplete", created["status"])
 
-			res = callTool(t, session, "complete_checkout", map[string]any{
-				"meta":     meta(uuid.NewString()),
-				"id":       created["id"],
-				"checkout": map[string]any{"pay_way_id": 2},
+			res := complete(t, created["id"], uuid.NewString(), map[string]any{
+				"payment": map[string]any{}, "pay_way_id": 2,
 			})
-			require.False(t, res.IsError, "complete must recompute readiness")
+			require.False(t, res.IsError, "%v", res.Content)
 			escalated := structured(t, res)
 			assert.Equal(t, "requires_escalation", escalated["status"])
 			assert.Equal(t, vivaCheckoutURL, escalated["continue_url"])
+			assert.EqualValues(t, 2,
+				stack.storedSession(t, created["id"].(string)).PayWayID)
+			assert.EqualValues(t, 2, (*stack.faults.lastOrder.Load())["payWayId"])
+		})
+
+	// A first method the store does not have is the caller's mistake, not
+	// an outage to retry: refused, nothing stored, nothing placed.
+	t.Run("an unknown method named only at complete time is refused",
+		func(t *testing.T) {
+			created := unready(t, nil)
+			id := created["id"].(string)
+			orders := stack.faults.orderCreates.Load()
+
+			res := complete(t, id, uuid.NewString(), map[string]any{
+				"payment": map[string]any{}, "pay_way_id": 99999,
+			})
+			require.True(t, res.IsError)
+			said := res.Content[0].(*mcp.TextContent).Text
+			assert.Contains(t, said, `"code":"not_found"`)
+			assert.Contains(t, said, "names no payment method")
+			assert.Zero(t, stack.storedSession(t, id).PayWayID)
+			assert.Equal(t, orders, stack.faults.orderCreates.Load())
+		})
+
+	// The method a complete names first is the buyer's choice whether or
+	// not that call places the order: a refused one keeps it, and the next
+	// complete, which names none, places the order with it.
+	t.Run("a refused complete keeps the method it named first",
+		func(t *testing.T) {
+			created := unready(t, nil)
+			id := created["id"].(string)
+			orders := stack.faults.orderCreates.Load()
+
+			stack.faults.stockShort.Store(true)
+			t.Cleanup(func() { stack.faults.stockShort.Store(false) })
+			res := complete(t, id, uuid.NewString(),
+				map[string]any{"payment": codInstrument})
+			require.True(t, res.IsError, "refused: the stock ran out")
+			stack.faults.stockShort.Store(false)
+			stored := stack.storedSession(t, id)
+			assert.EqualValues(t, 1, stored.PayWayID)
+			assert.Equal(t, checkout.StatusReadyForComplete, stored.Status)
+			require.Equal(t, orders, stack.faults.orderCreates.Load())
+
+			res = complete(t, id, uuid.NewString(),
+				map[string]any{"payment": map[string]any{}})
+			require.False(t, res.IsError, "%v", res.Content)
+			assert.Equal(t, "completed", structured(t, res)["status"])
+			assert.EqualValues(t, 1, (*stack.faults.lastOrder.Load())["payWayId"])
+		})
+
+	// A method named first that adds a fee would place the order at a
+	// total the checkout never showed. It places nothing, stores nothing,
+	// and says the fee and the new total; the platform selects the method
+	// with update_checkout, which shows them, and then completes.
+	t.Run("a method named only at complete time that adds a fee places nothing",
+		func(t *testing.T) {
+			stack.faults.codFee.Store(true)
+			t.Cleanup(func() { stack.faults.codFee.Store(false) })
+			created := unready(t, nil)
+			require.Equal(t, "incomplete", created["status"])
+			id := created["id"].(string)
+			orders := stack.faults.orderCreates.Load()
+			key := uuid.NewString()
+
+			said := placedNothing(t, complete(t, id, key,
+				map[string]any{"payment": codInstrument}),
+				created, "payment_fee_added", orders)
+			assert.Contains(t, said, "a fee of 4.50 EUR")
+			assert.Contains(t, said, "the total 933.86 EUR")
+			assert.Zero(t, stack.storedSession(t, id).PayWayID)
+
+			res := callTool(t, session, "update_checkout", map[string]any{
+				"meta": meta(""), "id": id,
+				"checkout": map[string]any{
+					"line_items": cartLines, "buyer": buyer,
+					"payment": codInstrument,
+				},
+			})
+			require.False(t, res.IsError, "%v", res.Content)
+			updated := structured(t, res)
+			require.Equal(t, "ready_for_complete", updated["status"])
+			assert.Contains(t, updated["totals"], map[string]any{
+				"type": "fee", "display_text": "Payment method fee",
+				"amount": float64(450),
+			})
+			assert.Contains(t, updated["totals"], map[string]any{
+				"type": "total", "amount": float64(93386),
+			})
+
+			// The same key: the refused complete claimed nothing.
+			res = complete(t, id, key, map[string]any{"payment": codInstrument})
+			require.False(t, res.IsError, "%v", res.Content)
+			assert.Equal(t, "completed", structured(t, res)["status"])
 		})
 
 	t.Run("a failed payment link keeps the order and retries the link",
@@ -1337,7 +1541,7 @@ func TestUCPEndToEnd(t *testing.T) {
 			res = callTool(t, session, "complete_checkout", map[string]any{
 				"meta":     meta(uuid.NewString()),
 				"id":       checkoutID,
-				"checkout": map[string]any{},
+				"checkout": map[string]any{"payment": map[string]any{}},
 			})
 			require.True(t, res.IsError)
 			text := res.Content[0].(*mcp.TextContent).Text
@@ -1358,7 +1562,7 @@ func TestUCPEndToEnd(t *testing.T) {
 			res = callTool(t, session, "complete_checkout", map[string]any{
 				"meta":     meta(uuid.NewString()),
 				"id":       checkoutID,
-				"checkout": map[string]any{},
+				"checkout": map[string]any{"payment": map[string]any{}},
 			})
 			require.False(t, res.IsError)
 			assert.Equal(t, vivaCheckoutURL,
@@ -1393,7 +1597,7 @@ func TestUCPEndToEnd(t *testing.T) {
 			res = callTool(t, session, "complete_checkout", map[string]any{
 				"meta":     meta(uuid.NewString()),
 				"id":       checkoutID,
-				"checkout": map[string]any{},
+				"checkout": map[string]any{"payment": map[string]any{}},
 			})
 			require.True(t, res.IsError)
 			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
@@ -1405,7 +1609,7 @@ func TestUCPEndToEnd(t *testing.T) {
 			res = callTool(t, session, "complete_checkout", map[string]any{
 				"meta":     meta(uuid.NewString()),
 				"id":       checkoutID,
-				"checkout": map[string]any{},
+				"checkout": map[string]any{"payment": map[string]any{}},
 			})
 			require.True(t, res.IsError)
 			assert.Equal(t, before+1, stack.faults.orderCreates.Load(),
@@ -1525,7 +1729,9 @@ func TestUCPEndToEnd(t *testing.T) {
 		}{
 			{"update_checkout", map[string]any{
 				"meta": meta(""), "id": bogus,
-				"checkout": map[string]any{"buyer": buyer},
+				"checkout": map[string]any{
+					"line_items": cartLines, "buyer": buyer,
+				},
 			}},
 			{"complete_checkout", map[string]any{
 				"meta": meta(uuid.NewString()), "id": bogus,

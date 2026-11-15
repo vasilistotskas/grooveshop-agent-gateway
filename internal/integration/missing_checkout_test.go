@@ -62,11 +62,15 @@ func TestAMissingCheckoutMayHavePlacedAnOrder(t *testing.T) {
 		calls := map[string]map[string]any{
 			"get_checkout": {"meta": meta(""), "id": id},
 			"update_checkout": {
-				"meta": meta(""), "id": id, "checkout": map[string]any{},
+				"meta": meta(""), "id": id, "checkout": map[string]any{
+					"line_items": []any{map[string]any{
+						"item": map[string]any{"id": "1"}, "quantity": 1,
+					}},
+				},
 			},
 			"complete_checkout": {
 				"meta": meta(uuid.NewString()), "id": id,
-				"checkout": map[string]any{},
+				"checkout": map[string]any{"payment": map[string]any{}},
 			},
 			"cancel_checkout": {"meta": meta(uuid.NewString()), "id": id},
 		}

@@ -686,9 +686,14 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   follows its answer (`keptAgainstKey`, above). A
   completion refused before the in-progress save stores nothing. So
   the ACP handler and the UCP tool store what the call itself
-  submitted (ACP's buyer, UCP's payment) before they call it, so that
-  a refused call keeps the buyer's latest choice, and only for a
-  session that is still open (`Session.Open`). After the flow they
+  submitted before they call it, so that a refused call keeps the
+  buyer's latest choice, and only for a session that is still open
+  (`Session.Open`): ACP's buyer, and on UCP the payment method a
+  complete names first, for a checkout that holds none, when it
+  leaves the total as the checkout showed it. A UCP complete is a
+  command: one that would change the method the checkout holds, or
+  add a fee, is answered `incomplete` before any claim, and stores
+  nothing (`.claude/rules/ucp.md`). After the flow they
   only map the error and settle their own key (UCP's completion claim
   by the placement, ACP's record by the answer once it is rendered),
   on a context the caller cannot cancel, bounded by the Django
@@ -1005,8 +1010,10 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   With promotions off `checkout.ApplyDiscountCodes` refuses every code
   as `discount_code_invalid` without applying it (Django answers 404
   with the plan flag off, which would fail the request) and clears the
-  cart's old coupon best effort, and ACP sessions do not declare the
-  discount extension.
+  cart's old coupon best effort, ACP sessions do not declare the
+  discount extension, and the UCP profile does not advertise
+  `dev.ucp.shopping.discount` (`ucp.BusinessCapabilities`), so a UCP
+  code is ignored as a member of an extension that was not negotiated.
 - **Store facts come from the store, never a default.**
   `find_pickup_points` searches only the pickup carriers the store's
   `/shipping/options` list as `pickup_point` for the country and the

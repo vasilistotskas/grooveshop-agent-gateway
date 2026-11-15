@@ -157,9 +157,11 @@ func placeUnpaidOrder(t *testing.T, s *mcp.ClientSession) unpaid {
 		"%v", created["messages"])
 	id := created["id"].(string)
 
+	// The spec requires `payment` on a complete: none named keeps the
+	// checkout's own method.
 	text := errorText(t, call(t, s, "complete_checkout", map[string]any{
 		"meta": meta(uuid.NewString()), "id": id,
-		"checkout": map[string]any{},
+		"checkout": map[string]any{"payment": map[string]any{}},
 	}))
 	require.Contains(t, text, "its payment link could not be created")
 	named := placedOrder.FindStringSubmatch(text)

@@ -1,0 +1,442 @@
+package mcpsrv
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
+)
+
+// ucpSession is a client of a store's server whose handlers have no
+// store: a call the input schema accepts reaches the handler and is
+// answered "missing store context", one it refuses never gets there.
+func ucpSession(t *testing.T) *mcp.ClientSession {
+	t.Helper()
+	ctx := context.Background()
+	serverT, clientT := mcp.NewInMemoryTransports()
+	_, err := NewServer(Deps{Version: "test", Log: slog.New(slog.DiscardHandler)},
+		Identity{Name: "test.acme/store", Title: "Acme Store"}, EveryFeature).
+		Connect(ctx, serverT, nil)
+	require.NoError(t, err)
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).
+		Connect(ctx, clientT, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	return session
+}
+
+// accepted reports whether the server took args for tool: decoded them
+// and called the handler.
+func accepted(
+	t *testing.T, session *mcp.ClientSession, tool, args string,
+) (bool, string) {
+	t.Helper()
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: tool, Arguments: json.RawMessage(args),
+	})
+	require.NoError(t, err)
+	require.True(t, res.IsError)
+	text := res.Content[0].(*mcp.TextContent).Text
+	return strings.Contains(text, "missing store context"), text
+}
+
+const specMeta = `{"ucp-agent":{"profile":` +
+	`"https://platform.example/profiles/shopping-agent.json"}}`
+
+const specIdempotentMeta = `{"ucp-agent":{"profile":"https://..."},` +
+	`"idempotency-key":"550e8400-e29b-41d4-a716-446655440000"}`
+
+// ucpSchemas are the input schemas a store's tools/list carries, by tool.
+func ucpSchemas(t *testing.T) map[string]map[string]any {
+	t.Helper()
+	return listedSchemas(t, NewServer(Deps{Version: "test"},
+		Identity{Name: "test.acme/store", Title: "Acme Store"}, EveryFeature))
+}
+
+// checkoutParts are the two schemas a tool's `checkout` is the allOf of:
+// the spec's request schema, and the business's own members.
+func checkoutParts(
+	t *testing.T, schema map[string]any,
+) (spec, own map[string]any) {
+	t.Helper()
+	checkout := schema["properties"].(map[string]any)["checkout"]
+	parts, _ := checkout.(map[string]any)["allOf"].([]any)
+	require.Len(t, parts, 2, "checkout is not the spec's schema and the "+
+		"business's own members")
+	return parts[0].(map[string]any), parts[1].(map[string]any)
+}
+
+// The checkout tools publish the spec's own request schemas, as generated:
+// update and complete take them as they are, create takes them with the
+// gateway's cart_id beside `checkout` as the other way to name the lines.
+func TestCheckoutToolsPublishTheSpecsRequestSchemas(t *testing.T) {
+	schemas := ucpSchemas(t)
+	specOf := func(tool string) string {
+		spec, _ := checkoutParts(t, schemas[tool])
+		raw, err := json.Marshal(spec)
+		require.NoError(t, err)
+		return string(raw)
+	}
+	assert.JSONEq(t, string(ucp.CheckoutRequestSchema(ucp.OpUpdate)),
+		specOf("update_checkout"))
+	assert.JSONEq(t, string(ucp.CheckoutRequestSchema(ucp.OpComplete)),
+		specOf("complete_checkout"))
+	assert.Contains(t, specOf("create_checkout"),
+		`"$id":"https://ucp.dev/schemas/shopping/checkout.json"`)
+	assert.Contains(t, specOf("create_checkout"), `"discounts"`)
+
+	for _, tool := range []string{"create_checkout", "get_checkout",
+		"update_checkout", "complete_checkout", "cancel_checkout",
+		"get_order"} {
+		meta := schemas[tool]["properties"].(map[string]any)["meta"]
+		assert.Equal(t, true,
+			meta.(map[string]any)["additionalProperties"],
+			"%s: the spec lets a platform add metadata", tool)
+	}
+}
+
+// The spec's fulfillment extension is not implemented yet, so an agent
+// learns how to send a delivery from tools/list: create and update
+// describe the business's own `fulfillment` member, every field of it,
+// which of them a member naming its kind must carry, and that the
+// extension will replace it. `pay_way_id` is described the same way.
+func TestCheckoutToolsDescribeTheBusinessesOwnMembers(t *testing.T) {
+	schemas := ucpSchemas(t)
+	for _, tool := range []string{"create_checkout", "update_checkout"} {
+		t.Run(tool, func(t *testing.T) {
+			_, own := checkoutParts(t, schemas[tool])
+			members := own["properties"].(map[string]any)
+			require.Contains(t, members, "fulfillment")
+			f := members["fulfillment"].(map[string]any)
+			assert.Contains(t, f["description"], "business's own member")
+			assert.Contains(t, f["description"],
+				"not the UCP fulfillment extension")
+			assert.Contains(t, f["description"], "will replace this shape")
+			assert.Contains(t, f["description"], "only when it names `kind`")
+
+			fields := f["properties"].(map[string]any)
+			names := make([]string, 0, len(fields))
+			for name, field := range fields {
+				names = append(names, name)
+				assert.Equal(t, "string", field.(map[string]any)["type"], name)
+			}
+			assert.ElementsMatch(t, []string{"kind", "providerCode",
+				"countryCode", "city", "zipcode", "street", "streetNumber",
+				"regionId", "acsStationExternalId", "acsStationBranch",
+				"boxnowLockerId"}, names)
+			for name, says := range map[string]string{
+				"kind":                 "home_delivery",
+				"providerCode":         "get_shipping_options",
+				"regionId":             "required when the country has regions",
+				"acsStationExternalId": "required for a pickup_point",
+				"acsStationBranch":     "required for a pickup_point",
+				"boxnowLockerId":       "required for a pickup_point",
+			} {
+				assert.Contains(t,
+					fields[name].(map[string]any)["description"], says, name)
+			}
+			// Required of a member that names its kind, and of no other:
+			// the spec's own `fulfillment` has another shape.
+			assert.NotContains(t, f, "required")
+			assert.NotContains(t, f, "additionalProperties")
+			assert.Equal(t, map[string]any{"required": []any{"kind"}}, f["if"])
+			assert.Equal(t, map[string]any{"required": []any{"kind",
+				"providerCode", "countryCode", "city", "zipcode", "street",
+				"streetNumber"}}, f["then"])
+
+			assert.Contains(t,
+				members["pay_way_id"].(map[string]any)["description"],
+				ucp.HostedSelectionCapability)
+		})
+	}
+
+	// A complete carries the payment only.
+	_, own := checkoutParts(t, schemas["complete_checkout"])
+	members := own["properties"].(map[string]any)
+	assert.NotContains(t, members, "fulfillment")
+	assert.Contains(t, members, "pay_way_id")
+}
+
+// The delivery member is checked only when it is the business's own: one
+// naming its kind carries the carrier and the whole address, the spec's
+// extension member (`methods`) and an empty one are taken as they are.
+func TestOwnFulfillmentIsCheckedOnlyWhenItNamesItsKind(t *testing.T) {
+	session := ucpSession(t)
+	call := func(fulfillment string) (bool, string) {
+		return accepted(t, session, "update_checkout", `{"meta":`+specMeta+
+			`,"id":"c","checkout":{"line_items":[{"item":{"id":"5"},`+
+			`"quantity":1}],"fulfillment":`+fulfillment+`}}`)
+	}
+	whole := `"kind":"home_delivery","providerCode":"acs","countryCode":` +
+		`"GR","city":"Αθήνα","zipcode":"10431","street":"Πανεπιστημίου"`
+	for name, tc := range map[string]struct {
+		fulfillment string
+		taken       bool
+	}{
+		"its own, whole":            {`{` + whole + `,"streetNumber":"12"}`, true},
+		"its own, with a region":    {`{` + whole + `,"streetNumber":"12","regionId":"GR-14"}`, true},
+		"its own, without a number": {`{` + whole + `}`, false},
+		"its own, a field mistyped": {`{` + whole + `,"streetNumber":12}`, false},
+		"the spec's extension":      {`{"methods":[{"type":"shipping"}]}`, true},
+		"empty":                     {`{}`, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ok, text := call(tc.fulfillment)
+			assert.Equal(t, tc.taken, ok, text)
+		})
+	}
+}
+
+// Every request example of the spec's MCP checkout binding and of the
+// discount extension's page is accepted. The binding's examples elide
+// their lines and payment ("[ ... ]", "{...}"), which are filled in with
+// the members the spec's schemas describe.
+func TestSpecRequestExamplesAreAccepted(t *testing.T) {
+	session := ucpSession(t)
+	line := `{"item":{"id":"prod_1"},"quantity":2}`
+	for name, tc := range map[string]struct{ tool, args string }{
+		"mcp.md request metadata": {"create_checkout", `{"meta":` +
+			specIdempotentMeta + `,"checkout":{"line_items":[` + line + `]}}`},
+		"mcp.md create_checkout": {"create_checkout", `{"meta":` + specMeta +
+			`,"checkout":{"buyer":{"email":"jane.doe@example.com",` +
+			`"first_name":"Jane","last_name":"Doe"},"line_items":[{"id":` +
+			`"li_1","item":{"id":"item_123"},"quantity":1}],"currency":` +
+			`"USD","fulfillment":{"methods":[{"type":"shipping",` +
+			`"destinations":[{"street_address":"123 Main St",` +
+			`"address_locality":"Springfield","address_region":"IL",` +
+			`"postal_code":"62701","address_country":"US"}]}]}}}`},
+		"mcp.md update_checkout": {"update_checkout", `{"meta":` + specMeta +
+			`,"id":"checkout_abc123","checkout":{"buyer":{"email":` +
+			`"jane.doe@example.com","first_name":"Jane","last_name":` +
+			`"Doe"},"line_items":[{"item":{"id":"item_123"},"id":"li_1",` +
+			`"quantity":1}],"currency":"USD","fulfillment":{"methods":[` +
+			`{"id":"shipping_1","line_item_ids":["li_1"],"groups":[{"id":` +
+			`"package_1","selected_option_id":"express"}]}]}}}`},
+		"mcp.md complete_checkout": {"complete_checkout", `{"meta":` +
+			specIdempotentMeta + `,"id":"checkout_abc123","checkout":` +
+			`{"payment":{"instruments":[{"id":"pi_1","handler_id":` +
+			`"handler_1","type":"cash_on_delivery","selected":true}]}}}`},
+		"mcp.md get_checkout": {"get_checkout",
+			`{"meta":` + specMeta + `,"id":"checkout_abc123"}`},
+		"mcp.md cancel_checkout": {"cancel_checkout", `{"meta":` +
+			specIdempotentMeta + `,"id":"checkout_abc123"}`},
+		"discount.md codes": {"create_checkout", `{"meta":` + specMeta +
+			`,"checkout":{"line_items":[` + line + `],"discounts":` +
+			`{"codes":["SUMMER20"]}}}`},
+		"discount.md order-level discount": {"update_checkout", `{"meta":` +
+			specMeta + `,"id":"c","checkout":{"line_items":[` + line +
+			`],"discounts":{"codes":["SAVE10"]}}}`},
+		"discount.md rejected code": {"update_checkout", `{"meta":` +
+			specMeta + `,"id":"c","checkout":{"line_items":[` + line +
+			`],"discounts":{"codes":["SAVE10","EXPIRED50"]}}}`},
+		"discount.md clear codes": {"update_checkout", `{"meta":` +
+			specMeta + `,"id":"c","checkout":{"line_items":[` + line +
+			`],"discounts":{"codes":[]}}}`},
+		"discount.md eligibility claim": {"create_checkout", `{"meta":` +
+			specMeta + `,"checkout":{"context":{"eligibility":` +
+			`["com.example.store_card"]},"line_items":[{"item":{"id":` +
+			`"prod_shirt"},"quantity":2}]}}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ok, text := accepted(t, session, tc.tool, tc.args)
+			assert.True(t, ok, text)
+		})
+	}
+}
+
+// Members no handler reads are accepted at every level and dropped when
+// the arguments are decoded, among them a whole response sent back.
+func TestUnknownMembersAreAcceptedAndIgnored(t *testing.T) {
+	args := `{"meta":{"ucp-agent":{"profile":"https://p.example/p.json",` +
+		`"x":1},"trace":"t-1"},"extra":true,"checkout":{"ucp":{"version":` +
+		`"2026-08-25"},"id":"chk","status":"incomplete","totals":[],` +
+		`"links":[],"signals":{"dev.ucp.buyer_ip":"203.0.113.9"},` +
+		`"attribution":{"utm_source":"agent"},"line_items":[{"id":"li_1",` +
+		`"item":{"id":"5","title":"Mug","price":900,"x":{}},"quantity":` +
+		`2,"totals":[{"type":"total","amount":1800}],"parent_id":"p"}],` +
+		`"buyer":{"first_name":"Jane","nickname":"J"},"discounts":{` +
+		`"codes":["SAVE10"],"applied":[{"code":"SAVE10","title":"10%",` +
+		`"amount":180}],"x":1},"payment":{"instruments":[{"id":"pi",` +
+		`"handler_id":"h","type":"cash_on_delivery","display":` +
+		`{"brand":"x"},"x":1}],"x":1},"x":{"y":[1]}}}`
+	ok, text := accepted(t, ucpSession(t), "create_checkout", args)
+	require.True(t, ok, text)
+
+	var in CreateCheckoutIn
+	require.NoError(t, json.Unmarshal([]byte(args), &in))
+	assert.Equal(t, "https://p.example/p.json", in.Meta.UCPAgent.Profile)
+	assert.Equal(t, []UCPLineItemReqIn{{Item: UCPItemIn{ID: "5"},
+		Quantity: 2}}, in.Checkout.LineItems)
+	assert.Equal(t, &UCPBuyerReqIn{FirstName: "Jane"}, in.Checkout.Buyer)
+	assert.Equal(t, []string{"SAVE10"}, in.Checkout.Discounts.Codes)
+	assert.Equal(t, []UCPInstrumentIn{{HandlerID: "h",
+		Type: "cash_on_delivery"}}, in.Checkout.Payment.Instruments)
+}
+
+// What the spec's schemas refuse is refused before the handler: a create
+// with neither lines nor a cart, an update without its lines, a complete
+// without its payment or its key, a line with no quantity.
+func TestWhatTheSpecRefusesIsRefused(t *testing.T) {
+	session := ucpSession(t)
+	line := `{"item":{"id":"5"},"quantity":1}`
+	for name, tc := range map[string]struct{ tool, args string }{
+		"create naming no lines": {"create_checkout",
+			`{"meta":` + specMeta + `,"checkout":{}}`},
+		"update without lines": {"update_checkout",
+			`{"meta":` + specMeta + `,"id":"c","checkout":{"buyer":{}}}`},
+		"complete without payment": {"complete_checkout",
+			`{"meta":` + specIdempotentMeta + `,"id":"c","checkout":{}}`},
+		"complete without a key": {"complete_checkout", `{"meta":` +
+			specMeta + `,"id":"c","checkout":{"payment":{}}}`},
+		"a line without its quantity": {"create_checkout", `{"meta":` +
+			specMeta + `,"checkout":{"line_items":[{"item":{"id":"5"}}]}}`},
+		"a quantity below one": {"update_checkout", `{"meta":` + specMeta +
+			`,"id":"c","checkout":{"line_items":[{"item":{"id":"5"},` +
+			`"quantity":0}]}}`},
+		"meta without the agent": {"get_checkout",
+			`{"meta":{},"id":"c"}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ok, text := accepted(t, session, tc.tool, tc.args)
+			assert.False(t, ok, text)
+			assert.Contains(t, text, `validating "arguments"`)
+		})
+	}
+
+	// A cart is the other way to name the lines.
+	ok, text := accepted(t, session, "create_checkout", `{"meta":`+specMeta+
+		`,"cart_id":"`+fixtureCartID+`","checkout":{}}`)
+	assert.True(t, ok, text)
+	ok, text = accepted(t, session, "update_checkout", `{"meta":`+specMeta+
+		`,"id":"c","checkout":{"line_items":[`+line+`]}}`)
+	assert.True(t, ok, text)
+}
+
+// The SDK validates the arguments against the published schema and then
+// decodes them into the handler's struct, which it never compares with
+// the schema. Every member a struct decodes is described by its schema
+// with a type the field takes: the spec's members by the spec's schema,
+// the business's own (cart_id, fulfillment, pay_way_id) by its own.
+func TestRequestStructsDecodeWhatTheSchemasAccept(t *testing.T) {
+	// ucp-schema bundles an instrument's {"$ref": "#"} so that it points
+	// at the Payment object, not at the instrument: the members are
+	// checked against the vendored payment_instrument.json instead.
+	raw, err := os.ReadFile(filepath.Join("..", "ucp", "spec", ucp.Version,
+		"common", "types", "payment_instrument.json"))
+	require.NoError(t, err)
+	var instrument jsonschema.Schema
+	require.NoError(t, json.Unmarshal(raw, &instrument))
+
+	for _, tc := range []struct {
+		tool   string
+		schema *jsonschema.Schema
+		in     reflect.Type
+	}{
+		{"create_checkout", createCheckoutInput,
+			reflect.TypeFor[CreateCheckoutIn]()},
+		{"update_checkout", updateCheckoutInput,
+			reflect.TypeFor[UpdateCheckoutIn]()},
+		{"complete_checkout", completeCheckoutInput,
+			reflect.TypeFor[CompleteCheckoutIn]()},
+		{"get_checkout", getCheckoutInput,
+			reflect.TypeFor[GetCheckoutIn]()},
+		{"cancel_checkout", cancelCheckoutInput,
+			reflect.TypeFor[CancelCheckoutIn]()},
+		{"get_order", getOrderInput, reflect.TypeFor[GetOrderIn]()},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			c := structCheck{t: t, instrument: &instrument}
+			c.object("", tc.in, tc.schema)
+		})
+	}
+}
+
+type structCheck struct {
+	t          *testing.T
+	instrument *jsonschema.Schema
+}
+
+// branches is s and every schema it is the allOf of, with the bundle's
+// self-reference read as the instrument.
+func (c structCheck) branches(s *jsonschema.Schema) []*jsonschema.Schema {
+	if s.Ref == "#" {
+		s = c.instrument
+	}
+	out := []*jsonschema.Schema{s}
+	for _, b := range s.AllOf {
+		out = append(out, c.branches(b)...)
+	}
+	return out
+}
+
+func (c structCheck) types(s *jsonschema.Schema) []string {
+	var out []string
+	for _, b := range c.branches(s) {
+		if b.Type != "" {
+			out = append(out, b.Type)
+		}
+		out = append(out, b.Types...)
+	}
+	return out
+}
+
+func (c structCheck) object(path string, typ reflect.Type, s *jsonschema.Schema) {
+	for i := range typ.NumField() {
+		f := typ.Field(i)
+		if f.Anonymous {
+			c.object(path, f.Type, s)
+			continue
+		}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		member := strings.TrimPrefix(path+"."+name, ".")
+		var prop *jsonschema.Schema
+		for _, b := range c.branches(s) {
+			if p, ok := b.Properties[name]; ok {
+				prop = p
+				break
+			}
+		}
+		if !assert.NotNil(c.t, prop,
+			"%s is not in the schema, so the schema takes any value", member) {
+			continue
+		}
+		c.value(member, f.Type, prop)
+	}
+}
+
+func (c structCheck) value(member string, typ reflect.Type, s *jsonschema.Schema) {
+	if typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	want := map[reflect.Kind]string{
+		reflect.String: "string", reflect.Int: "integer",
+		reflect.Int64: "integer", reflect.Bool: "boolean",
+		reflect.Slice: "array", reflect.Struct: "object",
+	}[typ.Kind()]
+	require.NotEmpty(c.t, want, "%s: a %s field", member, typ)
+	assert.Contains(c.t, c.types(s), want, member)
+	switch typ.Kind() {
+	case reflect.Slice:
+		var items *jsonschema.Schema
+		for _, b := range c.branches(s) {
+			if b.Items != nil {
+				items = b.Items
+			}
+		}
+		require.NotNil(c.t, items, "%s: no item schema", member)
+		c.value(member+"[]", typ.Elem(), items)
+	case reflect.Struct:
+		c.object(member, typ, s)
+	}
+}

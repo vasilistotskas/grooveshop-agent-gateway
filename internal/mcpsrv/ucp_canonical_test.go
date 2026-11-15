@@ -81,44 +81,104 @@ func TestCheckoutInLines(t *testing.T) {
 	assert.ErrorContains(t, err, "line_items[0].item.id")
 }
 
-// Absent means "leave the coupon alone" and an empty array means "remove
-// it" — collapsing the two would make removal impossible.
+// The codes are the discount extension's member, read only while it is
+// negotiated; an empty array names none, which clears them.
 func TestCheckoutInDiscountCodes(t *testing.T) {
-	codes, present := (&UCPCheckoutIn{}).discountCodes()
+	neg := discountNegotiated(t, true)
+	codes, present := (&UCPCheckoutIn{}).discountCodes(neg)
 	assert.False(t, present)
 	assert.Nil(t, codes)
 
 	codes, present = (&UCPCheckoutIn{
-		Discounts: &UCPDiscountsIn{},
-	}).discountCodes()
+		Discounts: &UCPDiscountsIn{Codes: []string{}},
+	}).discountCodes(neg)
 	assert.True(t, present)
 	assert.Empty(t, codes)
 
-	codes, present = (&UCPCheckoutIn{
+	submitted := &UCPCheckoutIn{
 		Discounts: &UCPDiscountsIn{Codes: []string{"SAVE10"}},
-	}).discountCodes()
+	}
+	codes, present = submitted.discountCodes(neg)
 	assert.True(t, present)
 	assert.Equal(t, []string{"SAVE10"}, codes)
+
+	// A member of an extension that was not negotiated is ignored.
+	codes, present = submitted.discountCodes(discountNegotiated(t, false))
+	assert.False(t, present)
+	assert.Nil(t, codes)
 }
 
-// A platform updating one field must not wipe the others.
-func TestCheckoutInApplyToLeavesAbsentMembersAlone(t *testing.T) {
+// Update replaces the checkout: with the extension negotiated, a request
+// without codes clears the cart's coupon, whatever this checkout
+// submitted (a checkout's codes are its cart's). Without the extension
+// nothing is read.
+func TestUpdateReplacesTheDiscountCodes(t *testing.T) {
+	codes, present := (&UCPCheckoutIn{}).replacedDiscountCodes(
+		discountNegotiated(t, true))
+	assert.True(t, present)
+	assert.Empty(t, codes)
+
+	codes, present = (&UCPCheckoutIn{Discounts: &UCPDiscountsIn{
+		Codes: []string{"SAVE10"}}}).replacedDiscountCodes(
+		discountNegotiated(t, true))
+	assert.True(t, present)
+	assert.Equal(t, []string{"SAVE10"}, codes)
+
+	_, present = (&UCPCheckoutIn{}).replacedDiscountCodes(
+		discountNegotiated(t, false))
+	assert.False(t, present)
+}
+
+// Update replaces the checkout, so the buyer is what the request carries.
+// The gateway's own fulfillment member is not in the response a platform
+// sends back, so one the request omits keeps the stored delivery, and so
+// does the spec's fulfillment member, which is not negotiated.
+func TestCheckoutInApplyToReplacesTheBuyer(t *testing.T) {
 	s := &checkout.Session{
 		Buyer:       checkout.Buyer{FirstName: "Μαρία", Email: "m@e.test"},
 		Fulfillment: checkout.Fulfillment{Kind: "home_delivery"},
 		PayWayID:    3,
 	}
-	(&UCPCheckoutIn{}).applyTo(s)
-
-	assert.Equal(t, "Μαρία", s.Buyer.FirstName)
-	assert.Equal(t, "home_delivery", s.Fulfillment.Kind)
-	assert.EqualValues(t, 3, s.PayWayID)
-
 	(&UCPCheckoutIn{Buyer: &UCPBuyerReqIn{
 		FirstName: "Άννα", PhoneNumber: "+30691",
 	}}).applyTo(s)
-	assert.Equal(t, "Άννα", s.Buyer.FirstName)
-	assert.Equal(t, "+30691", s.Buyer.Phone)
+	assert.Equal(t, checkout.Buyer{FirstName: "Άννα", Phone: "+30691"},
+		s.Buyer)
+	assert.Equal(t, "home_delivery", s.Fulfillment.Kind)
+	assert.EqualValues(t, 3, s.PayWayID)
+
+	var spec UCPCheckoutIn
+	require.NoError(t, json.Unmarshal([]byte(`{"fulfillment":{"methods":[`+
+		`{"type":"shipping","destinations":[{"postal_code":"10431"}]}]}}`),
+		&spec))
+	spec.applyTo(s)
+	assert.Equal(t, checkout.Buyer{}, s.Buyer)
+	assert.Equal(t, "home_delivery", s.Fulfillment.Kind)
+
+	(&UCPCheckoutIn{Fulfillment: &checkout.Fulfillment{
+		Kind: "pickup_point", ProviderCode: "boxnow",
+	}}).applyTo(s)
+	assert.Equal(t, "pickup_point", s.Fulfillment.Kind)
+}
+
+// discountNegotiated intersects a store with promotions on with a platform
+// that declares checkout, and the discount extension when asked.
+func discountNegotiated(t *testing.T, platformDeclares bool) ucp.Negotiated {
+	t.Helper()
+	caps := `"dev.ucp.shopping.checkout":[{"version":"` + ucp.Version +
+		`","schema":"https://ucp.dev/schemas/shopping/checkout.json"}]`
+	if platformDeclares {
+		caps += `,"` + ucp.CapabilityDiscount + `":[{"version":"` +
+			ucp.Version + `","schema":` +
+			`"https://ucp.dev/schemas/shopping/discount.json",` +
+			`"extends":"dev.ucp.shopping.checkout"}]`
+	}
+	var p ucp.PlatformProfile
+	require.NoError(t, json.Unmarshal([]byte(`{"ucp":{"version":"`+
+		ucp.Version+`","capabilities":{`+caps+`}}}`), &p))
+	tn := &tenant.Tenant{}
+	tn.Features.Promotions = true
+	return ucp.Negotiate(ucp.BusinessCapabilities(tn), &p)
 }
 
 // payWayDjango serves the recorded pay-way fixture.
@@ -154,10 +214,10 @@ func payWayTenant() *tenant.Tenant {
 func TestResolvePayWayMapsAdvertisedInstrument(t *testing.T) {
 	id, err := resolvePayWay(context.Background(), payWayDjango(t),
 		payWayTenant(), checkout.Fulfillment{},
-		&UCPPaymentIn{Instruments: []UCPInstrumentIn{{
+		[]UCPInstrumentIn{{
 			HandlerID: ucp.HandlerID,
 			Type:      ucp.InstrumentCashOnDelivery,
-		}}})
+		}})
 	require.NoError(t, err)
 	assert.Positive(t, id, "cash on delivery must resolve to a pay way")
 }
@@ -165,23 +225,17 @@ func TestResolvePayWayMapsAdvertisedInstrument(t *testing.T) {
 func TestResolvePayWayRejectsWhatTheStoreCannotSettle(t *testing.T) {
 	dj, tn := payWayDjango(t), payWayTenant()
 
-	// Nothing submitted: completing would place an order with no way to
-	// pay for it.
-	_, err := resolvePayWay(context.Background(), dj, tn,
-		checkout.Fulfillment{}, nil)
-	assert.ErrorContains(t, err, "payment.instruments is required")
-
 	// A type this store never advertised.
-	_, err = resolvePayWay(context.Background(), dj, tn, checkout.Fulfillment{},
-		&UCPPaymentIn{Instruments: []UCPInstrumentIn{{Type: "card"}}})
+	_, err := resolvePayWay(context.Background(), dj, tn,
+		checkout.Fulfillment{}, []UCPInstrumentIn{{Type: "card"}})
 	assert.ErrorContains(t, err, "not available")
 
 	// A handler that is not ours — the id must match what we advertised.
 	_, err = resolvePayWay(context.Background(), dj, tn, checkout.Fulfillment{},
-		&UCPPaymentIn{Instruments: []UCPInstrumentIn{{
+		[]UCPInstrumentIn{{
 			HandlerID: "com.stripe.payments",
 			Type:      ucp.InstrumentCashOnDelivery,
-		}}})
+		}})
 	assert.ErrorContains(t, err, "unknown payment handler_id")
 }
 
@@ -220,12 +274,10 @@ func TestResolvePayWayWithholdsUnreadableSettlements(t *testing.T) {
 
 			_, err := resolvePayWay(context.Background(), dj,
 				payWayTenant(), checkout.Fulfillment{},
-				&UCPPaymentIn{
-					Instruments: []UCPInstrumentIn{{
-						HandlerID: ucp.HandlerID,
-						Type:      ucp.InstrumentCashOnDelivery,
-					}},
-				})
+				[]UCPInstrumentIn{{
+					HandlerID: ucp.HandlerID,
+					Type:      ucp.InstrumentCashOnDelivery,
+				}})
 
 			assert.ErrorContains(t, err, "not available")
 		})
@@ -237,10 +289,10 @@ func TestResolvePayWayWithholdsUnreadableSettlements(t *testing.T) {
 func TestResolvePayWayHonoursTheSelectedInstrument(t *testing.T) {
 	id, err := resolvePayWay(context.Background(), payWayDjango(t),
 		payWayTenant(), checkout.Fulfillment{},
-		&UCPPaymentIn{Instruments: []UCPInstrumentIn{
+		[]UCPInstrumentIn{
 			{Type: "some_unmodelled_type"},
 			{Type: ucp.InstrumentCashOnDelivery, Selected: true},
-		}})
+		})
 	require.NoError(t, err)
 	assert.Positive(t, id)
 }
@@ -283,7 +335,7 @@ func TestApplyHostedSelectionRefusesUnlessNegotiated(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := &checkout.Session{PayWayID: 7}
-			err := (&UCPCheckoutIn{PayWayID: 2}).applyHostedSelection(s, neg)
+			err := (&UCPPaymentChoice{PayWayID: 2}).applyHostedSelection(s, neg)
 			assert.ErrorContains(t, err, "pay_way_id is not accepted")
 			assert.EqualValues(t, 7, s.PayWayID,
 				"the prior selection must stand")
@@ -293,7 +345,7 @@ func TestApplyHostedSelectionRefusesUnlessNegotiated(t *testing.T) {
 
 func TestApplyHostedSelectionHonoursWhenNegotiated(t *testing.T) {
 	s := &checkout.Session{PayWayID: 7}
-	require.NoError(t, (&UCPCheckoutIn{PayWayID: 2}).applyHostedSelection(
+	require.NoError(t, (&UCPPaymentChoice{PayWayID: 2}).applyHostedSelection(
 		s, negotiatedFor(t, gatedTenant(true), true)))
 	assert.EqualValues(t, 2, s.PayWayID)
 }
@@ -303,8 +355,22 @@ func TestApplyHostedSelectionHonoursWhenNegotiated(t *testing.T) {
 func TestApplyHostedSelectionIgnoresAbsentMember(t *testing.T) {
 	for _, hosted := range []bool{true, false} {
 		s := &checkout.Session{PayWayID: 7}
-		require.NoError(t, (&UCPCheckoutIn{}).applyHostedSelection(
+		require.NoError(t, (&UCPPaymentChoice{}).applyHostedSelection(
 			s, negotiatedFor(t, gatedTenant(hosted), hosted)))
 		assert.EqualValues(t, 7, s.PayWayID)
 	}
+}
+
+// The store sells per item: a line asserting another sale basis is
+// refused, never reinterpreted; C62 or none is a count of items.
+func TestCheckoutInLinesRefusesAnotherSaleBasis(t *testing.T) {
+	line := func(unit string) *UCPCheckoutIn {
+		return &UCPCheckoutIn{LineItems: []UCPLineItemReqIn{{Item: UCPItemIn{
+			ID: "5", QuantityUnit: &UCPQuantityUnitIn{Unit: unit}}, Quantity: 2}}}
+	}
+	_, err := line("KGM").lines()
+	assert.ErrorContains(t, err, "quantity_unit \"KGM\" is not this item's sale basis")
+	lines, err := line("C62").lines()
+	require.NoError(t, err)
+	assert.Equal(t, []checkout.Line{{ProductID: 5, Quantity: 2}}, lines)
 }

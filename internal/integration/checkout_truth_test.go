@@ -83,7 +83,8 @@ func TestACompleteRefusedForAnotherCompletesOrderReadsAgain(t *testing.T) {
 			stack := startUCPGateway(t)
 			surfaces := surfacesByName(t, stack)
 			surface := surfaces[name]
-			id := surface.ready(t)
+			// The winner's order keeps the cart.
+			id := surface.readyKeeping(t)
 			held := stack.hold(t, "POST /api/v1/cart/reserve-stock", 1)[0]
 			first := make(chan surfaceAnswer, 1)
 			go func() {
@@ -91,10 +92,9 @@ func TestACompleteRefusedForAnotherCompletesOrderReadsAgain(t *testing.T) {
 			}()
 			await(t, held, "the first complete")
 			stack.lapse(t, lockRedisKey(id))
-			// The winner's order keeps the cart.
-			submit, status := keepingCart(name)
+			status := surface.keepingStatus
 			require.Equal(t, status, surface.complete(
-				ctx, id, uuid.NewString(), submit))
+				ctx, id, uuid.NewString(), nil))
 			placed := stack.storedBytes(t, id)
 			stack.faults.stockShort.Store(true)
 

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -36,6 +37,13 @@ type completionSurface struct {
 	name string
 	// ready returns the id of a checkout that is ready to complete.
 	ready func(t *testing.T) string
+	// readyKeeping returns the id of a ready checkout whose order Django
+	// keeps the cart of, and keepingStatus the status its completion
+	// leaves. UCP's holds the hosted card (pay way 2), and the checkout
+	// then awaits that payment; ACP places pay-later orders only, whose
+	// cart the fake keeps unless cartDeletedOnOrder is set.
+	readyKeeping  func(t *testing.T) string
+	keepingStatus string
 	// complete asks for the order under key and returns the status the
 	// surface rendered, "" when it answered with an error or not at all.
 	// submit is what the call carries beyond the least a completion
@@ -199,6 +207,11 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			t.Helper()
 			return acpReady(t, base)
 		},
+		readyKeeping: func(t *testing.T) string {
+			t.Helper()
+			return acpReady(t, base)
+		},
+		keepingStatus: "completed",
 		answer: func(
 			ctx context.Context, id, key string, submit map[string]any,
 		) surfaceAnswer {
@@ -267,37 +280,54 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 		}
 		return m
 	}
+	// readyWith is a ready checkout paid as pay says.
+	readyWith := func(t *testing.T, pay map[string]any) string {
+		t.Helper()
+		submit := map[string]any{
+			"buyer": map[string]any{
+				"first_name": "Μαρία", "last_name": "Παπαδοπούλου",
+				"email":        "maria@example.test",
+				"phone_number": "+306912345678",
+			},
+			"fulfillment": map[string]any{
+				"kind": "home_delivery", "providerCode": "acs",
+				"countryCode": "GR", "city": "Αθήνα",
+				"zipcode": "10431", "street": "Πανεπιστημίου",
+				"streetNumber": "12", "regionId": "GR-14",
+			},
+		}
+		maps.Copy(submit, pay)
+		res := callTool(t, session, "create_checkout", map[string]any{
+			"meta": meta(""), "cart_id": stack.faults.carts.mint(),
+			"checkout": submit,
+		})
+		require.False(t, res.IsError, "%v", res.Content)
+		created := structured(t, res)
+		require.Equal(t, "ready_for_complete", created["status"])
+		return created["id"].(string)
+	}
 	mcpSurface := completionSurface{
 		name: "ucp",
 		ready: func(t *testing.T) string {
 			t.Helper()
-			res := callTool(t, session, "create_checkout", map[string]any{
-				"meta": meta(""), "cart_id": stack.faults.carts.mint(),
-				"checkout": map[string]any{
-					"buyer": map[string]any{
-						"first_name": "Μαρία", "last_name": "Παπαδοπούλου",
-						"email":        "maria@example.test",
-						"phone_number": "+306912345678",
-					},
-					"fulfillment": map[string]any{
-						"kind": "home_delivery", "providerCode": "acs",
-						"countryCode": "GR", "city": "Αθήνα",
-						"zipcode": "10431", "street": "Πανεπιστημίου",
-						"streetNumber": "12", "regionId": "GR-14",
-					},
-					"payment": codPayment(),
-				},
-			})
-			require.False(t, res.IsError, "%v", res.Content)
-			created := structured(t, res)
-			require.Equal(t, "ready_for_complete", created["status"])
-			return created["id"].(string)
+			return readyWith(t, map[string]any{"payment": codPayment()})
 		},
+		readyKeeping: func(t *testing.T) string {
+			t.Helper()
+			return readyWith(t, map[string]any{"pay_way_id": 2})
+		},
+		keepingStatus: "requires_escalation",
 		answer: func(
 			ctx context.Context, id, key string, submit map[string]any,
 		) surfaceAnswer {
-			if submit == nil {
-				submit = map[string]any{}
+			// The spec requires `payment` on a complete; one that names
+			// no instrument keeps the method the checkout holds.
+			if _, ok := submit["payment"]; !ok {
+				submit = maps.Clone(submit)
+				if submit == nil {
+					submit = map[string]any{}
+				}
+				submit["payment"] = map[string]any{}
 			}
 			return mcpAnswer(ctx, session, "complete_checkout",
 				map[string]any{
@@ -308,7 +338,12 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			return mcpAnswer(ctx, session, "update_checkout",
 				map[string]any{
 					"meta": meta(""), "id": id,
+					// An update carries the lines: the cart's own, so
+					// that this one writes no line.
 					"checkout": map[string]any{
+						"line_items": []any{map[string]any{
+							"item": map[string]any{"id": "1"}, "quantity": 2,
+						}},
 						"buyer":   map[string]any{"email": otherBuyerEmail},
 						"payment": codPayment(),
 					},
@@ -681,25 +716,14 @@ func otherBuyer() map[string]any {
 }
 
 // changeBy is a complete's submission that differs from what the
-// surface's ready checkout holds: cash on delivery on UCP, where pay way
-// 2 is the hosted card, and the buyer on ACP.
+// surface's ready checkout holds: the hosted card (pay way 2) on UCP,
+// whose ready checkout holds cash on delivery, and the buyer on ACP. A
+// UCP complete refuses it (complete is a command); ACP stores it.
 func changeBy(surface string) map[string]any {
 	if surface == "ucp" {
 		return map[string]any{"pay_way_id": 2}
 	}
 	return otherBuyer()
-}
-
-// keepingCart is what a complete over surface submits to place an order
-// whose cart Django keeps, and the status the checkout is left in. UCP's
-// buyer pays on the store's hosted page, and the checkout awaits that
-// payment. ACP places pay-later orders only, whose cart the fake keeps
-// unless cartDeletedOnOrder is set.
-func keepingCart(surface string) (map[string]any, string) {
-	if surface == "ucp" {
-		return changeBy("ucp"), "requires_escalation"
-	}
-	return nil, "completed"
 }
 
 func (stack ucpStack) storedSession(
@@ -722,17 +746,18 @@ func (stack ucpStack) storedBytes(t *testing.T, id string) string {
 	return raw
 }
 
-// What a complete call submits is the buyer's latest word, whether or not
+// What an ACP complete submits is the buyer's latest word, whether or not
 // that call places the order. A refused one keeps it, so the next
 // complete, which need not repeat it, places the order with it and not
-// with what the checkout held before.
+// with what the checkout held before. A UCP complete submits nothing to
+// keep: it is a command, and refuses a payment that differs
+// (TestUCPEndToEnd, "a complete that names another payment method").
 func TestRefusedCompleteKeepsWhatItSubmitted(t *testing.T) {
 	stack := startUCPGateway(t)
 	surfaces := map[string]completionSurface{}
 	for _, surface := range completionSurfaces(t, stack) {
 		surfaces[surface.name] = surface
 	}
-	payWay := func(s *checkout.Session) any { return s.PayWayID }
 	// refusal is a complete the store refuses, and what the checkout
 	// holds once it has.
 	type refusal struct {
@@ -748,22 +773,6 @@ func TestRefusedCompleteKeepsWhatItSubmitted(t *testing.T) {
 		member string
 		read   func(*checkout.Session) any
 	}{
-		{
-			name: "a hosted pay way", surface: "ucp",
-			refused: []refusal{{map[string]any{"pay_way_id": 2}, 2}},
-			member:  "payWayId", read: payWay,
-		},
-		{
-			// The first refusal leaves the hosted card selected, so
-			// cash on delivery after the second is the instrument's
-			// doing.
-			name: "an instrument", surface: "ucp",
-			refused: []refusal{
-				{map[string]any{"pay_way_id": 2}, 2},
-				{map[string]any{"payment": codPayment()}, 1},
-			},
-			member: "payWayId", read: payWay,
-		},
 		{
 			name: "a buyer", surface: "acp",
 			refused: []refusal{{otherBuyer(), otherBuyerEmail}},
