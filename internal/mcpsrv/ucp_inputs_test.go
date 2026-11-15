@@ -70,8 +70,10 @@ func checkoutParts(
 	t *testing.T, schema map[string]any,
 ) (spec, own map[string]any) {
 	t.Helper()
-	parts := schema["properties"].(map[string]any)["checkout"].(map[string]any)["allOf"].([]any)
-	require.Len(t, parts, 2)
+	checkout := schema["properties"].(map[string]any)["checkout"]
+	parts, _ := checkout.(map[string]any)["allOf"].([]any)
+	require.Len(t, parts, 2, "checkout is not the spec's schema and the "+
+		"business's own members")
 	return parts[0].(map[string]any), parts[1].(map[string]any)
 }
 
@@ -115,6 +117,7 @@ func TestCheckoutToolsDescribeTheBusinessesOwnMembers(t *testing.T) {
 		t.Run(tool, func(t *testing.T) {
 			_, own := checkoutParts(t, schemas[tool])
 			members := own["properties"].(map[string]any)
+			require.Contains(t, members, "fulfillment")
 			f := members["fulfillment"].(map[string]any)
 			assert.Contains(t, f["description"], "business's own member")
 			assert.Contains(t, f["description"],
