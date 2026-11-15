@@ -150,8 +150,10 @@ func TestACPErrorsFollowTheSpec(t *testing.T) {
 			resp, body := complete(id, key)
 			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 			assert.Equal(t, "invalid", body["code"])
-			assert.Equal(t, "The cart changed while it was ordered.",
-				body["message"])
+			// Django's own sentence, then that the key keeps the answer.
+			assert.Equal(t, "The cart changed while it was ordered. This "+
+				"Idempotency-Key keeps this answer for 24 hours: send a "+
+				"new attempt with a new key.", body["message"])
 
 			// The refusal is the key's answer; nothing was placed, so a
 			// new key completes the session.
@@ -184,6 +186,8 @@ func TestACPErrorsFollowTheSpec(t *testing.T) {
 			require.Equal(t, http.StatusBadGateway, resp.StatusCode)
 			assert.Contains(t, string(first),
 				`"code":"order_outcome_unknown"`)
+			// It says not to complete again, so never "a new key".
+			assert.NotContains(t, string(first), "new key")
 			stack.faults.orderCreate.Store(false)
 			require.True(t, stack.storedSession(t, id).Unconfirmed)
 
@@ -240,6 +244,7 @@ func TestACPErrorsFollowTheSpec(t *testing.T) {
 			resp, first := send()
 			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 			assert.Contains(t, string(first), `"code":"order_placed"`)
+			assert.NotContains(t, string(first), "new key")
 			assert.Contains(t, string(first), fixtureOrderUUID)
 
 			resp, again := send()

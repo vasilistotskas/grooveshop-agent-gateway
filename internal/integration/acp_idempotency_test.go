@@ -794,3 +794,40 @@ func TestAnACPRefusalIsReplayedAfterItsCauseIsGone(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "%s", placed)
 	assert.Equal(t, creates+1, stack.faults.orderCreates.Load())
 }
+
+// A cancel whose save was stored while Redis lost its reply made its
+// change: the stored session holds its mark. It is answered with the
+// session, not as a cancel of a canceled session, which its key would
+// then keep.
+func TestACancelWhoseSaveLostItsReplyIsAnsweredWithTheSession(t *testing.T) {
+	stack := startUCPGateway(t)
+	base := stack.gw.URL + "/acp/checkout_sessions"
+	id := acpReady(t, base)
+	key := uuid.NewString()
+	cancel := func() (*http.Response, map[string]any) {
+		return acpCall(t, http.MethodPost, base+"/"+id+"/cancel", nil, key)
+	}
+	var armed atomic.Bool
+	armed.Store(true)
+	stack.rdb.AddHook(redisAround(
+		func(cmd redis.Cmder, send func() error) error {
+			if !savesKey(cmd, sessionRedisKey(id)) ||
+				!armed.CompareAndSwap(true, false) {
+				return send()
+			}
+			if err := send(); err != nil {
+				return err
+			}
+			return errRedisDown
+		}))
+
+	resp, body := cancel()
+
+	require.False(t, armed.Load(), "the save was not reached")
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "%v", body)
+	assert.Equal(t, "canceled", body["status"])
+	assert.Equal(t, checkout.StatusCanceled, stack.storedSession(t, id).Status)
+	resp, body = cancel()
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "%v", body)
+	assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
+}

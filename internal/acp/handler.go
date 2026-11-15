@@ -540,6 +540,12 @@ func (h *Handler) settle(r *http.Request, k *keyed) error {
 		h.releaseIdem(r, k.claim, k.scope)
 		return nil
 	}
+	// A refusal only. The two 5xx answers a completion keeps say not to
+	// complete again: an order may exist behind them.
+	if status >= http.StatusBadRequest &&
+		status < http.StatusInternalServerError {
+		k.rec.noteKept()
+	}
 	rec := idemRecord{
 		BodyHash: k.hash, Status: status, Body: k.rec.body.String(),
 	}
@@ -582,6 +588,25 @@ func (a *heldResponse) WriteHeader(status int) {
 func (a *heldResponse) Write(p []byte) (int, error) {
 	a.WriteHeader(http.StatusOK)
 	return a.body.Write(p)
+}
+
+// msgRefusalKept ends the message of a refusal its key keeps. Its
+// message may name a condition that changes (stock, an unpaid order,
+// missing data), and the same request sent again with the same key is
+// answered this refusal whatever has changed since.
+const msgRefusalKept = " This Idempotency-Key keeps this answer for " +
+	"24 hours: send a new attempt with a new key."
+
+// noteKept adds msgRefusalKept to the Error the answer holds, before the
+// key stores it, so the first answer and every replay say it.
+func (a *heldResponse) noteKept() {
+	var e Error
+	if json.Unmarshal(a.body.Bytes(), &e) != nil || e.Message == "" {
+		return
+	}
+	e.Message += msgRefusalKept
+	a.body.Reset()
+	_ = json.NewEncoder(&a.body).Encode(e)
 }
 
 // statusCode is the status sent: net/http's 200 for an answer that wrote
@@ -1023,9 +1048,14 @@ func afterSave(write func(http.ResponseWriter)) answer {
 // same function that answers the operation for a session in that state,
 // or as a session another request changed while it is still open; no
 // longer stored, as missing; unreadable, as unavailable.
+//
+// A stored session that holds this request's mark (an update's or a
+// cancel's; a complete passes none) is its own save, whose reply Redis
+// lost: the change is made, and the session is the answer, as it is to
+// the request's retry (alreadyApplied).
 func (h *Handler) finish(
 	w http.ResponseWriter, r *http.Request, t *tenant.Tenant,
-	s *checkout.Session, a answer,
+	s *checkout.Session, a answer, mark string,
 	stored func(http.ResponseWriter, *checkout.Session) bool,
 ) {
 	if a.current {
@@ -1041,6 +1071,8 @@ func (h *Handler) finish(
 		h.sessionError(w, err)
 	case now.Revision == s.Revision:
 		a.write(w)
+	case mark != "" && now.AppliedBy == mark:
+		h.render(w, r, t, now)
 	case !stored(w, now):
 		saveFailed(w, checkout.ErrSessionChanged)
 	}
@@ -1068,7 +1100,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	if s, release, ok := h.lockSession(k.rec, r, t, id); ok {
 		defer release()
 		a := h.updateSession(r, t, s, req, k.mark)
-		h.finish(k.rec, r, t, s, a,
+		h.finish(k.rec, r, t, s, a, k.mark,
 			func(w http.ResponseWriter, now *checkout.Session) bool {
 				return h.refuseChange(w, r, now, updateAllow, "change")
 			})
@@ -1177,7 +1209,7 @@ func (h *Handler) complete(w http.ResponseWriter, r *http.Request) {
 	if s, release, ok := h.lockSession(k.rec, r, t, id); ok {
 		defer release()
 		a := h.completeSession(r, t, s, req)
-		h.finish(k.rec, r, t, s, a,
+		h.finish(k.rec, r, t, s, a, "",
 			func(w http.ResponseWriter, now *checkout.Session) bool {
 				return h.completeClosed(w, r, t, now)
 			})
@@ -1346,7 +1378,7 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	if s, release, ok := h.lockSession(k.rec, r, t, id); ok {
 		defer release()
 		a := h.cancelSession(r, t, s, k.mark)
-		h.finish(k.rec, r, t, s, a,
+		h.finish(k.rec, r, t, s, a, k.mark,
 			func(w http.ResponseWriter, now *checkout.Session) bool {
 				return h.refuseChange(w, r, now, "", "be canceled")
 			})

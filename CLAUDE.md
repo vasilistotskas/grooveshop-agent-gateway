@@ -569,7 +569,10 @@ passes, and runs CI's tidy, image and vulnerability checks again.
     freed the key; or its pod died before settling) finds the mark and
     is answered with the session (`alreadyApplied`), changing nothing:
     a cancel run again would be a 405, kept against the key that
-    canceled. One slot: after another key's update, an earlier
+    canceled. `finish` reads the mark too: a save that was stored
+    while Redis lost its reply leaves the request holding the older
+    revision, and the stored session, which holds its mark, is its
+    answer. One slot: after another key's update, an earlier
     update's retry applies again.
   - Equivalence is the body's JSON (§6.2, `fingerprint`): decoded and
     encoded again, so member order and `1.0` against `1` do not count,
@@ -579,7 +582,10 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   - What a key keeps (`keptAgainstKey`): every answer that is final
     for its request, refusals included (400, 404, 405 with its
     `Allow`), replayed for 24 hours however the conditions that caused
-    it change (§6.3). A platform that wants a new attempt sends a new key.
+    it change (§6.3). A platform that wants a new attempt sends a new key,
+    and a kept refusal's message ends by saying so (`noteKept`,
+    `msgRefusalKept`), since its own words may name a condition that
+    changes (stock, an unpaid order, missing data).
     The key is freed, and the same key runs afresh, only for an answer
     that asks for the same request again: a 5xx (§6.5), a 409
     `idempotency_in_flight` (§6.4: the key or the lock in use, a

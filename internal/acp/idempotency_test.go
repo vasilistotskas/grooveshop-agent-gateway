@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -131,4 +132,26 @@ func TestAHeldResponseSendsWhatWasWritten(t *testing.T) {
 	empty := httptest.NewRecorder()
 	newHeldResponse().send(empty)
 	assert.Equal(t, http.StatusOK, empty.Code)
+}
+
+// A refusal its key keeps says so, on the first answer and so on every
+// replay: its own message may name a condition that changes.
+func TestAKeptRefusalSaysItsKeyKeepsIt(t *testing.T) {
+	refusal := newHeldResponse()
+	writeError(refusal, http.StatusBadRequest, Error{
+		Type: "invalid_request", Code: "out_of_stock", Param: "$.x",
+		Message: "Not enough stock.",
+	})
+	refusal.noteKept()
+	var e Error
+	require.NoError(t, json.Unmarshal(refusal.body.Bytes(), &e))
+	assert.Equal(t, Error{
+		Type: "invalid_request", Code: "out_of_stock", Param: "$.x",
+		Message: "Not enough stock." + msgRefusalKept,
+	}, e)
+
+	session := newHeldResponse()
+	writeBody(session, http.StatusOK, []byte(`{"id":"x","status":"canceled"}`))
+	session.noteKept()
+	assert.JSONEq(t, `{"id":"x","status":"canceled"}`, session.body.String())
 }
