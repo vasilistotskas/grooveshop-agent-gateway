@@ -418,7 +418,10 @@ type keyed struct {
 	claim *checkout.Claim
 	scope string
 	hash  string
-	rec   *heldResponse
+	// mark names this request in the session it changes
+	// (checkout.Session.AppliedBy): its endpoint, key and body.
+	mark string
+	rec  *heldResponse
 	// orderUnsettled: see keptAgainstKey.
 	orderUnsettled bool
 }
@@ -457,7 +460,8 @@ func (h *Handler) claimKey(
 	if claim != nil {
 		w.Header().Set("Idempotency-Key", key)
 		return &keyed{
-			claim: claim, scope: scope, hash: hash, rec: newHeldResponse(),
+			claim: claim, scope: scope, hash: hash,
+			mark: requestMark(scope, key, hash), rec: newHeldResponse(),
 		}, true
 	}
 	// Held by another request, or settled with something that is not a
@@ -484,11 +488,18 @@ func (h *Handler) claimKey(
 	return nil, false
 }
 
+// requestMark is what a session keeps of the keyed request that changed
+// it. The key is the platform's, so it is stored hashed.
+func requestMark(scope, key, hash string) string {
+	sum := sha256.Sum256([]byte(scope + "\n" + key + "\n" + hash))
+	return hex.EncodeToString(sum[:])
+}
+
 // keptAgainstKey reports whether a key keeps the answer its request was
 // given, which every replay then returns.
 //
 // Every answer that is final for the request is kept, a refusal
-// included (400, 404, 405, 422): "Same key + identical body → server
+// included (400, 404, 405): "Same key + identical body → server
 // MUST return the original response with the same HTTP status code"
 // (§6.3). A platform that wants a new attempt after a refusal sends a
 // new key. Freed, so that the same request can be sent again:
@@ -1056,7 +1067,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	}
 	if s, release, ok := h.lockSession(k.rec, r, t, id); ok {
 		defer release()
-		a := h.updateSession(r, t, s, req)
+		a := h.updateSession(r, t, s, req, k.mark)
 		h.finish(k.rec, r, t, s, a,
 			func(w http.ResponseWriter, now *checkout.Session) bool {
 				return h.refuseChange(w, r, now, updateAllow, "change")
@@ -1069,7 +1080,11 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 // updateSession is update once its session is loaded.
 func (h *Handler) updateSession(
 	r *http.Request, t *tenant.Tenant, s *checkout.Session, req UpdateRequest,
+	mark string,
 ) answer {
+	if s.AppliedBy == mark {
+		return h.alreadyApplied(r, t, s)
+	}
 	// refused answers with Django's refusal.
 	refused := func(err error) answer {
 		return fromSnapshot(func(w http.ResponseWriter) {
@@ -1125,6 +1140,7 @@ func (h *Handler) updateSession(
 		}
 	}
 	s.Recompute()
+	s.AppliedBy = mark
 	// The lookups above can outlast the lock, and another request may
 	// have stored the session meanwhile, a completion included: this
 	// snapshot is then not written over it.
@@ -1329,7 +1345,7 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	}
 	if s, release, ok := h.lockSession(k.rec, r, t, id); ok {
 		defer release()
-		a := h.cancelSession(r, t, s)
+		a := h.cancelSession(r, t, s, k.mark)
 		h.finish(k.rec, r, t, s, a,
 			func(w http.ResponseWriter, now *checkout.Session) bool {
 				return h.refuseChange(w, r, now, "", "be canceled")
@@ -1341,8 +1357,11 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 
 // cancelSession is cancel once its session is loaded.
 func (h *Handler) cancelSession(
-	r *http.Request, t *tenant.Tenant, s *checkout.Session,
+	r *http.Request, t *tenant.Tenant, s *checkout.Session, mark string,
 ) answer {
+	if s.AppliedBy == mark {
+		return h.alreadyApplied(r, t, s)
+	}
 	// Once an order exists, or may, canceling the session would not
 	// cancel the order: the buyer could still pay it, and the session
 	// would read canceled over a paid order.
@@ -1352,12 +1371,26 @@ func (h *Handler) cancelSession(
 		})
 	}
 	s.Status = checkout.StatusCanceled
+	s.AppliedBy = mark
 	if err := h.store.Save(r.Context(), s); err != nil {
 		return fromSnapshot(func(w http.ResponseWriter) {
 			saveFailed(w, err)
 		})
 	}
 	return afterSave(func(w http.ResponseWriter) { h.render(w, r, t, s) })
+}
+
+// alreadyApplied answers an update or a cancel whose change the session
+// already holds: this request's first attempt was saved, and then could
+// not answer (a render that failed frees the key, a pod that died never
+// settled it). Run again, a cancel would be refused as a cancel of a
+// canceled session, and that 405 kept against the key. So the retry
+// changes nothing and is answered with the session, as the first attempt
+// would have been.
+func (h *Handler) alreadyApplied(
+	r *http.Request, t *tenant.Tenant, s *checkout.Session,
+) answer {
+	return fromSnapshot(func(w http.ResponseWriter) { h.render(w, r, t, s) })
 }
 
 // --- Shared plumbing -------------------------------------------------------

@@ -718,10 +718,47 @@ func TestAnACPKeyIsFreedForARetry(t *testing.T) {
 		resp, body := update(id, key)
 		require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 		assert.Equal(t, "unavailable", body["code"])
-		require.Equal(t, "other@example.test",
-			stack.storedSession(t, id).Buyer.Email)
+		saved := stack.storedSession(t, id)
+		require.Equal(t, "other@example.test", saved.Buyer.Email)
 		stack.faults.namedCartReadsFailFrom.Store(0)
 		assertFreeThenKept(t, id, key)
+		// The retry found its own change in the session and saved nothing.
+		assert.Equal(t, saved.Revision, stack.storedSession(t, id).Revision)
+	})
+
+	// The cancel was saved, and its answer could not be rendered. Run
+	// again it would be a cancel of a canceled session: a 405, kept
+	// against the key that canceled it.
+	t.Run("a cancel stored, answered with a 5xx", func(t *testing.T) {
+		id := acpReady(t, base)
+		key := uuid.NewString()
+		cancel := func(key string) (*http.Response, map[string]any) {
+			return acpCall(t, http.MethodPost, base+"/"+id+"/cancel",
+				nil, key)
+		}
+		stack.faults.namedCartReadsFailFrom.Store(
+			stack.faults.namedCartReads.Load() + 1)
+		t.Cleanup(func() { stack.faults.namedCartReadsFailFrom.Store(0) })
+		resp, body := cancel(key)
+		require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+		assert.Equal(t, "unavailable", body["code"])
+		saved := stack.storedSession(t, id)
+		require.Equal(t, checkout.StatusCanceled, saved.Status)
+		stack.faults.namedCartReadsFailFrom.Store(0)
+		assertFree(t, "ag:demostore:acp:idem:cancel.v3:"+id+":"+key)
+
+		resp, body = cancel(key)
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "%v", body)
+		assert.Equal(t, "canceled", body["status"])
+		assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
+		assert.Equal(t, saved.Revision, stack.storedSession(t, id).Revision)
+		resp, _ = cancel(key)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
+
+		// Another key's cancel is a cancel of a canceled session.
+		resp, _ = cancel(uuid.NewString())
+		assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
 	})
 }
 

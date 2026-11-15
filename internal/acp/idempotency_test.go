@@ -59,6 +59,9 @@ func TestAnOptionalBodyMayBeAbsentButNotMalformed(t *testing.T) {
 		"": http.StatusOK, "  \n": http.StatusOK,
 		`{"intent_trace":{"reason_code":"other"}}`: http.StatusOK,
 		"{": http.StatusBadRequest, "[]": http.StatusBadRequest,
+		// null decodes as an object that names nothing, as it does for
+		// every body; it is a body, so not the absent one's fingerprint.
+		"null": http.StatusOK, "1": http.StatusBadRequest,
 	} {
 		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 		rec := httptest.NewRecorder()

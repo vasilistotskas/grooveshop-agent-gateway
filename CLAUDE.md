@@ -550,15 +550,24 @@ passes.
     is written into a `heldResponse` and sent only once the key is
     settled by it (`settle`). Another body under the key is 422
     `idempotency_conflict`.
+  - An update or a cancel writes its own mark into the session with
+    the save that applies it (`Session.AppliedBy`, `requestMark`: the
+    endpoint, the key and the body, hashed). A retry that runs afresh
+    (the first attempt was saved and could not render, so its 5xx
+    freed the key; or its pod died before settling) finds the mark and
+    is answered with the session (`alreadyApplied`), changing nothing:
+    a cancel run again would be a 405, kept against the key that
+    canceled. One slot: after another key's update, an earlier
+    update's retry applies again.
   - Equivalence is the body's JSON (§6.2, `fingerprint`): decoded and
     encoded again, so member order and `1.0` against `1` do not count,
     `null` against an absent member does, array order does, and an
     unknown member counts (§6.7). Cancel's body is optional; an absent
     one has a fingerprint of its own.
   - What a key keeps (`keptAgainstKey`): every answer that is final
-    for its request, refusals included (400, 404, 405 with its `Allow`,
-    422), replayed for 24 hours however the conditions that caused it
-    change (§6.3). A platform that wants a new attempt sends a new key.
+    for its request, refusals included (400, 404, 405 with its
+    `Allow`), replayed for 24 hours however the conditions that caused
+    it change (§6.3). A platform that wants a new attempt sends a new key.
     The key is freed, and the same key runs afresh, only for an answer
     that asks for the same request again: a 5xx (§6.5), a 409
     `idempotency_in_flight` (§6.4: the key or the lock in use, a
@@ -787,7 +796,8 @@ passes.
     of one too.
     - `fromSnapshot` (UCP also `refusedBy`) is an answer made from the
       loaded session or from what Django said on its behalf: a
-      refusal, a render, a replayed key. `finish` reads the stored
+      refusal, a render, UCP's replayed key, ACP's retry of a change
+      the session already holds. `finish` reads the stored
       session and gives it only while the revision is the loaded one.
       Otherwise the request is answered by what is stored, through the
       function that answers that state everywhere else
@@ -919,8 +929,9 @@ passes.
     online payment (django-api #693). Its `code` is named once,
     `django.CodeCartHasUnpaidOrder`, and `CreateOrder` reports it as
     `django.ErrCartHasUnpaidOrder` (still Django's `*APIError`, so
-    a refusal: nothing placed, the session left `ready_for_complete`,
-    the key released). Both surfaces branch on that sentinel. UCP
+    a refusal: nothing placed, the session left `ready_for_complete`;
+    UCP's completion claim is released, ACP's key keeps the refusal
+    like any other). Both surfaces branch on that sentinel. UCP
     answers Django's code and sentence with its own hint
     (`cartOrderUnpaidErr`): this checkout placed no order, start no
     other checkout, and once the store cancels that order unpaid this

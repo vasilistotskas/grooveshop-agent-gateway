@@ -58,8 +58,8 @@ func refused(err error) bool {
 	return false
 }
 
-// Placement is what a completion did about the order. It decides the
-// caller's idempotency key, whatever error came with it.
+// Placement is what a completion did about the order, whatever error
+// came with it. Each surface settles its idempotency key by it.
 type Placement int
 
 const (
@@ -68,8 +68,9 @@ const (
 	// It is the zero value: a Placement nobody set must not release a
 	// key.
 	OrderMayExist Placement = iota
-	// NothingPlaced: refused, and nothing was created. The caller
-	// releases its key, so the same key can try again.
+	// NothingPlaced: refused, and nothing was created. UCP releases its
+	// completion claim, so the same key can try again; ACP's key keeps
+	// a refusal's answer like any other (acp.keptAgainstKey).
 	NothingPlaced
 )
 
