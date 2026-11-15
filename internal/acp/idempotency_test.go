@@ -77,39 +77,37 @@ func TestAnOptionalBodyMayBeAbsentButNotMalformed(t *testing.T) {
 	}
 }
 
-// A key keeps the answer of a request that did what it asked, unless it
-// is a 5xx (§6.5), and the two 5xx answers of a completion whose order
-// may exist while its stored session may not say so. A request that did
-// nothing frees its key.
+// A key keeps every answer that is final for its request, refusals
+// included (§6.3). It frees a 5xx (§6.5) and the answers that ask for
+// the same request again: 409 idempotency_in_flight and 429. It keeps
+// the two 5xx answers of a completion whose order may exist while its
+// stored session may not say so.
 func TestWhichAnswersAKeyKeeps(t *testing.T) {
 	cases := []struct {
-		name                 string
-		done, orderUnsettled bool
-		status               int
-		kept                 bool
+		name           string
+		orderUnsettled bool
+		status         int
+		kept           bool
 	}{
-		{"done", true, false, http.StatusOK, true},
-		{"done, then not rendered", true, false,
-			http.StatusServiceUnavailable, false},
-		{"refused", false, false, http.StatusBadRequest, false},
-		{"busy", false, false, http.StatusConflict, false},
-		{"failed", false, false, http.StatusServiceUnavailable, false},
-		{"answered by another request's session", false, false,
-			http.StatusOK, false},
-		{"an order placed", true, false, http.StatusOK, true},
-		// The stored session says the order is placed: a retry run
-		// afresh is answered with it.
-		{"an order placed, not rendered", true, false,
-			http.StatusServiceUnavailable, false},
-		{"an order whose outcome is unknown", true, true,
+		{"a 200", false, http.StatusOK, true},
+		{"a 201", false, http.StatusCreated, true},
+		{"a 400", false, http.StatusBadRequest, true},
+		{"a 404", false, http.StatusNotFound, true},
+		{"a 405", false, http.StatusMethodNotAllowed, true},
+		{"a 409 in flight", false, http.StatusConflict, false},
+		{"a 429", false, http.StatusTooManyRequests, false},
+		{"a 500", false, http.StatusInternalServerError, false},
+		{"a 502", false, http.StatusBadGateway, false},
+		{"a 503", false, http.StatusServiceUnavailable, false},
+		{"an order whose outcome is unknown", true,
 			http.StatusBadGateway, true},
-		{"an order whose session was not saved", true, true,
+		{"an order whose session was not saved", true,
 			http.StatusInternalServerError, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.kept,
-				keptAgainstKey(tc.done, tc.orderUnsettled, tc.status))
+				keptAgainstKey(tc.orderUnsettled, tc.status))
 		})
 	}
 }

@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"sync"
@@ -94,15 +95,22 @@ func TestASessionAnswersOnlyOnItsOwnSurface(t *testing.T) {
 		assert.Zero(t, n, "a lock is left on %s's session", other[name])
 	}
 	// Not one key of either session was written, the lock included. ACP
-	// claims the Idempotency-Key of an update or a cancel before it
-	// loads the session, in its own family, and frees it again.
+	// claims the Idempotency-Key of each POST before it loads the
+	// session, in its own family, and keeps the 404 it answered.
 	for _, name := range written.seen() {
 		assert.Contains(t, name, ":acp:idem:", "written: %s", name)
 	}
 	keys, err := stack.rdb.Keys(ctx, "ag:demostore:acp:idem:*").Result()
 	require.NoError(t, err)
 	for _, key := range keys {
-		assert.NotContains(t, key, ids["ucp"], "a key left: %s", key)
+		if !strings.Contains(key, ids["ucp"]) {
+			continue
+		}
+		raw, err := stack.rdb.Get(ctx, key).Result()
+		require.NoError(t, err)
+		var record struct{ Status int }
+		require.NoError(t, json.Unmarshal([]byte(raw), &record), raw)
+		assert.Equal(t, http.StatusNotFound, record.Status, key)
 	}
 
 	ready := map[string]string{
@@ -173,8 +181,8 @@ func TestACartsHolderIsReadOnEitherProtocol(t *testing.T) {
 // ACP completes only with a collect-later pay way, checked again on the
 // pay ways the store answers when the order is placed. A pay way that
 // reads as settled online by then places no order: the complete is
-// refused, the session stays ready, and its key is free for the same
-// call.
+// refused and the session stays ready. The key keeps the refusal, so a
+// new attempt takes a new key.
 func TestACPCompletesOnlyWithACollectLaterPayWay(t *testing.T) {
 	ctx := context.Background()
 	stack := startUCPGateway(t)
@@ -192,11 +200,12 @@ func TestACPCompletesOnlyWithACollectLaterPayWay(t *testing.T) {
 	assert.Equal(t, creates, stack.faults.orderCreates.Load())
 	assert.Equal(t, checkout.StatusReadyForComplete,
 		stack.storedSession(t, id).Status)
-	n, err := stack.rdb.Exists(ctx, surface.keyName(id, key)).Result()
-	require.NoError(t, err)
-	assert.Zero(t, n, "the key is still held")
+	assert.Equal(t, keySpent,
+		stack.bookkeeping(t, id, surface.keyName(id, key)).Key)
 
 	stack.faults.codOnlineFrom.Store(0)
-	assert.Equal(t, "completed", surface.complete(ctx, id, key, nil))
+	assert.Equal(t, "400 unsupported", surface.answer(ctx, id, key, nil).refusal)
+	assert.Equal(t, "completed",
+		surface.complete(ctx, id, uuid.NewString(), nil))
 	assert.Equal(t, creates+1, stack.faults.orderCreates.Load())
 }

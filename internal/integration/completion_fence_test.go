@@ -194,9 +194,11 @@ func TestConcurrentCompletesPlaceOneOrder(t *testing.T) {
 					Key: keySpent,
 				}, stack.bookkeeping(t, id, surface.keyName(id, secondKey)))
 				if !sameKey {
-					assert.Equal(t, keyReleased, stack.bookkeeping(t, id,
-						surface.keyName(id, firstKey)).Key,
-						"the loser placed nothing, so its key is free")
+					// The loser placed nothing. UCP frees its claim; ACP's
+					// key keeps the placed session it was answered with.
+					assert.Equal(t, refusalKey(surface.name),
+						stack.bookkeeping(t, id,
+							surface.keyName(id, firstKey)).Key)
 				}
 				assert.Equal(t, fixtureOrderUUID,
 					stack.storedSession(t, id).OrderUUID)

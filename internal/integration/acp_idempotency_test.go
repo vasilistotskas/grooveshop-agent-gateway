@@ -174,8 +174,9 @@ func TestACreateWhoseRecordIsNotConfirmedHandsOutNoSession(t *testing.T) {
 
 // The spec keeps a key's response for at least 24 hours: "Same key +
 // identical body → server MUST return the original response with the
-// same HTTP status code", and "MUST NOT re-execute side effects". A key
-// whose request failed, or was refused, is free for the next attempt.
+// same HTTP status code", and "MUST NOT re-execute side effects". A
+// refusal is that response too. A key whose request failed is free for
+// the next attempt.
 func TestACPIdempotencyKeys(t *testing.T) {
 	stack := startUCPGateway(t)
 	base := stack.gw.URL + "/acp/checkout_sessions"
@@ -273,19 +274,25 @@ func TestACPIdempotencyKeys(t *testing.T) {
 			assert.Equal(t, sessions+1, stack.sessionCount(t))
 		})
 
-	t.Run("a refused create leaves its key free", func(t *testing.T) {
+	t.Run("a refused create replays its refusal", func(t *testing.T) {
 		key := uuid.NewString()
 		empty := map[string]any{
 			"line_items": []map[string]any{}, "currency": "EUR",
 			"capabilities": map[string]any{},
 		}
-		for range 2 {
-			resp, body := acpCall(t, http.MethodPost, base, empty, key)
-			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-			assert.Equal(t, "missing", body["code"])
-			assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
-		}
-		resp, body := create(t, key, createBody)
+		resp, first := create(t, key, empty)
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.Contains(t, string(first), `"code":"missing"`)
+		assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
+		resp, again := create(t, key, empty)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
+		assert.Equal(t, string(first), string(again))
+
+		resp, refusal := acpCall(t, http.MethodPost, base, createBody, key)
+		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+		assert.Equal(t, "idempotency_conflict", refusal["code"])
+		resp, body := create(t, uuid.NewString(), createBody)
 		assertFresh(t, resp, body)
 	})
 
@@ -385,27 +392,32 @@ func TestACPIdempotencyKeys(t *testing.T) {
 			assert.Equal(t, http.StatusOK, <-done)
 		})
 
-	t.Run("a cancel refused with 405 leaves its key free", func(t *testing.T) {
-		resp, created := acpCall(t, http.MethodPost, base, createBody,
-			uuid.NewString())
-		require.Equal(t, http.StatusCreated, resp.StatusCode)
-		id := created["id"].(string)
-		resp, _ = acpCall(t, http.MethodPost, base+"/"+id+"/cancel", nil,
-			uuid.NewString())
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-
-		key := uuid.NewString()
-		for range 2 {
+	// The replay carries the Allow header the 405 was sent with, which
+	// names nothing here.
+	t.Run("a cancel refused with 405 replays it, Allow included",
+		func(t *testing.T) {
+			resp, created := acpCall(t, http.MethodPost, base, createBody,
+				uuid.NewString())
+			require.Equal(t, http.StatusCreated, resp.StatusCode)
+			id := created["id"].(string)
 			resp, _ = acpCall(t, http.MethodPost, base+"/"+id+"/cancel", nil,
-				key)
-			assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+				uuid.NewString())
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			key := uuid.NewString()
+			cancel := func() (*http.Response, []byte) {
+				return acpRaw(t, acpRequest(t, http.MethodPost,
+					base+"/"+id+"/cancel", nil, key))
+			}
+			resp, first := cancel()
+			require.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
 			assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
-		}
-		n, err := stack.rdb.Exists(ctx,
-			"ag:demostore:acp:idem:cancel.v3:"+id+":"+key).Result()
-		require.NoError(t, err)
-		assert.Zero(t, n)
-	})
+			resp, again := cancel()
+			assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+			assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
+			assert.Equal(t, []string{""}, resp.Header["Allow"])
+			assert.Equal(t, string(first), string(again))
+		})
 }
 
 // Every POST's key keeps the response it sent: "Same key + identical
@@ -621,10 +633,11 @@ func TestACompleteIsAnsweredByItsKeyFirst(t *testing.T) {
 	assert.Equal(t, creates, stack.faults.orderCreates.Load())
 }
 
-// A request that did nothing, and one whose answer is a 5xx ("MUST NOT be
-// cached against the idempotency key", §6.5), leave the key free: the
-// retry with that key runs afresh.
-func TestAnACPKeyIsFreedByWhatItDidNotDo(t *testing.T) {
+// An answer that asks for the same request again leaves the key free, and
+// the retry with that key runs afresh: a 5xx ("MUST NOT be cached against
+// the idempotency key", §6.5), a 409 idempotency_in_flight ("Yes (honor
+// Retry-After)", §6.4) and a 429.
+func TestAnACPKeyIsFreedForARetry(t *testing.T) {
 	stack := startUCPGateway(t)
 	base := stack.gw.URL + "/acp/checkout_sessions"
 	ctx := context.Background()
@@ -634,12 +647,15 @@ func TestAnACPKeyIsFreedByWhatItDidNotDo(t *testing.T) {
 				"email": "other@example.test",
 			}}, key)
 	}
-	assertFreeThenKept := func(t *testing.T, id, key string) {
+	assertFree := func(t *testing.T, key string) {
 		t.Helper()
-		n, err := stack.rdb.Exists(ctx,
-			"ag:demostore:acp:idem:update.v3:"+id+":"+key).Result()
+		n, err := stack.rdb.Exists(ctx, key).Result()
 		require.NoError(t, err)
 		assert.Zero(t, n, "the key is kept")
+	}
+	assertFreeThenKept := func(t *testing.T, id, key string) {
+		t.Helper()
+		assertFree(t, "ag:demostore:acp:idem:update.v3:"+id+":"+key)
 		resp, body := update(id, key)
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "%v", body)
 		assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
@@ -647,7 +663,40 @@ func TestAnACPKeyIsFreedByWhatItDidNotDo(t *testing.T) {
 		assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
 	}
 
-	t.Run("refused by the store", func(t *testing.T) {
+	t.Run("a 409, the session busy", func(t *testing.T) {
+		id := acpReady(t, base)
+		key := uuid.NewString()
+		require.NoError(t, stack.rdb.Set(ctx, lockRedisKey(id),
+			"another request", 10*time.Second).Err())
+		resp, body := update(id, key)
+		require.Equal(t, http.StatusConflict, resp.StatusCode)
+		assert.Equal(t, "idempotency_in_flight", body["code"])
+		require.NoError(t, stack.rdb.Del(ctx, lockRedisKey(id)).Err())
+		assertFreeThenKept(t, id, key)
+	})
+
+	t.Run("a 429, the store throttled the order", func(t *testing.T) {
+		id := acpReady(t, base)
+		key := uuid.NewString()
+		complete := func() (*http.Response, map[string]any) {
+			return acpCall(t, http.MethodPost, base+"/"+id+"/complete",
+				map[string]any{"payment_data": map[string]any{}}, key)
+		}
+		stack.faults.orderThrottle.Store(true)
+		t.Cleanup(func() { stack.faults.orderThrottle.Store(false) })
+		resp, body := complete()
+		require.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+		assert.Equal(t, "rate_limited", body["code"])
+		stack.faults.orderThrottle.Store(false)
+		assertFree(t, "ag:demostore:acp:idem:complete.v3:"+id+":"+key)
+
+		resp, body = complete()
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "%v", body)
+		assert.Equal(t, "completed", body["status"])
+		assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
+	})
+
+	t.Run("a 503 from the store", func(t *testing.T) {
 		id := acpReady(t, base)
 		key := uuid.NewString()
 		stack.faults.payWayLookup.Store(true)
@@ -674,4 +723,37 @@ func TestAnACPKeyIsFreedByWhatItDidNotDo(t *testing.T) {
 		stack.faults.namedCartReadsFailFrom.Store(0)
 		assertFreeThenKept(t, id, key)
 	})
+}
+
+// A refusal is the key's answer too (§6.3), however the conditions that
+// caused it change: once the stock is back, the key still answers the
+// stock refusal and places nothing. A new attempt takes a new key.
+func TestAnACPRefusalIsReplayedAfterItsCauseIsGone(t *testing.T) {
+	stack := startUCPGateway(t)
+	base := stack.gw.URL + "/acp/checkout_sessions"
+	id := acpReady(t, base)
+	key := uuid.NewString()
+	complete := func(key string) (*http.Response, []byte) {
+		return acpRaw(t, acpRequest(t, http.MethodPost,
+			base+"/"+id+"/complete",
+			map[string]any{"payment_data": map[string]any{}}, key))
+	}
+	creates := stack.faults.orderCreates.Load()
+
+	stack.faults.stockShort.Store(true)
+	t.Cleanup(func() { stack.faults.stockShort.Store(false) })
+	resp, first := complete(key)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Contains(t, string(first), `"code":"out_of_stock"`)
+	stack.faults.stockShort.Store(false)
+
+	resp, again := complete(key)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
+	assert.Equal(t, string(first), string(again))
+	assert.Equal(t, creates, stack.faults.orderCreates.Load())
+
+	resp, placed := complete(uuid.NewString())
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "%s", placed)
+	assert.Equal(t, creates+1, stack.faults.orderCreates.Load())
 }

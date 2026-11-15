@@ -153,10 +153,15 @@ func TestACPErrorsFollowTheSpec(t *testing.T) {
 			assert.Equal(t, "The cart changed while it was ordered.",
 				body["message"])
 
+			// The refusal is the key's answer; nothing was placed, so a
+			// new key completes the session.
 			stack.faults.orderConflict.Store(false)
-			resp, done := complete(id, key)
-			require.Equal(t, http.StatusOK, resp.StatusCode,
-				"nothing was placed, so the key is free: %v", done)
+			resp, body = complete(id, key)
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
+			assert.Equal(t, "invalid", body["code"])
+			resp, done := complete(id, uuid.NewString())
+			require.Equal(t, http.StatusOK, resp.StatusCode, "%v", done)
 			assert.Equal(t, "completed", done["status"])
 		})
 

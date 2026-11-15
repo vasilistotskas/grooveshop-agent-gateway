@@ -181,6 +181,9 @@ type checkoutFaults struct {
 	orderCreates atomic.Int32
 	// orderRefuse makes order creation answer 400: nothing is created.
 	orderRefuse atomic.Bool
+	// orderThrottle makes order creation answer Django's 429: nothing is
+	// created.
+	orderThrottle atomic.Bool
 	// orderUnpaid makes order creation answer Django's 400 for a cart
 	// whose earlier order still awaits its online payment: nothing is
 	// created.
@@ -444,6 +447,13 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(
 					`{"detail": "The cart can no longer be ordered."}`))
+				return
+			}
+			if faults.orderThrottle.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "3")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"detail": "Request was throttled."}`))
 				return
 			}
 			if faults.orderUnpaid.Load() {

@@ -555,15 +555,14 @@ passes.
     `null` against an absent member does, array order does, and an
     unknown member counts (§6.7). Cancel's body is optional; an absent
     one has a fingerprint of its own.
-  - What a key keeps (`keptAgainstKey`): the answer of a request that
-    did what it asked (a create's session, an update's or cancel's
-    accepted save, a completion past its in-progress save), unless it
-    is a 5xx (§6.5), which frees the key so the retry runs afresh. A
-    request that did nothing (refused, busy, failed, or answered by a
-    session another request stored) frees its key too, so the same
-    request runs again once what refused it changed
-    (`TestAnUnpaidCartRefusalIsAnsweredAsWhatItIs`): a departure from
-    §6.3, which asks for the original response of every replay.
+  - What a key keeps (`keptAgainstKey`): every answer that is final
+    for its request, refusals included (400, 404, 405 with its `Allow`,
+    422), replayed for 24 hours however the conditions that caused it
+    change (§6.3). A platform that wants a new attempt sends a new key.
+    The key is freed, and the same key runs afresh, only for an answer
+    that asks for the same request again: a 5xx (§6.5), a 409
+    `idempotency_in_flight` (§6.4: the key or the lock in use, a
+    session another request changed) and a 429.
   - Two 5xx answers are kept, departing from §6.5: 502
     `order_outcome_unknown` and 500 `order_placed` for an order whose
     session was not saved. An order may exist behind each and the
@@ -588,8 +587,9 @@ passes.
     do: a create refused there leaves no cart in Django, an update the
     cart as the stored session knows it. A line sync that fails partway
     still leaves what it wrote.
-  - A create is rendered before it is saved, and a 4xx or 5xx releases
-    its key: a create that failed leaves no session and no record. A
+  - A create is rendered before it is saved: a create that failed (a
+    5xx) leaves no session and no record, and one refused (a 4xx)
+    leaves no session and its refusal as the key's answer. A
     create that ran past its key's claim, with another create holding
     the key by then, discards its session and answers 409: one key
     answers one session. A create whose record could not be written

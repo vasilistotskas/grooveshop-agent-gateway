@@ -283,6 +283,8 @@ type idemRecord struct {
 	BodyHash string `json:"bodyHash"`
 	Status   int    `json:"status"`
 	Body     string `json:"body"`
+	// Allow is the header a 405 was sent with, which may be empty.
+	Allow *string `json:"allow,omitempty"`
 }
 
 const (
@@ -417,17 +419,13 @@ type keyed struct {
 	scope string
 	hash  string
 	rec   *heldResponse
-	// done: the request did what it asked (a create's session, an
-	// update's or a cancel's accepted save, a completion past its
-	// in-progress save), so its answer is the key's.
-	done bool
 	// orderUnsettled: see keptAgainstKey.
 	orderUnsettled bool
 }
 
 // outcome notes what a body's answer says the request did.
 func (k *keyed) outcome(a answer) {
-	k.done, k.orderUnsettled = a.current, a.orderUnsettled
+	k.orderUnsettled = a.orderUnsettled
 }
 
 // claimKey implements POST idempotency, before anything else the request
@@ -478,6 +476,9 @@ func (h *Handler) claimKey(
 		return nil, false
 	}
 	w.Header().Set("Idempotency-Key", key)
+	if rec.Allow != nil {
+		w.Header().Set("Allow", *rec.Allow)
+	}
 	w.Header().Set("Idempotent-Replayed", "true")
 	writeBody(w, rec.Status, []byte(rec.Body))
 	return nil, false
@@ -486,11 +487,17 @@ func (h *Handler) claimKey(
 // keptAgainstKey reports whether a key keeps the answer its request was
 // given, which every replay then returns.
 //
-// A request that did what it asked keeps it, unless the answer is a 5xx:
-// "Responses with HTTP 5xx status codes MUST NOT be cached against the
-// idempotency key" (§6.5), so the retry runs afresh. A request that did
-// nothing (refused, busy, failed) frees its key, so the same request can
-// run again once what refused it has changed.
+// Every answer that is final for the request is kept, a refusal
+// included (400, 404, 405, 422): "Same key + identical body → server
+// MUST return the original response with the same HTTP status code"
+// (§6.3). A platform that wants a new attempt after a refusal sends a
+// new key. Freed, so that the same request can be sent again:
+//   - a 5xx: "Responses with HTTP 5xx status codes MUST NOT be cached
+//     against the idempotency key" (§6.5);
+//   - a 409 idempotency_in_flight, the spec's answer to retry after
+//     Retry-After (§6.4): the key or the session lock in use, or a
+//     session another request changed meanwhile;
+//   - a 429, a throttle, retried after its Retry-After too.
 //
 // Two 5xx answers of a completion are kept all the same, departing from
 // §6.5: the order whose outcome the store never confirmed (502
@@ -503,22 +510,32 @@ func (h *Handler) claimKey(
 // order may exist; do not place another" for a server to keep: a 4xx
 // tells the client it erred, its 409 asks for a retry, and a complete's
 // 200 must carry status completed and the order.
-func keptAgainstKey(done, orderUnsettled bool, status int) bool {
-	return orderUnsettled ||
-		done && status < http.StatusInternalServerError
+func keptAgainstKey(orderUnsettled bool, status int) bool {
+	switch {
+	case orderUnsettled:
+		return true
+	case status == http.StatusConflict,
+		status == http.StatusTooManyRequests:
+		return false
+	}
+	return status < http.StatusInternalServerError
 }
 
 // settle stores the held answer against its key, or frees the key for an
 // answer that is not kept. It returns storeIdem's error.
 func (h *Handler) settle(r *http.Request, k *keyed) error {
 	status := k.rec.statusCode()
-	if !keptAgainstKey(k.done, k.orderUnsettled, status) {
+	if !keptAgainstKey(k.orderUnsettled, status) {
 		h.releaseIdem(r, k.claim, k.scope)
 		return nil
 	}
-	return h.storeIdem(r, k.claim, k.scope, idemRecord{
+	rec := idemRecord{
 		BodyHash: k.hash, Status: status, Body: k.rec.body.String(),
-	})
+	}
+	if allow, ok := k.rec.header["Allow"]; ok && len(allow) > 0 {
+		rec.Allow = &allow[0]
+	}
+	return h.storeIdem(r, k.claim, k.scope, rec)
 }
 
 // settleAndSend settles the key by the held answer, then sends it. A key
@@ -818,7 +835,6 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := h.createSession(k.rec, r, t, req)
-	k.done = s != nil
 	err := h.settle(r, k)
 	switch {
 	case err == nil, s == nil:
