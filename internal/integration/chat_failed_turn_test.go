@@ -322,3 +322,31 @@ func TestChatConversationKeepsNoCartOfASignedInTurn(t *testing.T) {
 	assert.NotContains(t, body, chatCartID)
 	assert.Contains(t, body, noCartLine)
 }
+
+// A signed-in turn that fails still drops the guest cart the stored
+// conversation named, as a finished one does: after a sign-out the next
+// turn must not be told to use a cart a sign-in merged away. The event
+// names no conversation: none was stored for a cart.
+func TestChatFailedSignedInTurnDropsTheGuestCart(t *testing.T) {
+	fake := answering(modelFails,
+		toolUseTurnSSE("add_to_cart", `{"productId": 1}`),
+		textTurnSSE("Το πρόσθεσα."))
+	djangoH, _ := tokenDjango(t)
+	gw, rdb := newChatGateway(t, fake, djangoH, quietLogger())
+
+	visitor := doneOf(t, postChat(t, gw.URL, map[string]any{
+		"message": "βάλε τον φορτιστή",
+	}))
+	id := visitor["conversationId"].(string)
+	require.Equal(t, chatCartID, storedConversation(t, rdb, id)["cartId"])
+
+	failure := lastEvent(t, postChat(t, gw.URL, map[string]any{
+		"message": "και άλλον έναν", "conversationId": id,
+		"cartToken": liveCartToken,
+	}), "error")
+	assert.NotContains(t, failure, "conversationId")
+	stored := storedConversation(t, rdb, id)
+	require.NotNil(t, stored)
+	assert.NotContains(t, stored, "cartId")
+	assert.Len(t, stored["turns"], 2, "the failed turn's messages are not stored")
+}

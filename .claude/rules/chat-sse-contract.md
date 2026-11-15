@@ -39,10 +39,12 @@ cross-repo change. The code wins over this page.
     on `cartMutated` it claims `cartId` (a visitor's turn that sent no
     cart) or refreshes the cart. A widget that reads only `message`,
     `code` and `retryAfter` ignores the rest.
-  - **A failed turn stores its conversation only to keep a cart.** When
+  - **A failed turn stores its conversation only for its cart.** When
     a visitor's cart tool named a cart, the conversation is stored with
     it and `error.conversationId` names the conversation, for the widget
-    to go on with. None of the failed turn's messages are stored: the
+    to go on with; it is named only once it is stored. A signed-in turn
+    whose stored conversation still named a guest cart stores it without
+    that cart, as a finished one does. None of the failed turn's messages are stored: the
     retry sends them again. So a later turn of that conversation that
     sends no `cartId` is told to use that cart and creates no other,
     also after a shopper pressed stop or left, when nobody reads an
@@ -51,8 +53,9 @@ cross-repo change. The code wins over this page.
     that cart stays unclaimed. Any other failed
     turn stores nothing and names no conversation. The save runs on a
     context the shopper's hang-up and the shutdown cannot end
-    (`Service.save`), after the event: a turn cut by shutdown has only
-    the server's final window to write it.
+    (`Service.save`), before the event, so the event never names a
+    conversation that is not stored. It ends at the Redis client's own
+    timeouts, well inside the shutdown's final window.
   - The cart members are what the turn's tools had recorded when it
     ended. A cart call still running when the shopper leaves or the
     shutdown cuts the turn is not in them, though the store may accept

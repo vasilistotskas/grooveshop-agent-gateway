@@ -78,7 +78,7 @@ func TestEndFailedSaysWhatTheTurnDidToTheCart(t *testing.T) {
 	end := func(ctx context.Context) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		s.endFailed(ctx, testTenant(), "en", &Conversation{ID: "c-1"},
-			&sseWriter{w: rec, f: rec}, cart, false,
+			&sseWriter{w: rec, f: rec}, cart, false, false,
 			errors.New("model down"))
 		return rec
 	}

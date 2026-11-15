@@ -112,6 +112,9 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A token turn drops a guest cart the stored conversation names; the
+	// conversation is stored without it however the turn ends.
+	dropped := cartToken != nil && conv.CartID != ""
 	switch {
 	// A signed-in shopper's cart is reached through their token alone,
 	// and a conversation keeps none for them: its id, kept, would be
@@ -153,7 +156,8 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		CartTokenRefused: cartToken != nil && cartToken.Refused(),
 	}
 	if err != nil {
-		s.endFailed(r.Context(), t, lang, conv, sse, cart, filled, err)
+		s.endFailed(r.Context(), t, lang, conv, sse, cart, filled, dropped,
+			err)
 		return
 	}
 
@@ -169,18 +173,23 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 // the error event, which says what the turn's tools did to the cart as
 // done would. A turn whose tools filled a visitor's cart stores its
 // conversation, so the cart is the next turn's too and not one nobody
-// claims, and names the conversation in the event; its messages are not
-// stored, the retry sends them again. The event is sent first: a turn cut
-// by shutdown has only the server's final window for it.
+// claims, and names the conversation in the event once it is stored. A
+// token turn that dropped a guest cart (dropped) stores the conversation
+// without it. The failed turn's messages are never stored: the retry
+// sends them again.
+//
+// The save comes before the event, so the event never names a
+// conversation that is not stored. It ends at the Redis client's own
+// timeouts, well inside the shutdown's final window.
 func (s *Service) endFailed(
 	ctx context.Context, t *tenant.Tenant, lang string, conv *Conversation,
-	sse *sseWriter, cart turnCart, filled bool, err error,
+	sse *sseWriter, cart turnCart, filled, dropped bool, err error,
 ) {
 	failure := errorEvent{
 		Message:  messageFor(lang, msgTurnFailed),
 		turnCart: cart,
 	}
-	if filled {
+	if (filled || dropped) && s.save(ctx, t, conv) && filled {
 		failure.ConversationID = conv.ID
 	}
 	switch {
@@ -198,21 +207,21 @@ func (s *Service) endFailed(
 	default:
 		s.failTurn(ctx, lang, conv, sse, failure, err)
 	}
-	if filled {
-		s.save(ctx, t, conv)
-	}
 }
 
 // save stores the conversation on a context its caller cannot end. The
 // turn's cart changes already happened upstream: a client that
 // disconnects, or a pod that is stopping, must not leave the
-// conversation behind them.
+// conversation behind them. It reports whether the conversation is
+// stored.
 func (s *Service) save(
 	ctx context.Context, t *tenant.Tenant, conv *Conversation,
-) {
+) bool {
 	if err := s.store.Save(context.WithoutCancel(ctx),
 		t.SchemaName, conv); err != nil {
 		s.log.ErrorContext(ctx, "chat save failed",
 			slog.String("error", err.Error()))
+		return false
 	}
+	return true
 }
