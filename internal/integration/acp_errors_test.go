@@ -150,8 +150,10 @@ func TestACPErrorsFollowTheSpec(t *testing.T) {
 			resp, body := complete(id, key)
 			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 			assert.Equal(t, "invalid", body["code"])
-			assert.Equal(t, "The cart changed while it was ordered.",
-				body["message"])
+			// Django's own sentence, then that the key keeps the answer.
+			assert.Equal(t, "The cart changed while it was ordered. This "+
+				"Idempotency-Key keeps this answer for 24 hours: send a "+
+				"new attempt with a new key.", body["message"])
 
 			// The refusal is the key's answer; nothing was placed, so a
 			// new key completes the session.
