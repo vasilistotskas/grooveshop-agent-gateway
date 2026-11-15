@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -60,13 +59,18 @@ const (
 
 // signedComponents are the RFC 9421 components a webhook covers, in the
 // order UCP's REST request signing lists them: @query only when the
-// platform's URL carries one.
+// platform's URL carries one. Webhook-Id and Webhook-Timestamp are
+// covered too: UCP after 2026-08-25 requires it of an order webhook and
+// has platforms reject a delivery whose signature omits either, and a
+// verifier of 2026-08-25 rebuilds the base from the listed components,
+// so covering two more costs it nothing.
 func signedComponents(withQuery bool) []string {
 	c := []string{"@method", "@authority", "@path"}
 	if withQuery {
 		c = append(c, "@query")
 	}
-	return append(c, "ucp-agent", "content-digest", "content-type")
+	return append(c, "ucp-agent", "content-digest", "content-type",
+		"webhook-id", "webhook-timestamp")
 }
 
 // Delivery is one queued order webhook. It is the queue record, never the
@@ -204,7 +208,7 @@ func (d *Dispatcher) ensureGroup(ctx context.Context) error {
 	err := d.rdb.XGroupCreateMkStream(ctx, eventsStream, eventsGroup, "0").
 		Err()
 	// BUSYGROUP: another pod (or an earlier boot) created it.
-	if err != nil && !strings.HasPrefix(err.Error(), "BUSYGROUP") {
+	if err != nil && !redis.HasErrorPrefix(err, "BUSYGROUP") {
 		return err
 	}
 	return nil
