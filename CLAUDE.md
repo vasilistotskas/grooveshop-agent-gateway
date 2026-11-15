@@ -37,11 +37,14 @@ go test ./internal/...                           # Unit tests
 go test -tags integration ./internal/integration/...  # Docker-backed tests
 go test -tags realstack ./internal/realstack/...      # A real Django; see below
 golangci-lint run                                # Lint (v2 config)
+go tool govulncheck ./...                        # Known vulnerabilities the code reaches
+go mod tidy -diff                                # go.mod and go.sum are tidy
 go run ./cmd/gateway                             # Run (needs .env vars exported)
 docker build -t agent-gateway .                  # Production image
 ```
 
-CI runs lint → unit+integration (with `-race`) → build. `-race` requires
+CI runs lint (with the vulnerability and tidy checks) → unit+integration
+(with `-race`) → build. `-race` requires
 cgo; the local Go builds with `CGO_ENABLED=0` and has no C compiler, so
 `go test -race` fails at once with `-race requires cgo`. Run it in CI.
 

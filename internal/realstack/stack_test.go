@@ -51,8 +51,8 @@ const (
 const (
 	postgresImage = "postgres:18.6-alpine3.23"
 	redisImage    = "redis:8-alpine"
-	rabbitImage   = "rabbitmq:4.3.5-alpine"
-	meiliImage    = "getmeili/meilisearch:v1.53.1"
+	rabbitImage   = "rabbitmq:4.3.7-alpine"
+	meiliImage    = "getmeili/meilisearch:v1.56.0"
 	profileImage  = "busybox:1.37"
 )
 

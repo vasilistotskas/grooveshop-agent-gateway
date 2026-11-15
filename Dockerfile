@@ -7,7 +7,7 @@
 # build broke silently after 0920e45 bumped go.mod to 1.27.0 and left
 # this line at 1.26. CI's other jobs use ``go-version-file: go.mod`` and
 # adapt on their own; this is the one place the version is hardcoded.
-FROM golang:1.27.3-alpine AS build
+FROM golang:1.27.4-alpine AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./
