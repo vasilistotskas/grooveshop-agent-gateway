@@ -15,7 +15,7 @@ import (
 )
 
 // goldenKeyVersion is the redisKeyVersion that goldenShape belongs to.
-const goldenKeyVersion = "v5"
+const goldenKeyVersion = "v6"
 
 // goldenShape is every field of the cached django.TenantConfig, nested
 // types included: "path type json-tag", sorted. It is the shape the
@@ -44,6 +44,7 @@ var goldenShape = []string{
 	`TenantConfig.Features django.StoreFeatures "features"`,
 	`TenantConfig.Features.Cart bool "cart"`,
 	`TenantConfig.Features.Catalogue bool "catalogue"`,
+	`TenantConfig.Features.CustomerAccounts bool "customerAccounts"`,
 	`TenantConfig.Features.Favourites bool "favourites"`,
 	`TenantConfig.Features.Loyalty bool "loyalty"`,
 	`TenantConfig.Features.ProductAlerts bool "productAlerts"`,
