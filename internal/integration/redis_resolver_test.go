@@ -123,8 +123,8 @@ func TestResolverSharesRedisTierAcrossInstances(t *testing.T) {
 	assert.Equal(t, callsAfterNegative, calls.Load(),
 		"pod B must see the shared negative sentinel")
 
-	// The Redis entry is namespaced per plan: ag:tenant:v6:{host}.
-	val, err := rdb.Get(ctx, "ag:tenant:v6:nope.example.test").Result()
+	// The Redis entry is namespaced per plan: ag:tenant:v7:{host}.
+	val, err := rdb.Get(ctx, "ag:tenant:v7:nope.example.test").Result()
 	require.NoError(t, err)
 	assert.Equal(t, "!", val)
 }
