@@ -41,9 +41,6 @@
           "postalCode": {
             "type": "string"
           },
-          "shopKind": {
-            "type": "integer"
-          },
           "workingHours": {
             "type": "string"
           }
@@ -61,7 +58,6 @@
           "maxWeightKg",
           "name",
           "postalCode",
-          "shopKind",
           "workingHours"
         ],
         "type": "object"
@@ -335,9 +331,6 @@
                       },
                       "type": "array"
                     },
-                    "likesCount": {
-                      "type": "integer"
-                    },
                     "mainImagePath": {
                       "type": "string"
                     },
@@ -395,9 +388,6 @@
                     "vatPercent": {
                       "type": "number"
                     },
-                    "viewCount": {
-                      "type": "integer"
-                    },
                     "weight": {
                       "nullable": true,
                       "properties": {
@@ -417,7 +407,6 @@
                     "effectivePrice",
                     "id",
                     "imagePaths",
-                    "likesCount",
                     "mainImagePath",
                     "priorPrice",
                     "reviewAverage",
@@ -425,8 +414,7 @@
                     "slug",
                     "translations",
                     "uuid",
-                    "vatPercent",
-                    "viewCount"
+                    "vatPercent"
                   ],
                   "type": "object"
                 },
@@ -458,13 +446,7 @@
             "type": "number"
           },
           "totalItems": {},
-          "totalItemsUnique": {
-            "type": "integer"
-          },
           "totalPrice": {
-            "type": "number"
-          },
-          "totalVatValue": {
             "type": "number"
           },
           "totalWeightGrams": {
@@ -485,9 +467,7 @@
           "promotionFreeShipping",
           "totalDiscountValue",
           "totalItems",
-          "totalItemsUnique",
           "totalPrice",
-          "totalVatValue",
           "totalWeightGrams",
           "uuid"
         ],
@@ -577,9 +557,6 @@
                 },
                 "type": "array"
               },
-              "likesCount": {
-                "type": "integer"
-              },
               "mainImagePath": {
                 "type": "string"
               },
@@ -637,9 +614,6 @@
               "vatPercent": {
                 "type": "number"
               },
-              "viewCount": {
-                "type": "integer"
-              },
               "weight": {
                 "nullable": true,
                 "properties": {
@@ -659,7 +633,6 @@
               "effectivePrice",
               "id",
               "imagePaths",
-              "likesCount",
               "mainImagePath",
               "priorPrice",
               "reviewAverage",
@@ -667,8 +640,7 @@
               "slug",
               "translations",
               "uuid",
-              "vatPercent",
-              "viewCount"
+              "vatPercent"
             ],
             "type": "object"
           },
@@ -1026,9 +998,6 @@
       },
       "OrderDetail": {
         "properties": {
-          "canBeCanceled": {
-            "type": "boolean"
-          },
           "createdAt": {
             "type": "string"
           },
@@ -1099,9 +1068,6 @@
                       },
                       "type": "array"
                     },
-                    "likesCount": {
-                      "type": "integer"
-                    },
                     "mainImagePath": {
                       "type": "string"
                     },
@@ -1159,9 +1125,6 @@
                     "vatPercent": {
                       "type": "number"
                     },
-                    "viewCount": {
-                      "type": "integer"
-                    },
                     "weight": {
                       "nullable": true,
                       "properties": {
@@ -1181,7 +1144,6 @@
                     "effectivePrice",
                     "id",
                     "imagePaths",
-                    "likesCount",
                     "mainImagePath",
                     "priorPrice",
                     "reviewAverage",
@@ -1189,8 +1151,7 @@
                     "slug",
                     "translations",
                     "uuid",
-                    "vatPercent",
-                    "viewCount"
+                    "vatPercent"
                   ],
                   "type": "object"
                 },
@@ -1287,7 +1248,6 @@
           }
         },
         "required": [
-          "canBeCanceled",
           "createdAt",
           "id",
           "isPaid",
@@ -1442,10 +1402,6 @@
           "settlement": {
             "type": "string"
           },
-          "sortOrder": {
-            "nullable": true,
-            "type": "integer"
-          },
           "translations": {
             "additionalProperties": {
               "properties": {
@@ -1470,7 +1426,6 @@
           "freeThreshold",
           "id",
           "key",
-          "sortOrder",
           "translations"
         ],
         "type": "object"
@@ -1568,17 +1523,13 @@
               "type": "object"
             },
             "type": "object"
-          },
-          "treeId": {
-            "type": "integer"
           }
         },
         "required": [
           "id",
           "level",
           "slug",
-          "translations",
-          "treeId"
+          "translations"
         ],
         "type": "object"
       },
@@ -1643,9 +1594,6 @@
             },
             "type": "array"
           },
-          "likesCount": {
-            "type": "integer"
-          },
           "mainImagePath": {
             "type": "string"
           },
@@ -1703,9 +1651,6 @@
           "vatPercent": {
             "type": "number"
           },
-          "viewCount": {
-            "type": "integer"
-          },
           "weight": {
             "nullable": true,
             "properties": {
@@ -1726,7 +1671,6 @@
           "highlights",
           "id",
           "imagePaths",
-          "likesCount",
           "mainImagePath",
           "priorPrice",
           "reviewAverage",
@@ -1734,8 +1678,7 @@
           "slug",
           "translations",
           "uuid",
-          "vatPercent",
-          "viewCount"
+          "vatPercent"
         ],
         "type": "object"
       },
@@ -1782,9 +1725,6 @@
                 "languageCode": {
                   "type": "string"
                 },
-                "likesCount": {
-                  "type": "integer"
-                },
                 "mainImagePath": {
                   "type": "string"
                 },
@@ -1811,9 +1751,6 @@
                 "vatPercent": {
                   "nullable": true,
                   "type": "number"
-                },
-                "viewCount": {
-                  "type": "integer"
                 }
               },
               "required": [
@@ -1823,7 +1760,6 @@
                 "effectivePrice",
                 "id",
                 "languageCode",
-                "likesCount",
                 "mainImagePath",
                 "master",
                 "name",
@@ -1831,8 +1767,7 @@
                 "reviewAverage",
                 "slug",
                 "stock",
-                "vatPercent",
-                "viewCount"
+                "vatPercent"
               ],
               "type": "object"
             },
@@ -1902,9 +1837,6 @@
             },
             "type": "array"
           },
-          "likesCount": {
-            "type": "integer"
-          },
           "mainImagePath": {
             "type": "string"
           },
@@ -1965,9 +1897,6 @@
           "vatPercent": {
             "type": "number"
           },
-          "viewCount": {
-            "type": "integer"
-          },
           "weight": {
             "nullable": true,
             "properties": {
@@ -1987,7 +1916,6 @@
           "effectivePrice",
           "id",
           "imagePaths",
-          "likesCount",
           "mainImagePath",
           "priceDropAlertsEnabled",
           "priorPrice",
@@ -1996,8 +1924,7 @@
           "slug",
           "translations",
           "uuid",
-          "vatPercent",
-          "viewCount"
+          "vatPercent"
         ],
         "type": "object"
       },
@@ -2875,12 +2802,6 @@
           "features": {
             "$ref": "#/components/schemas/StoreFeatures"
           },
-          "logoDarkUrl": {
-            "type": "string"
-          },
-          "logoLightUrl": {
-            "type": "string"
-          },
           "name": {
             "type": "string"
           },
@@ -2893,13 +2814,7 @@
           "schemaName": {
             "type": "string"
           },
-          "storeDescription": {
-            "type": "string"
-          },
           "storeName": {
-            "type": "string"
-          },
-          "stripePublishableKey": {
             "type": "string"
           }
         },
@@ -2912,15 +2827,11 @@
           "defaultLocale",
           "faviconUrl",
           "features",
-          "logoDarkUrl",
-          "logoLightUrl",
           "name",
           "primaryDomain",
           "productFeedsEnabled",
           "schemaName",
-          "storeDescription",
-          "storeName",
-          "stripePublishableKey"
+          "storeName"
         ],
         "type": "object"
       },
