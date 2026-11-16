@@ -5,6 +5,7 @@
 package integration
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -34,7 +35,10 @@ func startRedis(t *testing.T) *redis.Client {
 			Started:      true,
 		})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Terminate(t.Context()) })
+	// t.Context() is cancelled before cleanups run.
+	t.Cleanup(func() {
+		_ = container.Terminate(context.WithoutCancel(t.Context()))
+	})
 
 	host, err := container.Host(ctx)
 	require.NoError(t, err)

@@ -532,6 +532,9 @@ func TestUpdateCheckoutSettlesEverythingBeforeTheFirstCartWrite(
 		checkout UCPCheckoutIn
 		django   func(t *testing.T) (*django.Client, func() []string)
 		want     string
+		// reaches is a call the update must have made: the step that
+		// ended it, so the refusal is that step's and no other's.
+		reaches string
 	}{
 		"a payment the store does not offer": {
 			checkout: UCPCheckoutIn{LineItems: lines,
@@ -548,6 +551,7 @@ func TestUpdateCheckoutSettlesEverythingBeforeTheFirstCartWrite(
 			checkout: UCPCheckoutIn{LineItems: lines},
 			django:   downDjango,
 			want:     "unavailable",
+			reaches:  "GET /api/v1/pay_way",
 		},
 		"every lookup settled": {
 			checkout: UCPCheckoutIn{LineItems: lines},
@@ -570,8 +574,12 @@ func TestUpdateCheckoutSettlesEverythingBeforeTheFirstCartWrite(
 				})
 
 			require.ErrorContains(t, err, tc.want)
-			for _, call := range calls() {
+			made := calls()
+			for _, call := range made {
 				assert.NotContains(t, call, "/api/v1/cart")
+			}
+			if tc.reaches != "" {
+				assert.Contains(t, made, tc.reaches)
 			}
 		})
 	}
