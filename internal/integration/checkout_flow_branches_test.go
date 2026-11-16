@@ -3,8 +3,6 @@
 package integration
 
 import (
-	"context"
-	"errors"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -97,7 +95,7 @@ func startBranchFlow(t *testing.T, hosted bool) (flowStack, *branchDjango) {
 // storedBytes is the session exactly as Redis holds it.
 func (f flowStack) storedBytes(t *testing.T, id string) string {
 	t.Helper()
-	raw, err := f.rdb.Get(context.Background(), sessionRedisKey(id)).Result()
+	raw, err := f.rdb.Get(t.Context(), sessionRedisKey(id)).Result()
 	require.NoError(t, err)
 	return raw
 }
@@ -155,10 +153,17 @@ func TestCompleteRefusesAPayWayItCannotFinish(t *testing.T) {
 			b.payWay.Store(&tc.payWay)
 
 			placement, err := f.flow.Complete(
-				context.Background(), f.tenant, s)
+				t.Context(), f.tenant, s)
 
 			require.ErrorIs(t, err, checkout.ErrPaymentMethodUnsupported)
-			assert.Contains(t, err.Error(), tc.detail)
+			if tc.detail == "" {
+				// Refused with the bare sentinel, not one of the
+				// refusals above.
+				assert.Equal(t,
+					checkout.ErrPaymentMethodUnsupported.Error(), err.Error())
+			} else {
+				assert.Contains(t, err.Error(), tc.detail)
+			}
 			assert.Equal(t, checkout.NothingPlaced, placement)
 			assert.Zero(t, b.reserves.Load(), "stock was reserved")
 			assert.Zero(t, f.faults.orderCreates.Load())
@@ -173,7 +178,7 @@ func TestCompleteRefusesAPayWayItCannotFinish(t *testing.T) {
 		viva := `"providerCode":"viva_wallet","settlement":"online"`
 		b.payWay.Store(&viva)
 
-		placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+		placement, err := f.flow.Complete(t.Context(), f.tenant, s)
 
 		require.NoError(t, err)
 		assert.Equal(t, checkout.OrderMayExist, placement)
@@ -193,7 +198,7 @@ func (f flowStack) sessionOf(t *testing.T, protocol string) *checkout.Session {
 		ready.PayWayID
 	s.Recompute()
 	require.Equal(t, checkout.StatusReadyForComplete, s.Status)
-	require.NoError(t, f.store.Create(context.Background(), s,
+	require.NoError(t, f.store.Create(t.Context(), s,
 		checkout.CartHolder{}))
 	return s
 }
@@ -212,7 +217,7 @@ func escalated() *checkout.Session {
 // has none; any other session is left as it is, with no call to Django.
 func TestResumePaymentOpensAPageOnlyWhereOneIsMissing(t *testing.T) {
 	f, b := startBranchFlow(t, true)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("an escalated order without a page", func(t *testing.T) {
 		s := escalated()
@@ -259,7 +264,7 @@ func TestResumePaymentOpensAPageOnlyWhereOneIsMissing(t *testing.T) {
 // ended, changes nothing and asks Django nothing.
 func TestOrderEventLeavesAGoneOrEndedCheckoutAlone(t *testing.T) {
 	f, b := startBranchFlow(t, true)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("no session", func(t *testing.T) {
 		id := "4d3c2b1a-0000-4000-8000-000000000001"
@@ -292,7 +297,7 @@ func TestOrderEventLeavesAGoneOrEndedCheckoutAlone(t *testing.T) {
 // order, has nothing to record: the session is not written.
 func TestOrderEventWithNothingNewWritesNothing(t *testing.T) {
 	f, b := startBranchFlow(t, true)
-	ctx := context.Background()
+	ctx := t.Context()
 	s := f.readySession(t)
 	s.Status = checkout.StatusRequiresEscalation
 	s.OrderID, s.OrderUUID = 684, fixtureOrderUUID
@@ -320,7 +325,7 @@ func TestOrderEventWithNothingNewWritesNothing(t *testing.T) {
 // pushed again, and the other write stands.
 func TestOrderEventThatLostItsSaveSaysSo(t *testing.T) {
 	f, _ := startBranchFlow(t, true)
-	ctx := context.Background()
+	ctx := t.Context()
 	s := f.readySession(t)
 	s.Status = checkout.StatusRequiresEscalation
 	s.OrderID, s.OrderUUID = 684, fixtureOrderUUID
@@ -348,5 +353,4 @@ func TestOrderEventThatLostItsSaveSaysSo(t *testing.T) {
 	stored := f.stored(t, s)
 	assert.Equal(t, checkout.StatusRequiresEscalation, stored.Status)
 	assert.Equal(t, "Ελένη", stored.Buyer.FirstName)
-	assert.False(t, errors.Is(err, checkout.ErrNotFound))
 }

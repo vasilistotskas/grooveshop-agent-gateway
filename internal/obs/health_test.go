@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,7 +72,9 @@ func TestReadyzBoundsEachPing(t *testing.T) {
 	var redisBound, djangoBound bool
 	probe := func(seen *bool) func(context.Context) error {
 		return func(ctx context.Context) error {
-			_, *seen = ctx.Deadline()
+			deadline, ok := ctx.Deadline()
+			left := time.Until(deadline)
+			*seen = ok && left > 0 && left <= readyzPingTimeout
 			return nil
 		}
 	}

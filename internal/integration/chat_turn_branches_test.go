@@ -215,7 +215,7 @@ func TestChatRefusesAFullConversation(t *testing.T) {
 	fake := &fakeChatAPI{}
 	gw, rdb := newChatGateway(t, fake, fakeDjangoMux(t), quietLogger())
 	id := uuid.NewString()
-	turns := make([]map[string]string, 10) // ChatMaxTurns: 10
+	turns := make([]map[string]string, chatMaxTurns)
 	for i := range turns {
 		turns[i] = map[string]string{"role": "user", "text": "γεια"}
 	}
@@ -259,8 +259,11 @@ func TestChatClientDisconnectMidTurnStoresNothing(t *testing.T) {
 	ctx, leave := context.WithCancel(t.Context())
 	defer leave()
 	go func() {
-		<-asked
-		leave()
+		select {
+		case <-asked:
+			leave()
+		case <-ctx.Done():
+		}
 	}()
 	raw, err := json.Marshal(map[string]any{"message": "θήκες"})
 	require.NoError(t, err)
