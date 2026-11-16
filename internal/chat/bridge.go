@@ -20,8 +20,10 @@ import (
 //
 // A bridge is one turn's and is used from that turn's goroutine only:
 // its tool calls run one after another (runToolCalls), and its state is
-// read once they are done. The server's tool handlers reach only
-// activity, which is atomic.
+// read when the turn ends, finished or failed. The server's tool handlers
+// reach only activity, which is atomic: a handler whose call the turn
+// gave up on (the shopper left, the pod is stopping) can still be
+// running then, and what it records after that is read by nobody.
 type bridge struct {
 	session *mcp.ClientSession
 	// offered is the set of tools advertised to the model; call refuses

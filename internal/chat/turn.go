@@ -21,6 +21,18 @@ import (
 // may execute; each one is a Django round trip on the tenant's behalf.
 const maxToolCallsPerIteration = 8
 
+// turnResult is what a turn did. A turn that failed has no text, and
+// still says what its tools did to the cart up to there: the store keeps
+// a change it accepted.
+type turnResult struct {
+	// text is the assistant's reply.
+	text string
+	// cartID is the cart a cart tool's result named; empty when none did.
+	cartID string
+	// cartMutated: the store accepted a cart change.
+	cartMutated bool
+}
+
 // runTurn executes one assistant turn: the model looping over the commerce
 // tools via the in-process MCP bridge, streaming text deltas to the client.
 // The loop is bounded by ChatMaxIterations; each iteration is one streamed
@@ -31,19 +43,24 @@ func (s *Service) runTurn(
 	conv *Conversation,
 	userMessage string,
 	sse *sseWriter,
-) (assistantText, cartID string, cartMutated bool, err error) {
+) (turnResult, error) {
 	ctx := r.Context()
 	lang := django.Language(ctx, t.TenantConfig)
 
 	br, err := newBridge(ctx, s.server)
 	if err != nil {
-		return "", "", false, fmt.Errorf("chat: bridge: %w", err)
+		return turnResult{}, fmt.Errorf("chat: bridge: %w", err)
 	}
 	defer br.close()
+	// However the turn ends, it reports the cart as its tools left it.
+	result := func(text string) turnResult {
+		cartID, mutated := br.cartState()
+		return turnResult{text: text, cartID: cartID, cartMutated: mutated}
+	}
 
 	tools, err := br.tools(ctx, t.Features)
 	if err != nil {
-		return "", "", false, fmt.Errorf("chat: list tools: %w", err)
+		return result(""), fmt.Errorf("chat: list tools: %w", err)
 	}
 
 	messages := make(
@@ -66,9 +83,9 @@ func (s *Service) runTurn(
 	// The turn's deadline bounds its model calls and when a tool call may
 	// start. A tool call already running keeps ctx and finishes under its
 	// own Django timeout: cut midway, a cart change Django accepted would
-	// go unrecorded. A turn can still fail after a cart change; saying so
-	// to the shopper is #94, and a retry with the same turnId does not
-	// add a product twice (mcpsrv.Turn).
+	// go unrecorded. A turn that fails after a cart change reports it in
+	// its result, and a retry with the same turnId does not add a product
+	// twice (mcpsrv.Turn).
 	turnCtx, cancel := context.WithTimeout(ctx, s.cfg.ChatTurnTimeout)
 	defer cancel()
 
@@ -98,7 +115,7 @@ func (s *Service) runTurn(
 		acc, signatures, err := s.streamCompletion(
 			turnCtx, params, apiKey, &reply, sse)
 		if err != nil {
-			return "", "", false, err
+			return result(""), err
 		}
 		if len(acc.Choices) == 0 {
 			break
@@ -122,7 +139,7 @@ func (s *Service) runTurn(
 		messages, err = runToolCalls(
 			ctx, turnCtx, br, msg.ToolCalls, messages, sse)
 		if err != nil {
-			return "", "", false, err
+			return result(""), err
 		}
 	}
 
@@ -135,8 +152,7 @@ func (s *Service) runTurn(
 		reply.WriteString(fallback)
 	}
 
-	cartID, cartMutated = br.cartState()
-	return reply.String(), cartID, cartMutated, nil
+	return result(reply.String()), nil
 }
 
 // streamCompletion streams one chat completion: each text delta is

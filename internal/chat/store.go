@@ -25,7 +25,11 @@ type Turn struct {
 }
 
 type Conversation struct {
-	ID        string    `json:"id"`
+	ID string `json:"id"`
+	// CartID is the visitor's guest cart: the one the widget sent, else
+	// the one a turn's cart tool named. The next turn's model is told to
+	// use it. Never a signed-in shopper's cart, which only their cart
+	// token reaches (Service.handle).
 	CartID    string    `json:"cartId,omitempty"`
 	Turns     []Turn    `json:"turns"`
 	CreatedAt time.Time `json:"createdAt"`

@@ -18,10 +18,11 @@ import (
 )
 
 // failTurn logs a turn that failed while the request was still live and
-// ends its stream with the error event.
+// ends its stream with failure, the error event, worded for a throttle
+// when the model provider throttled the turn.
 func (s *Service) failTurn(
 	ctx context.Context, lang string, conv *Conversation, sse *sseWriter,
-	err error,
+	failure errorEvent, err error,
 ) {
 	attrs := []any{
 		slog.String("conversation", conv.ID),
@@ -31,9 +32,6 @@ func (s *Service) failTurn(
 	}
 	// The status line alone is undebuggable — surface the model
 	// API's error body and the failing request shape.
-	failure := errorEvent{
-		Message: messageFor(lang, msgTurnFailed),
-	}
 	if apierr, ok := errors.AsType[*openai.Error](err); ok {
 		attrs = append(attrs,
 			// Method, URL and headers only: the body is the whole
@@ -59,11 +57,9 @@ func (s *Service) failTurn(
 		// Lift which quota died out of the body so triage reads one
 		// field instead of a 2KB blob.
 		if perr.status == http.StatusTooManyRequests {
-			failure = errorEvent{
-				Message:    messageFor(lang, msgRateLimited),
-				Code:       codeRateLimited,
-				RetryAfter: perr.retryAfter(),
-			}
+			failure.Message = messageFor(lang, msgRateLimited)
+			failure.Code = codeRateLimited
+			failure.RetryAfter = perr.retryAfter()
 			for field, re := range quotaFields {
 				if m := re.FindStringSubmatch(perr.body); m != nil {
 					attrs = append(attrs, slog.String(field, m[1]))
