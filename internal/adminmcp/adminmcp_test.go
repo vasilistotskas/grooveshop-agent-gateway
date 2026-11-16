@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,8 +39,7 @@ func acme() *tenant.Tenant {
 }
 
 func quietLog() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	return slog.New(slog.DiscardHandler)
 }
 
 // fakeDjango serves /agent/staff/* for goodToken, holding the given

@@ -178,9 +178,8 @@ func TestCachedShapeMatchesKeyVersion(t *testing.T) {
 	case shapeSame && versionSame:
 	case !shapeSame && versionSame:
 		t.Fatalf("TenantConfig's cached shape changed: bump the version "+
-			"in redisKey (redisKeyVersion, now %q), update the key "+
-			"literal in internal/integration/redis_resolver_test.go, "+
-			"then update this golden (goldenKeyVersion and "+
+			"in redisKey (redisKeyVersion, now %q), then update this "+
+			"golden (goldenKeyVersion and "+
 			"goldenShape):%s",
 			redisKeyVersion, shapeDiff(goldenShape, got))
 	case shapeSame && !versionSame:
