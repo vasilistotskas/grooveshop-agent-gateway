@@ -164,3 +164,19 @@ func TestToolOutputsListNothingAsEmptyArrays(t *testing.T) {
 		}
 	}
 }
+
+// No tool sends null for a list, so no output schema says it may: each
+// list is an array (mcptool.OutputSchema), as on /mcp. The SDK checks
+// every result against its schema.
+func TestOutputSchemasDeclareNoNullableList(t *testing.T) {
+	session := connectAs(t, emptyStoreDjango(t), goodToken)
+	listed, err := session.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, listed.Tools)
+	for _, tool := range listed.Tools {
+		require.NotNil(t, tool.OutputSchema, tool.Name)
+		raw, err := json.Marshal(tool.OutputSchema)
+		require.NoError(t, err)
+		assert.NotContains(t, string(raw), `["null","array"]`, tool.Name)
+	}
+}

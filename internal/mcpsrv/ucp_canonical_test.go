@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
@@ -73,14 +75,26 @@ func TestCheckoutInLines(t *testing.T) {
 		{Item: UCPItemIn{ID: "7"}, Quantity: -3},
 	}}
 	_, err = neg.lines()
-	require.ErrorIs(t, err, checkout.ErrInvalidQuantity)
+	te := codeOf(t, err, mcptool.CodeInvalid)
+	assert.Equal(t, "checkout.line_items: product 7 asks for -3: "+
+		checkout.ErrInvalidQuantity.Error(), te.Hint)
 
 	// A non-numeric id is a caller error, not an empty checkout.
 	bad := &UCPCheckoutIn{LineItems: []UCPLineItemReqIn{
 		{Item: UCPItemIn{ID: "not-a-product"}},
 	}}
 	_, err = bad.lines()
-	assert.ErrorContains(t, err, "line_items[0].item.id")
+	te = codeOf(t, err, mcptool.CodeInvalid)
+	assert.Contains(t, te.Hint, "line_items[0].item.id")
+}
+
+// codeOf requires err to be a ToolError with code, and returns it.
+func codeOf(t *testing.T, err error, code string) *mcptool.ToolError {
+	t.Helper()
+	te, ok := errors.AsType[*mcptool.ToolError](err)
+	require.True(t, ok, "not a ToolError: %v", err)
+	assert.Equal(t, code, te.Code, te.Hint)
+	return te
 }
 
 // The codes are the discount extension's member, read only while it is
@@ -230,7 +244,8 @@ func TestResolvePayWayRejectsWhatTheStoreCannotSettle(t *testing.T) {
 	// A type this store never advertised.
 	_, err := resolvePayWay(context.Background(), dj, tn,
 		checkout.Fulfillment{}, 0, []UCPInstrumentIn{{Type: "card"}})
-	assert.ErrorContains(t, err, "not available")
+	assert.Contains(t, codeOf(t, err, mcptool.CodeUnsupported).Hint,
+		"not available")
 
 	// A handler that is not ours — the id must match what we advertised.
 	_, err = resolvePayWay(context.Background(), dj, tn,
@@ -238,7 +253,8 @@ func TestResolvePayWayRejectsWhatTheStoreCannotSettle(t *testing.T) {
 			HandlerID: "com.stripe.payments",
 			Type:      ucp.InstrumentCashOnDelivery,
 		}})
-	assert.ErrorContains(t, err, "unknown payment handler_id")
+	assert.Contains(t, codeOf(t, err, mcptool.CodeInvalid).Hint,
+		"unknown payment handler_id")
 }
 
 // A pay way whose settlement we cannot read is NOT an instrument.
@@ -475,11 +491,25 @@ func TestApplyHostedSelectionRefusesUnlessNegotiated(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := &checkout.Session{PayWayID: 7}
 			err := (&UCPPaymentChoice{PayWayID: 2}).applyHostedSelection(s, neg)
-			assert.ErrorContains(t, err, "pay_way_id is not accepted")
+			assert.Contains(t, codeOf(t, err, mcptool.CodeInvalid).Hint,
+				"pay_way_id is not accepted")
 			assert.EqualValues(t, 7, s.PayWayID,
 				"the prior selection must stand")
 		})
 	}
+}
+
+// pay_way_id and instruments select competing methods: a call sending
+// both is refused, even where the extension is negotiated.
+func TestApplyHostedSelectionRefusesBothSelections(t *testing.T) {
+	s := &checkout.Session{PayWayID: 7}
+	err := (&UCPPaymentChoice{PayWayID: 2, Payment: &UCPPaymentIn{
+		Instruments: []UCPInstrumentIn{{
+			Type: ucp.InstrumentCashOnDelivery}},
+	}}).applyHostedSelection(s, negotiatedFor(t, gatedTenant(true), true))
+	assert.Contains(t, codeOf(t, err, mcptool.CodeInvalid).Hint,
+		"not both")
+	assert.EqualValues(t, 7, s.PayWayID, "the prior selection must stand")
 }
 
 func TestApplyHostedSelectionHonoursWhenNegotiated(t *testing.T) {
@@ -508,7 +538,8 @@ func TestCheckoutInLinesRefusesAnotherSaleBasis(t *testing.T) {
 			ID: "5", QuantityUnit: &UCPQuantityUnitIn{Unit: unit}}, Quantity: 2}}}
 	}
 	_, err := line("KGM").lines()
-	assert.ErrorContains(t, err, "quantity_unit \"KGM\" is not this item's sale basis")
+	assert.Contains(t, codeOf(t, err, mcptool.CodeInvalid).Hint,
+		"quantity_unit \"KGM\" is not this item's sale basis")
 	lines, err := line("C62").lines()
 	require.NoError(t, err)
 	assert.Equal(t, []checkout.Line{{ProductID: 5, Quantity: 2}}, lines)
