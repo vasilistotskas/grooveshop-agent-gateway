@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"context"
 	"net/http"
 	"strconv"
 	"sync/atomic"
@@ -31,7 +30,7 @@ func retryAfter(t *testing.T, resp *http.Response) int {
 func TestACPErrorsFollowTheSpec(t *testing.T) {
 	stack := startUCPGateway(t)
 	base := stack.gw.URL + "/acp/checkout_sessions"
-	ctx := context.Background()
+	ctx := t.Context()
 	createBody := map[string]any{
 		"line_items":   []map[string]any{{"id": "1", "quantity": 2}},
 		"currency":     "EUR",

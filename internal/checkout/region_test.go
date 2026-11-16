@@ -1,7 +1,6 @@
 package checkout
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -44,8 +43,8 @@ func regionDjango(t *testing.T, status int) *django.Client {
 
 func regionTenant() *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{DefaultLocale: "el"},
-		Domain:       "demostore.test",
+		DefaultLocale: "el",
+		Domain:        "demostore.test",
 	}
 }
 
@@ -66,7 +65,7 @@ func TestResolveRegion(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &Session{Fulfillment: homeDelivery()}
 			require.NoError(t, ResolveRegion(
-				context.Background(), dj, regionTenant(), s, tc.named))
+				t.Context(), dj, regionTenant(), s, tc.named))
 			assert.Equal(t, tc.want, s.Fulfillment.RegionID)
 			assert.Len(t, s.RegionOptions, 2)
 		})
@@ -78,7 +77,7 @@ func TestResolveRegionReadsTheCountryInAnyCase(t *testing.T) {
 	f.CountryCode = "gr"
 	s := &Session{Fulfillment: f}
 	require.NoError(t, ResolveRegion(
-		context.Background(), regionDjango(t, http.StatusOK),
+		t.Context(), regionDjango(t, http.StatusOK),
 		regionTenant(), s, "Αττική"))
 	assert.Equal(t, "GR", s.Fulfillment.CountryCode)
 	assert.Equal(t, "GR-14", s.Fulfillment.RegionID)
@@ -101,7 +100,7 @@ func TestResolveRegionFirstMatchWins(t *testing.T) {
 
 	s := &Session{Fulfillment: homeDelivery()}
 	require.NoError(t, ResolveRegion(
-		context.Background(), dj, regionTenant(), s, "Αττική"))
+		t.Context(), dj, regionTenant(), s, "Αττική"))
 	assert.Equal(t, "GR-14", s.Fulfillment.RegionID)
 }
 
@@ -110,7 +109,7 @@ func TestResolveRegionCountryWithoutRegions(t *testing.T) {
 	f.CountryCode = "MT"
 	s := &Session{Fulfillment: f, RegionOptions: []RegionOption{{Code: "GR-14"}}}
 	require.NoError(t, ResolveRegion(
-		context.Background(), regionDjango(t, http.StatusOK),
+		t.Context(), regionDjango(t, http.StatusOK),
 		regionTenant(), s, "anything"))
 
 	assert.Empty(t, s.Fulfillment.RegionID)
@@ -121,7 +120,7 @@ func TestResolveRegionCountryWithoutRegions(t *testing.T) {
 func TestResolveRegionNoCountryYet(t *testing.T) {
 	s := &Session{}
 	require.NoError(t, ResolveRegion(
-		context.Background(), regionDjango(t, http.StatusBadGateway),
+		t.Context(), regionDjango(t, http.StatusBadGateway),
 		regionTenant(), s, ""))
 	assert.Empty(t, s.RegionOptions, "no country, no call")
 }
@@ -131,7 +130,7 @@ func TestResolveRegionNoCountryYet(t *testing.T) {
 func TestResolveRegionUpstreamFailure(t *testing.T) {
 	s := &Session{Fulfillment: homeDelivery()}
 	err := ResolveRegion(
-		context.Background(), regionDjango(t, http.StatusBadGateway),
+		t.Context(), regionDjango(t, http.StatusBadGateway),
 		regionTenant(), s, "GR-14")
 	assert.ErrorIs(t, err, django.ErrUpstreamDown)
 }

@@ -1,7 +1,6 @@
 package mcpsrv
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -63,7 +62,7 @@ func callMCP(
 	h := RequireLinkedAccount(Handler(Deps{Site: testSite, Version: "test",
 		Log: slog.New(slog.DiscardHandler)}))
 	req := httptest.NewRequestWithContext(
-		tenant.NewContext(context.Background(), store),
+		tenant.NewContext(t.Context(), store),
 		http.MethodPost, "/mcp", strings.NewReader(toolCall(name)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")

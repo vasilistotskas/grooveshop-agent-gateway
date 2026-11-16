@@ -151,7 +151,7 @@ func TestHandOutHoldsNothingPastTheBoundWhenEveryWorkerIsBusy(t *testing.T) {
 	const maxWait = 150 * time.Millisecond
 
 	start := time.Now()
-	require.True(t, d.handOut(context.Background(), busy, slots, batch,
+	require.True(t, d.handOut(t.Context(), busy, slots, batch,
 		maxWait))
 	took := time.Since(start)
 	assert.GreaterOrEqual(t, took, maxWait-10*time.Millisecond)
@@ -169,7 +169,7 @@ func TestHandOutLeavesAStaleJobPending(t *testing.T) {
 	require.Equal(t, admitted, slots.admit(testJob("busy", "a", time.Now())))
 	jobs := make(chan job, 1)
 	stale := testJob("old", "a", time.Now().Add(-time.Minute))
-	require.True(t, d.handOut(context.Background(), jobs, slots,
+	require.True(t, d.handOut(t.Context(), jobs, slots,
 		[]job{stale}, time.Second))
 	assert.Empty(t, jobs)
 	assert.Empty(t, slots.queue, "a stale job is not queued")
@@ -183,7 +183,7 @@ func TestHandOutGivesAFreeWorkerTheJob(t *testing.T) {
 	slots := newTargetSlots(1, 64, 256)
 	jobs := make(chan job, 2)
 	now := time.Now()
-	require.True(t, d.handOut(context.Background(), jobs, slots,
+	require.True(t, d.handOut(t.Context(), jobs, slots,
 		[]job{testJob("1", "a", now), testJob("2", "a", now)}, time.Second))
 	require.Len(t, jobs, 1)
 	assert.Equal(t, "1", (<-jobs).id)
@@ -224,7 +224,7 @@ func TestReleasingATargetsLastSlotDropsItsQueue(t *testing.T) {
 func TestHandOutStopsWithItsContext(t *testing.T) {
 	d := testDispatcher()
 	slots := newTargetSlots(2, 64, 256)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	assert.False(t, d.handOut(ctx, make(chan job), slots,
 		[]job{testJob("1", "a", time.Now())}, time.Minute))

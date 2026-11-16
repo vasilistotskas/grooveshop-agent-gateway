@@ -1,7 +1,6 @@
 package mcpsrv
 
 import (
-	"context"
 	"net/http"
 	"testing"
 
@@ -19,7 +18,7 @@ func TestChatAddToCartSendsTheShopperAttribution(t *testing.T) {
 	status := http.StatusCreated
 	h, _, adds := addDjango(t, &status)
 	h.surface = chatSurface
-	ctx := tenant.NewContext(context.Background(), cartTenant())
+	ctx := tenant.NewContext(t.Context(), cartTenant())
 	in := AddToCartIn{CartID: fixtureCartID, ProductID: 1}
 
 	_, _, err := h.addToCart(WithShopperAttribution(ctx,
@@ -42,7 +41,7 @@ func TestMCPAddToCartBooksTheCartAsAnAgents(t *testing.T) {
 	status := http.StatusCreated
 	h, _, adds := addDjango(t, &status)
 	h.surface = mcpSurface
-	ctx := tenant.NewContext(context.Background(), cartTenant())
+	ctx := tenant.NewContext(t.Context(), cartTenant())
 	in := AddToCartIn{CartID: fixtureCartID, ProductID: 1}
 
 	_, _, err := h.addToCart(ctx, nil, in)

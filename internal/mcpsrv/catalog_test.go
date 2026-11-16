@@ -1,7 +1,6 @@
 package mcpsrv
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -35,8 +34,7 @@ func fixtureHandlers(
 			_, _ = w.Write(body)
 		}))
 	t.Cleanup(srv.Close)
-	log := slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	log := slog.New(slog.DiscardHandler)
 	dj := django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, log, obs.NewMetrics())
 	return &handlers{deps: Deps{Site: testSite, Django: dj}}
@@ -55,7 +53,7 @@ func searchHandlers(t *testing.T) (*handlers, *[]string) {
 
 func TestSearchProductsPricing(t *testing.T) {
 	h, _ := searchHandlers(t)
-	ctx := tenant.NewContext(context.Background(), cartTenant())
+	ctx := tenant.NewContext(t.Context(), cartTenant())
 
 	_, out, err := h.searchProducts(ctx, nil, SearchProductsIn{Query: "phone"})
 	require.NoError(t, err)
@@ -80,14 +78,14 @@ func TestSearchProductsRatingNeedsReviews(t *testing.T) {
 	tn := cartTenant()
 
 	tn.Features.ProductReviews = true
-	_, out, err := h.searchProducts(tenant.NewContext(context.Background(), tn),
+	_, out, err := h.searchProducts(tenant.NewContext(t.Context(), tn),
 		nil, SearchProductsIn{Query: "phone"})
 	require.NoError(t, err)
 	require.NotEmpty(t, out.Products)
 	assert.Equal(t, "0.0", out.Products[0].Rating)
 
 	tn.Features.ProductReviews = false
-	_, out, err = h.searchProducts(tenant.NewContext(context.Background(), tn),
+	_, out, err = h.searchProducts(tenant.NewContext(t.Context(), tn),
 		nil, SearchProductsIn{Query: "phone"})
 	require.NoError(t, err)
 	require.NotEmpty(t, out.Products)
@@ -97,7 +95,7 @@ func TestSearchProductsRatingNeedsReviews(t *testing.T) {
 }
 
 func TestSearchProductsSort(t *testing.T) {
-	ctx := tenant.NewContext(context.Background(), cartTenant())
+	ctx := tenant.NewContext(t.Context(), cartTenant())
 
 	for _, sort := range []string{"", "effectivePrice", "-effectivePrice"} {
 		h, sorts := searchHandlers(t)

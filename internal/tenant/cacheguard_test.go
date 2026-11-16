@@ -302,7 +302,7 @@ func TestPublicConfigClearsEveryUndocumentedField(t *testing.T) {
 	public := publicConfig(&cfg)
 
 	// The memory tier keeps the caller's config whole.
-	assert.True(t, before == marshalString(t, &cfg),
+	assert.Equal(t, before, marshalString(t, &cfg),
 		"publicConfig changed the config it was given (a slice or map "+
 			"it shares with the copy?)")
 
@@ -319,7 +319,7 @@ func TestPublicConfigClearsEveryUndocumentedField(t *testing.T) {
 			continue
 		}
 		needle := marshalString(t, "value-of-"+fi.path)
-		assert.False(t, strings.Contains(raw, needle),
+		assert.NotContains(t, raw, needle,
 			"%s is written to the shared Redis entry", fi.path)
 	}
 	// What is not a credential still rides the cache.
@@ -338,7 +338,7 @@ func TestWithCredentialsRestoresWhatPublicConfigClears(t *testing.T) {
 
 	whole := withCredentials(public, cfg)
 
-	assert.True(t, marshalString(t, &cfg) == marshalString(t, &whole),
+	assert.Equal(t, marshalString(t, &cfg), marshalString(t, &whole),
 		"withCredentials leaves a credential publicConfig clears unset")
 }
 

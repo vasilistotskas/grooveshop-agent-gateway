@@ -53,7 +53,7 @@ func readBack(
 	readBackErr func(cancel context.CancelFunc) error,
 ) (*scriptedRedis, string, error) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	var reads atomic.Int32
 	r := &scriptedRedis{answer: func(cmd redis.Cmder) error {
@@ -118,7 +118,7 @@ func TestBodyReadBackOfABrokenBlob(t *testing.T) {
 		slog.New(slog.NewJSONHandler(&logs, nil)), obs.NewMetrics(), "", "",
 		time.Hour, 24*time.Hour, "test", storefront.NewSite("el"))
 
-	_, _, err := s.Body(context.Background(), demoTenant(), KindGoogle)
+	_, _, err := s.Body(t.Context(), demoTenant(), KindGoogle)
 	require.ErrorIs(t, err, errGenerationNotCached)
 	assert.True(t, r.set("ag:demostore:feed:failed"))
 	assert.Contains(t, logs.String(), msgBroken)

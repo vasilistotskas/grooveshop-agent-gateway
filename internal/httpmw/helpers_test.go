@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBearerToken(t *testing.T) {
@@ -85,6 +86,6 @@ func TestStatusWriterUnwrapsForResponseController(t *testing.T) {
 	rec := httptest.NewRecorder()
 	sw := wrap(rec)
 	assert.Same(t, rec, sw.Unwrap())
-	assert.NoError(t, http.NewResponseController(sw).Flush())
+	require.NoError(t, http.NewResponseController(sw).Flush())
 	assert.True(t, rec.Flushed)
 }

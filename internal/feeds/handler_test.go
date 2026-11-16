@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -173,7 +172,7 @@ func serveFeed(
 ) *http.Response {
 	t.Helper()
 	ctx := tenant.NewContext(
-		obs.WithRequestID(context.Background(), "req-131"), demoTenant())
+		obs.WithRequestID(t.Context(), "req-131"), demoTenant())
 	req := httptest.NewRequestWithContext(ctx, method,
 		"/feeds/google.xml", nil)
 	for k, v := range header {
@@ -597,13 +596,13 @@ func TestDropBlobSparesAReplacement(t *testing.T) {
 		dataKey("demostore", formatGoogle): string(gzipped(t, testFeed)),
 		metaKey("demostore", formatGoogle): string(newerRaw),
 	})
-	feedService(nil, rdb, io.Discard).dropBlob(context.Background(),
+	feedService(nil, rdb, io.Discard).dropBlob(t.Context(),
 		"demostore", formatGoogle, meta, errBroken)
 	_, kept := m.get(dataKey("demostore", formatGoogle))
 	assert.True(t, kept, "a blob written since the judgement stays")
 
 	m, rdb = newMemRedis(judged)
-	feedService(nil, rdb, io.Discard).dropBlob(context.Background(),
+	feedService(nil, rdb, io.Discard).dropBlob(t.Context(),
 		"demostore", formatGoogle, meta, errBroken)
 	_, kept = m.get(dataKey("demostore", formatGoogle))
 	assert.False(t, kept, "the blob judged goes")

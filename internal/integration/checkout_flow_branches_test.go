@@ -82,12 +82,10 @@ func startBranchFlow(t *testing.T, hosted bool) (flowStack, *branchDjango) {
 			quietLogger()),
 		store: store, rdb: rdb, faults: faults,
 		tenant: &tenant.Tenant{
-			TenantConfig: django.TenantConfig{
-				SchemaName: "demostore", DefaultLocale: "el",
-				AgentCommerceEnabled:      true,
-				AgentHostedPaymentEnabled: hosted,
-			},
-			Domain: "shop.test",
+			SchemaName: "demostore", DefaultLocale: "el",
+			AgentCommerceEnabled:      true,
+			AgentHostedPaymentEnabled: hosted,
+			Domain:                    "shop.test",
 		},
 	}, b
 }
@@ -271,7 +269,7 @@ func TestOrderEventLeavesAGoneOrEndedCheckoutAlone(t *testing.T) {
 		require.NoError(t, f.flow.ApplyOrderEvent(ctx, "demostore", id,
 			fixtureOrderUUID, django.PaymentStatusCompleted))
 		_, err := f.rdb.Get(ctx, sessionRedisKey(id)).Result()
-		assert.ErrorIs(t, err, redis.Nil, "the event stored a session")
+		require.ErrorIs(t, err, redis.Nil, "the event stored a session")
 		assert.Zero(t, b.orderReads.Load())
 	})
 

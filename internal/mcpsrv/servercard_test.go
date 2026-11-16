@@ -1,6 +1,7 @@
 package mcpsrv
 
 import (
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,29 +12,24 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
 func cardTenant() *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			SchemaName:    "demostore",
-			StoreName:     "Demo Store",
-			PrimaryDomain: "shop.example.test",
-			FaviconURL:    "https://assets.example.test/favicon.png",
-		},
-		Domain: "www.shop.example.test",
+		SchemaName:    "demostore",
+		StoreName:     "Demo Store",
+		PrimaryDomain: "shop.example.test",
+		FaviconURL:    "https://assets.example.test/favicon.png",
+		Domain:        "www.shop.example.test",
 	}
 }
 
 func getCard(t *testing.T, header http.Header) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/mcp/server-card", nil)
-	for k, v := range header {
-		req.Header[k] = v
-	}
+	maps.Copy(req.Header, header)
 	req = req.WithContext(tenant.NewContext(req.Context(), cardTenant()))
 	rec := httptest.NewRecorder()
 	ServerCardHandler("1.18.0", storefront.NewSite("el")).ServeHTTP(rec, req)
@@ -110,5 +106,5 @@ func TestIdentityTitleIsBoundedForBothSurfaces(t *testing.T) {
 	tn := cardTenant()
 	tn.StoreName = strings.Repeat("Ω", 150)
 	id := IdentityFor(tn)
-	assert.Equal(t, 100, len([]rune(id.Title)))
+	assert.Len(t, []rune(id.Title), 100)
 }

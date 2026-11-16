@@ -1,7 +1,6 @@
 package mcpsrv
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -145,7 +144,7 @@ func TestToolOutputsListNothingAsEmptyArrays(t *testing.T) {
 
 	store := cartTenant()
 	store.Features = EveryFeature
-	ctx := identity.NewContext(tenant.NewContext(context.Background(), store),
+	ctx := identity.NewContext(tenant.NewContext(t.Context(), store),
 		&identity.Linked{Bearer: "linked-token"})
 	server := NewChatServer(Deps{Site: testSite, Version: "test",
 		Django: emptyStoreDjango(t), Log: slog.New(slog.DiscardHandler)})
@@ -184,7 +183,7 @@ func TestToolOutputsListNothingAsEmptyArrays(t *testing.T) {
 // list is an array, on /mcp and in the chat, the UCP objects included.
 // The SDK checks every result against its schema.
 func TestOutputSchemasDeclareNoNullableList(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	d := Deps{Site: testSite, Version: "test",
 		Log: slog.New(slog.DiscardHandler)}
 	for name, server := range map[string]*mcp.Server{

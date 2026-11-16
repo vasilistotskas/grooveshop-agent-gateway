@@ -1,7 +1,6 @@
 package acp
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -63,8 +62,7 @@ func thresholdDjango(t *testing.T) *django.Client {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	log := slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	log := slog.New(slog.DiscardHandler)
 	return django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, log, obs.NewMetrics())
 }
@@ -84,7 +82,7 @@ func TestRenderJudgesFreeThresholdsAfterDiscounts(t *testing.T) {
 	s.PayWayID = 7
 	s.Recompute()
 
-	payload, err := Render(context.Background(), thresholdDjango(t), tn,
+	payload, err := Render(t.Context(), thresholdDjango(t), tn,
 		testLinks(tn), s)
 	require.NoError(t, err)
 

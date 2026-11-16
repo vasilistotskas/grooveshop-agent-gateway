@@ -1,7 +1,6 @@
 package django
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -26,7 +25,7 @@ func TestReserveStockDecodesResult(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	res, err := c.ReserveStock(context.Background(),
+	res, err := c.ReserveStock(t.Context(),
 		"shop.example.test", "el", "cart-uuid")
 	require.NoError(t, err)
 
@@ -48,7 +47,7 @@ func TestReserveStockShortfall(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, err := c.ReserveStock(context.Background(),
+	_, err := c.ReserveStock(t.Context(),
 		"shop.example.test", "el", "cart-uuid")
 	require.Error(t, err)
 
@@ -72,12 +71,12 @@ func TestReserveStockPlainConflictStaysAPIError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, err := c.ReserveStock(context.Background(),
+	_, err := c.ReserveStock(t.Context(),
 		"shop.example.test", "el", "cart-uuid")
 	require.Error(t, err)
 
 	var shortfall *StockShortfall
-	assert.False(t, errors.As(err, &shortfall))
+	assert.NotErrorAs(t, err, &shortfall)
 	var apiErr *APIError
 	require.ErrorAs(t, err, &apiErr)
 	assert.Equal(t, "Cart is being modified", apiErr.Detail)
@@ -96,10 +95,10 @@ func TestReserveStockDoesNotRetry(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, err := c.ReserveStock(context.Background(),
+	_, err := c.ReserveStock(t.Context(),
 		"shop.example.test", "el", "cart-uuid")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrUpstreamDown)
+	require.ErrorIs(t, err, ErrUpstreamDown)
 	assert.Equal(t, 1, calls)
 }
 
@@ -121,7 +120,7 @@ func TestCreateOrderSendsAttribution(t *testing.T) {
 	defer srv.Close()
 	c := newTestClient(t, srv.URL)
 
-	_, err := c.CreateOrder(context.Background(),
+	_, err := c.CreateOrder(t.Context(),
 		"shop.example.test", "el", "cart-uuid", OrderCreate{
 			PayWayID:    1,
 			Attribution: &Attribution{AgentProtocol: "acp"},
@@ -131,7 +130,7 @@ func TestCreateOrderSendsAttribution(t *testing.T) {
 		got["attribution"])
 	assert.Equal(t, false, got["termsAccepted"])
 
-	_, err = c.CreateOrder(context.Background(),
+	_, err = c.CreateOrder(t.Context(),
 		"shop.example.test", "el", "cart-uuid", OrderCreate{PayWayID: 1})
 	require.NoError(t, err)
 	assert.NotContains(t, got, "attribution")
@@ -150,7 +149,7 @@ func TestCreateOrderNamesTheUnpaidCartRefusal(t *testing.T) {
 			}))
 		defer srv.Close()
 		_, err := newTestClient(t, srv.URL).CreateOrder(
-			context.Background(), "shop.example.test", "el", "cart-uuid",
+			t.Context(), "shop.example.test", "el", "cart-uuid",
 			OrderCreate{PayWayID: 1})
 		return err
 	}
@@ -158,7 +157,7 @@ func TestCreateOrderNamesTheUnpaidCartRefusal(t *testing.T) {
 	err := refused(fixture(t, "order_cart_has_unpaid_order.json"))
 
 	require.ErrorIs(t, err, ErrCartHasUnpaidOrder)
-	assert.ErrorIs(t, err, ErrValidation)
+	require.ErrorIs(t, err, ErrValidation)
 	apiErr, ok := errors.AsType[*APIError](err)
 	require.True(t, ok)
 	assert.Equal(t, CodeCartHasUnpaidOrder, apiErr.Code)
@@ -198,7 +197,7 @@ func TestCreateOrderCheckoutSessionNamesTheGateway(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	res, err := c.CreateOrderCheckoutSession(context.Background(),
+	res, err := c.CreateOrderCheckoutSession(t.Context(),
 		"shop.example.test", "el", 684, "order-uuid",
 		"https://shop.example.test/ok", "https://shop.example.test/cancel")
 	require.NoError(t, err)

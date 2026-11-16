@@ -1,7 +1,6 @@
 package mcpsrv
 
 import (
-	"context"
 	"slices"
 	"testing"
 	"time"
@@ -14,7 +13,7 @@ import (
 // listed connects to srv and returns its tools/list answer.
 func listed(t *testing.T, srv *mcp.Server) *mcp.ListToolsResult {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	serverT, clientT := mcp.NewInMemoryTransports()
 	_, err := srv.Connect(ctx, serverT, nil)
 	require.NoError(t, err)

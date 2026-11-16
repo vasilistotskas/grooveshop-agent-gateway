@@ -28,7 +28,7 @@ const cartRecordPrefix = "ag:demostore:checkoutcart:"
 // without a record.
 func heldBy(t *testing.T, rdb *redis.Client, cartID string) string {
 	t.Helper()
-	id, err := rdb.Get(context.Background(), cartRecordPrefix+cartID).Result()
+	id, err := rdb.Get(t.Context(), cartRecordPrefix+cartID).Result()
 	if !errors.Is(err, redis.Nil) {
 		require.NoError(t, err)
 	}
@@ -47,7 +47,7 @@ func assertLivesWithSession(
 	t *testing.T, rdb *redis.Client, s *checkout.Session, want time.Duration,
 ) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	session, err := rdb.PTTL(ctx, sessionRedisKey(s.ID)).Result()
 	require.NoError(t, err)
 	record, err := rdb.PTTL(ctx, cartRecordPrefix+s.CartID).Result()
@@ -61,7 +61,7 @@ func assertLivesWithSession(
 // no longer holds.
 func (stack ucpStack) staleCartRecords(t *testing.T) []string {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	keys, err := stack.rdb.Keys(ctx, cartRecordPrefix+"*").Result()
 	require.NoError(t, err)
 	var stale []string
@@ -81,7 +81,7 @@ func (stack ucpStack) staleCartRecords(t *testing.T) []string {
 // second session is stored on that cart while the first holds it. Two
 // sessions on one cart could each place an order.
 func TestACartIsTakenWithItsSession(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, rdb := startStore(t)
 	first := newSession()
 	require.NoError(t, store.Create(ctx, first, checkout.CartHolder{}))
@@ -90,7 +90,7 @@ func TestACartIsTakenWithItsSession(t *testing.T) {
 	refused := func(t *testing.T, second *checkout.Session) {
 		t.Helper()
 		_, err := store.LoadAnyProtocol(ctx, second.Schema, second.ID)
-		assert.ErrorIs(t, err, checkout.ErrNotFound,
+		require.ErrorIs(t, err, checkout.ErrNotFound,
 			"a refused create stored its session")
 		assert.Empty(t, second.Revision)
 		assert.Equal(t, first.ID, heldBy(t, rdb, first.CartID))
@@ -133,7 +133,7 @@ func TestACartIsTakenWithItsSession(t *testing.T) {
 // its payment. A canceled or completed one, and a record whose session
 // is gone, leave the cart to the next checkout.
 func TestWhoHoldsACart(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, rdb := startStore(t)
 	for name, tc := range map[string]struct {
 		become func(*checkout.Session)
@@ -237,7 +237,7 @@ func TestWhoHoldsACart(t *testing.T) {
 // record that outlived its session would be stale; one that ended first
 // would free the cart of a live checkout.
 func TestACartsRecordLivesAsLongAsItsSession(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	const day, halfHour = 24 * time.Hour, 30 * time.Minute
 
 	t.Run("through a save", func(t *testing.T) {
@@ -329,7 +329,7 @@ func TestACartsRecordLivesAsLongAsItsSession(t *testing.T) {
 // A session that ends takes its cart's record with it, and only its
 // own: by then the record may name the next checkout on the cart.
 func TestAnEndingSessionFreesOnlyItsOwnCart(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, rdb := startStore(t)
 	// over is a session whose cart went to next once it completed.
 	over := func(t *testing.T) (old, next *checkout.Session) {
@@ -392,7 +392,7 @@ func TestAnEndingSessionFreesOnlyItsOwnCart(t *testing.T) {
 // took its cart from an old holder finds, on its second run, the cart in
 // its own name and its own revision stored, and reports the work done.
 func TestACartCommandSentTwiceIsAnsweredAsDone(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, rdb := startStore(t)
 	twice := new(sentTwice)
 	rdb.AddHook(twice)
@@ -485,7 +485,7 @@ func (p platform) create(
 // started is the id of a checkout create_checkout made on the cart.
 func (p platform) started(t *testing.T, cartID string) string {
 	t.Helper()
-	a := p.create(context.Background(), cartID, nil)
+	a := p.create(t.Context(), cartID, nil)
 	require.Empty(t, a.refusal)
 	require.NotEmpty(t, a.id)
 	return a.id
@@ -497,7 +497,7 @@ func (stack ucpStack) become(
 	t *testing.T, id string, change func(*checkout.Session),
 ) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	store := checkout.NewStore(stack.rdb, ucpUpstreamTimeout)
 	s, err := store.LoadAnyProtocol(ctx, "demostore", id)
 	require.NoError(t, err)
@@ -508,7 +508,7 @@ func (stack ucpStack) become(
 // sessions are the checkout sessions the store holds.
 func (stack ucpStack) sessions(t *testing.T) []*checkout.Session {
 	t.Helper()
-	keys, err := stack.rdb.Keys(context.Background(),
+	keys, err := stack.rdb.Keys(t.Context(),
 		sessionRedisKey("*")).Result()
 	require.NoError(t, err)
 	var out []*checkout.Session
@@ -542,7 +542,7 @@ const regionRoute = "GET /api/v1/region/GR/get_regions_by_country_alpha_2"
 // asked, one checkout on the cart is left that is not canceled, and no
 // call is given, or told of, a checkout that is not its own.
 func TestConcurrentCreatesOnOneCartLeaveOneLiveCheckout(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	p := newPlatform(t, stack)
 	cart := stack.faults.carts.mint()
@@ -609,7 +609,7 @@ func TestConcurrentCreatesOnOneCartLeaveOneLiveCheckout(t *testing.T) {
 // canceled. A checkout whose order is being placed or awaits its payment
 // keeps the cart, and no answer hands that checkout out or names it.
 func TestCreateCheckoutOnACartInACheckout(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	p := newPlatform(t, stack)
 	acpBase := stack.gw.URL + "/acp/checkout_sessions"
@@ -959,7 +959,7 @@ func TestCreateCheckoutOnACartInACheckout(t *testing.T) {
 // that was made for it. Its continue_url discloses that cart's id, so a
 // create_checkout naming the cart must meet the checkout.
 func TestACheckoutFromLineItemsHoldsItsCart(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	p := newPlatform(t, stack)
 
@@ -1020,7 +1020,7 @@ func (redisReply) ProcessPipelineHook(
 // was stored: the script may have run and its reply been lost. It gave
 // the checkout to nobody, so it removes it.
 func TestACreateTheStoreDidNotAnswerLeavesNoCheckout(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	p := newPlatform(t, stack)
 	// The next create's script runs, and its reply is lost.
@@ -1084,7 +1084,7 @@ func TestACreateTheStoreDidNotAnswerLeavesNoCheckout(t *testing.T) {
 // otherwise, the create hands out no session: it could be the second one
 // on a cart.
 func TestACartJustMadeThatIsHeldStartsNoCheckout(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	p := newPlatform(t, stack)
 	// Before a create takes its cart, another session's name is put in
@@ -1138,7 +1138,7 @@ func TestACartJustMadeThatIsHeldStartsNoCheckout(t *testing.T) {
 // cart, and cancels the checkout that held it only in that checkout's
 // turn: under its lock.
 func TestACreateWritesItsCartOnlyOnceItHoldsIt(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	stack.faults.promotions.Store(true)
 	p := newPlatform(t, stack)

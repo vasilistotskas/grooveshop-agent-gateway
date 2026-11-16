@@ -1,7 +1,6 @@
 package mcpsrv
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -101,7 +100,7 @@ func TestUpstreamErrLeaksNothingTheAgentMayNotSee(t *testing.T) {
 				`"detail": "relation \"pay_way\" does not exist"}`))
 		}))
 	t.Cleanup(srv.Close)
-	_, payWays := resolvePayWay(context.Background(),
+	_, payWays := resolvePayWay(t.Context(),
 		django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 			5*time.Second, slog.New(slog.DiscardHandler), nil),
 		cartTenant(), checkout.Fulfillment{}, 0,
@@ -186,7 +185,7 @@ func addDjango(
 // Only an omitted quantity defaults. Django refuses one below 1, and an
 // agent reducing a cart must hear that, not find a unit added to it.
 func TestAddToCartQuantity(t *testing.T) {
-	ctx := tenant.NewContext(context.Background(), cartTenant())
+	ctx := tenant.NewContext(t.Context(), cartTenant())
 	for _, tc := range []struct {
 		name string
 		sent *int
@@ -205,7 +204,7 @@ func TestAddToCartQuantity(t *testing.T) {
 			})
 			require.NoError(t, err)
 			require.Len(t, *bodies, 1)
-			assert.EqualValues(t, tc.want, (*bodies)[0]["quantity"])
+			assert.InDelta(t, tc.want, (*bodies)[0]["quantity"], 0)
 		})
 	}
 }
@@ -216,7 +215,7 @@ func TestAddToCartQuantity(t *testing.T) {
 func TestAddToCartIsIdempotentWithinATurn(t *testing.T) {
 	status := http.StatusBadGateway
 	h, keys, _ := addDjango(t, &status)
-	ctx := WithTurn(tenant.NewContext(context.Background(), cartTenant()),
+	ctx := WithTurn(tenant.NewContext(t.Context(), cartTenant()),
 		NewTurn("8b0f6c1e-4a8d-4c8b-9a37-2f4f1d1c9e01"))
 	in := AddToCartIn{CartID: fixtureCartID, ProductID: 1, Quantity: new(2)}
 
@@ -239,7 +238,7 @@ func TestAddToCartIsIdempotentWithinATurn(t *testing.T) {
 	assert.NotEqual(t, k[2], k[3], "another quantity is another change")
 
 	// The same turn retried by the shopper starts from the same keys.
-	retried := WithTurn(tenant.NewContext(context.Background(), cartTenant()),
+	retried := WithTurn(tenant.NewContext(t.Context(), cartTenant()),
 		NewTurn("8b0f6c1e-4a8d-4c8b-9a37-2f4f1d1c9e01"))
 	_, _, err = h.addToCart(retried, nil, in)
 	require.NoError(t, err)
@@ -251,7 +250,7 @@ func TestAddToCartIsIdempotentWithinATurn(t *testing.T) {
 func TestAddToCartToAGoneCartSaysToCreateANewOne(t *testing.T) {
 	status := http.StatusCreated
 	h, _, _ := addDjango(t, &status)
-	ctx := tenant.NewContext(context.Background(), cartTenant())
+	ctx := tenant.NewContext(t.Context(), cartTenant())
 
 	_, _, err := h.addToCart(ctx, nil, AddToCartIn{
 		CartID: "6f1c1f3e-2d6a-4b0f-9a3e-2f6d6c1b9a10", ProductID: 1,
@@ -267,7 +266,7 @@ func TestAddToCartToAGoneCartSaysToCreateANewOne(t *testing.T) {
 func TestAddToCartWithoutATurnSendsNoKey(t *testing.T) {
 	status := http.StatusCreated
 	h, keys, _ := addDjango(t, &status)
-	ctx := tenant.NewContext(context.Background(), cartTenant())
+	ctx := tenant.NewContext(t.Context(), cartTenant())
 
 	_, _, err := h.addToCart(ctx, nil,
 		AddToCartIn{CartID: fixtureCartID, ProductID: 1})

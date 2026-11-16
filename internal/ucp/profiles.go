@@ -256,9 +256,8 @@ func (r *ProfileResolver) fetch(
 			"the platform profile is not valid JSON")
 	}
 	if err := r.schema.Validate(doc); err != nil {
-		var verr *jsonschema.ValidationError
 		msg := err.Error()
-		if errors.As(err, &verr) {
+		if verr, ok := errors.AsType[*jsonschema.ValidationError](err); ok {
 			msg = firstLine(verr.Error())
 		}
 		return nil, 0, discoveryErr(CodeProfileMalformed,

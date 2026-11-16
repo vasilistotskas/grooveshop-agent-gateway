@@ -1,7 +1,6 @@
 package mcpsrv
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -51,7 +50,7 @@ func TestMetaValidateRequiresAgentProfile(t *testing.T) {
 // complete and cancel place or void an order, so a retry without a key
 // could do it twice.
 func TestMetaValidateRequiresIdempotencyKeyWhereItMatters(t *testing.T) {
-	assert.ErrorContains(t, agentMeta("").validate(true),
+	require.ErrorContains(t, agentMeta("").validate(true),
 		"idempotency-key")
 	assert.NoError(t, agentMeta("key-1").validate(true))
 }
@@ -228,7 +227,7 @@ func payWayTenant() *tenant.Tenant {
 // The instrument type is the protocol's vocabulary and the pay-way id is
 // the store's; only the business bridges them.
 func TestResolvePayWayMapsAdvertisedInstrument(t *testing.T) {
-	id, err := resolvePayWay(context.Background(), payWayDjango(t),
+	id, err := resolvePayWay(t.Context(), payWayDjango(t),
 		payWayTenant(), checkout.Fulfillment{}, 0,
 		[]UCPInstrumentIn{{
 			HandlerID: ucp.HandlerID,
@@ -242,13 +241,13 @@ func TestResolvePayWayRejectsWhatTheStoreCannotSettle(t *testing.T) {
 	dj, tn := payWayDjango(t), payWayTenant()
 
 	// A type this store never advertised.
-	_, err := resolvePayWay(context.Background(), dj, tn,
+	_, err := resolvePayWay(t.Context(), dj, tn,
 		checkout.Fulfillment{}, 0, []UCPInstrumentIn{{Type: "card"}})
 	assert.Contains(t, codeOf(t, err, mcptool.CodeUnsupported).Hint,
 		"not available")
 
 	// A handler that is not ours — the id must match what we advertised.
-	_, err = resolvePayWay(context.Background(), dj, tn,
+	_, err = resolvePayWay(t.Context(), dj, tn,
 		checkout.Fulfillment{}, 0, []UCPInstrumentIn{{
 			HandlerID: "com.stripe.payments",
 			Type:      ucp.InstrumentCashOnDelivery,
@@ -290,7 +289,7 @@ func TestResolvePayWayWithholdsUnreadableSettlements(t *testing.T) {
 				5_000_000_000, obs.NewLogger(slog.LevelError, "test", "test"),
 				obs.NewMetrics())
 
-			_, err := resolvePayWay(context.Background(), dj,
+			_, err := resolvePayWay(t.Context(), dj,
 				payWayTenant(), checkout.Fulfillment{}, 0,
 				[]UCPInstrumentIn{{
 					HandlerID: ucp.HandlerID,
@@ -305,7 +304,7 @@ func TestResolvePayWayWithholdsUnreadableSettlements(t *testing.T) {
 // When the platform marks a selection, that is the one to settle — not
 // whichever happens to be first.
 func TestResolvePayWayHonoursTheSelectedInstrument(t *testing.T) {
-	id, err := resolvePayWay(context.Background(), payWayDjango(t),
+	id, err := resolvePayWay(t.Context(), payWayDjango(t),
 		payWayTenant(), checkout.Fulfillment{}, 0,
 		[]UCPInstrumentIn{
 			{Type: "some_unmodelled_type"},
@@ -400,7 +399,7 @@ func TestResolvePayWayKeepsTheHeldMethodOfTheInstrument(t *testing.T) {
 			deliveryBy(django.ShippingProviderBoxNow), 5, 7},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			id, err := resolvePayWay(context.Background(),
+			id, err := resolvePayWay(t.Context(),
 				carrierPayWays(t), payWayTenant(), tc.delivery, tc.held,
 				cod)
 			require.NoError(t, err)
@@ -437,7 +436,7 @@ func TestPayWayForDeliveryFollowsTheDelivery(t *testing.T) {
 				Fulfillment: tc.delivery, PayWayID: tc.held,
 			}
 			require.NoError(t, h.payWayForDelivery(
-				context.Background(), payWayTenant(), s))
+				t.Context(), payWayTenant(), s))
 			assert.Equal(t, tc.want, s.PayWayID)
 		})
 	}

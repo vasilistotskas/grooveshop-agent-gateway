@@ -58,7 +58,7 @@ func TestRecordProductsSearch(t *testing.T) {
 func TestRecordProductsDetailIncludesVariants(t *testing.T) {
 	b := &bridge{}
 	out := mcpsrv.GetProductOut{
-		ProductSummary: mcpsrv.ProductSummary{ID: 1},
+		ID: 1,
 		Variants: []mcpsrv.ProductSummary{
 			{ID: 2}, {ID: 3},
 		},
@@ -130,14 +130,14 @@ func TestRecordProductsDedupesAcrossTheTurn(t *testing.T) {
 
 	detail := b.recordProducts("get_product", nil, structured(t,
 		mcpsrv.GetProductOut{
-			ProductSummary: mcpsrv.ProductSummary{ID: 2},
-			Variants:       []mcpsrv.ProductSummary{{ID: 3}},
+			ID:       2,
+			Variants: []mcpsrv.ProductSummary{{ID: 3}},
 		}))
 	require.NotNil(t, detail)
 	assert.Equal(t, []int64{3}, ids(detail))
 
 	assert.Nil(t, b.recordProducts("get_product", nil, structured(t,
-		mcpsrv.GetProductOut{ProductSummary: mcpsrv.ProductSummary{ID: 1}})),
+		mcpsrv.GetProductOut{ID: 1})),
 		"a detail naming only products already sent says nothing")
 
 	again := b.recordProducts("search_products",

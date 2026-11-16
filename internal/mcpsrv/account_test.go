@@ -1,7 +1,6 @@
 package mcpsrv
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +20,7 @@ import (
 // Without a linked account, or with a token missing the tool's scope, the
 // agent gets a ToolError whose code says which, and what to do.
 func TestAccountToolsSayWhatTheLinkLacks(t *testing.T) {
-	store := tenant.NewContext(context.Background(), cartTenant())
+	store := tenant.NewContext(t.Context(), cartTenant())
 
 	t.Run("no linked account", func(t *testing.T) {
 		h := fixtureHandlers(t, "agent_orders.json", func(*http.Request) {
@@ -65,7 +64,7 @@ func TestMyFavouritesPricing(t *testing.T) {
 		auth = r.Header.Get("Authorization")
 	})
 	ctx := identity.NewContext(
-		tenant.NewContext(context.Background(), cartTenant()),
+		tenant.NewContext(t.Context(), cartTenant()),
 		&identity.Linked{Bearer: "linked-token"})
 
 	res, out, err := h.myFavourites(ctx, nil, struct{}{})

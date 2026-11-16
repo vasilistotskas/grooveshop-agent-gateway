@@ -2,7 +2,6 @@ package obs
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"log/slog"
 	"testing"
@@ -17,7 +16,7 @@ func TestRecoverLogsThePanicAndReturnsAShortError(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(&buf, nil))
 	err := func() (err error) {
-		defer Recover(context.Background(), log, "demo: op", &err)
+		defer Recover(t.Context(), log, "demo: op", &err)
 		panic("boom")
 	}()
 	require.EqualError(t, err, "demo: op: panicked")
@@ -37,7 +36,7 @@ func TestRecoverLeavesANormalReturnAlone(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(&buf, nil))
 	err := func() (err error) {
-		defer Recover(context.Background(), log, "demo: op", &err)
+		defer Recover(t.Context(), log, "demo: op", &err)
 		return nil
 	}()
 	require.NoError(t, err)

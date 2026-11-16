@@ -1,7 +1,6 @@
 package mcpsrv
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -45,11 +44,10 @@ func TestGetProductListsVariantPrices(t *testing.T) {
 			_, _ = w.Write(detail)
 		}))
 	t.Cleanup(srv.Close)
-	log := slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	log := slog.New(slog.DiscardHandler)
 	h := &handlers{deps: Deps{Site: testSite, Django: django.New(srv.URL+"/api/v1",
 		"api.example.test", "secret", 5*time.Second, log, obs.NewMetrics())}}
-	ctx := tenant.NewContext(context.Background(), cartTenant())
+	ctx := tenant.NewContext(t.Context(), cartTenant())
 
 	_, out, err := h.getProduct(ctx, nil, GetProductIn{ProductID: 1})
 	require.NoError(t, err)

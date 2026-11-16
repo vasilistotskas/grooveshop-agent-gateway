@@ -4,7 +4,6 @@ package integration
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -82,7 +81,7 @@ func await(t *testing.T, g *gate, what string) {
 // request it belonged to was still holding it.
 func (stack ucpStack) lapse(t *testing.T, key string) {
 	t.Helper()
-	n, err := stack.rdb.Del(context.Background(), key).Result()
+	n, err := stack.rdb.Del(t.Context(), key).Result()
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n, "%s was not held", key)
 }
@@ -133,7 +132,7 @@ func assertLost(t *testing.T, surface string, a surfaceAnswer) {
 	require.NoError(t, err, "%s", a.errorBody)
 	assert.NoError(t, schema.Validate(doc), "%s", a.errorBody)
 	after, err := strconv.Atoi(a.retryAfter)
-	assert.NoError(t, err, "a 409 must carry Retry-After")
+	require.NoError(t, err, "a 409 must carry Retry-After")
 	assert.Positive(t, after)
 }
 
@@ -163,7 +162,7 @@ func TestConcurrentCompletesPlaceOneOrder(t *testing.T) {
 				name = "the same key, its claim lapsed"
 			}
 			t.Run(name+" over "+surface.name, func(t *testing.T) {
-				ctx := context.Background()
+				ctx := t.Context()
 				id := surface.ready(t)
 				creates := stack.faults.orderCreates.Load()
 				held := stack.hold(t, "POST /api/v1/cart/reserve-stock", 1)[0]
@@ -215,7 +214,7 @@ func TestAMarkWhoseRepliesWereLostIsAnsweredWithTheOrder(t *testing.T) {
 	stack := startUCPGateway(t)
 	for _, surface := range completionSurfaces(t, stack) {
 		t.Run(surface.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			id := surface.ready(t)
 			creates := stack.faults.orderCreates.Load()
 			lost := fenceRepliesLost(stack.rdb, id)
@@ -244,7 +243,7 @@ func TestAMarkWhoseRepliesWereLostIsAnsweredWithTheOrder(t *testing.T) {
 func TestALostCompleteLeavesThePlacedSessionAlone(t *testing.T) {
 	for _, name := range []string{"acp", "ucp"} {
 		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			stack := startUCPGateway(t)
 			var surface completionSurface
 			for _, s := range completionSurfaces(t, stack) {
@@ -285,7 +284,7 @@ func TestAStaleUpdateDoesNotOverwriteACompletion(t *testing.T) {
 	for _, surface := range completionSurfaces(t, stack) {
 		t.Run("while the order is placed, over "+surface.name,
 			func(t *testing.T) {
-				ctx := context.Background()
+				ctx := t.Context()
 				id := surface.ready(t)
 				creates := stack.faults.orderCreates.Load()
 				held := stack.hold(t, "GET /api/v1/pay_way", 1)[0]
@@ -333,7 +332,7 @@ func TestAStaleUpdateDoesNotOverwriteACompletion(t *testing.T) {
 
 		t.Run("after the order was placed, over "+surface.name,
 			func(t *testing.T) {
-				ctx := context.Background()
+				ctx := t.Context()
 				id := surface.ready(t)
 				creates := stack.faults.orderCreates.Load()
 				held := stack.hold(t, "GET /api/v1/pay_way", 1)[0]
@@ -365,7 +364,7 @@ func TestAStaleUpdateDoesNotOverwriteACompletion(t *testing.T) {
 func TestACPRequestPastItsClaimLeavesTheKeyToItsHolder(t *testing.T) {
 	stack := startUCPGateway(t)
 	base := stack.gw.URL + "/acp/checkout_sessions"
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("failing, it does not release the holder's claim",
 		func(t *testing.T) {

@@ -127,7 +127,7 @@ func TestVerifierConcurrentCallersShareOneProbe(t *testing.T) {
 		close(h.release)
 		wg.Wait()
 		for _, err := range errs {
-			assert.NoError(t, err)
+			require.NoError(t, err)
 		}
 		assert.EqualValues(t, 1, h.calls.Load())
 	})

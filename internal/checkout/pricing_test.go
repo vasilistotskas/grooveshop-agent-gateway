@@ -1,12 +1,10 @@
 package checkout
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -94,8 +92,7 @@ func pricingDjango(
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	log := slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	log := slog.New(slog.DiscardHandler)
 	return django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, log, obs.NewMetrics())
 }
@@ -201,7 +198,7 @@ func TestComputePricingDiscounts(t *testing.T) {
 				}
 			}
 
-			p, cart, err := ComputePricing(context.Background(), dj, tn, s)
+			p, cart, err := ComputePricing(t.Context(), dj, tn, s)
 			require.NoError(t, err)
 			require.NotNil(t, cart)
 
@@ -255,8 +252,7 @@ func thresholdDjango(t *testing.T, cart string) *django.Client {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	log := slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	log := slog.New(slog.DiscardHandler)
 	return django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, log, obs.NewMetrics())
 }
@@ -298,7 +294,7 @@ func TestComputePricingJudgesFreeThresholdsAfterDiscounts(t *testing.T) {
 			}
 			s.PayWayID = 7
 
-			p, _, err := ComputePricing(context.Background(),
+			p, _, err := ComputePricing(t.Context(),
 				thresholdDjango(t, tc.cart), tn, s)
 			require.NoError(t, err)
 

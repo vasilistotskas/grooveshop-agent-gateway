@@ -65,7 +65,7 @@ func TestAPanicIsLoggedAndCountedWithTheStatusSent(t *testing.T) {
 			_ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("data: 1\n\n"))
-			require.NoError(t, http.NewResponseController(w).Flush())
+			assert.NoError(t, http.NewResponseController(w).Flush())
 			panic("boom")
 		}, http.StatusOK},
 	} {

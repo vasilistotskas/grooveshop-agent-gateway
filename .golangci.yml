@@ -17,16 +17,20 @@ linters:
     - errorlint
     - gocritic
     - misspell
+    - modernize
     - nilerr
+    - nolintlint
     - noctx
     - perfsprint
     - revive
     # A log call that has a context must pass it: the logger's context
     # handler takes the request id and tenant from it.
     - sloglint
+    - testifylint
     - unconvert
     - unparam
     - usestdlibvars
+    - usetesting
   exclusions:
     rules:
       # Tests use the http.Get/httptest.NewRequest shorthands and helpers
@@ -38,6 +42,11 @@ linters:
   settings:
     sloglint:
       context: scope
+      attr-only: true
+      static-msg: true
+      key-naming-case: snake
+    usetesting:
+      context-background: true
     revive:
       rules:
         - name: exported

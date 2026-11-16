@@ -81,7 +81,7 @@ var (
 func TestACompleteRefusedForAnotherCompletesOrderReadsAgain(t *testing.T) {
 	for _, name := range []string{"acp", "ucp"} {
 		t.Run("stock the winner's order took, over "+name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			stack := startUCPGateway(t)
 			surfaces := surfacesByName(t, stack)
 			surface := surfaces[name]
@@ -110,7 +110,7 @@ func TestACompleteRefusedForAnotherCompletesOrderReadsAgain(t *testing.T) {
 	// The session is read again to tell. One that is gone by then, or
 	// cannot be read, is answered as that, never with Django's refusal.
 	stack := startUCPGateway(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	surfaces := surfacesByName(t, stack)
 	stack.faults.stockShort.Store(true)
 	t.Cleanup(func() { stack.faults.stockShort.Store(false) })
@@ -150,7 +150,7 @@ func TestACompleteRefusedForAnotherCompletesOrderReadsAgain(t *testing.T) {
 func TestAnUpdateThatCannotReadItsSessionAgainDoesNotCallTheCartGone(
 	t *testing.T,
 ) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	surfaces := surfacesByName(t, stack)
 	type scene struct {
@@ -209,7 +209,7 @@ func TestAnUpdateThatCannotReadItsSessionAgainDoesNotCallTheCartGone(
 // answer says to read again until it renders, and none offers a link
 // that starts the purchase again.
 func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	surfaces := surfacesByName(t, stack)
 	ids := map[string]string{}
@@ -304,7 +304,7 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 // A canceled checkout answers what it is to a complete, on UCP as on
 // ACP: not that it is "not ready" and missing nothing.
 func TestCompleteOfACanceledCheckoutSaysItIsCanceled(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	surfaces := surfacesByName(t, stack)
 	ids := map[string]string{}
@@ -333,7 +333,7 @@ func TestAPaymentEventForAnOrderThatIsGoneIsNotAskedForAgain(t *testing.T) {
 	stored.OrderID, stored.OrderUUID = 0, ""
 	raw, err := json.Marshal(stored)
 	require.NoError(t, err)
-	require.NoError(t, stack.rdb.Set(context.Background(),
+	require.NoError(t, stack.rdb.Set(t.Context(),
 		sessionRedisKey(id), raw, redis.KeepTTL).Err())
 	before := stack.storedBytes(t, id)
 	stack.faults.orderGone.Store(true)

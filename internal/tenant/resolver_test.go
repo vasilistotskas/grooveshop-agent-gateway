@@ -7,7 +7,6 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -53,9 +52,7 @@ func resolveBody(
 	if err := json.Unmarshal([]byte(demostoreJSON), &m); err != nil {
 		panic(err)
 	}
-	for k, v := range set {
-		m[k] = v
-	}
+	maps.Copy(m, set)
 	if secrets {
 		m["chatApiKey"] = chatKey
 		m["acpBearerToken"] = acpBearer
@@ -68,9 +65,7 @@ func resolveBody(
 }
 
 func testLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelError + 1,
-	}))
+	return slog.New(slog.DiscardHandler)
 }
 
 // unreachableRedis exercises the resolver's Redis-degraded path in unit
@@ -213,13 +208,13 @@ func TestResolveCachesInMemory(t *testing.T) {
 	f := newFakeDjango(t)
 	r := newTestResolver(t, f)
 
-	first, err := r.Resolve(context.Background(), "SHOP.example.test:443")
+	first, err := r.Resolve(t.Context(), "SHOP.example.test:443")
 	require.NoError(t, err)
 	assert.Equal(t, "demostore", first.SchemaName)
 	assert.Equal(t, "shop.example.test", first.Domain)
 	assert.False(t, first.Stale)
 
-	second, err := r.Resolve(context.Background(), "shop.example.test")
+	second, err := r.Resolve(t.Context(), "shop.example.test")
 	require.NoError(t, err)
 	assert.Equal(t, "demostore", second.SchemaName)
 	assert.Equal(t, int32(1), f.calls.Load(),
@@ -246,19 +241,19 @@ func TestResolveUnknownDomainNegativeCache(t *testing.T) {
 	f := newFakeDjango(t)
 	r := newTestResolver(t, f)
 
-	_, err := r.Resolve(context.Background(), "nope.example.test")
-	assert.ErrorIs(t, err, ErrUnknownTenant)
+	_, err := r.Resolve(t.Context(), "nope.example.test")
+	require.ErrorIs(t, err, ErrUnknownTenant)
 
-	_, err = r.Resolve(context.Background(), "nope.example.test")
-	assert.ErrorIs(t, err, ErrUnknownTenant)
+	_, err = r.Resolve(t.Context(), "nope.example.test")
+	require.ErrorIs(t, err, ErrUnknownTenant)
 	assert.Equal(t, int32(1), f.calls.Load(),
 		"negative result must be cached")
 	assertMemoryTTL(t, r, "nope.example.test", testNegTTL)
 
 	// A negative entry ends with its TTL: a store created since resolves.
 	expireMemory(t, r, "nope.example.test")
-	_, err = r.Resolve(context.Background(), "nope.example.test")
-	assert.ErrorIs(t, err, ErrUnknownTenant)
+	_, err = r.Resolve(t.Context(), "nope.example.test")
+	require.ErrorIs(t, err, ErrUnknownTenant)
 	assert.Equal(t, int32(2), f.calls.Load(),
 		"an expired negative entry must be resolved again")
 }
@@ -270,7 +265,7 @@ func TestResolveSingleflightCollapsesConcurrentMisses(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 25 {
 		wg.Go(func() {
-			_, err := r.Resolve(context.Background(), "shop.example.test")
+			_, err := r.Resolve(t.Context(), "shop.example.test")
 			assert.NoError(t, err)
 		})
 	}
@@ -283,13 +278,13 @@ func TestResolveServesStaleWhenDjangoDown(t *testing.T) {
 	f := newFakeDjango(t)
 	r := newTestResolver(t, f)
 
-	_, err := r.Resolve(context.Background(), "shop.example.test")
+	_, err := r.Resolve(t.Context(), "shop.example.test")
 	require.NoError(t, err)
 
 	expireMemory(t, r, "shop.example.test")
 	f.goDown()
 
-	got, err := r.Resolve(context.Background(), "shop.example.test")
+	got, err := r.Resolve(t.Context(), "shop.example.test")
 	require.NoError(t, err)
 	assert.True(t, got.Stale)
 	assert.Equal(t, "demostore", got.SchemaName)
@@ -301,16 +296,16 @@ func TestResolveStaleAnswerBacksOffDjango(t *testing.T) {
 	f := newFakeDjango(t)
 	r := newTestResolver(t, f)
 
-	_, err := r.Resolve(context.Background(), "shop.example.test")
+	_, err := r.Resolve(t.Context(), "shop.example.test")
 	require.NoError(t, err)
 	expireMemory(t, r, "shop.example.test")
 	f.goDown()
 
-	_, err = r.Resolve(context.Background(), "shop.example.test")
+	_, err = r.Resolve(t.Context(), "shop.example.test")
 	require.NoError(t, err)
 	probes := f.calls.Load()
 	for range 5 {
-		got, err := r.Resolve(context.Background(), "shop.example.test")
+		got, err := r.Resolve(t.Context(), "shop.example.test")
 		require.NoError(t, err)
 		assert.True(t, got.Stale)
 	}
@@ -337,7 +332,7 @@ func TestResolveLeaderCancellationDoesNotFailFollowers(t *testing.T) {
 	r := NewResolver(dj, unreachableRedis(), time.Minute,
 		testNegTTL, testLogger(), nil)
 
-	leaderCtx, cancel := context.WithCancel(context.Background())
+	leaderCtx, cancel := context.WithCancel(t.Context())
 	leader := make(chan error, 1)
 	go func() {
 		_, err := r.Resolve(leaderCtx, "shop.example.test")
@@ -346,7 +341,7 @@ func TestResolveLeaderCancellationDoesNotFailFollowers(t *testing.T) {
 	<-entered
 	follower := make(chan error, 1)
 	go func() {
-		_, err := r.Resolve(context.Background(), "shop.example.test")
+		_, err := r.Resolve(t.Context(), "shop.example.test")
 		follower <- err
 	}()
 	cancel()
@@ -360,7 +355,7 @@ func TestResolveLeaderCancellationDoesNotFailFollowers(t *testing.T) {
 // goroutine.
 func TestSharedReturnsPanicAsError(t *testing.T) {
 	r := NewResolver(nil, nil, time.Minute, time.Minute, testLogger(), nil)
-	_, err := r.shared(context.Background(), "shop.example.test",
+	_, err := r.shared(t.Context(), "shop.example.test",
 		func(context.Context) (any, error) { panic("boom") })
 	require.EqualError(t, err, "tenant: resolve: panicked")
 }
@@ -370,7 +365,7 @@ func TestResolveErrorsWithoutStaleEntry(t *testing.T) {
 	f.goDown()
 	r := newTestResolver(t, f)
 
-	_, err := r.Resolve(context.Background(), "shop.example.test")
+	_, err := r.Resolve(t.Context(), "shop.example.test")
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrUnknownTenant)
 }

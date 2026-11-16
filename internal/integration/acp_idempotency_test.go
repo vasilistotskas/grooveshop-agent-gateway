@@ -24,7 +24,7 @@ import (
 // sessionCount is how many checkout sessions the store holds.
 func (stack ucpStack) sessionCount(t *testing.T) int {
 	t.Helper()
-	keys, err := stack.rdb.Keys(context.Background(),
+	keys, err := stack.rdb.Keys(t.Context(),
 		sessionRedisKey("*")).Result()
 	require.NoError(t, err)
 	n := 0
@@ -180,7 +180,7 @@ func TestACreateWhoseRecordIsNotConfirmedHandsOutNoSession(t *testing.T) {
 func TestACPIdempotencyKeys(t *testing.T) {
 	stack := startUCPGateway(t)
 	base := stack.gw.URL + "/acp/checkout_sessions"
-	ctx := context.Background()
+	ctx := t.Context()
 	createBody := map[string]any{
 		"line_items":   []map[string]any{{"id": "1", "quantity": 2}},
 		"currency":     "EUR",
@@ -575,7 +575,7 @@ func TestEveryACPPostReplaysTheResponseItSent(t *testing.T) {
 func TestACompleteIsAnsweredByItsKeyFirst(t *testing.T) {
 	stack := startUCPGateway(t)
 	base := stack.gw.URL + "/acp/checkout_sessions"
-	ctx := context.Background()
+	ctx := t.Context()
 	payment := map[string]any{"payment_data": map[string]any{}}
 	complete := func(id string, body any, key string) (
 		*http.Response, []byte,
@@ -640,7 +640,7 @@ func TestACompleteIsAnsweredByItsKeyFirst(t *testing.T) {
 func TestAnACPKeyIsFreedForARetry(t *testing.T) {
 	stack := startUCPGateway(t)
 	base := stack.gw.URL + "/acp/checkout_sessions"
-	ctx := context.Background()
+	ctx := t.Context()
 	update := func(id, key string) (*http.Response, map[string]any) {
 		return acpCall(t, http.MethodPost, base+"/"+id,
 			map[string]any{"buyer": map[string]any{

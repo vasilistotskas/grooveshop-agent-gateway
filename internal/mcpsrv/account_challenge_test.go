@@ -14,7 +14,6 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/identity"
@@ -23,11 +22,9 @@ import (
 
 func challengeTenant() *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			Features: django.StoreFeatures{
-				CustomerAccounts: true, Catalogue: true, Cart: true,
-				Favourites: true,
-			},
+		Features: django.StoreFeatures{
+			CustomerAccounts: true, Catalogue: true, Cart: true,
+			Favourites: true,
 		},
 		Domain: "shop.example.test",
 	}
@@ -52,7 +49,7 @@ func throughChallenge(
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reached = true
 		b, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		assert.NoError(t, err)
 		seen = string(b)
 		w.WriteHeader(http.StatusOK)
 	})
@@ -63,7 +60,7 @@ func throughChallenge(
 }
 
 func TestRequireLinkedAccountChallengesAnAnonymousCall(t *testing.T) {
-	ctx := tenant.NewContext(context.Background(), challengeTenant())
+	ctx := tenant.NewContext(t.Context(), challengeTenant())
 	// One link serves every account tool this store has: loyalty is off
 	// here, so it is not asked for.
 	for _, tool := range []string{"my_orders", "my_favourites"} {
@@ -80,7 +77,7 @@ func TestRequireLinkedAccountChallengesAnAnonymousCall(t *testing.T) {
 }
 
 func TestRequireLinkedAccountLeavesTheRestOpen(t *testing.T) {
-	ctx := tenant.NewContext(context.Background(), challengeTenant())
+	ctx := tenant.NewContext(t.Context(), challengeTenant())
 	linked := identity.NewContext(ctx, &identity.Linked{Bearer: "token"})
 	for _, tc := range []struct {
 		name   string
@@ -129,7 +126,7 @@ var accountCallBodies = map[string]string{
 func TestRequireLinkedAccountChallengesEveryWayToCallAnAccountTool(
 	t *testing.T,
 ) {
-	ctx := tenant.NewContext(context.Background(), challengeTenant())
+	ctx := tenant.NewContext(t.Context(), challengeTenant())
 	for name, body := range accountCallBodies {
 		t.Run(name, func(t *testing.T) {
 			rec, _, reached := throughChallenge(t, ctx, http.MethodPost, body)
@@ -142,7 +139,7 @@ func TestRequireLinkedAccountChallengesEveryWayToCallAnAccountTool(
 }
 
 func TestRequireLinkedAccountLeavesOtherBatchesOpen(t *testing.T) {
-	ctx := tenant.NewContext(context.Background(), challengeTenant())
+	ctx := tenant.NewContext(t.Context(), challengeTenant())
 	for name, body := range map[string]string{
 		"public calls": `[` + toolCall("search_products") + `,` +
 			toolCall("list_categories") + `]`,
@@ -248,7 +245,7 @@ func toolsTheSDKRuns(t *testing.T, body string) []string {
 }
 
 func TestRequireLinkedAccountBoundsTheBody(t *testing.T) {
-	ctx := tenant.NewContext(context.Background(), challengeTenant())
+	ctx := tenant.NewContext(t.Context(), challengeTenant())
 	rec, _, reached := throughChallenge(t, ctx, http.MethodPost,
 		strings.Repeat("x", maxRequestBodyBytes+1))
 	assert.False(t, reached)
@@ -257,7 +254,7 @@ func TestRequireLinkedAccountBoundsTheBody(t *testing.T) {
 
 // A body that could not be read is not one that was too large.
 func TestRequireLinkedAccountRefusesAnUnreadableBody(t *testing.T) {
-	ctx := tenant.NewContext(context.Background(), challengeTenant())
+	ctx := tenant.NewContext(t.Context(), challengeTenant())
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/mcp",
 		iotest.ErrReader(io.ErrUnexpectedEOF))
 	rec := httptest.NewRecorder()

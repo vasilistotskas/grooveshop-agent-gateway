@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -63,7 +62,7 @@ func TestAnUpdateWhoseLineWriteMeetsAnotherCompletesOrder(t *testing.T) {
 	for _, tc := range cases {
 		for _, name := range []string{"acp", "ucp"} {
 			t.Run(tc.name+", over "+name, func(t *testing.T) {
-				ctx := context.Background()
+				ctx := t.Context()
 				stack := startUCPGateway(t)
 				surfaces := surfacesByName(t, stack)
 				ready, status := surfaces[name].ready, "completed"
@@ -106,7 +105,7 @@ func TestAnUpdatePastItsLockWritesNoCartOfACheckoutStoredSince(
 ) {
 	for _, name := range []string{"acp", "ucp"} {
 		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			stack := startUCPGateway(t)
 			surfaces := surfacesByName(t, stack)
 			surface := surfaces[name]
@@ -134,7 +133,7 @@ func TestAnUpdatePastItsLockWritesNoCartOfACheckoutStoredSince(
 
 	// Nobody stored it meanwhile: the update goes through.
 	t.Run("a checkout nobody touched", func(t *testing.T) {
-		ctx := context.Background()
+		ctx := t.Context()
 		stack := startUCPGateway(t)
 		for name, surface := range surfacesByName(t, stack) {
 			id := surface.ready(t)
@@ -151,7 +150,7 @@ func TestAnUpdatePastItsLockWritesNoCartOfACheckoutStoredSince(
 // answers the stored checkout: completed, not still awaiting a payment
 // that was made.
 func TestARenderFromAStaleSnapshotAnswersTheStoredCheckout(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	surface := surfacesByName(t, stack)["ucp"]
 	id := awaitingPayment(t, surface)
@@ -178,7 +177,7 @@ func TestARenderFromAStaleSnapshotAnswersTheStoredCheckout(t *testing.T) {
 func TestACompleteThatCannotMarkItsSessionSaysRecordsAreUnavailable(
 	t *testing.T,
 ) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	want := map[string]string{
 		"acp": "503 unavailable",
@@ -222,7 +221,7 @@ func TestACompleteThatCannotMarkItsSessionSaysRecordsAreUnavailable(
 // snapshot it would say "ready, call complete to place the order" for a
 // checkout that has one.
 func TestACompleteOnASpentKeyAnswersTheStoredCheckout(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	surfaces := surfacesByName(t, stack)
 
@@ -275,7 +274,7 @@ func TestACompleteOnASpentKeyAnswersTheStoredCheckout(t *testing.T) {
 // answered with the placed checkout, not told to fix a checkout that
 // has an order.
 func TestARefusalFromAStaleSnapshotAnswersTheStoredCheckout(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	surfaces := surfacesByName(t, stack)
 	// meanwhile places the order over the surface name just before the
@@ -344,7 +343,7 @@ func TestARefusalFromAStaleSnapshotAnswersTheStoredCheckout(t *testing.T) {
 // which a cash-on-delivery order's first event is, records it on the
 // session; the payment event then completes it.
 func TestAnOrderItsSessionNeverSavedIsStillKnown(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	surfaces := surfacesByName(t, stack)
 	redisDown := errors.New("redis is down")
@@ -453,7 +452,7 @@ func TestAnOrderItsSessionNeverSavedIsStillKnown(t *testing.T) {
 // session in progress, and stores its own outcome over it: the order is
 // not reported as unsaved, and what the event said (paid) is kept.
 func TestAnOrderEventDuringItsCompletionCostsNeitherTheirResult(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	surface := surfacesByName(t, stack)["ucp"]
 	id := surface.readyKeeping(t)

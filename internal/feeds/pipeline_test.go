@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -40,8 +39,7 @@ func pagedCatalog(
 			writePage(w, totalPages, page)
 		}))
 	t.Cleanup(srv.Close)
-	log := slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	log := slog.New(slog.DiscardHandler)
 	return django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, log, obs.NewMetrics()), &pages
 }
@@ -75,7 +73,7 @@ func (h panicking) WithGroup(string) slog.Handler { return h }
 func TestFetchAllProductsStreamsEveryPageInOrder(t *testing.T) {
 	dj, pages := pagedCatalog(t, 5, 0)
 	var ids []int64
-	count, truncated, err := fetchAllProducts(context.Background(), dj, discard,
+	count, truncated, err := fetchAllProducts(t.Context(), dj, discard,
 		"shop.example.test", "el", func(p django.ProductFeed) error {
 			ids = append(ids, p.ID)
 			return nil
@@ -95,7 +93,7 @@ func TestFetchAllProductsEmitErrorStopsTheSweep(t *testing.T) {
 	boom := errors.New("boom")
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := fetchAllProducts(context.Background(), dj, discard,
+		_, _, err := fetchAllProducts(t.Context(), dj, discard,
 			"shop.example.test", "el", func(p django.ProductFeed) error {
 				if p.ID == 2 {
 					return boom
@@ -106,7 +104,7 @@ func TestFetchAllProductsEmitErrorStopsTheSweep(t *testing.T) {
 	}()
 	select {
 	case err := <-done:
-		assert.ErrorIs(t, err, boom)
+		require.ErrorIs(t, err, boom)
 	case <-time.After(10 * time.Second):
 		t.Fatal("sweep did not return after the emit error")
 	}
@@ -123,7 +121,7 @@ func TestFetchAllProductsEmitErrorStopsTheSweep(t *testing.T) {
 func TestFetchAllProductsFailedPageFailsTheSweep(t *testing.T) {
 	dj, _ := pagedCatalog(t, 60, 7)
 	for range 750 {
-		_, _, err := fetchAllProducts(context.Background(), dj, discard,
+		_, _, err := fetchAllProducts(t.Context(), dj, discard,
 			"shop.example.test", "el",
 			func(django.ProductFeed) error { return nil })
 		require.ErrorIs(t, err, django.ErrNotFound)
@@ -145,7 +143,7 @@ func TestFetchAllProductsPanickingPageFailsTheSweep(t *testing.T) {
 	t.Cleanup(srv.Close)
 	dj := django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, slog.New(panicking{}), obs.NewMetrics())
-	_, _, err := fetchAllProducts(context.Background(), dj, discard,
+	_, _, err := fetchAllProducts(t.Context(), dj, discard,
 		"shop.example.test", "el",
 		func(django.ProductFeed) error { return nil })
 	require.EqualError(t, err, "feeds: page 2: panicked")

@@ -83,7 +83,7 @@ func (h *sentTwice) during(t *testing.T, call func()) {
 // A caller touching an unpaid placed checkout must not keep it alive: it reads
 // its order past the limit on a guest's uuid.
 func TestPlacedSessionCannotBeKeptAlive(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, rdb := startStore(t)
 
 	s := newSession()
@@ -108,7 +108,7 @@ func TestPlacedSessionCannotBeKeptAlive(t *testing.T) {
 func TestAnEndedSessionIsDeletedOnlyOverTheSessionItsCallerRead(
 	t *testing.T,
 ) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, _ := startStore(t)
 	s := newSession()
 	s.Status = checkout.StatusRequiresEscalation
@@ -137,7 +137,7 @@ func TestAnEndedSessionIsDeletedOnlyOverTheSessionItsCallerRead(
 // Current tells a request whether the session it holds is still the
 // stored one, before it acts elsewhere on the session's behalf.
 func TestCurrentIsTheStoredRevision(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, rdb := startStore(t)
 	s := newSession()
 	require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
@@ -157,7 +157,7 @@ func TestCurrentIsTheStoredRevision(t *testing.T) {
 // read one session cannot both store it, whatever became of the lock:
 // the second is refused, and its session is left as it was.
 func TestSaveWritesOnlyOverTheSessionItRead(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, rdb := startStore(t)
 	load := func(t *testing.T, s *checkout.Session) *checkout.Session {
 		t.Helper()
@@ -244,7 +244,7 @@ func TestSaveWritesOnlyOverTheSessionItRead(t *testing.T) {
 // saves the same content in the same instant writes the same bytes but
 // for its revision: finding those stored is not finding one's own write.
 func TestSaveDoesNotTakeAnotherWritersTwinForItsOwn(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, rdb := startStore(t)
 	s := newSession()
 	require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
@@ -275,7 +275,7 @@ func TestSaveDoesNotTakeAnotherWritersTwinForItsOwn(t *testing.T) {
 // checkout and a payment event finds it, and once it is gone its id is
 // only "not found". A placed one ends a day after it was placed.
 func TestSessionLifetimeByStatus(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, rdb := startStore(t)
 	const day, halfHour = 24 * time.Hour, 30 * time.Minute
 	for status, want := range map[checkout.Status]time.Duration{
@@ -320,7 +320,7 @@ func TestSessionLifetimeByStatus(t *testing.T) {
 // This one neither reads it nor writes it: the two never share a
 // session.
 func TestSessionUnderTheOldKeyIsNotThisStores(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, rdb := startStore(t)
 	s := newSession()
 	require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
@@ -342,7 +342,7 @@ func TestSessionUnderTheOldKeyIsNotThisStores(t *testing.T) {
 // "changed", or a lock answered "busy", by its own first run would fail
 // a request that held everything it needed.
 func TestACommandSentTwiceIsAnsweredAsDone(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, rdb := startStore(t)
 	twice := new(sentTwice)
 	rdb.AddHook(twice)
@@ -421,7 +421,7 @@ func TestACommandSentTwiceIsAnsweredAsDone(t *testing.T) {
 // itself, and a request that outlived it must not release the lock of
 // the request that took it next.
 func TestLock(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, rdb := startStore(t)
 	s := newSession()
 
@@ -454,7 +454,7 @@ func TestLock(t *testing.T) {
 // that ran past its claim neither settles nor releases the key of the
 // request that holds it now.
 func TestClaim(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, rdb := startStore(t)
 	const prefix = "ag:demostore:acp:idem:test:"
 	// held reports who has key: a claim, a settled value, or neither.

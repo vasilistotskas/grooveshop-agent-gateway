@@ -1,7 +1,6 @@
 package mcpsrv
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -155,7 +154,7 @@ func TestTheChallengeRefusesABodyNestedDeeperThanTheSDKReads(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			req := httptest.NewRequestWithContext(
-				tenant.NewContext(context.Background(), store),
+				tenant.NewContext(t.Context(), store),
 				http.MethodPost, "/mcp", strings.NewReader(depthBodies[name]))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Accept", "application/json, text/event-stream")

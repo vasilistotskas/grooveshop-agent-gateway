@@ -26,10 +26,10 @@ import (
 func offeredNames(t *testing.T, features django.StoreFeatures) []string {
 	t.Helper()
 	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test"})
-	br, err := newBridge(context.Background(), server)
+	br, err := newBridge(t.Context(), server)
 	require.NoError(t, err)
 	t.Cleanup(br.close)
-	tools, err := br.tools(context.Background(), features)
+	tools, err := br.tools(t.Context(), features)
 	require.NoError(t, err)
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
@@ -66,7 +66,7 @@ func TestBridgeOffersOnlyTheStoreTools(t *testing.T) {
 func TestBridgeReportsAPanickingToolAsAFailure(t *testing.T) {
 	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test",
 		Log: slog.New(slog.DiscardHandler)})
-	ctx := tenant.NewContext(context.Background(), testTenant())
+	ctx := tenant.NewContext(t.Context(), testTenant())
 	br, err := newBridge(ctx, server)
 	require.NoError(t, err)
 	t.Cleanup(br.close)
@@ -107,7 +107,7 @@ func TestBridgeReportsAFailedCartToolAsAFailure(t *testing.T) {
 	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test",
 		Django: django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 			5*time.Second, log, obs.NewMetrics()), Log: log})
-	ctx := tenant.NewContext(context.Background(), testTenant())
+	ctx := tenant.NewContext(t.Context(), testTenant())
 	br, err := newBridge(ctx, server)
 	require.NoError(t, err)
 	t.Cleanup(br.close)
@@ -146,7 +146,7 @@ func TestBridgeReportsARefusedCartToken(t *testing.T) {
 	tok, err := django.ParseCartToken("Zk3n_Q8vX2-rT5yLmW9aB4cD7eF0gH1iJ6k")
 	require.NoError(t, err)
 	ctx := django.WithCartToken(
-		tenant.NewContext(context.Background(), testTenant()), tok)
+		tenant.NewContext(t.Context(), testTenant()), tok)
 	br, err := newBridge(ctx, server)
 	require.NoError(t, err)
 	t.Cleanup(br.close)
@@ -180,7 +180,7 @@ func TestBridgeClosesTheServerSessionWhenTheClientCannotConnect(
 ) {
 	server := mcpsrv.NewChatServer(mcpsrv.Deps{Version: "test"})
 	serverT, _ := mcp.NewInMemoryTransports()
-	_, err := connectBridge(context.Background(), server, serverT,
+	_, err := connectBridge(t.Context(), server, serverT,
 		failingTransport{})
 	require.ErrorContains(t, err, "no connection")
 	assert.Empty(t, slices.Collect(server.Sessions()))

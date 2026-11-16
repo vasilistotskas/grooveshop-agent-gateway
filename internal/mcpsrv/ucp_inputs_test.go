@@ -1,7 +1,6 @@
 package mcpsrv
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -23,7 +22,7 @@ import (
 // answered "missing store context", one it refuses never gets there.
 func ucpSession(t *testing.T) *mcp.ClientSession {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	serverT, clientT := mcp.NewInMemoryTransports()
 	_, err := NewServer(Deps{Version: "test", Log: slog.New(slog.DiscardHandler)},
 		Identity{Name: "test.acme/store", Title: "Acme Store"}, EveryFeature).
@@ -42,7 +41,7 @@ func accepted(
 	t *testing.T, session *mcp.ClientSession, tool, args string,
 ) (bool, string) {
 	t.Helper()
-	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+	res, err := session.CallTool(t.Context(), &mcp.CallToolParams{
 		Name: tool, Arguments: json.RawMessage(args),
 	})
 	require.NoError(t, err)
@@ -392,8 +391,7 @@ func (c structCheck) types(s *jsonschema.Schema) []string {
 }
 
 func (c structCheck) object(path string, typ reflect.Type, s *jsonschema.Schema) {
-	for i := range typ.NumField() {
-		f := typ.Field(i)
+	for f := range typ.Fields() {
 		if f.Anonymous {
 			c.object(path, f.Type, s)
 			continue

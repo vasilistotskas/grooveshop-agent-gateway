@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -83,7 +84,7 @@ func serveOn(t *testing.T, addr string, h http.Handler) *httptest.Server {
 // from the target's queue, each once.
 func TestDispatcherIsolatesAStalledTarget(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	keys := newKeys(t, rdb, testKEK(t))
 
 	stalled := &stallingPlatform{release: make(chan struct{})}
@@ -213,9 +214,7 @@ func (p *countingPlatform) counts() map[string]int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	out := make(map[string]int, len(p.seen))
-	for k, v := range p.seen {
-		out[k] = v
-	}
+	maps.Copy(out, p.seen)
 	return out
 }
 
@@ -224,7 +223,7 @@ func runDispatcher(t *testing.T, rdb *redis.Client, keys *ucp.Keys,
 	consumer string,
 ) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
 		ucp.NewDispatcher(rdb, keys, quietLogger(), consumer, true).Run(ctx)
@@ -241,7 +240,7 @@ func runDispatcher(t *testing.T, rdb *redis.Client, keys *ucp.Keys,
 // for the visibility timeout, every event once.
 func TestDispatcherDeliversABurstToOneTargetPromptly(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	keys := newKeys(t, rdb, testKEK(t))
 	platform := &countingPlatform{delay: 200 * time.Millisecond,
 		seen: map[string]int{}}
@@ -275,7 +274,7 @@ func TestDispatcherDeliversABurstToOneTargetPromptly(t *testing.T) {
 // an hour, as a dead pod's entry does.
 func backdate(t *testing.T, rdb *redis.Client, consumer, id string) {
 	t.Helper()
-	require.NoError(t, rdb.Do(context.Background(), "XCLAIM", webhookStream,
+	require.NoError(t, rdb.Do(t.Context(), "XCLAIM", webhookStream,
 		"dispatch", consumer, 0, id, "IDLE", time.Hour.Milliseconds()).Err())
 }
 
@@ -283,7 +282,7 @@ func backdate(t *testing.T, rdb *redis.Client, consumer, id string) {
 func readAs(t *testing.T, rdb *redis.Client, consumer string, n int64,
 ) []redis.XMessage {
 	t.Helper()
-	streams, err := rdb.XReadGroup(context.Background(),
+	streams, err := rdb.XReadGroup(t.Context(),
 		&redis.XReadGroupArgs{
 			Group: "dispatch", Consumer: consumer,
 			Streams: []string{webhookStream, ">"}, Count: n,
@@ -299,7 +298,7 @@ func readAs(t *testing.T, rdb *redis.Client, consumer string, n int64,
 // stopped instead of starting over at the head.
 func TestDispatcherReclaimReachesPastTheFirstScanWindow(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	keys := newKeys(t, rdb, testKEK(t))
 	platform := &countingPlatform{seen: map[string]int{}}
 	srv := serveOn(t, "127.0.0.1:0", platform.handler())
@@ -346,7 +345,7 @@ func TestDispatcherReclaimReachesPastTheFirstScanWindow(t *testing.T) {
 // reclaim instead of being dropped.
 func TestDispatcherKeepsADeliveryWhoseKeyIsUnavailable(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	keys := newKeys(t, rdb, testKEK(t))
 	// A sealed record no key-encryption key of this test opens.
 	require.NoError(t, rdb.Set(ctx, sealedKeyName("alpha"),

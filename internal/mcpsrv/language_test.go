@@ -33,7 +33,7 @@ func TestToolsAskDjangoForTheTurnsLanguage(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := tc.ctx(
-				tenant.NewContext(context.Background(), cartTenant()))
+				tenant.NewContext(t.Context(), cartTenant()))
 
 			var langs []string
 			h := fixtureHandlers(t, "product_detail.json",
@@ -79,7 +79,7 @@ func TestLinksFollowTheTurnsLanguage(t *testing.T) {
 	}{
 		"English turn": {
 			django.WithLanguage(
-				tenant.NewContext(context.Background(), cartTenant()), "en"),
+				tenant.NewContext(t.Context(), cartTenant()), "en"),
 			"https://shop.example.test/en/products/",
 			"https://shop.example.test/cart/claim?locale=en&uuid=" +
 				fixtureCartID,
@@ -87,13 +87,13 @@ func TestLinksFollowTheTurnsLanguage(t *testing.T) {
 		},
 		"Greek turn": {
 			django.WithLanguage(
-				tenant.NewContext(context.Background(), cartTenant()), "el"),
+				tenant.NewContext(t.Context(), cartTenant()), "el"),
 			"https://shop.example.test/products/",
 			"https://shop.example.test/cart/claim?uuid=" + fixtureCartID,
 			"https://shop.example.test/return-policy",
 		},
 		"/mcp at an English-default store": {
-			tenant.NewContext(context.Background(), enStore),
+			tenant.NewContext(t.Context(), enStore),
 			"https://shop.example.test/en/products/",
 			"https://shop.example.test/cart/claim?locale=en&uuid=" +
 				fixtureCartID,

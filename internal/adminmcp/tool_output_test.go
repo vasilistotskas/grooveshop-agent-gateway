@@ -1,7 +1,6 @@
 package adminmcp
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -109,7 +108,7 @@ func connectAs(t *testing.T, dj *django.Client, token string) *mcp.ClientSession
 	srv := httptest.NewServer(stack(dj, acme()))
 	t.Cleanup(srv.Close)
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).
-		Connect(context.Background(), &mcp.StreamableClientTransport{
+		Connect(t.Context(), &mcp.StreamableClientTransport{
 			Endpoint:   srv.URL + Path,
 			HTTPClient: &http.Client{Transport: bearer{token}},
 		}, nil)

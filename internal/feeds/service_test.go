@@ -32,7 +32,7 @@ import (
 
 func demoTenant() *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{SchemaName: "demostore"},
+		SchemaName: "demostore",
 	}
 }
 
@@ -45,7 +45,7 @@ func TestRefreshReturnsPanicAsError(t *testing.T) {
 	metrics := obs.NewMetrics()
 	s := NewService(nil, rdb, slog.New(slog.DiscardHandler), metrics,
 		"", "", time.Hour, 24*time.Hour, "test", storefront.NewSite("el"))
-	res := <-s.refresh(context.Background(), demoTenant())
+	res := <-s.refresh(t.Context(), demoTenant())
 	require.EqualError(t, res.Err, "feeds: generation: panicked")
 	assert.InDelta(t, 1, counterValue(t, metrics,
 		"gateway_feed_generation_failures_total"), 0)
@@ -144,7 +144,7 @@ func TestShortMGetReplyIsAMiss(t *testing.T) {
 		obs.NewMetrics(), "", "", time.Hour, 24*time.Hour, "test",
 		storefront.NewSite("el"))
 	require.NotPanics(t, func() {
-		_, ok, failed, err := s.cachedMeta(context.Background(),
+		_, ok, failed, err := s.cachedMeta(t.Context(),
 			"demostore", formatRSS)
 		require.NoError(t, err)
 		assert.False(t, ok)
@@ -166,7 +166,7 @@ func TestFailureBeforeTheEpochIsMarked(t *testing.T) {
 	s := NewService(nil, r.client(), slog.New(slog.DiscardHandler),
 		metrics, "", "", time.Hour, 24*time.Hour, "test",
 		storefront.NewSite("el"))
-	res := <-s.refresh(context.Background(), demoTenant())
+	res := <-s.refresh(t.Context(), demoTenant())
 	require.ErrorContains(t, res.Err, "epoch unreadable")
 	assert.True(t, r.set("ag:demostore:feed:failed"))
 }
@@ -192,14 +192,14 @@ func TestRefreshFailureIsLoggedAndCounted(t *testing.T) {
 		time.Hour, 24*time.Hour, "test", storefront.NewSite("el"))
 
 	ctx := obs.WithRequestID(
-		obs.WithTenantSlot(context.Background()), "req-98")
+		obs.WithTenantSlot(t.Context()), "req-98")
 	obs.SetTenant(ctx, "demostore")
 	ctx, cancel := context.WithCancel(ctx)
 	cancel()
 
 	res := <-s.refresh(ctx, demoTenant())
 	require.Error(t, res.Err)
-	assert.NotErrorIs(t, res.Err, context.Canceled,
+	require.NotErrorIs(t, res.Err, context.Canceled,
 		"the generation is detached from its request")
 
 	lines := logLines(t, &logs, "feed generation failed")
@@ -222,13 +222,11 @@ func TestGenerationStoresEachDocumentWithItsMetadata(t *testing.T) {
 	m, rdb := newMemRedis(map[string]string{})
 	s := feedService(storeCatalog(t, 3), rdb, io.Discard)
 	store := &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			SchemaName: "demostore", StoreName: "Demo Store",
-			DefaultLocale: "el", DefaultCurrency: "EUR",
-		},
+		SchemaName: "demostore", StoreName: "Demo Store",
+		DefaultLocale: "el", DefaultCurrency: "EUR",
 		Domain: "demo.example.test",
 	}
-	require.NoError(t, (<-s.refresh(context.Background(), store)).Err)
+	require.NoError(t, (<-s.refresh(t.Context(), store)).Err)
 
 	docs := map[string][]byte{}
 	for _, format := range formats {
@@ -305,13 +303,11 @@ func TestGoogleFeedDiffersOnlyInBrand(t *testing.T) {
 	m, rdb := newMemRedis(map[string]string{})
 	s := feedService(brandCatalog(t, &pages), rdb, io.Discard)
 	store := &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			SchemaName: "demostore", StoreName: "Demo Store",
-			DefaultLocale: "el", DefaultCurrency: "EUR",
-		},
+		SchemaName: "demostore", StoreName: "Demo Store",
+		DefaultLocale: "el", DefaultCurrency: "EUR",
 		Domain: "demo.example.test",
 	}
-	ctx := tenant.NewContext(context.Background(), store)
+	ctx := tenant.NewContext(t.Context(), store)
 	bodies := map[string]string{}
 	for _, kind := range []string{KindGoogle, KindMeta, KindTikTok} {
 		req := httptest.NewRequestWithContext(ctx, http.MethodGet,
@@ -349,7 +345,7 @@ func TestInvalidateDropsEveryFormat(t *testing.T) {
 	require.Contains(t, vals, dataKey("demostore", formatOf(KindGoogle)))
 	m, rdb := newMemRedis(vals)
 	s := feedService(nil, rdb, io.Discard)
-	removed, err := s.Invalidate(context.Background(), "demostore")
+	removed, err := s.Invalidate(t.Context(), "demostore")
 	require.NoError(t, err)
 	assert.EqualValues(t, len(formats)*2+1, removed)
 	m.mu.Lock()

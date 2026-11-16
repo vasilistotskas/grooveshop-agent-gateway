@@ -108,7 +108,7 @@ func TestDerivedComponents(t *testing.T) {
 func TestSignRefusesWhatItCannotCover(t *testing.T) {
 	req := rfcTestRequest(t)
 	signer := ed25519Signer{key: ed25519.NewKeyFromSeed(make([]byte, 32))}
-	assert.ErrorContains(t,
+	require.ErrorContains(t,
 		Sign(req, "sig1", []string{"ucp-agent"}, Params{}, signer),
 		`"ucp-agent" is not set`)
 	assert.ErrorContains(t,

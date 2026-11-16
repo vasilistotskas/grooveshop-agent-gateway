@@ -1,7 +1,6 @@
 package ucp
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -24,7 +23,7 @@ func TestValidatePlatformURLAcceptsPublicHTTPS(t *testing.T) {
 }
 
 func TestValidatePlatformURLRejectsEmptyAndCredentials(t *testing.T) {
-	assert.ErrorIs(t, ValidatePlatformURL("", false), ErrPlatformURL)
+	require.ErrorIs(t, ValidatePlatformURL("", false), ErrPlatformURL)
 	// The host a reader sees is not the host dialled.
 	assert.ErrorIs(t, ValidatePlatformURL(
 		"https://ucp.dev@evil.example/profile.json", false), ErrPlatformURL)
@@ -88,7 +87,7 @@ func TestWebhookClientDoesNotFollowRedirects(t *testing.T) {
 		}))
 	t.Cleanup(redirector.Close)
 
-	req, err := http.NewRequestWithContext(context.Background(),
+	req, err := http.NewRequestWithContext(t.Context(),
 		http.MethodPost, redirector.URL, nil)
 	require.NoError(t, err)
 	resp, err := platformClient(true, 5*time.Second).Do(req)
@@ -104,7 +103,7 @@ func TestWebhookClientRefusesSpecialUseAddresses(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(http.ResponseWriter, *http.Request) {}))
 	t.Cleanup(srv.Close)
-	req, err := http.NewRequestWithContext(context.Background(),
+	req, err := http.NewRequestWithContext(t.Context(),
 		http.MethodPost, srv.URL, nil)
 	require.NoError(t, err)
 	_, err = platformClient(false, 5*time.Second).Do(req)

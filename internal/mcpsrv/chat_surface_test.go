@@ -1,7 +1,6 @@
 package mcpsrv
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
@@ -15,7 +14,7 @@ func listedSchemas(
 	t *testing.T, srv *mcp.Server,
 ) map[string]map[string]any {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	serverT, clientT := mcp.NewInMemoryTransports()
 	_, err := srv.Connect(ctx, serverT, nil)
 	require.NoError(t, err)

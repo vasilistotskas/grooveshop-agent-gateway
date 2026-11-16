@@ -57,7 +57,7 @@ func (p *shutdownPlatform) handler() http.Handler {
 // resumes it on its next boot.
 func TestDispatcherSurvivesShutdownMidDelivery(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	platform := newShutdownPlatform()
 	server := httptest.NewServer(platform.handler())

@@ -1,7 +1,6 @@
 package acp
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,7 +26,7 @@ func TestRenderAsksForTheHouseNumber(t *testing.T) {
 	s.Recompute()
 	require.Equal(t, checkout.StatusIncomplete, s.Status)
 
-	payload, err := Render(context.Background(), fixtureDjango(t),
+	payload, err := Render(t.Context(), fixtureDjango(t),
 		testTenant(), testLinks(testTenant()), s)
 	require.NoError(t, err)
 

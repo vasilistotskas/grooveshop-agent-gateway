@@ -4,7 +4,6 @@ package integration
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -36,7 +35,7 @@ func TestAnUnpaidCartRefusalIsAnsweredAsWhatItIs(t *testing.T) {
 	stack := startUCPGateway(t)
 	for _, surface := range completionSurfaces(t, stack) {
 		t.Run(surface.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			id := surface.ready(t)
 			stack.faults.orderUnpaid.Store(true)
 			t.Cleanup(func() { stack.faults.orderUnpaid.Store(false) })
@@ -132,7 +131,7 @@ func scrapeToolCalls(t *testing.T, stack ucpStack) string {
 // whether the render or the coupon call finds the cart gone, and leaves
 // nothing behind. A Django outage on the same read is still an outage.
 func TestACreateOnACartDjangoNoLongerServes(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	// The store takes discount codes, so a create that sends one reaches
 	// the coupon call; set before the store is first resolved.

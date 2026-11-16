@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -58,8 +57,7 @@ func payWayDjango(t *testing.T) (*django.Client, func() url.Values) {
 		})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	log := slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	log := slog.New(slog.DiscardHandler)
 	dj := django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, log, obs.NewMetrics())
 	return dj, func() url.Values {
@@ -85,14 +83,14 @@ func TestPayWaysForScopesByCompleteDelivery(t *testing.T) {
 	dj, lastQuery := payWayDjango(t)
 	tn := pricingTenant()
 
-	_, err := PayWaysFor(context.Background(), dj, tn, lockerDelivery())
+	_, err := PayWaysFor(t.Context(), dj, tn, lockerDelivery())
 	require.NoError(t, err)
 	assert.Equal(t, "boxnow", lastQuery().Get("shippingProviderCode"))
 	assert.Equal(t, FulfillmentPickupPoint, lastQuery().Get("shippingKind"))
 	assert.Equal(t, "100", lastQuery().Get("pageSize"),
 		"the default page of 12 would hide methods")
 
-	_, err = PayWaysFor(context.Background(), dj, tn,
+	_, err = PayWaysFor(t.Context(), dj, tn,
 		Fulfillment{Kind: FulfillmentPickupPoint})
 	require.NoError(t, err)
 	assert.Empty(t, lastQuery().Get("shippingProviderCode"))
@@ -100,7 +98,7 @@ func TestPayWaysForScopesByCompleteDelivery(t *testing.T) {
 
 func TestOfflinePayWayPicksCollectLater(t *testing.T) {
 	dj, _ := payWayDjango(t)
-	pw, err := OfflinePayWay(context.Background(), dj, pricingTenant(),
+	pw, err := OfflinePayWay(t.Context(), dj, pricingTenant(),
 		lockerDelivery())
 	require.NoError(t, err)
 	require.NotNil(t, pw)
@@ -110,11 +108,11 @@ func TestOfflinePayWayPicksCollectLater(t *testing.T) {
 func TestAvailablePayWayRefusesAMethodNotOffered(t *testing.T) {
 	dj, _ := payWayDjango(t)
 	s := &Session{Fulfillment: lockerDelivery(), PayWayID: 99}
-	_, err := availablePayWay(context.Background(), dj, pricingTenant(), s)
-	assert.ErrorIs(t, err, ErrPayWayUnavailable)
+	_, err := availablePayWay(t.Context(), dj, pricingTenant(), s)
+	require.ErrorIs(t, err, ErrPayWayUnavailable)
 
 	s.PayWayID = 2
-	pw, err := availablePayWay(context.Background(), dj, pricingTenant(), s)
+	pw, err := availablePayWay(t.Context(), dj, pricingTenant(), s)
 	require.NoError(t, err)
 	assert.Equal(t, django.ProviderVivaWallet, pw.ProviderCode)
 }
@@ -124,7 +122,7 @@ func TestAvailablePayWayRefusesAMethodNotOffered(t *testing.T) {
 func TestComputePricingAddsTheSelectedPayWayFee(t *testing.T) {
 	dj, _ := payWayDjango(t)
 	s := &Session{CartID: "29eb4495-e018-45e7-b59c-6646302bd4ef", PayWayID: 1}
-	p, _, err := ComputePricing(context.Background(), dj, pricingTenant(), s)
+	p, _, err := ComputePricing(t.Context(), dj, pricingTenant(), s)
 	require.NoError(t, err)
 	assert.True(t, p.HasPaymentFee)
 	assert.EqualValues(t, 200, p.PaymentFee)

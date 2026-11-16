@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,9 +102,8 @@ func ucpHandlers(t *testing.T, dj *django.Client) *handlers {
 
 // A payment the store refuses is refused before the cart is written:
 // create_checkout neither creates a cart nor fills one. (update_checkout
-// orders its steps the same way, but takes its session lock in Redis
-// first, which this package's tests do not run; the integration suite
-// covers it.)
+// orders its steps the same way: see
+// TestUpdateCheckoutSettlesEverythingBeforeTheFirstCartWrite.)
 func TestCreateCheckoutRefusesThePaymentBeforeTheCart(t *testing.T) {
 	for name, tc := range map[string]struct {
 		instrument UCPInstrumentIn
@@ -120,7 +120,7 @@ func TestCreateCheckoutRefusesThePaymentBeforeTheCart(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dj, calls := ucpDjango(t)
 			h := ucpHandlers(t, dj)
-			ctx := tenant.NewContext(context.Background(), cartTenant())
+			ctx := tenant.NewContext(t.Context(), cartTenant())
 
 			_, _, err := h.createCheckout(ctx, nil, CreateCheckoutIn{
 				Meta: ucpMeta(t, ""),
@@ -154,7 +154,7 @@ func TestCreateCheckoutRefusesACartIDThatIsNoUUID(t *testing.T) {
 		t.Run(id, func(t *testing.T) {
 			dj, calls := ucpDjango(t)
 			h := ucpHandlers(t, dj)
-			ctx := tenant.NewContext(context.Background(), cartTenant())
+			ctx := tenant.NewContext(t.Context(), cartTenant())
 
 			_, _, err := h.createCheckout(ctx, nil, CreateCheckoutIn{
 				Meta: ucpMeta(t, ""), CartID: id,
@@ -221,7 +221,7 @@ func TestCheckoutStoreOutageIsUnavailable(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			dj, _ := ucpDjango(t)
-			ctx := tenant.NewContext(context.Background(), cartTenant())
+			ctx := tenant.NewContext(t.Context(), cartTenant())
 
 			err := call(ctx, ucpHandlers(t, dj), t)
 
@@ -242,7 +242,7 @@ func TestCheckoutStoreOutageIsUnavailable(t *testing.T) {
 func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
 	dj, _ := ucpDjango(t)
 	h := ucpHandlers(t, dj)
-	ctx := tenant.NewContext(context.Background(), cartTenant())
+	ctx := tenant.NewContext(t.Context(), cartTenant())
 
 	// An id no session can have is known to be missing without the store
 	// being asked, by the tools that lock the session too: these handlers'
@@ -336,7 +336,7 @@ func TestCompleteAndCancelBoundTheIdempotencyKey(t *testing.T) {
 		t.Run(tool, func(t *testing.T) {
 			dj, _ := ucpDjango(t)
 			h := ucpHandlers(t, dj)
-			ctx := tenant.NewContext(context.Background(), cartTenant())
+			ctx := tenant.NewContext(t.Context(), cartTenant())
 			for _, key := range outside {
 				err := call(ctx, h, ucpMeta(t, key))
 				require.ErrorIs(t, err, errIdempotencyKeyForm, key)
@@ -367,8 +367,8 @@ func TestACompletionInFlightIsAConflict(t *testing.T) {
 
 	for what, err := range map[string]error{
 		"the flow":  completeErr(s, checkout.ErrCompletionInProgress),
-		"an update": h.closedTo(context.Background(), s, "updated"),
-		"a cancel":  h.closedTo(context.Background(), s, "canceled"),
+		"an update": h.closedTo(t.Context(), s, "updated"),
+		"a cancel":  h.closedTo(t.Context(), s, "canceled"),
 	} {
 		require.ErrorIs(t, err, errCompletionInFlight, what)
 		te, ok := errors.AsType[*mcptool.ToolError](err)
@@ -378,7 +378,7 @@ func TestACompletionInFlightIsAConflict(t *testing.T) {
 		assert.Contains(t, te.Hint, "do not complete it again", what)
 	}
 	assert.Equal(t, errCompletionInFlight.Hint, guidance(
-		h.pending(context.Background(), s)), "a render's text is the hint")
+		h.pending(t.Context(), s)), "a render's text is the hint")
 }
 
 // A checkout that is not open takes no update and no cancel, whatever
@@ -398,7 +398,7 @@ func TestClosedToRefusesWhatIsNotOpen(t *testing.T) {
 			checkout.ProtocolUCP, fixtureCartID)
 		s.Status = status
 		for _, action := range []string{"updated", "canceled"} {
-			err := h.closedTo(context.Background(), s, action)
+			err := h.closedTo(t.Context(), s, action)
 			assert.Equal(t, !s.Open(), err != nil, "%s %s", status, action)
 		}
 	}
@@ -412,7 +412,7 @@ func TestCheckoutRefusalsCarryACode(t *testing.T) {
 	h := ucpHandlers(t, dj)
 	h.deps.Flow = checkout.NewFlow(dj, h.deps.Checkout, testSite,
 		slog.New(slog.DiscardHandler))
-	ctx := context.Background()
+	ctx := t.Context()
 	placed := checkout.NewSession("demostore", "shop.test",
 		checkout.ProtocolUCP, fixtureCartID)
 	placed.OrderUUID = fixtureOrderUUID
@@ -514,4 +514,87 @@ func TestCheckoutRefusalsCarryACode(t *testing.T) {
 		Meta: ucpMeta(t, "")})
 	assert.Contains(t, codeOf(t, err, mcptool.CodeInvalid).Hint,
 		"checkout.line_items is required")
+}
+
+// update_checkout settles every lookup and refusal before its first cart
+// write, and reads the stored checkout once more just ahead of it. Its
+// body is run here without the lock (that needs a Redis) on a checkout
+// built in the test, which the store does not hold: the read
+// ahead of the cart writes finds it changed and ends an update that got
+// that far:
+// whichever step ends the update, no cart call has been made.
+func TestUpdateCheckoutSettlesEverythingBeforeTheFirstCartWrite(
+	t *testing.T,
+) {
+	lines := []UCPLineItemReqIn{{Item: UCPItemIn{ID: "2"}, Quantity: 1}}
+	for name, tc := range map[string]struct {
+		session  checkout.Session
+		checkout UCPCheckoutIn
+		django   func(t *testing.T) (*django.Client, func() []string)
+		want     string
+	}{
+		"a payment the store does not offer": {
+			checkout: UCPCheckoutIn{LineItems: lines,
+				UCPPaymentChoice: UCPPaymentChoice{Payment: &UCPPaymentIn{
+					Instruments: []UCPInstrumentIn{{
+						HandlerID: ucp.HandlerID, Type: "card",
+					}},
+				}}},
+			django: ucpDjango,
+			want:   "not available",
+		},
+		"a pay-way lookup that fails": {
+			session:  checkout.Session{PayWayID: 7},
+			checkout: UCPCheckoutIn{LineItems: lines},
+			django:   downDjango,
+			want:     "unavailable",
+		},
+		"every lookup settled": {
+			checkout: UCPCheckoutIn{LineItems: lines},
+			django:   ucpDjango,
+			want:     errCheckoutChanged.Error(),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dj, calls := tc.django(t)
+			h := ucpHandlers(t, dj)
+			ctx := tenant.NewContext(t.Context(), cartTenant())
+
+			tc.session.Status = checkout.StatusReadyForComplete
+			_, _, err := h.negotiated(ctx, ucpMeta(t, ""), false,
+				func(tn *tenant.Tenant, neg ucp.Negotiated) (
+					*mcp.CallToolResult, CheckoutResult, error,
+				) {
+					return h.updateSession(ctx, tn, &tc.session,
+						UpdateCheckoutIn{Checkout: tc.checkout}, neg).answer()
+				})
+
+			require.ErrorContains(t, err, tc.want)
+			for _, call := range calls() {
+				assert.NotContains(t, call, "/api/v1/cart")
+			}
+		})
+	}
+}
+
+// downDjango answers every call with a 503 and records the calls.
+func downDjango(t *testing.T) (*django.Client, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			calls = append(calls, r.Method+" "+r.URL.Path)
+			mu.Unlock()
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+	t.Cleanup(srv.Close)
+	return django.New(srv.URL+"/api/v1", "api.example.test", "secret",
+			time.Second, slog.New(slog.DiscardHandler), nil),
+		func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]string(nil), calls...)
+		}
 }

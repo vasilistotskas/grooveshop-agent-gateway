@@ -4,7 +4,6 @@ package integration
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -185,7 +184,7 @@ func TestACPCompletedSessionRendersFromTheOrder(t *testing.T) {
 			total := row.(map[string]any)
 			amounts[total["type"].(string)] = total["amount"].(float64)
 		}
-		assert.EqualValues(t, fixtureOrderTotal, amounts["total"])
+		assert.InDelta(t, fixtureOrderTotal, amounts["total"], 0)
 	}
 
 	// The order goes through but cannot be read back: the answer must say it
@@ -461,7 +460,7 @@ func TestACPEndToEnd(t *testing.T) {
 			assert.Equal(t, http.StatusNotFound, resp.StatusCode, op.path)
 			assert.Equal(t, "not_found", body["code"], op.path)
 		}
-		keys, err := stack.rdb.Keys(context.Background(),
+		keys, err := stack.rdb.Keys(t.Context(),
 			"*"+bogus+"*").Result()
 		require.NoError(t, err)
 		assert.Empty(t, keys)

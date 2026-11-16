@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -61,7 +60,7 @@ func (k *keysWritten) seen() []string {
 // written nor locked, so its own surface is not kept waiting, and it
 // goes on as before there.
 func TestASessionAnswersOnlyOnItsOwnSurface(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	surfaces := surfacesByName(t, stack)
 	ids := map[string]string{
@@ -129,7 +128,7 @@ func TestASessionAnswersOnlyOnItsOwnSurface(t *testing.T) {
 func TestAnOrderEventFindsACheckoutOfEitherProtocol(t *testing.T) {
 	for _, name := range []string{"acp", "ucp"} {
 		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			stack := startUCPGateway(t)
 			surface := surfacesByName(t, stack)[name]
 			id := surface.ready(t)
@@ -160,7 +159,7 @@ func TestAnOrderEventFindsACheckoutOfEitherProtocol(t *testing.T) {
 // A cart's holder is read whatever surface created it: the cart rule is
 // the same on both.
 func TestACartsHolderIsReadOnEitherProtocol(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, _ := startStore(t)
 	for _, protocol := range []string{
 		checkout.ProtocolACP, checkout.ProtocolUCP,
@@ -184,7 +183,7 @@ func TestACartsHolderIsReadOnEitherProtocol(t *testing.T) {
 // refused and the session stays ready. The key keeps the refusal, so a
 // new attempt takes a new key.
 func TestACPCompletesOnlyWithACollectLaterPayWay(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	surface := surfacesByName(t, stack)["acp"]
 	id := surface.ready(t)

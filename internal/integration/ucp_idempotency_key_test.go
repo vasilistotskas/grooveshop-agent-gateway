@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -19,7 +18,7 @@ import (
 // outside that form is refused before anything is written, and the
 // checkout is left as it was.
 func TestTheUCPIdempotencyKeyIsBounded(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	surface := surfacesByName(t, stack)["ucp"]
 

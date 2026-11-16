@@ -137,7 +137,7 @@ func TestRedirectIsAnError(t *testing.T) {
 				defer srv.Close()
 				p := newProbe(t, srv, 2*time.Second)
 
-				err := p.call(context.Background(), method)
+				err := p.call(t.Context(), method)
 
 				require.ErrorIs(t, err, ErrUpstreamDown)
 				assert.Equal(t, int32(1), calls.Load(), "not retried")
@@ -181,9 +181,9 @@ func TestRedirectKeepsTheConnection(t *testing.T) {
 	defer srv.Close()
 	p := newProbe(t, srv, 2*time.Second)
 
-	require.ErrorIs(t, p.call(context.Background(), http.MethodGet),
+	require.ErrorIs(t, p.call(t.Context(), http.MethodGet),
 		ErrUpstreamDown)
-	require.NoError(t, p.c.get(context.Background(),
+	require.NoError(t, p.c.get(t.Context(),
 		request{path: "/ok", host: "shop.example.test"}))
 	assert.Equal(t, int32(1), conns.Load())
 }
@@ -200,10 +200,10 @@ func TestTimeoutIsNotRetried(t *testing.T) {
 			defer close(release)
 			p := newProbe(t, srv, 200*time.Millisecond)
 
-			err := p.call(context.Background(), method)
+			err := p.call(t.Context(), method)
 
 			require.ErrorIs(t, err, ErrUpstreamDown)
-			assert.ErrorIs(t, err, context.DeadlineExceeded)
+			require.ErrorIs(t, err, context.DeadlineExceeded)
 			assert.Contains(t, p.logs.String(), "django request failed")
 			assert.Equal(t, map[string]float64{
 				"/cart " + method + " error": 1,
@@ -230,7 +230,7 @@ func TestGetRetriesDroppedConnection(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ResolveTenant(context.Background(), "shop.example.test")
+	_, _, err := c.ResolveTenant(t.Context(), "shop.example.test")
 	require.NoError(t, err)
 	assert.Equal(t, int32(3), calls.Load())
 }
@@ -240,10 +240,10 @@ func TestGetRetriesDroppedConnection(t *testing.T) {
 func TestCallerHangingUpIsNotAnUpstreamFailure(t *testing.T) {
 	cancels := map[string]func() (context.Context, func()){
 		"cancel": func() (context.Context, func()) {
-			return context.WithCancel(context.Background())
+			return context.WithCancel(t.Context())
 		},
 		"shutdown": func() (context.Context, func()) {
-			ctx, cancel := context.WithCancelCause(context.Background())
+			ctx, cancel := context.WithCancelCause(t.Context())
 			return ctx, func() { cancel(httpmw.ErrShuttingDown) }
 		},
 	}
@@ -272,7 +272,7 @@ func TestCallerHangingUpIsNotAnUpstreamFailure(t *testing.T) {
 				err := p.call(ctx, method)
 
 				require.ErrorIs(t, err, context.Canceled)
-				assert.NotErrorIs(t, err, ErrUpstreamDown)
+				require.NotErrorIs(t, err, ErrUpstreamDown)
 				assert.Equal(t, int32(1), hits.Load())
 				assert.Empty(t, p.logs.String())
 				assert.Equal(t, map[string]float64{
@@ -297,14 +297,14 @@ func TestCallerHangingUpDuringTheBody(t *testing.T) {
 			defer srv.Close()
 			defer close(release)
 			p := newProbe(t, srv, 5*time.Second)
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			p.afterHeaders(func(*http.Response) { cancel() })
 
 			err := p.call(ctx, method)
 
 			require.ErrorIs(t, err, context.Canceled)
-			assert.NotErrorIs(t, err, ErrUpstreamDown)
+			require.NotErrorIs(t, err, ErrUpstreamDown)
 			assert.Empty(t, p.logs.String())
 			assert.Equal(t, map[string]float64{
 				"/cart " + method + " canceled": 1,
@@ -326,14 +326,14 @@ func TestCallerDeadlineIsAnUpstreamFailure(t *testing.T) {
 			defer srv.Close()
 			defer close(release)
 			p := newProbe(t, srv, 5*time.Second)
-			ctx, cancel := context.WithTimeout(context.Background(),
+			ctx, cancel := context.WithTimeout(t.Context(),
 				200*time.Millisecond)
 			defer cancel()
 
 			err := p.call(ctx, method)
 
 			require.ErrorIs(t, err, ErrUpstreamDown)
-			assert.ErrorIs(t, err, context.DeadlineExceeded)
+			require.ErrorIs(t, err, context.DeadlineExceeded)
 			assert.Contains(t, p.logs.String(), "django request failed")
 			assert.Equal(t, map[string]float64{
 				"/cart " + method + " error": 1,
@@ -348,18 +348,18 @@ func TestWaitToRetry(t *testing.T) {
 	req := request{method: http.MethodGet, path: "/cart"}
 	failure := &APIError{Status: http.StatusServiceUnavailable}
 
-	expired, cancel := context.WithDeadline(context.Background(),
+	expired, cancel := context.WithDeadline(t.Context(),
 		time.Now().Add(-time.Second))
 	defer cancel()
 	assert.Same(t, failure, waitToRetry(expired, time.Hour, req, failure))
 
-	hungUp, hangUp := context.WithCancel(context.Background())
+	hungUp, hangUp := context.WithCancel(t.Context())
 	hangUp()
 	err := waitToRetry(hungUp, time.Hour, req, failure)
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, "django: GET /cart: context canceled", err.Error())
 
-	assert.NoError(t, waitToRetry(context.Background(), 0, req, failure))
+	assert.NoError(t, waitToRetry(t.Context(), 0, req, failure))
 }
 
 func TestNoRetryOnceTheCallerHungUp(t *testing.T) {
@@ -371,7 +371,7 @@ func TestNoRetryOnceTheCallerHungUp(t *testing.T) {
 		}))
 	defer srv.Close()
 	p := newProbe(t, srv, 5*time.Second)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	p.afterHeaders(func(*http.Response) { cancel() })
 
@@ -429,7 +429,8 @@ func (s *cutServer) close() {
 func cutBody(t *testing.T, w http.ResponseWriter, status int, rst bool,
 	part string, gotHeaders <-chan struct{}) {
 	conn, _, err := http.NewResponseController(w).Hijack()
-	if !assert.NoError(t, err) {
+	if err != nil {
+		t.Errorf("hijack the connection: %v", err)
 		return
 	}
 	defer func() { _ = conn.Close() }()
@@ -437,7 +438,8 @@ func cutBody(t *testing.T, w http.ResponseWriter, status int, rst bool,
 		"Location: /elsewhere\r\n"+
 		"Content-Type: application/json\r\nContent-Length: 100\r\n\r\n%s",
 		status, http.StatusText(status), part)
-	if !assert.NoError(t, err) {
+	if err != nil {
+		t.Errorf("write the cut response: %v", err)
 		return
 	}
 	select {
@@ -471,7 +473,7 @@ func TestBodyCutShort(t *testing.T) {
 				defer s.close()
 				p := s.probe(t)
 
-				err := p.call(context.Background(), method)
+				err := p.call(t.Context(), method)
 				s.handlers.Wait()
 
 				assert.Contains(t, p.logs.String(), "django request failed")
@@ -485,7 +487,7 @@ func TestBodyCutShort(t *testing.T) {
 				}
 				require.ErrorIs(t, err, ErrUpstreamDown)
 				if cut.want != nil {
-					assert.ErrorIs(t, err, cut.want)
+					require.ErrorIs(t, err, cut.want)
 				} else {
 					netErr, ok := errors.AsType[net.Error](err)
 					assert.True(t, ok && !netErr.Timeout(), "a reset: %v", err)
@@ -516,11 +518,11 @@ func TestBodyCutByTheClientTimeout(t *testing.T) {
 			var gotHeaders atomic.Bool
 			p.afterHeaders(func(*http.Response) { gotHeaders.Store(true) })
 
-			err := p.call(context.Background(), method)
+			err := p.call(t.Context(), method)
 
 			assert.True(t, gotHeaders.Load(), "timed out in the body")
 			require.ErrorIs(t, err, ErrUpstreamDown)
-			assert.ErrorIs(t, err, context.DeadlineExceeded)
+			require.ErrorIs(t, err, context.DeadlineExceeded)
 			assert.Contains(t, p.logs.String(), "django request failed")
 			assert.Equal(t, map[string]float64{
 				"/cart " + method + " error": 1,
@@ -535,7 +537,7 @@ func TestCutBodyWithoutOutputIsTheStatus(t *testing.T) {
 	defer s.close()
 	p := s.probe(t)
 
-	err := p.c.send(context.Background(), http.MethodDelete,
+	err := p.c.send(t.Context(), http.MethodDelete,
 		request{path: "/cart", host: "shop.example.test"})
 
 	require.NoError(t, err)
@@ -551,7 +553,7 @@ func TestDocumentThenCutIsTheAnswer(t *testing.T) {
 	defer s.close()
 	p := s.probe(t)
 
-	err := p.call(context.Background(), http.MethodGet)
+	err := p.call(t.Context(), http.MethodGet)
 
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), s.hits.Load())
@@ -569,10 +571,10 @@ func TestInvalidBodyIsNotAnOutage(t *testing.T) {
 	defer srv.Close()
 	p := newProbe(t, srv, 5*time.Second)
 
-	err := p.call(context.Background(), http.MethodGet)
+	err := p.call(t.Context(), http.MethodGet)
 
 	require.Error(t, err)
-	assert.NotErrorIs(t, err, ErrUpstreamDown)
+	require.NotErrorIs(t, err, ErrUpstreamDown)
 	assert.True(t, strings.HasPrefix(err.Error(), "django: decode /cart"))
 	assert.Equal(t, int32(1), hits.Load())
 	assert.Equal(t, map[string]float64{"/cart GET 200": 1}, p.counts(t))
@@ -584,7 +586,7 @@ func TestTransportErrorNamesTheRoute(t *testing.T) {
 	c := New("http://127.0.0.1:1/api/v1", "api.example.test", "s",
 		time.Second, slog.New(slog.NewTextHandler(logs, nil)), nil)
 
-	err := c.send(context.Background(), http.MethodGet, request{
+	err := c.send(t.Context(), http.MethodGet, request{
 		path:    "/order/uuid/{uuid}",
 		rawPath: "/order/uuid/0b1c2d3e",
 		query:   url.Values{"q": {"typed"}},
@@ -614,9 +616,9 @@ func TestGetCartNamingNoCartIsSentOnce(t *testing.T) {
 		ctx    context.Context
 		hits   int32
 	}{
-		{"new", "", context.Background(), 1},
-		{"named", fixtureCartID, context.Background(), 3},
-		{"token", "", WithCartToken(context.Background(), tok), 3},
+		{"new", "", t.Context(), 1},
+		{"named", fixtureCartID, t.Context(), 3},
+		{"token", "", WithCartToken(t.Context(), tok), 3},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -649,7 +651,7 @@ func TestPingIsOneAttempt(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	require.ErrorIs(t, c.Ping(context.Background()), ErrUpstreamDown)
+	require.ErrorIs(t, c.Ping(t.Context()), ErrUpstreamDown)
 	assert.Equal(t, int32(1), calls.Load())
 }
 
@@ -668,7 +670,7 @@ func TestErrorBodyCutShort(t *testing.T) {
 				defer s.close()
 				p := s.probe(t)
 
-				err := p.call(context.Background(), method)
+				err := p.call(t.Context(), method)
 				s.handlers.Wait()
 
 				require.ErrorIs(t, err, ErrUpstreamDown)
@@ -713,11 +715,11 @@ func TestErrorBodyCutByTheClientTimeout(t *testing.T) {
 			var gotHeaders atomic.Bool
 			p.afterHeaders(func(*http.Response) { gotHeaders.Store(true) })
 
-			err := p.call(context.Background(), method)
+			err := p.call(t.Context(), method)
 
 			assert.True(t, gotHeaders.Load(), "timed out in the body")
 			require.ErrorIs(t, err, ErrUpstreamDown)
-			assert.ErrorIs(t, err, context.DeadlineExceeded)
+			require.ErrorIs(t, err, context.DeadlineExceeded)
 			assert.Equal(t, map[string]float64{
 				"/cart " + method + " error": 1,
 			}, p.counts(t), "one attempt")
@@ -736,14 +738,14 @@ func TestCallerHangingUpDuringAnErrorOrRedirectBody(t *testing.T) {
 				defer srv.Close()
 				defer close(release)
 				p := newProbe(t, srv, 5*time.Second)
-				ctx, cancel := context.WithCancel(context.Background())
+				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				p.afterHeaders(func(*http.Response) { cancel() })
 
 				err := p.call(ctx, method)
 
 				require.ErrorIs(t, err, context.Canceled)
-				assert.NotErrorIs(t, err, ErrUpstreamDown)
+				require.NotErrorIs(t, err, ErrUpstreamDown)
 				assert.Empty(t, p.logs.String())
 				assert.Equal(t, map[string]float64{
 					"/cart " + method + " canceled": 1,
@@ -760,7 +762,7 @@ func TestRedirectBodyCutIsStillARedirect(t *testing.T) {
 	defer s.close()
 	p := s.probe(t)
 
-	err := p.call(context.Background(), http.MethodGet)
+	err := p.call(t.Context(), http.MethodGet)
 
 	require.ErrorIs(t, err, ErrUpstreamDown)
 	assert.Contains(t, err.Error(), "redirected with status 302")

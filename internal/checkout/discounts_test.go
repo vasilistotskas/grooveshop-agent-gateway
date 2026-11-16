@@ -1,12 +1,10 @@
 package checkout
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -77,8 +75,7 @@ func (u *couponUpstream) client(t *testing.T) *django.Client {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	log := slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	log := slog.New(slog.DiscardHandler)
 	return django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, log, obs.NewMetrics())
 }
@@ -91,7 +88,7 @@ func TestApplyDiscountCodes(t *testing.T) {
 		dj := up.client(t)
 		s := NewSession("public", tn.Domain, "acp", sessionCartID)
 
-		err := ApplyDiscountCodes(context.Background(), dj, tn, s,
+		err := ApplyDiscountCodes(t.Context(), dj, tn, s,
 			[]string{"SAVE10", "EXTRA1", "EXTRA2"})
 		require.NoError(t, err)
 
@@ -114,7 +111,7 @@ func TestApplyDiscountCodes(t *testing.T) {
 		s.DiscountCodes = []string{"OLD"}
 		s.RejectedDiscounts = []DiscountRejection{{Code: "stale"}}
 
-		err := ApplyDiscountCodes(context.Background(), dj, tn, s, nil)
+		err := ApplyDiscountCodes(t.Context(), dj, tn, s, nil)
 		require.NoError(t, err)
 
 		assert.Empty(t, up.applies)
@@ -152,7 +149,7 @@ func TestApplyDiscountCodes(t *testing.T) {
 					dj := up.client(t)
 					s := NewSession("public", tn.Domain, "acp", sessionCartID)
 
-					err := ApplyDiscountCodes(context.Background(), dj, tn,
+					err := ApplyDiscountCodes(t.Context(), dj, tn,
 						s, []string{"NOPE"})
 					require.NoError(t, err,
 						"a rejection is session state, not a failure")
@@ -178,7 +175,7 @@ func TestApplyDiscountCodes(t *testing.T) {
 			dj := up.client(t)
 			s := NewSession("public", tn.Domain, "acp", sessionCartID)
 
-			err := ApplyDiscountCodes(context.Background(), dj, tn, s,
+			err := ApplyDiscountCodes(t.Context(), dj, tn, s,
 				[]string{"DEAD", "EXTRA"})
 			require.NoError(t, err)
 			require.Len(t, s.RejectedDiscounts, 2)
@@ -196,10 +193,10 @@ func TestApplyDiscountCodes(t *testing.T) {
 		dj := up.client(t)
 		s := NewSession("public", tn.Domain, "acp", sessionCartID)
 
-		err := ApplyDiscountCodes(context.Background(), dj, tn, s,
+		err := ApplyDiscountCodes(t.Context(), dj, tn, s,
 			[]string{"SAVE10"})
 		require.Error(t, err)
-		assert.ErrorIs(t, err, django.ErrUpstreamDown)
+		require.ErrorIs(t, err, django.ErrUpstreamDown)
 		assert.Empty(t, s.RejectedDiscounts)
 	})
 }
@@ -229,7 +226,7 @@ func TestApplyDiscountCodesWithPromotionsOff(t *testing.T) {
 			dj := up.client(t)
 			s := NewSession("public", tn.Domain, "acp", sessionCartID)
 
-			err := ApplyDiscountCodes(context.Background(), dj, tn, s,
+			err := ApplyDiscountCodes(t.Context(), dj, tn, s,
 				[]string{"SAVE10", "EXTRA1"})
 			require.NoError(t, err)
 
@@ -243,7 +240,7 @@ func TestApplyDiscountCodesWithPromotionsOff(t *testing.T) {
 			}
 
 			require.NoError(t,
-				ApplyDiscountCodes(context.Background(), dj, tn, s, nil))
+				ApplyDiscountCodes(t.Context(), dj, tn, s, nil))
 			assert.Equal(t, 2, up.removes)
 			assert.Empty(t, s.RejectedDiscounts)
 		})

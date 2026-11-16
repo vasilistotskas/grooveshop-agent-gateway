@@ -310,13 +310,11 @@ func mib(b uint64) string { return fmt.Sprintf("%.1f", float64(b)/(1<<20)) }
 
 func feedmemTenant(i int) *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			SchemaName:      fmt.Sprintf("store%d", i),
-			StoreName:       "Κατάστημα δοκιμής",
-			DefaultLocale:   "el",
-			DefaultCurrency: "EUR",
-		},
-		Domain: fmt.Sprintf("shop%d.example.test", i),
+		SchemaName:      fmt.Sprintf("store%d", i),
+		StoreName:       "Κατάστημα δοκιμής",
+		DefaultLocale:   "el",
+		DefaultCurrency: "EUR",
+		Domain:          fmt.Sprintf("shop%d.example.test", i),
 	}
 }
 
@@ -410,7 +408,7 @@ func TestFeedMemory(t *testing.T) {
 	errs := make([]error, sweeps)
 	for i := range sweeps {
 		wg.Go(func() {
-			res := <-s.refresh(context.Background(), feedmemTenant(i))
+			res := <-s.refresh(t.Context(), feedmemTenant(i))
 			errs[i] = res.Err
 		})
 	}
@@ -468,7 +466,7 @@ func fetchOnly(t *testing.T, dj *django.Client, products, sweeps int) {
 	errs := make([]error, sweeps)
 	for i := range sweeps {
 		wg.Go(func() {
-			_, _, errs[i] = fetchAllProducts(context.Background(), dj, discard,
+			_, _, errs[i] = fetchAllProducts(t.Context(), dj, discard,
 				"shop.example.test", "el", func(p django.ProductFeed) error {
 					_, err := newFeedItem(&p, fctx)
 					return err

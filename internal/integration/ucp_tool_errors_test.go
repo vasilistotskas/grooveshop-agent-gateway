@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -30,7 +29,7 @@ func toolError(t *testing.T, refusal string) mcptool.ToolError {
 // conflict. The missing one still says an order may exist; the busy one
 // that this call did nothing.
 func TestUCPCheckoutAnswersCarryACode(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	stack := startUCPGateway(t)
 	surface := surfacesByName(t, stack)["ucp"]
 

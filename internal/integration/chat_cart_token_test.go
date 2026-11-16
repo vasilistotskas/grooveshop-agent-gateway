@@ -4,7 +4,6 @@ package integration
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -89,7 +88,7 @@ func tokenDjango(t *testing.T) (http.Handler, func() []djangoCall) {
 		switch route {
 		case "GET /api/v1/tenant/resolve":
 			b, err := os.ReadFile(fixturePath("tenant_resolve_demostore.json"))
-			require.NoError(t, err)
+			assert.NoError(t, err)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(bytes.Replace(b, []byte(`"promotions": false`),
 				[]byte(`"promotions": true`), 1))
@@ -193,10 +192,10 @@ func TestChatActsOnTheSignedInCartThroughTheToken(t *testing.T) {
 	assert.Equal(t, 2, cartCalls, "the add and its read-back")
 
 	stored := map[string]string{}
-	keys, err := rdb.Keys(context.Background(), "*").Result()
+	keys, err := rdb.Keys(t.Context(), "*").Result()
 	require.NoError(t, err)
 	for _, k := range keys {
-		if v, err := rdb.Get(context.Background(), k).Result(); err == nil {
+		if v, err := rdb.Get(t.Context(), k).Result(); err == nil {
 			stored[k] = v
 		}
 	}

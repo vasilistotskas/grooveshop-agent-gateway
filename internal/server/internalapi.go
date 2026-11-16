@@ -103,13 +103,15 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 		}
 		obs.SetTenant(ctx, body.SchemaName)
 		retry := func(msg string, err error) {
-			d.Log.ErrorContext(ctx, msg,
+			d.Log.ErrorContext(ctx, "order event retried",
+				slog.String("reason", msg),
 				slog.String("order", body.OrderUUID),
 				slog.String("error", err.Error()))
 			http.Error(w, "retry", http.StatusServiceUnavailable)
 		}
 		drop := func(msg string, err error) {
-			d.Log.ErrorContext(ctx, msg,
+			d.Log.ErrorContext(ctx, "order event dropped",
+				slog.String("reason", msg),
 				slog.String("order", body.OrderUUID),
 				slog.String("error", err.Error()))
 			w.WriteHeader(http.StatusNoContent)

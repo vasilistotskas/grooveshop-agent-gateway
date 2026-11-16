@@ -70,8 +70,8 @@ func fixtureCatalogue() []django.Product {
 				Description: "Γρήγορη φόρτιση &amp; ασφάλεια <b>USB-C</b>.",
 			}},
 			Slug: "fortistis-kinitou", Category: new(int64(262)),
-			Pricing: django.Pricing{EffectivePrice: "464.68"},
-			Stock:   186, Active: true,
+			EffectivePrice: "464.68",
+			Stock:          186, Active: true,
 			MainImagePath: "media/uploads/products/%CF%86%CE%BF%CF%81%CF%84%CE%B9%CF%83%CF%84%CE%AE%CF%82.jpg",
 		},
 		{
@@ -83,11 +83,9 @@ func fixtureCatalogue() []django.Product {
 			}},
 			Slug: "thiki-kinitou", Category: new(int64(262)),
 			VariantGroup: new(int64(77)), BrandName: new("Spigen"),
-			Pricing: django.Pricing{
-				EffectivePrice: "22.32", PriorPrice: "24.80",
-				AnnouncedDiscountPercent: "10",
-			},
-			Stock: 0, Active: true,
+			EffectivePrice: "22.32", PriorPrice: "24.80",
+			AnnouncedDiscountPercent: "10",
+			Stock:                    0, Active: true,
 			MainImagePath: "media/uploads/products/case.jpg",
 			ImagePaths: []string{
 				"media/uploads/products/case.jpg",
@@ -108,8 +106,8 @@ func fixtureCatalogue() []django.Product {
 				Name: "Καλώδιο USB-C",
 			}},
 			Slug: "kalodio-usb-c", Category: new(int64(262)),
-			Pricing: django.Pricing{EffectivePrice: "8.37"},
-			Stock:   12, Active: true,
+			EffectivePrice: "8.37",
+			Stock:          12, Active: true,
 			MainImagePath: "media/uploads/products/cable.jpg",
 		},
 		{
@@ -119,8 +117,8 @@ func fixtureCatalogue() []django.Product {
 				Name: "Αόρατο Προϊόν",
 			}},
 			Slug: "aorato", Category: new(int64(262)),
-			Pricing: django.Pricing{EffectivePrice: "12.40"},
-			Stock:   5, Active: true,
+			EffectivePrice: "12.40",
+			Stock:          5, Active: true,
 			MainImagePath: "",
 		},
 		{
@@ -482,6 +480,7 @@ func TestWritersStreamEachItem(t *testing.T) {
 	var acpOut bytes.Buffer
 	acp, err := newACPWriter(&acpOut)
 	require.NoError(t, err)
+	//nolint:testifylint // the head of a document still being written is not valid JSON yet
 	assert.Equal(t, `{"products":[`, acpOut.String())
 	require.NoError(t, acp.Item(items[0]))
 	first, err := json.Marshal(acpProductOf(items[0]))
@@ -507,7 +506,7 @@ func TestEmptyCatalogueDocuments(t *testing.T) {
 	assert.Empty(t, rss.Items)
 
 	raw := acpDocument(t)
-	assert.Equal(t, `{"products":[]}`, string(raw))
+	assert.JSONEq(t, `{"products":[]}`, string(raw))
 	var doc any
 	require.NoError(t, json.Unmarshal(raw, &doc))
 	require.NoError(t, validateACP(t, "ProductsResponse", doc))
