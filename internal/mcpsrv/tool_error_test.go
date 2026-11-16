@@ -104,7 +104,7 @@ func TestUpstreamErrLeaksNothingTheAgentMayNotSee(t *testing.T) {
 	_, payWays := resolvePayWay(context.Background(),
 		django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 			5*time.Second, slog.New(slog.DiscardHandler), nil),
-		cartTenant(), checkout.Fulfillment{},
+		cartTenant(), checkout.Fulfillment{}, 0,
 		[]UCPInstrumentIn{{Type: ucp.InstrumentCashOnDelivery}})
 	require.ErrorAs(t, payWays, &got)
 	assert.Equal(t, "unavailable", got.Code)

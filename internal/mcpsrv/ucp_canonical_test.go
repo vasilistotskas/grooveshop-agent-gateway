@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -213,7 +215,7 @@ func payWayTenant() *tenant.Tenant {
 // the store's; only the business bridges them.
 func TestResolvePayWayMapsAdvertisedInstrument(t *testing.T) {
 	id, err := resolvePayWay(context.Background(), payWayDjango(t),
-		payWayTenant(), checkout.Fulfillment{},
+		payWayTenant(), checkout.Fulfillment{}, 0,
 		[]UCPInstrumentIn{{
 			HandlerID: ucp.HandlerID,
 			Type:      ucp.InstrumentCashOnDelivery,
@@ -227,12 +229,12 @@ func TestResolvePayWayRejectsWhatTheStoreCannotSettle(t *testing.T) {
 
 	// A type this store never advertised.
 	_, err := resolvePayWay(context.Background(), dj, tn,
-		checkout.Fulfillment{}, []UCPInstrumentIn{{Type: "card"}})
+		checkout.Fulfillment{}, 0, []UCPInstrumentIn{{Type: "card"}})
 	assert.ErrorContains(t, err, "not available")
 
 	// A handler that is not ours — the id must match what we advertised.
-	_, err = resolvePayWay(context.Background(), dj, tn, checkout.Fulfillment{},
-		[]UCPInstrumentIn{{
+	_, err = resolvePayWay(context.Background(), dj, tn,
+		checkout.Fulfillment{}, 0, []UCPInstrumentIn{{
 			HandlerID: "com.stripe.payments",
 			Type:      ucp.InstrumentCashOnDelivery,
 		}})
@@ -273,7 +275,7 @@ func TestResolvePayWayWithholdsUnreadableSettlements(t *testing.T) {
 				obs.NewMetrics())
 
 			_, err := resolvePayWay(context.Background(), dj,
-				payWayTenant(), checkout.Fulfillment{},
+				payWayTenant(), checkout.Fulfillment{}, 0,
 				[]UCPInstrumentIn{{
 					HandlerID: ucp.HandlerID,
 					Type:      ucp.InstrumentCashOnDelivery,
@@ -288,13 +290,150 @@ func TestResolvePayWayWithholdsUnreadableSettlements(t *testing.T) {
 // whichever happens to be first.
 func TestResolvePayWayHonoursTheSelectedInstrument(t *testing.T) {
 	id, err := resolvePayWay(context.Background(), payWayDjango(t),
-		payWayTenant(), checkout.Fulfillment{},
+		payWayTenant(), checkout.Fulfillment{}, 0,
 		[]UCPInstrumentIn{
 			{Type: "some_unmodelled_type"},
 			{Type: ucp.InstrumentCashOnDelivery, Selected: true},
 		})
 	require.NoError(t, err)
 	assert.Positive(t, id)
+}
+
+// carrierPayWays serves a store with two cash-on-delivery methods, 5 for
+// ACS and 7 for BOX NOW, and an online one, 9, for ACS only: the list is
+// filtered by the delivery's carrier, as Django filters it. Any other
+// pay way is a 404.
+func carrierPayWays(t *testing.T) *django.Client {
+	t.Helper()
+	payWay := func(id, provider, settlement string) string {
+		return `{"id":` + id + `,"active":true,"providerCode":"` +
+			provider + `","settlement":"` + settlement + `","cost":"0",` +
+			`"freeThreshold":"0","sortOrder":` + id + `,"translations":{}}`
+	}
+	ways := map[string]string{
+		"5": payWay("5", django.ProviderCashOnDelivery,
+			django.SettlementCourierCash),
+		"7": payWay("7", django.ProviderCashOnDelivery,
+			django.SettlementCourierCash),
+		"9": payWay("9", "viva_wallet", django.SettlementOnline),
+	}
+	offered := map[string][]string{
+		"":                            {"5", "7", "9"},
+		django.ShippingProviderACS:    {"5", "9"},
+		django.ShippingProviderBoxNow: {"7"},
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/pay_way",
+		func(w http.ResponseWriter, r *http.Request) {
+			var results []string
+			for _, id := range offered[r.URL.Query().Get(
+				"shippingProviderCode")] {
+				results = append(results, ways[id])
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"count":` +
+				strconv.Itoa(len(results)) + `,"results":[` +
+				strings.Join(results, ",") + `]}`))
+		})
+	mux.HandleFunc("GET /api/v1/pay_way/{id}",
+		func(w http.ResponseWriter, r *http.Request) {
+			body, ok := ways[r.PathValue("id")]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return django.New(srv.URL+"/api/v1", "api.test", "secret",
+		5_000_000_000, obs.NewLogger(slog.LevelError, "test", "test"),
+		obs.NewMetrics())
+}
+
+// deliveryBy is a complete delivery by the carrier.
+func deliveryBy(provider string) checkout.Fulfillment {
+	f := checkout.Fulfillment{
+		Kind: checkout.FulfillmentHomeDelivery, ProviderCode: provider,
+		CountryCode: "GR", City: "Athens", Zipcode: "10431",
+		Street: "Patision", StreetNumber: "1",
+	}
+	if provider == django.ShippingProviderBoxNow {
+		f.Kind = checkout.FulfillmentPickupPoint
+		f.BoxnowLockerID = "42"
+	}
+	return f
+}
+
+// A store may settle one instrument with several methods. The one the
+// checkout holds is kept when it settles the instrument, so a complete
+// naming the instrument the checkout holds is not a change of method.
+func TestResolvePayWayKeepsTheHeldMethodOfTheInstrument(t *testing.T) {
+	cod := []UCPInstrumentIn{{Type: ucp.InstrumentCashOnDelivery}}
+	for _, tc := range []struct {
+		name     string
+		delivery checkout.Fulfillment
+		held     int64
+		want     int64
+	}{
+		{"none held: the first", checkout.Fulfillment{}, 0, 5},
+		{"the held one settles it", checkout.Fulfillment{}, 7, 7},
+		{"the held one is online", checkout.Fulfillment{}, 9, 5},
+		{"the delivery does not offer the held one",
+			deliveryBy(django.ShippingProviderBoxNow), 5, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id, err := resolvePayWay(context.Background(),
+				carrierPayWays(t), payWayTenant(), tc.delivery, tc.held,
+				cod)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, id)
+		})
+	}
+}
+
+// An update that names no method keeps the held one only while the
+// delivery is offered it: otherwise the method of the same instrument
+// the delivery is offered, or none.
+func TestPayWayForDeliveryFollowsTheDelivery(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		delivery checkout.Fulfillment
+		held     int64
+		want     int64
+	}{
+		{"nothing held", deliveryBy(django.ShippingProviderBoxNow), 0, 0},
+		{"offered for the delivery",
+			deliveryBy(django.ShippingProviderACS), 5, 5},
+		{"another carrier's method of the instrument",
+			deliveryBy(django.ShippingProviderBoxNow), 5, 7},
+		{"an online method the delivery is not offered",
+			deliveryBy(django.ShippingProviderBoxNow), 9, 0},
+		{"a method the store no longer has",
+			deliveryBy(django.ShippingProviderACS), 404, 0},
+		{"no delivery yet: every method is offered",
+			checkout.Fulfillment{}, 7, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &handlers{deps: Deps{Django: carrierPayWays(t)}}
+			s := &checkout.Session{
+				Fulfillment: tc.delivery, PayWayID: tc.held,
+			}
+			require.NoError(t, h.payWayForDelivery(
+				context.Background(), payWayTenant(), s))
+			assert.Equal(t, tc.want, s.PayWayID)
+		})
+	}
+}
+
+func TestNamesPayment(t *testing.T) {
+	assert.False(t, (&UCPPaymentChoice{}).namesPayment())
+	assert.False(t, (&UCPPaymentChoice{
+		Payment: &UCPPaymentIn{}}).namesPayment(), "payment: {}")
+	assert.True(t, (&UCPPaymentChoice{PayWayID: 2}).namesPayment())
+	assert.True(t, (&UCPPaymentChoice{Payment: &UCPPaymentIn{
+		Instruments: []UCPInstrumentIn{{Type: "x"}}}}).namesPayment())
 }
 
 func gatedTenant(hosted bool) *tenant.Tenant {

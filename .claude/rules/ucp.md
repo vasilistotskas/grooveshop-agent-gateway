@@ -118,6 +118,17 @@ wins over this page.
   the flat `fulfillment`, and the payment selection
   (`payment.instruments`, `pay_way_id`; `payment: {}` names none).
   Without the extension, `discounts` is ignored and the codes are kept.
+  A kept method is kept only while the checkout's delivery is offered
+  it (`payWayForDelivery`): Django offers some methods only for some
+  carriers and kinds, and an instrument is resolved for the delivery the
+  checkout had then. One the delivery is not offered is replaced by the
+  method that settles the same instrument for it, or dropped when none
+  does, and the checkout then asks for a method.
+- **An instrument resolves to the method the checkout holds** when that
+  method settles it for the delivery, else to the first that does
+  (`instrumentPayWay`): a store may settle one instrument with several
+  methods, each for other carriers, so naming the held instrument again
+  is never a change of method.
 - **complete_checkout is a command, not an update** (the spec's `main`):
   it never places an order at a total the checkout did not show. The
   tag requires `payment` on complete, so a platform may first name its

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -545,12 +546,53 @@ func (h *handlers) applyPayment(
 	if in.Payment == nil || len(in.Payment.Instruments) == 0 {
 		return nil
 	}
-	payWayID, err := resolvePayWay(
-		ctx, h.deps.Django, t, s.Fulfillment, in.Payment.Instruments)
+	payWayID, err := resolvePayWay(ctx, h.deps.Django, t, s.Fulfillment,
+		s.PayWayID, in.Payment.Instruments)
 	if err != nil {
 		return err
 	}
 	s.PayWayID = payWayID
+	return nil
+}
+
+// payWayForDelivery keeps the method an update did not name one the
+// checkout's delivery is offered. Django offers some methods only for
+// some carriers and kinds, and an instrument is resolved for the delivery
+// the checkout had then: a held method the delivery does not offer is
+// replaced by the one that settles the same instrument for it, as naming
+// the instrument again would select, or dropped when none does, and the
+// checkout then asks for one. Kept, it would fail the order at
+// completion, and a complete that names the same instrument would read
+// as a change of method. The response shows the fee and total it brings.
+func (h *handlers) payWayForDelivery(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+) error {
+	if s.PayWayID <= 0 {
+		return nil
+	}
+	pws, err := checkout.PayWaysFor(ctx, h.deps.Django, t, s.Fulfillment)
+	if err != nil {
+		return upstreamErr(err, "payment methods are unavailable")
+	}
+	if slices.ContainsFunc(pws, func(pw django.PayWay) bool {
+		return pw.Active && pw.ID == s.PayWayID
+	}) {
+		return nil
+	}
+	held, err := h.deps.Django.PayWayByID(
+		ctx, t.Domain, t.DefaultLocale, s.PayWayID)
+	switch {
+	case errors.Is(err, django.ErrNotFound):
+		// The store offers it for no delivery any more.
+		s.PayWayID = 0
+		return nil
+	case err != nil:
+		return upstreamErr(err, "payment methods are unavailable")
+	}
+	s.PayWayID = 0
+	if kind, ok := ucp.InstrumentTypeFor(held.ProviderCode); ok {
+		s.PayWayID = instrumentPayWay(pws, kind, 0)
+	}
 	return nil
 }
 
@@ -693,6 +735,11 @@ func (h *handlers) updateSession(
 	err = h.applyPayment(ctx, t, s, &in.Checkout.UCPPaymentChoice, neg)
 	if err != nil {
 		return refusedBy(err)
+	}
+	if !in.Checkout.namesPayment() {
+		if err := h.payWayForDelivery(ctx, t, s); err != nil {
+			return refusedBy(err)
+		}
 	}
 	codes, hasCodes := in.Checkout.replacedDiscountCodes(neg)
 	// The lookups above can outlast the lock. A checkout another call

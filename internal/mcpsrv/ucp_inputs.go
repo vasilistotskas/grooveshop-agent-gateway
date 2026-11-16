@@ -63,7 +63,7 @@ func metaSchema(idempotent bool) *jsonschema.Schema {
 				},
 			},
 			"idempotency-key": {
-				Type: "string", Format: "uuid",
+				Type: "string",
 				Description: "Unique key for retry safety: a UUID, or up " +
 					"to 255 visible ASCII characters. Repeat it to retry.",
 			},
