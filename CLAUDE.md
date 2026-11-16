@@ -142,22 +142,29 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   enough; a tag other than `web-bot-auth` is skipped; an `alg`
   parameter is refused (the algorithm is the key's: ES256, ES384,
   Ed25519, ECDSA as fixed-width r||s); a `web-bot-auth` signature's
-  keyid must be its key's RFC 7638 thumbprint; it must cover
-  `@method`, `@authority`, `@path`, `@query` when there is one, the
-  body (`content-digest`, `content-type`) and each of `ucp-agent`,
-  `signature-agent` and `idempotency-key` the request carries; a
-  covered field takes only the `key` parameter (RFC 9421 section
-  2.1.2). A received request's `@authority` is its `Host`, either
+  keyid must be its key's RFC 7638 thumbprint; it must cover, each
+  whole (no parameter), `@method`, `@authority`, `@path`, `@query` when
+  there is one, the body (`content-digest`, `content-type`) and each of
+  `ucp-agent` and `idempotency-key` the request carries, and
+  `signature-agent` whole or by the member keyed by the signature's
+  label; a covered field takes only the `key` parameter (RFC 9421
+  section 2.1.2). A received request's `@authority` is its `Host`, either
   scheme's default port dropped (TLS ends at Traefik). The refusals
   carry UCP's codes (`signature_invalid`, `key_not_found`,
   `digest_mismatch`, `algorithm_unsupported`).
 - **A platform's signature on `/mcp`** (`mcpsrv.VerifyPlatformSignature`,
-  after the identity middleware). A request that carries
-  `Signature-Input` or `Signature` is verified, whatever it calls,
+  after the identity middleware). A UCP request that carries
+  `Signature-Input` or `Signature`, one with a `UCP-Agent` header or one
+  that calls a tool marked `signed`, is verified, whatever it calls,
   against the keys its `UCP-Agent` profile publishes
   (`ucp.ProfileResolver.VerifyRequest`: the profile is fetched as
   negotiation fetches it, and fetched again once a TTL floor per origin
-  for a keyid it does not publish, `Refresh`). One that does not verify
+  for a keyid it does not publish, `Refresh`, which replaces the cached
+  profile only with one it fetched; a key that does not decode is
+  skipped, never the profile refused). A signature on any other request
+  (an agent that signs all its traffic, as Web Bot Auth has it) is not
+  verified, and the request is served as unsigned. At most
+  `httpsig.maxSignatures` signatures are tried. One that does not verify
   is answered before the MCP handler with UCP's HTTP status and
   JSON-RPC error: 401 and -32000 (`signature_invalid`,
   `key_not_found`), 400 and -32600 (`digest_mismatch`,
@@ -168,8 +175,10 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   the meta the tool decoded). The verified platform, its profile URL
   normalized (`ucp.NormalizeProfileURL`), rides the request context. A
   tool marked `signed` (`get_order`) refuses an unsigned call with 401
-  and `signature_missing`. The body is read once for this and the
-  account challenge (`readPost`), as the SDK reads it.
+  and `signature_missing`, with no `WWW-Authenticate`: no OAuth link
+  answers it. A caller that left during the check gets a 503 and no log
+  line. The body is read once for this and the account challenge
+  (`readPost`), as the SDK reads it.
 - `internal/identity` — the bearer verification both MCP servers share,
   and /mcp's optional-auth middleware.
   - `Verifier[P]` caches a `Probe`'s verdict for 60s, keyed by

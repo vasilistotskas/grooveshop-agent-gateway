@@ -16,6 +16,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/time/rate"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpsig"
 )
@@ -102,18 +103,42 @@ func TestJWKVerifyKey(t *testing.T) {
 // Keys marked for another use are skipped when a kid is looked up
 // (RFC 7517 sections 4.2 and 4.3).
 func TestProfileKeySkipsKeysNotForVerifying(t *testing.T) {
-	p := &PlatformProfile{Keys: []JWK{
-		{Kid: "enc", Use: "enc"},
-		{Kid: "ops", KeyOps: []string{"sign"}},
-		{Kid: "sig", Use: "sig", KeyOps: []string{"verify"}},
-		{Kid: "plain"},
+	p := &PlatformProfile{Keys: []json.RawMessage{
+		json.RawMessage(`{"kid":"enc","kty":"EC","use":"enc"}`),
+		json.RawMessage(`{"kid":"ops","kty":"EC","key_ops":["sign"]}`),
+		json.RawMessage(`{"kid":"opstr","kty":"EC","key_ops":"verify"}`),
+		json.RawMessage(`{"kid":"odd","kty":"EC","x":1}`),
+		json.RawMessage(`{"kid":"sig","kty":"EC","use":"sig","key_ops":["verify"]}`),
+		json.RawMessage(`{"kid":"plain","kty":"EC"}`),
 	}}
 	for kid, want := range map[string]bool{
-		"enc": false, "ops": false, "sig": true, "plain": true, "none": false,
+		"enc": false, "ops": false, "opstr": false, "odd": false,
+		"sig": true, "plain": true, "none": false,
 	} {
 		_, ok := p.key(kid)
 		assert.Equal(t, want, ok, kid)
 	}
+}
+
+// A key this business cannot read is skipped, never a profile refused:
+// negotiation goes on with the profile, and its other keys verify.
+func TestAKeyThatDoesNotDecodeLeavesTheProfileUsable(t *testing.T) {
+	key := testSigningKey(t)
+	body := withKeys(t, platformProfileJSON(t, "https://p.example/h"),
+		map[string]string{"kid": "odd", "kty": "RSA", "key_ops": "verify"},
+		key.JWK())
+	srv := serveProfile(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	})
+	r := newTestResolver(t)
+
+	p, err := r.Resolve(t.Context(), srv.URL+"/profile.json")
+	require.NoError(t, err)
+	assert.True(t, Negotiate(BusinessCapabilities(testTenant()), p).
+		Has(CapabilityCheckout))
+	req, raw := signedRequest(t, key, srv.URL+"/profile.json")
+	_, err = r.VerifyRequest(t.Context(), req, raw, testWindow, time.Now())
+	require.NoError(t, err)
 }
 
 func TestNormalizeProfileURL(t *testing.T) {
@@ -262,4 +287,108 @@ func TestVerifyRequestRefusesWhatNamesNoSigner(t *testing.T) {
 	req, raw = signedRequest(t, key, srv.URL+"/profile.json")
 	_, err = r.VerifyRequest(ctx, req, raw, testWindow, time.Now())
 	assert.Equal(t, CodeProfileUnreachable, discoveryCode(t, err))
+}
+
+// A refresh replaces the cached profile only with one it fetched: one
+// that fails keeps the cached profile, and one that never reached the
+// origin (the discovery budget spent) does not count against its floor.
+func TestRefreshKeepsTheCachedProfileUntilItHasAnother(t *testing.T) {
+	good := platformProfileJSON(t, "https://p.example/h")
+	var broken atomic.Bool
+	srv := serveProfile(t, func(w http.ResponseWriter, _ *http.Request) {
+		if broken.Load() {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(good))
+	})
+	r := newTestResolver(t)
+	url := srv.URL + "/profile.json"
+	_, err := r.Resolve(t.Context(), url)
+	require.NoError(t, err)
+
+	r.limiter = rate.NewLimiter(0, 0)
+	_, err = r.Refresh(t.Context(), url)
+	require.ErrorIs(t, err, ErrDiscoveryBusy)
+	r.limiter = rate.NewLimiter(rate.Inf, 1)
+	_, err = r.Resolve(t.Context(), url)
+	require.NoError(t, err, "a busy refresh keeps the cached profile")
+
+	broken.Store(true)
+	_, err = r.Refresh(t.Context(), url)
+	assert.Equal(t, CodeProfileUnreachable, discoveryCode(t, err),
+		"the busy refresh did not spend the origin's floor")
+	_, err = r.Resolve(t.Context(), url)
+	require.NoError(t, err, "a failed refresh keeps the cached profile")
+	_, err = r.Refresh(t.Context(), url)
+	require.ErrorIs(t, err, errRefreshSpent)
+}
+
+// The refresh floor is the origin's, however its URL spells it.
+func TestRefreshFloorIsTheNormalizedOrigin(t *testing.T) {
+	r := newTestResolver(t)
+	r.refreshed["https://platform.example"] = time.Now()
+	for _, raw := range []string{
+		"https://platform.example:443/ucp",
+		"HTTPS://Platform.Example/other",
+	} {
+		_, err := r.Refresh(t.Context(), raw)
+		require.ErrorIs(t, err, errRefreshSpent, raw)
+	}
+}
+
+// A key the cached profile does not publish, on a profile that can no
+// longer be fetched, is the discovery failure, not a missing key.
+func TestVerifyRequestAnswersAProfileThatCannotBeRefetched(t *testing.T) {
+	key := testSigningKey(t)
+	var broken atomic.Bool
+	body := withKeys(t, platformProfileJSON(t, "https://p.example/h"),
+		key.JWK())
+	srv := serveProfile(t, func(w http.ResponseWriter, _ *http.Request) {
+		if broken.Load() {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(body))
+	})
+	r := newTestResolver(t)
+	_, err := r.Resolve(t.Context(), srv.URL+"/profile.json")
+	require.NoError(t, err)
+
+	broken.Store(true)
+	req, raw := signedRequest(t, testSigningKey(t), srv.URL+"/profile.json")
+	_, err = r.VerifyRequest(t.Context(), req, raw, testWindow, time.Now())
+	assert.Equal(t, CodeProfileUnreachable, discoveryCode(t, err))
+}
+
+// SignRequest covers what the verifier requires of the request it signs:
+// an empty query, a Signature-Agent, an Idempotency-Key; and it writes
+// the profile URL as a structured-field string.
+func TestSignRequestCoversWhatTheRequestCarries(t *testing.T) {
+	key := testSigningKey(t)
+	body := withKeys(t, platformProfileJSON(t, "https://p.example/h"),
+		key.JWK())
+	srv := serveProfile(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	})
+	r := newTestResolver(t)
+	profile := srv.URL + `/profile.json?name="a\b"`
+
+	raw := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	req := httptest.NewRequest(http.MethodPost, "/mcp?",
+		strings.NewReader(string(raw)))
+	req.Host = "shop.example"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "k-1")
+	req.Header.Set("Signature-Agent",
+		`sig1="https://platform.example/.well-known/ucp";type=jwks_uri`)
+	require.NoError(t, SignRequest(req, raw, profile, key, time.Now()))
+	assert.Equal(t, `profile="`+srv.URL+`/profile.json?name=\"a\\b\""`,
+		req.Header.Get("UCP-Agent"))
+	for _, c := range []string{`"@query"`, `"signature-agent"`,
+		`"idempotency-key"`} {
+		assert.Contains(t, req.Header.Get("Signature-Input"), c)
+	}
+	_, err := r.VerifyRequest(t.Context(), req, raw, testWindow, time.Now())
+	require.NoError(t, err)
 }

@@ -39,7 +39,9 @@ wins over this page.
   and `VerifyPlatformSignature` before the handler), else
   `signature_invalid`.
 - **A platform's RFC 9421 signature** (`signatures.md`, MCP Transport)
-  is verified on every `/mcp` request that carries one
+  is verified on every UCP request to `/mcp` that carries one (it names
+  its platform in `UCP-Agent`, or calls `get_order`; another request's
+  signature is not UCP's to judge, and it is served unsigned)
   (`mcpsrv.VerifyPlatformSignature`, `ucp.ProfileResolver.VerifyRequest`,
   `httpsig.Verify`; `CLAUDE.md` names the rules), with the keys in the
   top-level `keys[]` of the profile its `UCP-Agent` header names

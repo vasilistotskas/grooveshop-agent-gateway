@@ -80,11 +80,18 @@ type Window struct {
 // Algorithm, step 1). A signature with any other tag is skipped.
 const tagWebBotAuth = "web-bot-auth"
 
+// maxSignatures is how many of a request's signatures are tried. UCP's
+// shapes need one (a dual-audience signature serves UCP and Web Bot
+// Auth alike), and RFC 9421 section 4.3 a few for separate audiences;
+// each one tried costs a signature check, so the rest are not read.
+const maxSignatures = 8
+
 // Verify authenticates req, whose body has been read into body, by the
 // signatures it carries (RFC 9421 section 3.2), and returns the label of
 // the first one that verifies. Each signature is tried on its own, and
 // the request is refused only when none verifies (UCP's Identity
-// Resolution Algorithm): the error is the first signature's.
+// Resolution Algorithm): the error is the first signature's. Only the
+// first maxSignatures are tried.
 func Verify(
 	ctx context.Context, req *http.Request, body []byte, keys KeySource,
 	w Window, now time.Time,
@@ -99,10 +106,17 @@ func Verify(
 		return "", refusal(CodeSignatureInvalid,
 			"Signature is not a dictionary of signatures")
 	}
+	b := bodyRead{
+		hasBody:  len(body) > 0,
+		digested: len(body) == 0 || digestMatches(req, body),
+	}
 	var first error
-	for _, label := range inputs.Names() {
+	for i, label := range inputs.Names() {
+		if i == maxSignatures {
+			break
+		}
 		input, _ := inputs.Get(label)
-		err := verifyOne(ctx, req, body, keys, w, now, input, sigs, label)
+		err := verifyOne(ctx, req, b, keys, w, now, input, sigs, label)
 		if err == nil {
 			return label, nil
 		}
@@ -116,9 +130,16 @@ func Verify(
 	return "", first
 }
 
+// bodyRead is what Verify reads of a request's body once, for each of
+// its signatures: whether it has one, and whether Content-Digest
+// carries its sha-256.
+type bodyRead struct {
+	hasBody, digested bool
+}
+
 // verifyOne verifies the signature under label.
 func verifyOne(
-	ctx context.Context, req *http.Request, body []byte, keys KeySource,
+	ctx context.Context, req *http.Request, b bodyRead, keys KeySource,
 	w Window, now time.Time, input httpsfv.Member, sigs *httpsfv.Dictionary,
 	label string,
 ) error {
@@ -139,7 +160,7 @@ func verifyOne(
 	if err != nil {
 		return err
 	}
-	if missing := uncovered(req, body, covered); missing != "" {
+	if missing := uncovered(req, b.hasBody, covered); missing != "" {
 		return refusal(CodeSignatureInvalid,
 			"signature %s does not cover %s", label, missing)
 	}
@@ -159,7 +180,7 @@ func verifyOne(
 			"and its keyid is not its key's RFC 7638 thumbprint",
 			label, tagWebBotAuth)
 	}
-	if len(body) > 0 && !digestMatches(req, body) {
+	if !b.digested {
 		return refusal(CodeDigestMismatch,
 			"Content-Digest does not carry the sha-256 of the body")
 	}
@@ -233,9 +254,15 @@ func checkParams(
 	return keyID, tag, nil
 }
 
-// coveredNames is the component names the signature covers. Each
-// component identifier is a string, and occurs once (RFC 9421 section
-// 2.5, step 2.1); its parameters are checked when the base is built.
+// coveredNames is the components the signature covers whole, by name:
+// those that carry no parameter. A component with parameters covers
+// only part of what its name does (a Dictionary member: RFC 9421 section
+// 2.1.2), so it does not count, with one exception: the web-bot-auth
+// shape covers signature-agent by the member keyed by the signature's
+// own label, which is the member that names its key source (signatures
+// .md, WBA Interop, item 3). Each component identifier is a string, and
+// occurs once (RFC 9421 section 2.5, step 2.1); its parameters are
+// checked when the base is built.
 func coveredNames(items []httpsfv.Item, label string) ([]string, error) {
 	names := make([]string, 0, len(items))
 	seen := make([]string, 0, len(items))
@@ -252,7 +279,14 @@ func coveredNames(items []httpsfv.Item, label string) ([]string, error) {
 				"signature %s names a component twice", label)
 		}
 		seen = append(seen, id)
-		names = append(names, name)
+		params := it.Params.Names()
+		key, _ := it.Params.Get("key")
+		switch {
+		case len(params) == 0:
+			names = append(names, name)
+		case name == "signature-agent" && len(params) == 1 && key == label:
+			names = append(names, name)
+		}
 	}
 	return names, nil
 }
@@ -261,12 +295,12 @@ func coveredNames(items []httpsfv.Item, label string) ([]string, error) {
 // to cover that covered lacks, or "" (overview, Identity Resolution
 // Algorithm, step 5): the target, the body when there is one, and each
 // of ucp-agent, signature-agent and idempotency-key the request carries.
-func uncovered(req *http.Request, body []byte, covered []string) string {
+func uncovered(req *http.Request, hasBody bool, covered []string) string {
 	required := []string{"@method", "@authority", "@path"}
 	if req.URL.RawQuery != "" || req.URL.ForceQuery {
 		required = append(required, "@query")
 	}
-	if len(body) > 0 {
+	if hasBody {
 		required = append(required, "content-digest", "content-type")
 	}
 	for _, h := range []string{

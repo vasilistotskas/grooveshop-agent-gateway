@@ -98,6 +98,29 @@ func signed(t *testing.T, s Signer, components []string, p Params) *http.Request
 	return req
 }
 
+// signedWith is received(mcpBody) signed by s under the inner list input
+// as it is written, parameters and all: what Sign cannot write.
+func signedWith(t *testing.T, s Signer, input string) *http.Request {
+	t.Helper()
+	req := received(mcpBody)
+	req.Header.Set("Signature-Input", "sig1="+input)
+	inputs, err := httpsfv.UnmarshalDictionary([]string{"sig1=" + input})
+	require.NoError(t, err)
+	m, _ := inputs.Get("sig1")
+	base, err := verifyBase(req, m.(httpsfv.InnerList))
+	require.NoError(t, err)
+	sig, err := s.Sign([]byte(base))
+	require.NoError(t, err)
+	req.Header.Set("Signature", "sig1=:"+
+		base64.StdEncoding.EncodeToString(sig)+":")
+	return req
+}
+
+// ucpInput is ucpComponents as an inner list, with params after it.
+func ucpInput(params string) string {
+	return `("` + strings.Join(ucpComponents, `" "`) + `")` + params
+}
+
 func verify(req *http.Request, body []byte, keys map[string]Key) (string, error) {
 	return Verify(context.Background(), req, body, keysOf(keys), testWindow,
 		testNow)
@@ -251,10 +274,8 @@ func TestVerifyRefuses(t *testing.T) {
 		},
 		"an alg parameter": {
 			req: func(t *testing.T) *http.Request {
-				req := signed(t, s, ucpComponents, Params{})
-				req.Header.Set("Signature-Input", req.Header.Get(
-					"Signature-Input")+`;alg="ecdsa-p256-sha256"`)
-				return req
+				return signedWith(t, s,
+					ucpInput(`;keyid="k1";alg="ecdsa-p256-sha256"`))
 			},
 			code: CodeSignatureInvalid,
 		},
@@ -276,29 +297,33 @@ func TestVerifyRefuses(t *testing.T) {
 		},
 		"an expires that has passed": {
 			req: func(t *testing.T) *http.Request {
-				req := signed(t, s, ucpComponents, Params{})
 				expired := testNow.Add(-testWindow.Skew - time.Second)
-				req.Header.Set("Signature-Input", req.Header.Get(
-					"Signature-Input")+";expires="+
-					strconv.FormatInt(expired.Unix(), 10))
-				return req
+				return signedWith(t, s, ucpInput(`;keyid="k1";expires=`+
+					strconv.FormatInt(expired.Unix(), 10)))
 			},
 			code: CodeSignatureInvalid,
 		},
 		"a tag other than web-bot-auth": {
 			req: func(t *testing.T) *http.Request {
-				req := signed(t, s, ucpComponents, Params{})
-				req.Header.Set("Signature-Input", req.Header.Get(
-					"Signature-Input")+`;tag="other"`)
-				return req
+				return signedWith(t, s, ucpInput(`;keyid="k1";tag="other"`))
 			},
 			code: CodeSignatureInvalid,
 		},
 		"a web-bot-auth signature whose keyid is not its thumbprint": {
 			req: func(t *testing.T) *http.Request {
-				req := signed(t, s, ucpComponents, Params{})
-				req.Header.Set("Signature-Input", req.Header.Get(
-					"Signature-Input")+`;tag="web-bot-auth"`)
+				return signedWith(t, s,
+					ucpInput(`;keyid="k1";tag="web-bot-auth"`))
+			},
+			code: CodeSignatureInvalid,
+		},
+		"a created changed after signing": {
+			req: func(t *testing.T) *http.Request {
+				req := signed(t, s, ucpComponents,
+					Params{Created: testNow.Unix()})
+				req.Header.Set("Signature-Input", strings.Replace(
+					req.Header.Get("Signature-Input"),
+					";created="+strconv.FormatInt(testNow.Unix(), 10),
+					";created="+strconv.FormatInt(testNow.Unix()-1, 10), 1))
 				return req
 			},
 			code: CodeSignatureInvalid,
@@ -344,6 +369,62 @@ func TestVerifyRefuses(t *testing.T) {
 	}
 }
 
+// The fixtures that sign their parameters verify once the rejected
+// parameter is left out, so each refusal above is its policy's.
+func TestSignedWithVerifiesWithoutTheRefusedParameter(t *testing.T) {
+	s := newECSigner(t, elliptic.P256(), "k1")
+	keys := map[string]Key{"k1": {Public: &s.key.PublicKey}}
+	expires := testNow.Add(time.Hour).Unix()
+	for _, params := range []string{
+		`;keyid="k1"`,
+		`;keyid="k1";expires=` + strconv.FormatInt(expires, 10),
+		`;keyid="k1";tag="web-bot-auth"`,
+	} {
+		use := keys
+		if strings.Contains(params, "web-bot-auth") {
+			use = map[string]Key{"k1": {Public: &s.key.PublicKey,
+				Thumbprint: "k1"}}
+		}
+		_, err := verify(signedWith(t, s, ucpInput(params)), mcpBody, use)
+		require.NoError(t, err, params)
+	}
+}
+
+// The body is covered by the whole Content-Digest field, whose sha-256
+// member is the one checked against it: covering one member of the field
+// is not covering the body.
+func TestVerifyRequiresTheWholeContentDigest(t *testing.T) {
+	s := newECSigner(t, elliptic.P256(), "k1")
+	keys := map[string]Key{"k1": {Public: &s.key.PublicKey}}
+	sha512 := `sha-512=:` + base64.StdEncoding.EncodeToString(
+		sha512Sum(mcpBody)) + `:`
+	input := `("@method" "@authority" "@path" "content-digest";key="sha-512" ` +
+		`"content-type" "ucp-agent");keyid="k1"`
+	req := received(mcpBody)
+	req.Header.Set("Content-Digest", ContentDigest(mcpBody)+", "+sha512)
+	req.Header.Set("Signature-Input", "sig1="+input)
+	inputs, err := httpsfv.UnmarshalDictionary([]string{"sig1=" + input})
+	require.NoError(t, err)
+	m, _ := inputs.Get("sig1")
+	base, err := verifyBase(req, m.(httpsfv.InnerList))
+	require.NoError(t, err)
+	sig, err := s.Sign([]byte(base))
+	require.NoError(t, err)
+	req.Header.Set("Signature", "sig1=:"+
+		base64.StdEncoding.EncodeToString(sig)+":")
+
+	// The sha-256 member, outside the signature, names another body.
+	other := []byte(`{"jsonrpc":"2.0","id":8,"method":"tools/list"}`)
+	req.Header.Set("Content-Digest", ContentDigest(other)+", "+sha512)
+	_, err = verify(req, other, keys)
+	assert.Equal(t, CodeSignatureInvalid, refusalCode(t, err))
+}
+
+func sha512Sum(b []byte) []byte {
+	sum := sha512.Sum512(b)
+	return sum[:]
+}
+
 // The window bounds only what a signature carries: one without created
 // or expires is not refused for them.
 func TestVerifyTakesASignatureWithinItsWindow(t *testing.T) {
@@ -365,6 +446,35 @@ func TestVerifyTakesASignatureWithinItsWindow(t *testing.T) {
 
 // A request may carry several signatures: one that verifies is enough,
 // in any order, and the fields may arrive over several header lines.
+// Only the first maxSignatures of a request's signatures are tried.
+func TestVerifyTriesAtMostMaxSignatures(t *testing.T) {
+	good := newECSigner(t, elliptic.P256(), "good")
+	bad := newECSigner(t, elliptic.P256(), "gone")
+	keys := map[string]Key{"good": {Public: &good.key.PublicKey}}
+	withGoodAt := func(at int) *http.Request {
+		req := received(mcpBody)
+		var inputs, sigs []string
+		for i := range at + 1 {
+			s := Signer(bad)
+			if i == at {
+				s = good
+			}
+			require.NoError(t, Sign(req, "s"+strconv.Itoa(i), ucpComponents,
+				Params{}, s))
+			inputs = append(inputs, req.Header.Get("Signature-Input"))
+			sigs = append(sigs, req.Header.Get("Signature"))
+		}
+		req.Header.Set("Signature-Input", strings.Join(inputs, ", "))
+		req.Header.Set("Signature", strings.Join(sigs, ", "))
+		return req
+	}
+
+	_, err := verify(withGoodAt(maxSignatures-1), mcpBody, keys)
+	require.NoError(t, err)
+	_, err = verify(withGoodAt(maxSignatures), mcpBody, keys)
+	assert.Equal(t, CodeKeyNotFound, refusalCode(t, err))
+}
+
 func TestVerifyTakesAnyOneSignatureThatVerifies(t *testing.T) {
 	good := newECSigner(t, elliptic.P256(), "good")
 	bad := newECSigner(t, elliptic.P256(), "gone")

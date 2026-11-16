@@ -59,9 +59,14 @@ var signedTools = sync.OnceValue(func() []string {
 // as the spec's example words it (signatures.md, MCP Error Response).
 const ucpSignatureFailed = "Signature verification failed"
 
-// VerifyPlatformSignature verifies the RFC 9421 signature a request to
-// /mcp carries, against the keys of the platform its UCP-Agent header
-// names, with created and expires inside window. It answers, itself and
+// VerifyPlatformSignature verifies the RFC 9421 signature a UCP request
+// to /mcp carries, against the keys of the platform its UCP-Agent header
+// names, with created and expires inside window. A UCP request is one
+// that names its platform in UCP-Agent, or calls a tool that serves only
+// a verified platform: UCP's signature rules are for UCP's operations,
+// and a signature on any other request (an agent that signs all its
+// traffic, as Web Bot Auth has it) is not this business's to verify, so
+// that request is served as an unsigned one. It answers, itself and
 // with the spec's HTTP status and JSON-RPC error, a request that:
 //   - carries a signature that does not verify: 401 and -32000
 //     (signature_invalid, key_not_found), or 400 and -32600
@@ -88,10 +93,13 @@ func VerifyPlatformSignature(
 			if !ok {
 				return
 			}
-			if !signed {
-				if slices.ContainsFunc(body.toolCalls(), func(c calledTool) bool {
+			callsSigned := slices.ContainsFunc(body.toolCalls(),
+				func(c calledTool) bool {
 					return slices.Contains(signedTools(), c.name)
-				}) {
+				})
+			if !signed || (!callsSigned &&
+				len(r.Header.Values("UCP-Agent")) == 0) {
+				if callsSigned {
 					writeSignatureError(w, body.replyID(), &httpsig.Error{
 						Code: httpsig.CodeSignatureMissing,
 						Content: "this tool serves a platform by its " +
@@ -169,6 +177,10 @@ func refuseSigned(
 		return
 	}
 	if errors.Is(err, context.Canceled) {
+		// The caller left: nothing it reads, and nothing to log.
+		writeRPCError(w, http.StatusServiceUnavailable, id, &jsonrpc.Error{
+			Code: -32000, Message: "Service temporarily unavailable",
+		})
 		return
 	}
 	rpcErr, status := discoveryFailure(err, "")

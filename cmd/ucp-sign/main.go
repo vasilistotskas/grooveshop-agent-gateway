@@ -74,7 +74,9 @@ func keygen(args []string) error {
 		return errors.New("keygen needs -key")
 	}
 	var profile map[string]any
-	if err := json.NewDecoder(os.Stdin).Decode(&profile); err != nil {
+	dec := json.NewDecoder(os.Stdin)
+	dec.UseNumber() // numbers in the profile are written back as read
+	if err := dec.Decode(&profile); err != nil {
 		return fmt.Errorf("read the profile on stdin: %w", err)
 	}
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

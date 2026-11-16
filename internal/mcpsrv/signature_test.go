@@ -1,6 +1,7 @@
 package mcpsrv
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -232,9 +233,10 @@ func TestASignatureThatDoesNotVerifyIsRefusedWhateverItCalls(t *testing.T) {
 			status: http.StatusUnauthorized, rpc: -32000,
 			code: httpsig.CodeSignatureInvalid,
 		},
-		"a signature with no UCP-Agent": {
+		"a signed get_order with no UCP-Agent": {
 			req: func(t *testing.T) *http.Request {
-				req := p.post(t, `{"jsonrpc":"2.0","id":7,"method":"tools/list"}`)
+				req := p.post(t, callBody(t, "get_order",
+					map[string]any{"id": "o1"}))
 				req.Header.Del("UCP-Agent")
 				return req
 			},
@@ -268,5 +270,43 @@ func TestASignerWhoseProfileCannotBeHadIsADiscoveryFailure(t *testing.T) {
 	assert.Equal(t, http.StatusFailedDependency, rec.Code)
 	assert.EqualValues(t, ucpDiscoveryFailed, out.Error.Code)
 	assert.Equal(t, ucp.CodeProfileUnreachable, out.Error.Data.Code)
+	assert.False(t, g.reached)
+}
+
+// A signature on a request that is not UCP's (no UCP-Agent, no tool that
+// serves only a verified platform) is not verified: the request is
+// served as an unsigned one, whatever the signature is.
+func TestASignatureOutsideUCPIsNotVerified(t *testing.T) {
+	p := newSigningPlatform(t)
+	g := newSignatureGate(t)
+	req := p.post(t, callBody(t, "search_products",
+		map[string]any{"query": "x"}))
+	req.Header.Del("UCP-Agent")
+	req.Header.Set("Signature", "sig1=:AAAA:")
+
+	rec, _ := g.serve(t, req)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.True(t, g.reached)
+	assert.Empty(t, g.signer)
+}
+
+// A caller that left while its signature was checked is answered 503,
+// and nothing is logged.
+func TestACallerWhoLeftIsAnswered503(t *testing.T) {
+	p := newSigningPlatform(t)
+	// The profile never answers, so the caller is gone before it does.
+	release := make(chan struct{})
+	stalled := httptest.NewServer(http.HandlerFunc(
+		func(http.ResponseWriter, *http.Request) { <-release }))
+	t.Cleanup(stalled.Close)
+	t.Cleanup(func() { close(release) })
+	p.profile = stalled.URL + "/profile.json"
+	g := newSignatureGate(t)
+	req := p.post(t, `{"jsonrpc":"2.0","id":7,"method":"tools/list"}`)
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel()
+
+	rec, _ := g.serve(t, req.WithContext(ctx))
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	assert.False(t, g.reached)
 }

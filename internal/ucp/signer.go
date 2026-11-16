@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -89,9 +90,14 @@ func (k JWK) verifyKey() (httpsig.Key, error) {
 }
 
 // key is the signature-capable key the profile publishes under kid.
+// A key that does not decode as a JWK (a member of another type than
+// this business reads, key_ops that is not an array) is skipped like
+// one not for verifying.
 func (p *PlatformProfile) key(kid string) (JWK, bool) {
-	for _, k := range p.Keys {
-		if k.Kid == kid && k.forVerifying() {
+	for _, raw := range p.Keys {
+		var k JWK
+		if json.Unmarshal(raw, &k) == nil && k.Kid == kid &&
+			k.forVerifying() {
 			return k, true
 		}
 	}
@@ -203,12 +209,12 @@ func (r *ProfileResolver) VerifyRequest(
 		refreshed = true
 		fresh, err := r.Refresh(ctx, profileURL)
 		switch {
-		case errors.Is(err, ErrDiscoveryBusy) ||
-			errors.Is(err, context.Canceled) ||
-			errors.Is(err, context.DeadlineExceeded):
-			return httpsig.Key{}, err
-		case err != nil:
+		case errors.Is(err, errRefreshSpent):
 			return httpsig.Key{}, httpsig.ErrUnknownKey
+		case err != nil:
+			// The profile cannot be had now: the discovery failure, as
+			// Resolve answers it, never a key the platform lacks.
+			return httpsig.Key{}, err
 		}
 		p = fresh
 		if k, ok := p.key(kid); ok {
@@ -234,14 +240,23 @@ func SignRequest(
 	req *http.Request, body []byte, profileURL string, key *SigningKey,
 	now time.Time,
 ) error {
-	req.Header.Set("UCP-Agent", `profile="`+profileURL+`"`)
+	agent := httpsfv.NewDictionary()
+	agent.Add("profile", httpsfv.NewItem(profileURL))
+	header, err := httpsfv.Marshal(agent)
+	if err != nil {
+		return fmt.Errorf("ucp: the profile URL is not a header string: %w",
+			err)
+	}
+	req.Header.Set("UCP-Agent", header)
 	components := []string{"@method", "@authority", "@path"}
-	if req.URL.RawQuery != "" {
+	if req.URL.RawQuery != "" || req.URL.ForceQuery {
 		components = append(components, "@query")
 	}
 	components = append(components, "ucp-agent")
-	if len(req.Header.Values("Idempotency-Key")) > 0 {
-		components = append(components, "idempotency-key")
+	for _, h := range []string{"signature-agent", "idempotency-key"} {
+		if len(req.Header.Values(h)) > 0 {
+			components = append(components, h)
+		}
 	}
 	if len(body) > 0 {
 		req.Header.Set("Content-Digest", httpsig.ContentDigest(body))

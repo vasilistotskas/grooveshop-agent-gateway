@@ -588,7 +588,7 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 
 ## 10. Before deploying a release that moves the checkout session key
 
-**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Two have so far:
+**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Three have so far:
 
 | Release | Key | Why an older pod must not share a session |
 |---|---|---|
@@ -603,7 +603,7 @@ The new pods do not read sessions the old pods stored, and the reverse, on purpo
 | The session | During the rollout (pods of both releases) | After it |
 |---|---|---|
 | Open (`incomplete`, `ready_for_complete`), stored by either kind | Found on pods of its kind. On the other kind: the missing-session answer; a platform that follows it finds no order and starts again | An old one is gone for good, a new one is found everywhere |
-| `complete_in_progress` or `requires_escalation`: an order exists, or may | Found on pods of its kind (do not start another checkout; the order; its payment page). On the other kind: the missing-session answer, which says an order may exist and how to check. A platform that starts another checkout anyway orders twice: for a hosted payment the first order's cart is still there | An old one: the missing-session answer until the platform stops asking. The order itself is unaffected: `get_order` and the order webhooks go through the order link, which does not move |
+| `complete_in_progress` or `requires_escalation`: an order exists, or may | Found on pods of its kind (do not start another checkout; the order; its payment page). On the other kind: the missing-session answer, which says an order may exist and how to check. A platform that starts another checkout anyway orders twice: for a hosted payment the first order's cart is still there | An old one: the missing-session answer until the platform stops asking. The order webhooks go through the order link, which does not move. From the `cs:v4` release on, `get_order` serves an order only to the platform that signed its checkout's creation, so an order placed before that release (its link names no platform) answers `not_found` on the new pods for good: the platform still must not start another checkout, and the order is read from the shopper's order confirmation, or with `track_order` by its id |
 | `completed`, `canceled` | As above; only the session's own read is lost | As above |
 | A payment event for a session a **new** pod stored, delivered to an **old** pod | The old pod finds the order link, looks under the old key, finds no session and answers 204, which is final for Django. The order webhook still goes out. That session stays `requires_escalation` until it ends, 24 hours after its order was placed: `get_checkout` keeps showing the payment page of a paid order, `get_order` shows the truth | Cannot happen |
 

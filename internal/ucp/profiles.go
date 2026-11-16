@@ -131,26 +131,34 @@ func NewProfileResolver(
 // a TTL floor per origin (overview, Fetching, rule 6); a Refresh sooner
 // than that is errRefreshSpent. The record of origins is bounded as the
 // cache is: when it is full of origins refreshed within the floor, no
-// other origin is refreshed until one ages out.
+// other origin is refreshed until one ages out. The cached profile is
+// replaced only by one fetched: a refresh that fails keeps it, and one
+// whose fetch never reached the origin does not count against the floor.
 func (r *ProfileResolver) Refresh(
 	ctx context.Context, raw string,
 ) (*PlatformProfile, error) {
-	u, err := url.Parse(raw)
+	// The origin in the one spelling identities are compared in, so a
+	// default port written out, or a host's case, is not another origin.
+	normalized, err := NormalizeProfileURL(raw)
+	if err != nil {
+		return nil, discoveryErr(CodeInvalidProfileURL, "%s", err.Error())
+	}
+	u, err := url.Parse(normalized)
 	if err != nil {
 		return nil, discoveryErr(CodeInvalidProfileURL,
 			"the profile URL cannot be parsed")
 	}
-	origin := strings.ToLower(u.Scheme + "://" + u.Host)
+	origin := u.Scheme + "://" + u.Host
 	now := time.Now()
 	r.mu.Lock()
-	if last, ok := r.refreshed[origin]; ok &&
-		now.Sub(last) < profileTTLFloor {
+	last, held := r.refreshed[origin]
+	if held && now.Sub(last) < profileTTLFloor {
 		r.mu.Unlock()
 		return nil, errRefreshSpent
 	}
 	if len(r.refreshed) >= maxProfiles {
-		for o, last := range r.refreshed {
-			if now.Sub(last) >= profileTTLFloor {
+		for o, at := range r.refreshed {
+			if now.Sub(at) >= profileTTLFloor {
 				delete(r.refreshed, o)
 			}
 		}
@@ -160,9 +168,41 @@ func (r *ProfileResolver) Refresh(
 		return nil, errRefreshSpent
 	}
 	r.refreshed[origin] = now
-	delete(r.cache, raw)
 	r.mu.Unlock()
-	return r.Resolve(ctx, raw)
+
+	p, err := r.refetch(ctx, raw)
+	if _, answered := errors.AsType[*DiscoveryError](err); err != nil &&
+		!answered {
+		// The origin was never asked (the discovery budget was spent, the
+		// caller left): its refresh is not spent.
+		r.mu.Lock()
+		if r.refreshed[origin].Equal(now) {
+			if held {
+				r.refreshed[origin] = last
+			} else {
+				delete(r.refreshed, origin)
+			}
+		}
+		r.mu.Unlock()
+	}
+	return p, err
+}
+
+// refetch fetches the profile at raw on ctx and, only once it has one,
+// replaces raw's cache entry: a refetch that fails leaves the entry as it
+// was, so a cached profile is never lost to a refresh.
+func (r *ProfileResolver) refetch(
+	ctx context.Context, raw string,
+) (_ *PlatformProfile, err error) {
+	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
+	defer obs.Recover(fetchCtx, r.log, "ucp: profile fetch", &err)
+	p, ttl, err := r.fetch(fetchCtx, raw)
+	if err != nil {
+		return nil, err
+	}
+	r.remember(raw, profileEntry{profile: p, expires: time.Now().Add(ttl)})
+	return p, nil
 }
 
 // Resolve returns the validated profile at raw. Every failure is a
