@@ -476,7 +476,19 @@ func TestMCPEndToEnd(t *testing.T) {
 		// none of it may survive the gateway.
 		assert.NotContains(t, string(raw), "example.com")
 		assert.NotContains(t, string(raw), "phone")
-		assert.Contains(t, string(raw), "Willie")
+		// What the reviewer typed is marked untrusted.
+		reviews := structured(t, res)["reviews"].([]any)
+		require.NotEmpty(t, reviews)
+		review := reviews[0].(map[string]any)
+		for _, typed := range []string{"reviewer", "comment"} {
+			marked, ok := review[typed].(map[string]any)
+			require.True(t, ok, "%s is not marked: %v", typed, review)
+			assert.Equal(t, true, marked["untrusted"], typed)
+			assert.Equal(t, "customer", marked["source"], typed)
+			assert.NotEmpty(t, marked["text"], typed)
+		}
+		assert.Equal(t, "Willie",
+			review["reviewer"].(map[string]any)["text"])
 	})
 }
 

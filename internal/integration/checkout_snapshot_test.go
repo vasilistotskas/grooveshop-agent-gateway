@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 )
 
 // A call that changes a session holds a snapshot of it, and the lock
@@ -369,8 +370,10 @@ func TestAnOrderItsSessionNeverSavedIsStillKnown(t *testing.T) {
 			require.Equal(t, "500 order_placed", first.refusal)
 			require.Contains(t, string(first.errorBody), fixtureOrderUUID)
 		} else {
-			require.Contains(t, first.refusal, "the order was placed")
-			require.Contains(t, first.refusal, fixtureOrderUUID)
+			te := toolError(t, first.refusal)
+			require.Equal(t, mcptool.CodeOrderPlaced, te.Code)
+			require.Contains(t, te.Hint, "the order was placed")
+			require.Contains(t, te.Hint, fixtureOrderUUID)
 		}
 		stored := stack.storedSession(t, id)
 		require.Equal(t, checkout.StatusCompleteInProgress, stored.Status)
@@ -393,8 +396,10 @@ func TestAnOrderItsSessionNeverSavedIsStillKnown(t *testing.T) {
 			"complete": surfaces["ucp"].answer(ctx, id, uuid.NewString(), nil),
 			"cancel":   surfaces["ucp"].abandon(ctx, id),
 		} {
-			assert.Contains(t, answer.refusal, "the order was placed", what)
-			assert.Contains(t, answer.refusal, fixtureOrderUUID, what)
+			te := toolError(t, answer.refusal)
+			assert.Equal(t, mcptool.CodeOrderPlaced, te.Code, what)
+			assert.Contains(t, te.Hint, "the order was placed", what)
+			assert.Contains(t, te.Hint, fixtureOrderUUID, what)
 		}
 		// A read that renders says it too.
 		read := surfaces["ucp"].read(ctx, id)

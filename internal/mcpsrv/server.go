@@ -345,7 +345,8 @@ func toolset(h *handlers) []tool {
 			Annotations: mcptool.ReadOnly("Product reviews"),
 			Description: "Customer reviews for a product: overall rating and " +
 				"each review's rating (both 1–10) and recent " +
-				"verified-purchase comments.",
+				"verified-purchase comments." + mcptool.UntrustedNote(
+				"Text a customer typed (the reviewer's name, the comment)"),
 		}, h.getProductReviews)),
 
 		onlyWith(cartOn, toolOf(&mcp.Tool{

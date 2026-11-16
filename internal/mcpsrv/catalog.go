@@ -11,6 +11,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -370,12 +371,18 @@ type ReviewsOut struct {
 // review would go into every chat turn that reads the product's reviews.
 const reviewCommentMax = 600
 
+// ReviewOut is one review, with what its reviewer typed (their name and
+// the comment) marked untrusted: the chat reads it into a model that
+// holds cart tools.
 type ReviewOut struct {
-	Reviewer string `json:"reviewer"`
-	Rating   int    `json:"rating"`
-	Comment  string `json:"comment"`
-	Date     string `json:"date"`
+	Reviewer *mcptool.Untrusted `json:"reviewer,omitempty"`
+	Rating   int                `json:"rating"`
+	Comment  *mcptool.Untrusted `json:"comment,omitempty"`
+	Date     string             `json:"date"`
 }
+
+// reviewSource is the Untrusted source of what a reviewer typed.
+const reviewSource = "customer"
 
 func (h *handlers) getProductReviews(
 	ctx context.Context, _ *mcp.CallToolRequest, in ReviewsIn,
@@ -415,11 +422,11 @@ func (h *handlers) getProductReviews(
 		// Only rating, comment and first name leave the gateway — the
 		// upstream payload carries reviewer PII that must not propagate.
 		out.Reviews = append(out.Reviews, ReviewOut{
-			Reviewer: r.User.FirstName,
+			Reviewer: mcptool.MarkUntrusted(reviewSource, r.User.FirstName),
 			Rating:   r.Rate,
-			Comment: truncate(
+			Comment: mcptool.MarkUntrusted(reviewSource, truncate(
 				django.Localized(r.Translations, lang).Comment,
-				reviewCommentMax),
+				reviewCommentMax)),
 			Date: r.CreatedAt,
 		})
 	}

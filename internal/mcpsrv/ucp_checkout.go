@@ -70,35 +70,83 @@ type CancelCheckoutIn struct {
 	ID   string  `json:"id"`
 }
 
+// checkoutBody is a canonical checkout tool once its call has passed
+// the steps every one of them opens with (negotiated).
+type checkoutBody func(
+	t *tenant.Tenant, neg ucp.Negotiated,
+) (*mcp.CallToolResult, CheckoutResult, error)
+
+// negotiated runs what every canonical checkout tool opens with, then
+// body: the store the request is for, the call's meta (keyed: the
+// operation needs an idempotency key), and the platform's profile
+// negotiated. A platform that shares no version of the checkout
+// capability is answered with the spec's error response, and body does
+// not run.
+func (h *handlers) negotiated(
+	ctx context.Context, m *MetaIn, keyed bool, body checkoutBody,
+) (*mcp.CallToolResult, CheckoutResult, error) {
+	t, err := h.tenantFor(ctx)
+	if err != nil {
+		return nil, CheckoutResult{}, err
+	}
+	if err := m.validate(keyed); err != nil {
+		return nil, CheckoutResult{}, err
+	}
+	links := h.linksFor(ctx, t)
+	neg, err := h.negotiate(ctx, t, m, links.Cart())
+	if err != nil {
+		return nil, CheckoutResult{}, err
+	}
+	if !neg.Has(ucp.CapabilityCheckout) {
+		return nil, incompatibleCheckout(links), nil
+	}
+	return body(t, neg)
+}
+
+// onSession runs body on the checkout id names, under its lock, and
+// gives body's answer through finish: stored is the operation's answer
+// for a checkout another request stored meanwhile.
+func (h *handlers) onSession(
+	ctx context.Context, t *tenant.Tenant, id string,
+	body func(s *checkout.Session) sessionAnswer,
+	stored func(now *checkout.Session) toolResult,
+) (*mcp.CallToolResult, CheckoutResult, error) {
+	s, release, err := h.lockedSession(ctx, t, id)
+	if err != nil {
+		return nil, CheckoutResult{}, err
+	}
+	defer release()
+	return h.finish(ctx, t, s, body(s), stored)
+}
+
 func (h *handlers) createCheckout(
 	ctx context.Context, _ *mcp.CallToolRequest, in CreateCheckoutIn,
 ) (*mcp.CallToolResult, CheckoutResult, error) {
+	return h.negotiated(ctx, in.Meta, false,
+		func(t *tenant.Tenant, neg ucp.Negotiated) (
+			*mcp.CallToolResult, CheckoutResult, error,
+		) {
+			return h.create(ctx, t, in, neg)
+		})
+}
+
+// create is create_checkout once its call is negotiated.
+func (h *handlers) create(
+	ctx context.Context, t *tenant.Tenant, in CreateCheckoutIn,
+	neg ucp.Negotiated,
+) (*mcp.CallToolResult, CheckoutResult, error) {
 	var zero CheckoutResult
-	t, err := h.tenantFor(ctx)
-	if err != nil {
-		return nil, zero, err
-	}
-	if err := in.Meta.validate(false); err != nil {
-		return nil, zero, err
-	}
-	neg, err := h.negotiate(ctx, t, in.Meta, h.linksFor(ctx, t).Cart())
-	if err != nil {
-		return nil, zero, err
-	}
-	if !neg.Has(ucp.CapabilityCheckout) {
-		return nil, incompatibleCheckout(h.linksFor(ctx, t)), nil
-	}
 	lines, err := in.Checkout.lines()
 	if err != nil {
 		return nil, zero, err
 	}
 	switch {
 	case in.CartID != "" && len(lines) > 0:
-		return nil, zero, errors.New(
+		return nil, zero, invalidInput(
 			"send either cart_id or checkout.line_items, not both: the " +
 				"cart already holds its lines")
 	case in.CartID == "" && len(lines) == 0:
-		return nil, zero, errors.New(
+		return nil, zero, invalidInput(
 			"checkout.line_items is required to start a checkout")
 	case in.CartID != "":
 		return h.createFromCart(ctx, t, in, neg)
@@ -239,7 +287,7 @@ func (h *handlers) createFromCart(
 	// named in one spelling here: it keys the cart's record.
 	cartID, ok := checkout.CanonicalCartID(in.CartID)
 	if !ok {
-		return nil, zero, errors.New(
+		return nil, zero, invalidInput(
 			"cart_id is not a cart id: send the cartId the cart tools " +
 				"returned, or omit it and send checkout.line_items")
 	}
@@ -672,35 +720,30 @@ func (h *handlers) finish(
 func (h *handlers) updateCheckout(
 	ctx context.Context, _ *mcp.CallToolRequest, in UpdateCheckoutIn,
 ) (*mcp.CallToolResult, CheckoutResult, error) {
-	var zero CheckoutResult
-	t, err := h.tenantFor(ctx)
-	if err != nil {
-		return nil, zero, err
-	}
-	if err := in.Meta.validate(false); err != nil {
-		return nil, zero, err
-	}
-	neg, err := h.negotiate(ctx, t, in.Meta, h.linksFor(ctx, t).Cart())
-	if err != nil {
-		return nil, zero, err
-	}
-	if !neg.Has(ucp.CapabilityCheckout) {
-		return nil, incompatibleCheckout(h.linksFor(ctx, t)), nil
-	}
-	s, release, err := h.lockedSession(ctx, t, in.ID)
-	if err != nil {
-		return nil, zero, err
-	}
-	defer release()
-	return h.finish(ctx, t, s, h.updateSession(ctx, t, s, in, neg),
-		func(now *checkout.Session) toolResult {
-			if err := h.closedTo(ctx, now, "updated"); err != nil {
-				return refusedBy(err).answer
-			}
-			// Still open: this update's cart writes may be made.
-			return refusedBy(
-				withHint(errCheckoutChanged, checkoutNotUpdated)).answer
+	return h.negotiated(ctx, in.Meta, false,
+		func(t *tenant.Tenant, neg ucp.Negotiated) (
+			*mcp.CallToolResult, CheckoutResult, error,
+		) {
+			return h.onSession(ctx, t, in.ID,
+				func(s *checkout.Session) sessionAnswer {
+					return h.updateSession(ctx, t, s, in, neg)
+				},
+				func(now *checkout.Session) toolResult {
+					return h.updateStored(ctx, now)
+				})
 		})
+}
+
+// updateStored answers an update whose checkout another request stored
+// while it ran.
+func (h *handlers) updateStored(
+	ctx context.Context, now *checkout.Session,
+) toolResult {
+	if err := h.closedTo(ctx, now, "updated"); err != nil {
+		return refusedBy(err).answer
+	}
+	// Still open: this update's cart writes may be made.
+	return refusedBy(withHint(errCheckoutChanged, checkoutNotUpdated)).answer
 }
 
 // updateSession is update_checkout once its checkout is loaded.
@@ -721,7 +764,7 @@ func (h *handlers) updateSession(
 		return refusedBy(err)
 	}
 	if len(lines) == 0 {
-		return refusedBy(errors.New(
+		return refusedBy(invalidInput(
 			"checkout.line_items is required and must not be empty; " +
 				"cancel the checkout to abandon it"))
 	}
@@ -779,29 +822,17 @@ func (h *handlers) updateSession(
 func (h *handlers) completeCheckout(
 	ctx context.Context, _ *mcp.CallToolRequest, in CompleteCheckoutIn,
 ) (*mcp.CallToolResult, CheckoutResult, error) {
-	var zero CheckoutResult
-	t, err := h.tenantFor(ctx)
-	if err != nil {
-		return nil, zero, err
-	}
-	if err := in.Meta.validate(true); err != nil {
-		return nil, zero, err
-	}
-	neg, err := h.negotiate(ctx, t, in.Meta, h.linksFor(ctx, t).Cart())
-	if err != nil {
-		return nil, zero, err
-	}
-	if !neg.Has(ucp.CapabilityCheckout) {
-		return nil, incompatibleCheckout(h.linksFor(ctx, t)), nil
-	}
-	s, release, err := h.lockedSession(ctx, t, in.ID)
-	if err != nil {
-		return nil, zero, err
-	}
-	defer release()
-	return h.finish(ctx, t, s, h.completeSession(ctx, t, s, in, neg),
-		func(now *checkout.Session) toolResult {
-			return h.completeClosed(ctx, t, now, neg)
+	return h.negotiated(ctx, in.Meta, true,
+		func(t *tenant.Tenant, neg ucp.Negotiated) (
+			*mcp.CallToolResult, CheckoutResult, error,
+		) {
+			return h.onSession(ctx, t, in.ID,
+				func(s *checkout.Session) sessionAnswer {
+					return h.completeSession(ctx, t, s, in, neg)
+				},
+				func(now *checkout.Session) toolResult {
+					return h.completeClosed(ctx, t, now, neg)
+				})
 		})
 }
 
@@ -893,7 +924,7 @@ func (h *handlers) completeSession(
 		ctx, t.SchemaName, s.ID, in.Meta.IdempotencyKey)
 	switch {
 	case errors.Is(err, checkout.ErrCompletionInProgress):
-		return refusedBy(err)
+		return refusedBy(errCompletionInFlight)
 	case errors.Is(err, checkout.ErrInvalidIdempotencyKey):
 		// MetaIn.validate refuses such a key before anything is read.
 		return refusedBy(errIdempotencyKeyForm)
@@ -952,10 +983,10 @@ func (h *handlers) completeSession(
 
 // errNoPaymentMethod refuses a complete of a checkout that holds no
 // payment method and names none.
-var errNoPaymentMethod = errors.New(
-	"this checkout holds no payment method and this call names none: " +
-		"submit one of the instruments the checkout advertises in " +
-		"checkout.payment.instruments")
+var errNoPaymentMethod = &mcptool.ToolError{Code: mcptool.CodeMissing,
+	Hint: "this checkout holds no payment method and this call names " +
+		"none: submit one of the instruments the checkout advertises in " +
+		"checkout.payment.instruments"}
 
 // paymentChanged is the recoverable error of a complete whose payment
 // selects another method than the checkout holds.
@@ -1049,20 +1080,24 @@ func completeErr(s *checkout.Session, err error) error {
 		return cartOrderUnpaidErr(err)
 	case errors.Is(err, checkout.ErrSessionChanged):
 		return saveFailed(err)
-	case errors.Is(err, checkout.ErrNotReady),
-		errors.Is(err, checkout.ErrCompletionInProgress):
-		return err
+	case errors.Is(err, checkout.ErrCompletionInProgress):
+		return errCompletionInFlight
+	case errors.Is(err, checkout.ErrNotReady):
+		return &mcptool.ToolError{Code: mcptool.CodeMissing,
+			Hint: "this checkout is not ready to complete; still needed: " +
+				strings.Join(s.Missing(), "; ") + ". Send them with " +
+				"update_checkout, then complete"}
 	case errors.Is(err, checkout.ErrPayWayUnavailable):
-		return errors.New(
-			"the selected payment method is not offered for this " +
+		return &mcptool.ToolError{Code: mcptool.CodeUnsupported,
+			Hint: "the selected payment method is not offered for this " +
 				"delivery; select another advertised instrument with " +
-				"update_checkout, then complete")
+				"update_checkout, then complete"}
 	case errors.Is(err, checkout.ErrPaymentMethodUnsupported):
-		return errors.New(
-			"this payment method needs the buyer to pay on the " +
+		return &mcptool.ToolError{Code: mcptool.CodeUnsupported,
+			Hint: "this payment method needs the buyer to pay on the " +
 				"store's checkout; use an offline method (e.g. cash " +
 				"on delivery), Viva card payment, or hand over " +
-				"get_checkout_link instead")
+				"get_checkout_link instead"}
 	}
 	return upstreamErr(err, "order placement failed; the cart is unchanged")
 }
@@ -1091,9 +1126,11 @@ func cartOrderUnpaidErr(err error) error {
 // and to every later call, which finds the checkout in progress and the
 // order named beside it.
 func placedUnsavedErr(orderUUID string) error {
-	return errors.New(
-		"the order was placed but checkout state could not be saved; " +
-			"track it with track_order using orderUuid " + orderUUID)
+	return &mcptool.ToolError{Code: mcptool.CodeOrderPlaced,
+		Hint: "the order was placed but checkout state could not be " +
+			"saved; track it with track_order using orderUuid " +
+			orderUUID + ", and do not complete again or start a new " +
+			"checkout"}
 }
 
 // settleCompletion spends or releases a completion claim by what the
@@ -1162,13 +1199,15 @@ func (h *handlers) closedTo(
 	case s.Status == checkout.StatusCompleteInProgress:
 		return h.pending(ctx, s)
 	case s.Status == checkout.StatusCanceled:
-		return fmt.Errorf("checkout %s is canceled and cannot be %s",
-			s.ID, action)
+		return &mcptool.ToolError{Code: mcptool.CodeCheckoutClosed,
+			Hint: fmt.Sprintf("checkout %s is canceled and cannot be %s",
+				s.ID, action)}
 	}
-	return fmt.Errorf(
-		"checkout %s already placed order %s and cannot be %s here; "+
-			"the order is managed by the store, and get_order or "+
-			"track_order reads it", s.ID, s.OrderUUID, action)
+	return &mcptool.ToolError{Code: mcptool.CodeCheckoutClosed,
+		Hint: fmt.Sprintf("checkout %s already placed order %s and cannot "+
+			"be %s here; the order is managed by the store, and "+
+			"get_order or track_order reads it", s.ID, s.OrderUUID,
+			action)}
 }
 
 // errOutcomeUnknown answers a checkout whose order the store never
@@ -1176,13 +1215,14 @@ func (h *handlers) closedTo(
 // session stays so until it expires, and no call changes that. It tells
 // the agent what a person can do, because nothing the agent can call
 // will find out.
-var errOutcomeUnknown = errors.New(
-	"the store never confirmed whether this checkout's order was " +
+var errOutcomeUnknown = &mcptool.ToolError{
+	Code: mcptool.CodeOrderOutcomeUnknown,
+	Hint: "the store never confirmed whether this checkout's order was " +
 		"placed, and that will not change: do not complete it again, " +
 		"do not keep checking it, and do not start another checkout. " +
 		"Ask the shopper to look for the store's order confirmation " +
 		"email, or to ask the store; start a new checkout only if " +
-		"they find that no order was placed")
+		"they find that no order was placed"}
 
 // pending answers a call that finds the checkout's order being placed.
 // An order the completion placed and could not save is known (the
@@ -1195,9 +1235,18 @@ func (h *handlers) pending(ctx context.Context, s *checkout.Session) error {
 		return placedUnsavedErr(order)
 	}
 	if time.Until(h.deps.Flow.CompletionDeadline(s)) > 0 {
-		return checkout.ErrCompletionInProgress
+		return errCompletionInFlight
 	}
 	return errOutcomeUnknown
+}
+
+// guidance is what an answer tells the agent to do, as a sentence for a
+// result's text: a ToolError's hint, or a plain error's text.
+func guidance(err error) string {
+	if te, ok := errors.AsType[*mcptool.ToolError](err); ok {
+		return te.Hint
+	}
+	return err.Error()
 }
 
 // errCheckoutGone answers a checkout id no session is stored for. The id
@@ -1205,15 +1254,29 @@ func (h *handlers) pending(ctx context.Context, s *checkout.Session) error {
 // placed an order and its session is no longer kept, or the id is wrong.
 // So the answer never says only to start another: an agent that did
 // would order a second time in the second case.
-var errCheckoutGone = errors.New(
-	"that checkout no longer exists here. It may never have been " +
+var errCheckoutGone = &mcptool.ToolError{Code: mcptool.CodeNotFound,
+	Hint: "that checkout no longer exists here. It may never have been " +
 		"completed, it may have placed an order whose checkout is no " +
 		"longer kept, or the id may be wrong, so an order may exist: " +
 		"do not start another checkout before checking. If you hold " +
 		"its order id, read the order with get_order or track_order; " +
 		"if not, ask the shopper for the store's order confirmation. " +
 		"Only if it was never completed, start a new one with " +
-		"create_checkout")
+		"create_checkout"}
+
+// errCheckoutBusy answers a call on a checkout another request holds
+// the lock of: nothing of this call was done.
+var errCheckoutBusy = &mcptool.ToolError{Code: mcptool.CodeConflict,
+	Hint: "another request is at work on this checkout, so this call " +
+		"did nothing; send it again shortly"}
+
+// errCompletionInFlight answers a call that finds the checkout's order
+// being placed, while that completion can still be running: an order
+// may exist by the time it ends.
+var errCompletionInFlight = &mcptool.ToolError{Code: mcptool.CodeConflict,
+	Hint: "a completion of this checkout is in progress or unconfirmed, " +
+		"so an order may exist: do not complete it again or start " +
+		"another checkout; read it with get_checkout shortly"}
 
 // errCheckoutUnavailable answers a checkout store (Redis) that could not
 // be read or written: the sessions, their locks and completion claims,
@@ -1259,21 +1322,21 @@ var errCheckoutCartGone = &mcptool.ToolError{Code: mcptool.CodeNotFound,
 // checkout is not rendered: the agent must read it again, not order
 // again.
 func unrenderedErr(s *checkout.Session) error {
-	return fmt.Errorf(
-		"order %s is placed, but the checkout could not be rendered; "+
-			"read it again with get_checkout, and do not start a "+
-			"new checkout", s.OrderUUID)
+	return &mcptool.ToolError{Code: mcptool.CodeOrderPlaced,
+		Hint: fmt.Sprintf("order %s is placed, but the checkout could not "+
+			"be rendered; read it again with get_checkout, and do not "+
+			"start a new checkout", s.OrderUUID)}
 }
 
 // paymentLinkErr is the truthful answer when the order exists but its
 // hosted payment link could not be created: saying the order failed
 // would send the buyer to check out again and order twice.
 func paymentLinkErr(s *checkout.Session) error {
-	return fmt.Errorf(
-		"order %s is placed, but its payment link could not be created; "+
-			"call complete_checkout again for checkout %s to retry the "+
-			"payment link — do not start a new checkout",
-		s.OrderUUID, s.ID)
+	return &mcptool.ToolError{Code: mcptool.CodePaymentLinkFailed,
+		Hint: fmt.Sprintf("order %s is placed, but its payment link could "+
+			"not be created; call complete_checkout again for checkout %s "+
+			"to retry the payment link — do not start a new checkout",
+			s.OrderUUID, s.ID)}
 }
 
 func stockShortfallErr(err error) error {
@@ -1285,22 +1348,26 @@ func stockShortfallErr(err error) error {
 			item.ProductName, item.ProductID,
 			item.Requested, item.Available))
 	}
-	return fmt.Errorf(
-		"not enough stock: %s — adjust quantities and retry",
-		strings.Join(lines, "; "))
+	return &mcptool.ToolError{Code: mcptool.CodeOutOfStock,
+		Hint: fmt.Sprintf("not enough stock: %s — adjust quantities and "+
+			"retry", strings.Join(lines, "; "))}
 }
+
+// errIDRequired refuses a UCP call whose id, of the checkout or the
+// order, is empty.
+var errIDRequired = invalidInput("id is required")
 
 func (h *handlers) lockedSession(
 	ctx context.Context, t *tenant.Tenant, id string,
 ) (*checkout.Session, func(), error) {
 	if id == "" {
-		return nil, nil, errors.New("id is required")
+		return nil, nil, errIDRequired
 	}
 	s, release, err := h.deps.Checkout.LockSession(
 		ctx, t.SchemaName, checkout.ProtocolUCP, id)
 	switch {
 	case errors.Is(err, checkout.ErrLocked):
-		return nil, nil, err
+		return nil, nil, errCheckoutBusy
 	case errors.Is(err, checkout.ErrNotFound):
 		return nil, nil, errCheckoutGone
 	case err != nil:
@@ -1358,7 +1425,7 @@ func (h *handlers) checkoutResult(
 	case checkout.StatusCompleteInProgress:
 		// The guidance every other tool gives for this state: in flight,
 		// the order it placed, or an outcome that was never recorded.
-		text = h.pending(ctx, s).Error()
+		text = guidance(h.pending(ctx, s))
 	default:
 		text = fmt.Sprintf("Checkout %s status: %s.", s.ID, s.Status)
 	}
@@ -1395,33 +1462,24 @@ func (h *handlers) discountAnnotated(
 func (h *handlers) getCheckout(
 	ctx context.Context, _ *mcp.CallToolRequest, in GetCheckoutIn,
 ) (*mcp.CallToolResult, CheckoutResult, error) {
-	var zero CheckoutResult
-	t, err := h.tenantFor(ctx)
-	if err != nil {
-		return nil, zero, err
-	}
-	if err := in.Meta.validate(false); err != nil {
-		return nil, zero, err
-	}
-	neg, err := h.negotiate(ctx, t, in.Meta, h.linksFor(ctx, t).Cart())
-	if err != nil {
-		return nil, zero, err
-	}
-	if !neg.Has(ucp.CapabilityCheckout) {
-		return nil, incompatibleCheckout(h.linksFor(ctx, t)), nil
-	}
-	if in.ID == "" {
-		return nil, zero, errors.New("id is required")
-	}
-	s, err := h.deps.Checkout.Load(
-		ctx, t.SchemaName, checkout.ProtocolUCP, in.ID)
-	if err != nil {
-		if errors.Is(err, checkout.ErrNotFound) {
-			return nil, zero, errCheckoutGone
-		}
-		return nil, zero, errCheckoutUnavailable
-	}
-	return h.checkoutResult(ctx, t, s, neg)
+	return h.negotiated(ctx, in.Meta, false,
+		func(t *tenant.Tenant, neg ucp.Negotiated) (
+			*mcp.CallToolResult, CheckoutResult, error,
+		) {
+			var zero CheckoutResult
+			if in.ID == "" {
+				return nil, zero, errIDRequired
+			}
+			s, err := h.deps.Checkout.Load(
+				ctx, t.SchemaName, checkout.ProtocolUCP, in.ID)
+			switch {
+			case errors.Is(err, checkout.ErrNotFound):
+				return nil, zero, errCheckoutGone
+			case err != nil:
+				return nil, zero, errCheckoutUnavailable
+			}
+			return h.checkoutResult(ctx, t, s, neg)
+		})
 }
 
 // cancelCheckout abandons a session the buyer is no longer pursuing.
@@ -1436,29 +1494,17 @@ func (h *handlers) getCheckout(
 func (h *handlers) cancelCheckout(
 	ctx context.Context, _ *mcp.CallToolRequest, in CancelCheckoutIn,
 ) (*mcp.CallToolResult, CheckoutResult, error) {
-	var zero CheckoutResult
-	t, err := h.tenantFor(ctx)
-	if err != nil {
-		return nil, zero, err
-	}
-	if err := in.Meta.validate(true); err != nil {
-		return nil, zero, err
-	}
-	neg, err := h.negotiate(ctx, t, in.Meta, h.linksFor(ctx, t).Cart())
-	if err != nil {
-		return nil, zero, err
-	}
-	if !neg.Has(ucp.CapabilityCheckout) {
-		return nil, incompatibleCheckout(h.linksFor(ctx, t)), nil
-	}
-	s, release, err := h.lockedSession(ctx, t, in.ID)
-	if err != nil {
-		return nil, zero, err
-	}
-	defer release()
-	return h.finish(ctx, t, s, h.cancelSession(ctx, t, s, neg),
-		func(now *checkout.Session) toolResult {
-			return h.cancelClosed(ctx, t, now, neg)
+	return h.negotiated(ctx, in.Meta, true,
+		func(t *tenant.Tenant, neg ucp.Negotiated) (
+			*mcp.CallToolResult, CheckoutResult, error,
+		) {
+			return h.onSession(ctx, t, in.ID,
+				func(s *checkout.Session) sessionAnswer {
+					return h.cancelSession(ctx, t, s, neg)
+				},
+				func(now *checkout.Session) toolResult {
+					return h.cancelClosed(ctx, t, now, neg)
+				})
 		})
 }
 

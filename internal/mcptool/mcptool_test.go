@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"log/slog"
 	"maps"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -217,6 +218,41 @@ func TestAddRecoversAPanickingHandler(t *testing.T) {
 	assert.NotContains(t, raw, argumentValue)
 	assert.Equal(t, map[string]float64{"mcp explodes panic": 1},
 		toolCalls(t, metrics))
+}
+
+// A tool whose result is a pointer is refused when it is registered:
+// with the output schema Add gives it, the SDK would send a nil one as
+// null, which the schema does not allow.
+func TestAddRefusesAPointerResult(t *testing.T) {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "test"}, nil)
+	rec := Recorder{Server: ServerMCP, Log: slog.New(slog.DiscardHandler)}
+	assert.PanicsWithValue(t, "mcptool: tool pointed: its result type "+
+		"*mcptool.secretOut is a pointer; return the struct itself",
+		func() {
+			Add(srv, rec, &mcp.Tool{Name: "pointed",
+				Annotations: ReadOnly("Pointed")}, func(
+				context.Context, *mcp.CallToolRequest, secretIn,
+			) (*mcp.CallToolResult, *secretOut, error) {
+				return nil, nil, nil
+			})
+		})
+}
+
+// A list in a result is an array and never null in its output schema,
+// wherever it sits: a member, an element's member, a map's value.
+func TestOutputSchemaDeclaresNoNullableList(t *testing.T) {
+	type row struct {
+		Tags []string `json:"tags"`
+	}
+	type result struct {
+		Rows   []row               `json:"rows"`
+		ByName map[string][]string `json:"byName"`
+	}
+	raw, err := json.Marshal(OutputSchema(reflect.TypeFor[result]()))
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), `"null"`)
+	assert.Equal(t, 3, strings.Count(string(raw), `"type":"array"`),
+		"%s", raw)
 }
 
 // Every Code constant is counted as itself: a code added to the list
