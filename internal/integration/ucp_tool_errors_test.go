@@ -71,4 +71,29 @@ func TestUCPCheckoutAnswersCarryACode(t *testing.T) {
 		// A read takes no lock.
 		assert.Equal(t, "ready_for_complete", surface.read(ctx, id).status)
 	})
+
+	t.Run("stock the store no longer has", func(t *testing.T) {
+		id := surface.ready(t)
+		stack.faults.stockShort.Store(true)
+		t.Cleanup(func() { stack.faults.stockShort.Store(false) })
+		te := toolError(t,
+			surface.answer(ctx, id, uuid.NewString(), nil).refusal)
+		assert.Equal(t, mcptool.CodeOutOfStock, te.Code)
+		assert.Contains(t, te.Hint, "not enough stock")
+		assert.Contains(t, te.Hint, "Ζυμαρικά")
+	})
+
+	t.Run("a checkout that placed its order", func(t *testing.T) {
+		id := surface.ready(t)
+		require.Equal(t, "completed",
+			surface.complete(ctx, id, uuid.NewString(), nil))
+		for what, answer := range map[string]surfaceAnswer{
+			"update": surface.update(ctx, id),
+			"cancel": surface.abandon(ctx, id),
+		} {
+			te := toolError(t, answer.refusal)
+			assert.Equal(t, mcptool.CodeConflict, te.Code, what)
+			assert.Contains(t, te.Hint, "already placed order", what)
+		}
+	})
 }

@@ -158,7 +158,7 @@ func (h *handlers) getOrder(
 			h.linksFor(ctx, t).Home())}, nil
 	}
 	if in.ID == "" {
-		return nil, zero, errors.New("id is required")
+		return nil, zero, errIDRequired
 	}
 
 	order, err := h.deps.Django.OrderByUUID(

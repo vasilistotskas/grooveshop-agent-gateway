@@ -485,11 +485,26 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   scope (`not_granted`, as on `/mcp/admin`), a refused coupon (its
   reason as the code), the checkout store down
   (`errCheckoutUnavailable`, one value, `retryAfterSeconds` as an
-  upstream outage), and on the UCP checkout tools a checkout no session
-  is stored for (`errCheckoutGone`, `not_found`), one another request
-  holds the lock of (`errCheckoutBusy`, `conflict`) and one whose
-  completion may still be running (`errCompletionInFlight`,
-  `conflict`). A cart tool's failure goes through `handlers.cartErr`,
+  upstream outage). Every refusal of the UCP checkout tools is one,
+  named as ACP's `Error` codes name the same state:
+  - arguments the input schema cannot refuse: `invalid`
+    (`invalidInput`);
+  - a checkout no session is stored for: `not_found`
+    (`errCheckoutGone`);
+  - a checkout another request holds the lock of (`errCheckoutBusy`),
+    one whose completion may still be running (`errCompletionInFlight`),
+    and one canceled or with its order placed (`closedTo`): `conflict`;
+  - not ready to complete, or no payment method: `missing`;
+  - a payment method the delivery or this surface cannot take:
+    `unsupported`;
+  - not enough stock: `out_of_stock`;
+  - an order placed whose checkout was not saved or not rendered:
+    `order_placed`; an outcome never recorded:
+    `order_outcome_unknown`; an order whose payment link could not be
+    made: `payment_link_failed`. Each hint says not to start another
+    checkout.
+
+  A cart tool's failure goes through `handlers.cartErr`,
   or `handlers.cartGoneErr` for a call on the cart itself (a line's or a
   product's 404 stays theirs). There a 404 with Django's code
   `cart_not_found` (`django.CodeCartNotFound`) or a 403 is the cart
@@ -506,8 +521,10 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   another landed says so on top of its cause's hint (`withHint`). A list
   with nothing in it is `[]`, never `null`
   (`TestToolOutputsListNothingAsEmptyArrays`), and every output schema
-  declares a list an `array`, not `["null","array"]` (`outputSchema`):
-  the SDK checks each result against it.
+  declares a list an `array`, not `["null","array"]`, on /mcp, the chat
+  and /mcp/admin (`mcptool.OutputSchema`, which `mcptool.Add` gives a
+  tool without a schema of its own): the SDK checks each result against
+  it.
   `find_pickup_points` reads Django's 400 from BOX NOW's nearest lookup
   as no locker found: Django answers every BOX NOW refusal with it.
   Returning a plain Go error from a typed tool handler is fine — the

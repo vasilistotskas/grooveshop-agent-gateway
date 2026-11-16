@@ -44,6 +44,13 @@ func (h *handlers) linksFor(
 	return h.deps.Site.Links(t.Domain, django.Language(ctx, t.TenantConfig))
 }
 
+// invalidInput refuses a call's arguments that the input schema cannot
+// refuse: hint says what is wrong with them and what to send instead.
+func invalidInput(format string, args ...any) error {
+	return &mcptool.ToolError{Code: mcptool.CodeInvalid,
+		Hint: fmt.Sprintf(format, args...)}
+}
+
 // withHint adds a sentence to the hint of the ToolError err is, on a copy:
 // what the failed call left behind, which the hint for its cause cannot
 // know.

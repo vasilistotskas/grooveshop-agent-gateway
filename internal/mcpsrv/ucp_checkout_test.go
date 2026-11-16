@@ -403,3 +403,115 @@ func TestClosedToRefusesWhatIsNotOpen(t *testing.T) {
 		}
 	}
 }
+
+// Every refusal of the checkout tools carries a code an agent can branch
+// on, named as ACP names the same state. An order that exists or may is
+// never answered as a failure to start again: its hint says not to.
+func TestCheckoutRefusalsCarryACode(t *testing.T) {
+	dj, _ := ucpDjango(t)
+	h := ucpHandlers(t, dj)
+	h.deps.Flow = checkout.NewFlow(dj, h.deps.Checkout, testSite,
+		slog.New(slog.DiscardHandler))
+	ctx := context.Background()
+	placed := checkout.NewSession("demostore", "shop.test",
+		checkout.ProtocolUCP, fixtureCartID)
+	placed.OrderUUID = fixtureOrderUUID
+	placed.Status = checkout.StatusCompleted
+	canceled := checkout.NewSession("demostore", "shop.test",
+		checkout.ProtocolUCP, fixtureCartID)
+	canceled.Status = checkout.StatusCanceled
+	unknown := checkout.NewSession("demostore", "shop.test",
+		checkout.ProtocolUCP, fixtureCartID)
+	unknown.Status = checkout.StatusCompleteInProgress
+	unknown.Unconfirmed = true
+	notReady := checkout.NewSession("demostore", "shop.test",
+		checkout.ProtocolUCP, fixtureCartID)
+	shortfall := &django.StockShortfall{}
+	shortfall.FailedItems = append(shortfall.FailedItems, struct {
+		ProductID   int64  `json:"productId"`
+		ProductName string `json:"productName"`
+		Available   int    `json:"available"`
+		Requested   int    `json:"requested"`
+	}{ProductID: 7, ProductName: "Μπλούζα", Available: 1, Requested: 3})
+
+	for name, tc := range map[string]struct {
+		err   error
+		code  string
+		hints []string
+	}{
+		"an outcome never recorded": {
+			completeErr(placed, checkout.ErrOrderOutcomeUnknown),
+			mcptool.CodeOrderOutcomeUnknown,
+			[]string{"never confirmed", "do not start another checkout"}},
+		"an outcome never recorded, found by a call": {
+			h.closedTo(ctx, unknown, "updated"),
+			mcptool.CodeOrderOutcomeUnknown,
+			[]string{"never confirmed", "order confirmation email"}},
+		"a payment link not made": {
+			completeErr(placed, checkout.ErrPaymentSessionFailed),
+			mcptool.CodePaymentLinkFailed,
+			[]string{"order " + fixtureOrderUUID + " is placed",
+				"call complete_checkout again", "do not start a new checkout"}},
+		"an order placed, its checkout not saved": {
+			completeErr(placed, checkout.ErrSessionNotSaved),
+			mcptool.CodeOrderPlaced,
+			[]string{"orderUuid " + fixtureOrderUUID,
+				"do not complete again or start a new checkout"}},
+		"an order placed, its checkout not rendered": {
+			unrenderedErr(placed), mcptool.CodeOrderPlaced,
+			[]string{"order " + fixtureOrderUUID + " is placed",
+				"do not start a new checkout"}},
+		"not enough stock": {
+			completeErr(placed, shortfall), mcptool.CodeOutOfStock,
+			[]string{"Μπλούζα (product 7): requested 3, only 1 available"}},
+		"not ready": {
+			completeErr(notReady, checkout.ErrNotReady),
+			mcptool.CodeMissing,
+			[]string{"not ready to complete", "buyer (firstName",
+				"update_checkout"}},
+		"no payment method": {
+			errNoPaymentMethod, mcptool.CodeMissing,
+			[]string{"holds no payment method"}},
+		"a pay way the delivery is not offered": {
+			completeErr(placed, checkout.ErrPayWayUnavailable),
+			mcptool.CodeUnsupported,
+			[]string{"not offered for this delivery"}},
+		"a pay way the surface cannot finish": {
+			completeErr(placed, checkout.ErrPaymentMethodUnsupported),
+			mcptool.CodeUnsupported,
+			[]string{"get_checkout_link"}},
+		"a canceled checkout": {
+			h.closedTo(ctx, canceled, "updated"), mcptool.CodeConflict,
+			[]string{"is canceled and cannot be updated"}},
+		"a checkout that placed its order": {
+			h.closedTo(ctx, placed, "canceled"), mcptool.CodeConflict,
+			[]string{"already placed order " + fixtureOrderUUID,
+				"get_order or track_order"}},
+		"no id": {errIDRequired, mcptool.CodeInvalid,
+			[]string{"id is required"}},
+		"no profile": {(&MetaIn{}).validate(false), mcptool.CodeInvalid,
+			[]string{"meta.ucp-agent.profile is required"}},
+		"no idempotency key": {
+			(&MetaIn{UCPAgent: &UCPAgentIn{Profile: "https://p.test"}}).
+				validate(true),
+			mcptool.CodeInvalid,
+			[]string{"meta.idempotency-key is required"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			te := codeOf(t, tc.err, tc.code)
+			for _, hint := range tc.hints {
+				assert.Contains(t, te.Hint, hint)
+			}
+		})
+	}
+
+	// Through the tools themselves, before the store is asked.
+	ctx = tenant.NewContext(ctx, cartTenant())
+	_, _, err := h.getCheckout(ctx, nil, GetCheckoutIn{Meta: ucpMeta(t, "")})
+	assert.Equal(t, "id is required",
+		codeOf(t, err, mcptool.CodeInvalid).Hint)
+	_, _, err = h.createCheckout(ctx, nil, CreateCheckoutIn{
+		Meta: ucpMeta(t, "")})
+	assert.Contains(t, codeOf(t, err, mcptool.CodeInvalid).Hint,
+		"checkout.line_items is required")
+}

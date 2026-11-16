@@ -249,6 +249,8 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 			assert.Empty(t, answer.retryAfter, what)
 		}
 		for what, answer := range calls(surfaces["ucp"]) {
+			assert.Equal(t, mcptool.CodeOrderOutcomeUnknown,
+				toolError(t, answer.refusal).Code, what)
 			assert.Contains(t, answer.refusal, "never confirmed", what)
 			assert.Contains(t, answer.refusal,
 				"order confirmation email", what)

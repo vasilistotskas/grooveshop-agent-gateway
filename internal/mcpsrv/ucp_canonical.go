@@ -2,12 +2,12 @@ package mcpsrv
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
@@ -37,7 +37,7 @@ type MetaIn struct {
 
 // errIdempotencyKeyForm refuses a key outside checkout.ValidIdempotencyKey.
 // The call did nothing, so a key of the right form may be sent.
-var errIdempotencyKeyForm = fmt.Errorf(
+var errIdempotencyKeyForm = invalidInput(
 	"meta.idempotency-key must be 1 to %d visible ASCII characters "+
 		"(no spaces), such as a UUID; this call did nothing, so send it "+
 		"again with a key of that form", checkout.MaxIdempotencyKeyLen)
@@ -49,7 +49,7 @@ var errIdempotencyKeyForm = fmt.Errorf(
 // fetch-safety rules live.
 func (m *MetaIn) validate(needIdempotency bool) error {
 	if m == nil || m.UCPAgent == nil || m.UCPAgent.Profile == "" {
-		return errors.New(
+		return invalidInput(
 			"meta.ucp-agent.profile is required: it identifies the " +
 				"calling platform so capabilities can be negotiated")
 	}
@@ -57,7 +57,7 @@ func (m *MetaIn) validate(needIdempotency bool) error {
 		return nil
 	}
 	if m.IdempotencyKey == "" {
-		return errors.New(
+		return invalidInput(
 			"meta.idempotency-key is required on this operation so a " +
 				"retry cannot place or cancel a second order")
 	}
@@ -199,12 +199,12 @@ func (c *UCPCheckoutIn) lines() ([]checkout.Line, error) {
 	for i, li := range c.LineItems {
 		id, err := strconv.ParseInt(li.Item.ID, 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf(
+			return nil, invalidInput(
 				"checkout.line_items[%d].item.id %q is not a product id",
 				i, li.Item.ID)
 		}
 		if u := li.Item.QuantityUnit; u != nil && u.Unit != ucp.UnitEach {
-			return nil, fmt.Errorf(
+			return nil, invalidInput(
 				"checkout.line_items[%d].item.quantity_unit %q is not this "+
 					"item's sale basis: the store sells it per item (%s). "+
 					"Send the quantity as a count of items, and omit "+
@@ -214,7 +214,14 @@ func (c *UCPCheckoutIn) lines() ([]checkout.Line, error) {
 		out = append(out,
 			checkout.Line{ProductID: id, Quantity: li.Quantity})
 	}
-	return checkout.MergeLines(out)
+	merged, err := checkout.MergeLines(out)
+	if err != nil {
+		// checkout.ErrInvalidQuantity, its only error.
+		return nil, invalidInput("checkout.line_items: every quantity " +
+			"must be at least 1, and a product's lines together at most " +
+			"9007199254740991")
+	}
+	return merged, nil
 }
 
 // resolvePayWay maps a submitted instrument onto the merchant pay-way
@@ -242,7 +249,7 @@ func resolvePayWay(
 		}
 	}
 	if chosen.HandlerID != "" && chosen.HandlerID != ucp.HandlerID {
-		return 0, fmt.Errorf(
+		return 0, invalidInput(
 			"unknown payment handler_id %q; this store advertises %q",
 			chosen.HandlerID, ucp.HandlerID)
 	}
@@ -254,9 +261,9 @@ func resolvePayWay(
 	if id := instrumentPayWay(pws, chosen.Type, held); id > 0 {
 		return id, nil
 	}
-	return 0, fmt.Errorf(
-		"payment instrument type %q is not available for this checkout",
-		chosen.Type)
+	return 0, &mcptool.ToolError{Code: mcptool.CodeUnsupported,
+		Hint: fmt.Sprintf("payment instrument type %q is not available "+
+			"for this checkout", chosen.Type)}
 }
 
 // instrumentPayWay is the method among pws that settles an instrument
@@ -355,13 +362,13 @@ func (c *UCPPaymentChoice) applyHostedSelection(
 		return nil
 	}
 	if c.Payment != nil && len(c.Payment.Instruments) > 0 {
-		return errors.New(
+		return invalidInput(
 			"send either checkout.pay_way_id or checkout.payment." +
 				"instruments, not both: they select competing payment " +
 				"methods")
 	}
 	if !neg.Has(ucp.HostedSelectionCapability) {
-		return fmt.Errorf(
+		return invalidInput(
 			"checkout.pay_way_id is not accepted: the %s capability is "+
 				"not negotiated (this store may not offer it, or your "+
 				"profile does not declare it). Submit one of the "+

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"reflect"
 	"slices"
 	"sync"
 	"time"
@@ -213,47 +212,8 @@ func favouritesOn(f django.StoreFeatures) bool {
 func loyaltyOn(f django.StoreFeatures) bool    { return f.Loyalty }
 func promotionsOn(f django.StoreFeatures) bool { return f.Cart && f.Promotions }
 
-// outputSchema is a tool's output schema for t, inferred as the SDK
-// would, except that a list is an array and never null: no tool sends
-// null for one (TestToolOutputsListNothingAsEmptyArrays), and the SDK
-// checks every result against the schema, so one that did would fail
-// there rather than reach an agent.
-func outputSchema(t reflect.Type) *jsonschema.Schema {
-	s, err := jsonschema.ForType(t, &jsonschema.ForOptions{})
-	if err != nil {
-		panic("mcpsrv: output schema for " + t.String() + ": " + err.Error())
-	}
-	listsNeverNull(s)
-	return s
-}
-
-// listsNeverNull makes every list in an inferred schema an array alone.
-// The inference declares a Go slice ["null", "array"], since a nil slice
-// encodes as null; it builds no other nullable array, and uses only the
-// members walked here.
-func listsNeverNull(s *jsonschema.Schema) {
-	if s == nil {
-		return
-	}
-	if slices.Equal(s.Types, []string{"null", "array"}) {
-		s.Types, s.Type = nil, "array"
-	}
-	listsNeverNull(s.Items)
-	listsNeverNull(s.AdditionalProperties)
-	for _, p := range s.Properties {
-		listsNeverNull(p)
-	}
-	for _, o := range s.OneOf {
-		listsNeverNull(o)
-	}
-}
-
-// toolOf is a tool served on every surface. A tool without an output
-// schema of its own gets Out's (outputSchema).
+// toolOf is a tool served on every surface.
 func toolOf[In, Out any](def *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) tool {
-	if def.OutputSchema == nil {
-		def.OutputSchema = outputSchema(reflect.TypeFor[Out]())
-	}
 	return tool{def: def, on: everySurface, register: func(
 		srv *mcp.Server, _ surface, rec mcptool.Recorder,
 	) {
@@ -269,7 +229,6 @@ func toolOf[In, Out any](def *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) tool {
 func cartToolOf[In, Out any](
 	def *mcp.Tool, h mcp.ToolHandlerFor[In, Out],
 ) tool {
-	def.OutputSchema = outputSchema(reflect.TypeFor[Out]())
 	return tool{def: def, on: everySurface, register: func(
 		srv *mcp.Server, s surface, rec mcptool.Recorder,
 	) {

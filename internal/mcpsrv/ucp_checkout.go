@@ -142,11 +142,11 @@ func (h *handlers) create(
 	}
 	switch {
 	case in.CartID != "" && len(lines) > 0:
-		return nil, zero, errors.New(
+		return nil, zero, invalidInput(
 			"send either cart_id or checkout.line_items, not both: the " +
 				"cart already holds its lines")
 	case in.CartID == "" && len(lines) == 0:
-		return nil, zero, errors.New(
+		return nil, zero, invalidInput(
 			"checkout.line_items is required to start a checkout")
 	case in.CartID != "":
 		return h.createFromCart(ctx, t, in, neg)
@@ -287,7 +287,7 @@ func (h *handlers) createFromCart(
 	// named in one spelling here: it keys the cart's record.
 	cartID, ok := checkout.CanonicalCartID(in.CartID)
 	if !ok {
-		return nil, zero, errors.New(
+		return nil, zero, invalidInput(
 			"cart_id is not a cart id: send the cartId the cart tools " +
 				"returned, or omit it and send checkout.line_items")
 	}
@@ -764,7 +764,7 @@ func (h *handlers) updateSession(
 		return refusedBy(err)
 	}
 	if len(lines) == 0 {
-		return refusedBy(errors.New(
+		return refusedBy(invalidInput(
 			"checkout.line_items is required and must not be empty; " +
 				"cancel the checkout to abandon it"))
 	}
@@ -983,10 +983,10 @@ func (h *handlers) completeSession(
 
 // errNoPaymentMethod refuses a complete of a checkout that holds no
 // payment method and names none.
-var errNoPaymentMethod = errors.New(
-	"this checkout holds no payment method and this call names none: " +
-		"submit one of the instruments the checkout advertises in " +
-		"checkout.payment.instruments")
+var errNoPaymentMethod = &mcptool.ToolError{Code: mcptool.CodeMissing,
+	Hint: "this checkout holds no payment method and this call names " +
+		"none: submit one of the instruments the checkout advertises in " +
+		"checkout.payment.instruments"}
 
 // paymentChanged is the recoverable error of a complete whose payment
 // selects another method than the checkout holds.
@@ -1083,18 +1083,21 @@ func completeErr(s *checkout.Session, err error) error {
 	case errors.Is(err, checkout.ErrCompletionInProgress):
 		return errCompletionInFlight
 	case errors.Is(err, checkout.ErrNotReady):
-		return err
+		return &mcptool.ToolError{Code: mcptool.CodeMissing,
+			Hint: "this checkout is not ready to complete; still needed: " +
+				strings.Join(s.Missing(), "; ") + ". Send them with " +
+				"update_checkout, then complete"}
 	case errors.Is(err, checkout.ErrPayWayUnavailable):
-		return errors.New(
-			"the selected payment method is not offered for this " +
+		return &mcptool.ToolError{Code: mcptool.CodeUnsupported,
+			Hint: "the selected payment method is not offered for this " +
 				"delivery; select another advertised instrument with " +
-				"update_checkout, then complete")
+				"update_checkout, then complete"}
 	case errors.Is(err, checkout.ErrPaymentMethodUnsupported):
-		return errors.New(
-			"this payment method needs the buyer to pay on the " +
+		return &mcptool.ToolError{Code: mcptool.CodeUnsupported,
+			Hint: "this payment method needs the buyer to pay on the " +
 				"store's checkout; use an offline method (e.g. cash " +
 				"on delivery), Viva card payment, or hand over " +
-				"get_checkout_link instead")
+				"get_checkout_link instead"}
 	}
 	return upstreamErr(err, "order placement failed; the cart is unchanged")
 }
@@ -1123,9 +1126,11 @@ func cartOrderUnpaidErr(err error) error {
 // and to every later call, which finds the checkout in progress and the
 // order named beside it.
 func placedUnsavedErr(orderUUID string) error {
-	return errors.New(
-		"the order was placed but checkout state could not be saved; " +
-			"track it with track_order using orderUuid " + orderUUID)
+	return &mcptool.ToolError{Code: mcptool.CodeOrderPlaced,
+		Hint: "the order was placed but checkout state could not be " +
+			"saved; track it with track_order using orderUuid " +
+			orderUUID + ", and do not complete again or start a new " +
+			"checkout"}
 }
 
 // settleCompletion spends or releases a completion claim by what the
@@ -1194,13 +1199,15 @@ func (h *handlers) closedTo(
 	case s.Status == checkout.StatusCompleteInProgress:
 		return h.pending(ctx, s)
 	case s.Status == checkout.StatusCanceled:
-		return fmt.Errorf("checkout %s is canceled and cannot be %s",
-			s.ID, action)
+		return &mcptool.ToolError{Code: mcptool.CodeConflict,
+			Hint: fmt.Sprintf("checkout %s is canceled and cannot be %s",
+				s.ID, action)}
 	}
-	return fmt.Errorf(
-		"checkout %s already placed order %s and cannot be %s here; "+
-			"the order is managed by the store, and get_order or "+
-			"track_order reads it", s.ID, s.OrderUUID, action)
+	return &mcptool.ToolError{Code: mcptool.CodeConflict,
+		Hint: fmt.Sprintf("checkout %s already placed order %s and cannot "+
+			"be %s here; the order is managed by the store, and "+
+			"get_order or track_order reads it", s.ID, s.OrderUUID,
+			action)}
 }
 
 // errOutcomeUnknown answers a checkout whose order the store never
@@ -1208,13 +1215,14 @@ func (h *handlers) closedTo(
 // session stays so until it expires, and no call changes that. It tells
 // the agent what a person can do, because nothing the agent can call
 // will find out.
-var errOutcomeUnknown = errors.New(
-	"the store never confirmed whether this checkout's order was " +
+var errOutcomeUnknown = &mcptool.ToolError{
+	Code: mcptool.CodeOrderOutcomeUnknown,
+	Hint: "the store never confirmed whether this checkout's order was " +
 		"placed, and that will not change: do not complete it again, " +
 		"do not keep checking it, and do not start another checkout. " +
 		"Ask the shopper to look for the store's order confirmation " +
 		"email, or to ask the store; start a new checkout only if " +
-		"they find that no order was placed")
+		"they find that no order was placed"}
 
 // pending answers a call that finds the checkout's order being placed.
 // An order the completion placed and could not save is known (the
@@ -1314,21 +1322,21 @@ var errCheckoutCartGone = &mcptool.ToolError{Code: mcptool.CodeNotFound,
 // checkout is not rendered: the agent must read it again, not order
 // again.
 func unrenderedErr(s *checkout.Session) error {
-	return fmt.Errorf(
-		"order %s is placed, but the checkout could not be rendered; "+
-			"read it again with get_checkout, and do not start a "+
-			"new checkout", s.OrderUUID)
+	return &mcptool.ToolError{Code: mcptool.CodeOrderPlaced,
+		Hint: fmt.Sprintf("order %s is placed, but the checkout could not "+
+			"be rendered; read it again with get_checkout, and do not "+
+			"start a new checkout", s.OrderUUID)}
 }
 
 // paymentLinkErr is the truthful answer when the order exists but its
 // hosted payment link could not be created: saying the order failed
 // would send the buyer to check out again and order twice.
 func paymentLinkErr(s *checkout.Session) error {
-	return fmt.Errorf(
-		"order %s is placed, but its payment link could not be created; "+
-			"call complete_checkout again for checkout %s to retry the "+
-			"payment link — do not start a new checkout",
-		s.OrderUUID, s.ID)
+	return &mcptool.ToolError{Code: mcptool.CodePaymentLinkFailed,
+		Hint: fmt.Sprintf("order %s is placed, but its payment link could "+
+			"not be created; call complete_checkout again for checkout %s "+
+			"to retry the payment link — do not start a new checkout",
+			s.OrderUUID, s.ID)}
 }
 
 func stockShortfallErr(err error) error {
@@ -1340,16 +1348,20 @@ func stockShortfallErr(err error) error {
 			item.ProductName, item.ProductID,
 			item.Requested, item.Available))
 	}
-	return fmt.Errorf(
-		"not enough stock: %s — adjust quantities and retry",
-		strings.Join(lines, "; "))
+	return &mcptool.ToolError{Code: mcptool.CodeOutOfStock,
+		Hint: fmt.Sprintf("not enough stock: %s — adjust quantities and "+
+			"retry", strings.Join(lines, "; "))}
 }
+
+// errIDRequired refuses a UCP call whose id, of the checkout or the
+// order, is empty.
+var errIDRequired = invalidInput("id is required")
 
 func (h *handlers) lockedSession(
 	ctx context.Context, t *tenant.Tenant, id string,
 ) (*checkout.Session, func(), error) {
 	if id == "" {
-		return nil, nil, errors.New("id is required")
+		return nil, nil, errIDRequired
 	}
 	s, release, err := h.deps.Checkout.LockSession(
 		ctx, t.SchemaName, checkout.ProtocolUCP, id)
@@ -1456,7 +1468,7 @@ func (h *handlers) getCheckout(
 		) {
 			var zero CheckoutResult
 			if in.ID == "" {
-				return nil, zero, errors.New("id is required")
+				return nil, zero, errIDRequired
 			}
 			s, err := h.deps.Checkout.Load(
 				ctx, t.SchemaName, checkout.ProtocolUCP, in.ID)

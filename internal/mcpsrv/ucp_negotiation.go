@@ -9,6 +9,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
@@ -48,8 +49,8 @@ func resultSchema[Resource any]() *jsonschema.Schema {
 	return &jsonschema.Schema{
 		Type: "object",
 		OneOf: []*jsonschema.Schema{
-			outputSchema(reflect.TypeFor[Resource]()),
-			outputSchema(reflect.TypeFor[ucp.ErrorResponse]()),
+			mcptool.OutputSchema(reflect.TypeFor[Resource]()),
+			mcptool.OutputSchema(reflect.TypeFor[ucp.ErrorResponse]()),
 		},
 	}
 }
