@@ -224,6 +224,10 @@ type checkoutFaults struct {
 	// codFee makes cash on delivery (pay way 1) read without its free
 	// threshold, so its 4.50 fee applies to the fixture cart.
 	codFee atomic.Bool
+	// codNotDelivered makes the pay-way list for a delivery (one that
+	// names a carrier) leave out cash on delivery, as Django does for a
+	// carrier that collects no cash.
+	codNotDelivered atomic.Bool
 	// orderRead makes reading a placed order answer 502.
 	orderRead atomic.Bool
 	// orderGone makes reading a placed order answer 404: Django no
@@ -344,6 +348,30 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				return
 			}
 			read := faults.payWayReads.Add(1)
+			if faults.codNotDelivered.Load() &&
+				r.URL.Query().Get("shippingProviderCode") != "" {
+				raw, err := os.ReadFile(fixturePath("pay_way.json"))
+				if !assert.NoError(t, err) {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				var page map[string]any
+				if !assert.NoError(t, json.Unmarshal(raw, &page)) {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				var kept []any
+				for _, pw := range page["results"].([]any) {
+					if pw.(map[string]any)["providerCode"] !=
+						django.ProviderCashOnDelivery {
+						kept = append(kept, pw)
+					}
+				}
+				page["results"], page["count"] = kept, len(kept)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(page)
+				return
+			}
 			if from := faults.codOnlineFrom.Load(); from > 0 && read >= from {
 				raw, err := os.ReadFile(fixturePath("pay_way.json"))
 				if !assert.NoError(t, err) {
@@ -1483,6 +1511,37 @@ func TestUCPEndToEnd(t *testing.T) {
 	// total the checkout never showed. It places nothing, stores nothing,
 	// and says the fee and the new total; the platform selects the method
 	// with update_checkout, which shows them, and then completes.
+	// A method is resolved for the delivery the checkout has then. An
+	// update that sets a delivery the method is not offered for, and
+	// names none, drops it: the checkout asks for a method, rather than
+	// reading ready and failing the order at completion.
+	t.Run("an update to a delivery the held method is not offered for drops it",
+		func(t *testing.T) {
+			res := callTool(t, session, "create_checkout", map[string]any{
+				"meta":    meta(""),
+				"cart_id": stack.faults.carts.mint(),
+				"checkout": map[string]any{
+					"buyer": buyer, "payment": codInstrument,
+				},
+			})
+			require.False(t, res.IsError, "%v", res.Content)
+			id := structured(t, res)["id"].(string)
+			require.EqualValues(t, 1, stack.storedSession(t, id).PayWayID)
+
+			stack.faults.codNotDelivered.Store(true)
+			t.Cleanup(func() { stack.faults.codNotDelivered.Store(false) })
+			res = callTool(t, session, "update_checkout", map[string]any{
+				"meta": meta(""), "id": id,
+				"checkout": map[string]any{
+					"line_items": cartLines, "buyer": buyer,
+					"fulfillment": fulfillment,
+				},
+			})
+			require.False(t, res.IsError, "%v", res.Content)
+			assert.Equal(t, "incomplete", structured(t, res)["status"])
+			assert.Zero(t, stack.storedSession(t, id).PayWayID)
+		})
+
 	t.Run("a method named only at complete time that adds a fee places nothing",
 		func(t *testing.T) {
 			stack.faults.codFee.Store(true)

@@ -227,10 +227,11 @@ func (c *UCPCheckoutIn) lines() ([]checkout.Line, error) {
 //
 // The candidates are the methods offered for the session's delivery, so
 // an instrument the chosen carrier cannot settle is refused here rather
-// than by Django at order creation.
+// than by Django at order creation. held is the method the checkout
+// holds, kept when it settles the instrument (instrumentPayWay).
 func resolvePayWay(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant,
-	f checkout.Fulfillment, instruments []UCPInstrumentIn,
+	f checkout.Fulfillment, held int64, instruments []UCPInstrumentIn,
 ) (int64, error) {
 	// Honour the platform's selection when it marks one, else the first.
 	chosen := instruments[0]
@@ -250,6 +251,21 @@ func resolvePayWay(
 	if err != nil {
 		return 0, upstreamErr(err, "payment methods are unavailable")
 	}
+	if id := instrumentPayWay(pws, chosen.Type, held); id > 0 {
+		return id, nil
+	}
+	return 0, fmt.Errorf(
+		"payment instrument type %q is not available for this checkout",
+		chosen.Type)
+}
+
+// instrumentPayWay is the method among pws that settles an instrument
+// type: held when it is one of them, else the first; 0 when none does.
+// A store may have several of one type, each offered for other carriers,
+// so naming the instrument the checkout holds again keeps its method,
+// and a complete that names it is not a change of method.
+func instrumentPayWay(pws []django.PayWay, kind string, held int64) int64 {
+	var first int64
 	for i := range pws {
 		pw := &pws[i]
 		// Positive test, not "not online". An ONLINE pay way is not an
@@ -260,14 +276,17 @@ func resolvePayWay(
 		if !pw.Active || !pw.IsCollectedLater() || pw.ProviderCode == "" {
 			continue
 		}
-		if kind, ok := ucp.InstrumentTypeFor(pw.ProviderCode); ok &&
-			kind == chosen.Type {
-			return pw.ID, nil
+		if k, ok := ucp.InstrumentTypeFor(pw.ProviderCode); !ok || k != kind {
+			continue
+		}
+		if pw.ID == held {
+			return held
+		}
+		if first == 0 {
+			first = pw.ID
 		}
 	}
-	return 0, fmt.Errorf(
-		"payment instrument type %q is not available for this checkout",
-		chosen.Type)
+	return first
 }
 
 // discountCodes reports the submitted codes, and whether the request
@@ -312,6 +331,13 @@ func (c *UCPCheckoutIn) applyTo(s *checkout.Session) {
 	if f := c.fulfillment(); f != nil {
 		s.Fulfillment = *f
 	}
+}
+
+// namesPayment reports whether the request selects a payment method: an
+// instrument, or a hosted pay_way_id. `payment: {}` selects none.
+func (c *UCPPaymentChoice) namesPayment() bool {
+	return c.PayWayID > 0 ||
+		c.Payment != nil && len(c.Payment.Instruments) > 0
 }
 
 // applyHostedSelection honours a submitted pay-way id, refusing it unless
