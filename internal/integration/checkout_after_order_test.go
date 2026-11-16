@@ -340,7 +340,7 @@ func TestAnUpdatePastItsLockIsNotToldToStartOver(t *testing.T) {
 }
 
 // A checkout the gateway holds no session for may have expired unplaced,
-// or been placed and lost its record (expiry, eviction, a session kept
+// or been placed and lost its record (expiry, a flush or a restore, a session kept
 // under another key by an older release), or never existed. The id does
 // not say which, so the answer never says only "start a new one".
 func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {

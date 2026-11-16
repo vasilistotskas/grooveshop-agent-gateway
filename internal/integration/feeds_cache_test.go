@@ -248,11 +248,10 @@ func TestFailedFeedRefreshIsNotRetriedByEveryRequest(t *testing.T) {
 		"an invalidation lifts the backoff")
 }
 
-// Redis evicts keys one by one (allkeys-lru), and a revalidation reads
-// the meta key alone, so the blob is the colder one. An entry whose blob
-// is gone is a miss: it regenerates at once, whether Meta finds it gone
+// A flush or a restore can lose the blob and keep its meta key, which a
+// revalidation reads alone. An entry whose blob is gone is a miss: it regenerates at once, whether Meta finds it gone
 // or Body does after Meta found it.
-func TestFeedWithItsBlobEvictedRegenerates(t *testing.T) {
+func TestFeedWithItsBlobLostRegenerates(t *testing.T) {
 	g := newGatedDjango(t)
 	g.armed.Store(false)
 	srv := httptest.NewServer(g)
@@ -307,7 +306,7 @@ func TestFeedNotCachedAfterAGenerationBacksOff(t *testing.T) {
 }
 
 // blobAlwaysGone answers every read of a feed blob as if Redis had just
-// evicted it.
+// lost it.
 type blobAlwaysGone struct{}
 
 func (blobAlwaysGone) DialHook(next redis.DialHook) redis.DialHook {
@@ -317,7 +316,7 @@ func (blobAlwaysGone) DialHook(next redis.DialHook) redis.DialHook {
 func (blobAlwaysGone) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 		err := next(ctx, cmd)
-		evict(cmd)
+		forgetBlob(cmd)
 		return err
 	}
 }
@@ -328,13 +327,13 @@ func (blobAlwaysGone) ProcessPipelineHook(
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		err := next(ctx, cmds)
 		for _, cmd := range cmds {
-			evict(cmd)
+			forgetBlob(cmd)
 		}
 		return err
 	}
 }
 
-func evict(cmd redis.Cmder) {
+func forgetBlob(cmd redis.Cmder) {
 	args := cmd.Args()
 	if len(args) < 2 {
 		return

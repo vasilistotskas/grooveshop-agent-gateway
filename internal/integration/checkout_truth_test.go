@@ -50,8 +50,9 @@ func (stack ucpStack) onSessionRead(
 	t.Cleanup(func() { reads.Store(nth) })
 }
 
-// evicted removes a session the way Redis evicts a key.
-func (stack ucpStack) evicted(id string) func() error {
+// lost removes a session the way a flush or a restore of Redis loses a
+// key.
+func (stack ucpStack) lost(id string) func() error {
 	return func() error {
 		return stack.rdb.Del(context.Background(), sessionRedisKey(id)).Err()
 	}
@@ -114,9 +115,9 @@ func TestACompleteRefusedForAnotherCompletesOrderReadsAgain(t *testing.T) {
 	stack.faults.stockShort.Store(true)
 	t.Cleanup(func() { stack.faults.stockShort.Store(false) })
 	for name, surface := range surfaces {
-		t.Run("a session evicted meanwhile, over "+name, func(t *testing.T) {
+		t.Run("a session lost meanwhile, over "+name, func(t *testing.T) {
 			id := surface.ready(t)
-			stack.onSessionRead(t, id, exitRead, stack.evicted(id))
+			stack.onSessionRead(t, id, exitRead, stack.lost(id))
 			answer := surface.answer(ctx, id, uuid.NewString(), nil)
 			assert.Empty(t, answer.status)
 			assert.Contains(t, answer.refusal, sessionGone[name])
@@ -143,8 +144,8 @@ func TestACompleteRefusedForAnotherCompletesOrderReadsAgain(t *testing.T) {
 
 // An update whose cart cannot be reached reads the session again, and
 // answers "the cart is gone" only for a session it read and found open.
-// Redis evicts session keys, so "not stored any more" is an ordinary
-// answer to that read: the order may exist, and the caller is not told
+// Sessions expire, and a flush or a restore can lose one, so "not
+// stored any more" is an ordinary answer to that read: the order may exist, and the caller is not told
 // to start a new checkout.
 func TestAnUpdateThatCannotReadItsSessionAgainDoesNotCallTheCartGone(
 	t *testing.T,
@@ -180,9 +181,9 @@ func TestAnUpdateThatCannotReadItsSessionAgainDoesNotCallTheCartGone(
 	for i := 0; i < len(scenes); i += 2 {
 		gone, unreadable := scenes[i], scenes[i+1]
 		over := ", " + gone.at + ", over " + gone.name
-		t.Run("evicted"+over, func(t *testing.T) {
+		t.Run("lost"+over, func(t *testing.T) {
 			stack.onSessionRead(t, gone.id, gone.read,
-				stack.evicted(gone.id))
+				stack.lost(gone.id))
 			answer := surfaces[gone.name].updateLines(ctx, gone.id)
 			assert.Contains(t, answer.refusal, sessionGone[gone.name])
 			assert.NotContains(t, answer.refusal, "cart no longer exists")

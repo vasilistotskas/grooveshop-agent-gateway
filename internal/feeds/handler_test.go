@@ -310,7 +310,7 @@ const brokenLine = "cached feed blob is broken"
 
 // A blob that is not this feed's whole gzip (checked from its header and
 // trailer, without decoding) is never served: it is dropped and a miss,
-// regenerated like an evicted one, and while a failed generation's
+// regenerated like a lost one, and while a failed generation's
 // backoff runs it answers 503 at once, uncacheable, with the cause logged
 // once under the request.
 func TestFeedHandlerNeverServesABrokenBlob(t *testing.T) {

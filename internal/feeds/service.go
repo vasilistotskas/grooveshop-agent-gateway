@@ -167,8 +167,8 @@ func failedKey(schema string) string {
 
 // Meta returns the metadata of the feed the store serves, without its
 // body, so a revalidation that matches costs no blob read. An entry
-// counts only while its blob is there too (Redis evicts the keys one by
-// one), checked in the same round trip. A fresh entry is returned as it
+// counts only while its blob is there too (the two keys can be lost
+// apart, by a flush or a restore), checked in the same round trip. A fresh entry is returned as it
 // is; a stale one too, while a background refresh runs; a miss waits for
 // a generation. After a failed generation, failureBackoff holds off the
 // next: a stale entry is returned without a refresh and a miss fails at
@@ -201,8 +201,8 @@ func (s *Service) Meta(
 }
 
 // Body returns the gzipped feed with the metadata stored beside it, both
-// read in one step. A blob gone since Meta (evicted, invalidated,
-// rewritten by another build), or one that is not whole (see whole), is a
+// read in one step. A blob gone since Meta (lost to a flush or a
+// restore, invalidated, rewritten by another build), or one that is not whole (see whole), is a
 // miss like any other: it waits for a generation, under the same failure
 // backoff, and is read again.
 func (s *Service) Body(
@@ -369,7 +369,7 @@ func (s *Service) await(
 }
 
 // notCached handles a generation that succeeded but whose feed is not
-// there when read back (evicted again at once, under memory pressure), or
+// there when read back (lost again at once, to a flush or a restore), or
 // is broken (msg says which): without a mark, every request would run
 // another full sweep and still get 503. An invalidation since the
 // generation's epoch lifts it, as for a failure. A read-back that failed
@@ -473,10 +473,10 @@ func (s *Service) mark(ctx context.Context, schema string, epoch int64) {
 
 // cachedMeta reads the feed's metadata, whether its blob is there, and
 // whether a generation failed within failureBackoff, in one round trip
-// that reads no blob. TOUCH, not EXISTS: it refreshes the blob's LRU
-// clock (EXISTS looks it up with LOOKUP_NOTOUCH), so revalidations that
-// keep the meta key warm keep its blob warm too under allkeys-lru. A read
-// that failed (Redis, or the caller's context) is an error, not a miss.
+// that reads no blob. TOUCH, not EXISTS: it marks the blob read with the
+// meta key (EXISTS looks it up with LOOKUP_NOTOUCH), so the two keys'
+// last reads move together. A read that failed (Redis, or the caller's
+// context) is an error, not a miss.
 func (s *Service) cachedMeta(
 	ctx context.Context, schema, format string,
 ) (meta Meta, ok, failed bool, err error) {

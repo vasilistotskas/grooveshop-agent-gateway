@@ -235,7 +235,7 @@ func TestCheckoutStoreOutageIsUnavailable(t *testing.T) {
 }
 
 // A checkout no session is stored for may have placed an order: its
-// session can be gone by expiry, by eviction, or by a release that
+// session can be gone by expiry, by a flush or a restore, or by a release that
 // changes the session key (an ordinary rollout drops none), and the
 // id does not say. An agent told only to start a new one would order a
 // second time, so it is told to check first, with what it holds.

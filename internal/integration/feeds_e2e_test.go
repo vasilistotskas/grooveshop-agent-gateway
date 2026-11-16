@@ -301,15 +301,16 @@ func TestFeedsEndToEnd(t *testing.T) {
 				assert.Equal(t, etag, resp.Header.Get("ETag"), inm)
 				assert.Equal(t, "Accept-Encoding", resp.Header.Get("Vary"), inm)
 				assert.Empty(t, rec.readsOf("ag:demostore:feed:rss"), inm)
-				// TOUCH, not EXISTS: the blob's LRU clock moves with the
-				// meta key's, so allkeys-lru does not evict it first.
+				// TOUCH, not EXISTS: the blob is marked read with the
+				// meta key.
 				assert.True(t, rec.touched("ag:demostore:feed:rss"), inm)
 			}
 		})
 
-	// Redis evicts keys one by one: a meta key whose blob is gone is a
-	// miss, regenerated at once, never a 503 until the entry goes stale.
-	t.Run("an evicted blob is regenerated", func(t *testing.T) {
+	// A flush or a restore can lose the blob alone: a meta key whose blob
+	// is gone is a miss, regenerated at once, never a 503 until the entry
+	// goes stale.
+	t.Run("a lost blob is regenerated", func(t *testing.T) {
 		first := get("/feeds/tiktok.xml",
 			map[string]string{"Accept-Encoding": "gzip"})
 		_ = first.Body.Close()
@@ -337,7 +338,7 @@ func TestFeedsEndToEnd(t *testing.T) {
 		assert.Contains(t, string(body), "<g:id>6</g:id>")
 	})
 
-	// A blob that is not this feed's gzip is a miss like an evicted one:
+	// A blob that is not this feed's gzip is a miss like a lost one:
 	// it is regenerated, never answered with an error or served broken.
 	t.Run("a blob that is not the feed's gzip is regenerated", func(t *testing.T) {
 		first := get("/feeds/google.xml",

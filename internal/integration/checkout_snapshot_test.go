@@ -426,7 +426,7 @@ func TestAnOrderItsSessionNeverSavedIsStillKnown(t *testing.T) {
 				stack.storedSession(t, id).Status)
 		})
 
-	// The record beside the session is a key Redis can evict. The event
+	// The record beside the session can be lost (a flush or a restore). The event
 	// does not need it: it names its order, and the order link vouches
 	// that the order is this checkout's.
 	t.Run("an event without the placed order's record", func(t *testing.T) {
