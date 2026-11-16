@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/redis/go-redis/v9"
@@ -87,30 +89,52 @@ func run() error {
 		Profiles:   profiles,
 	})
 
-	ctx, stop := signal.NotifyContext(
+	signaled, stop := signal.NotifyContext(
 		context.Background(), os.Interrupt, syscall.SIGTERM,
 	)
 	defer stop()
+	// The process also ends, with its cause, on a startup check's
+	// definite failure.
+	ctx, abort := context.WithCancelCause(signaled)
+	defer abort(nil)
 
-	// Order-webhook delivery stops consuming at the signal, so its drain
-	// runs alongside the HTTP shutdown inside the pod's grace period;
-	// deliveries enqueued meanwhile wait in the stream for another pod.
-	// It is waited for before Redis closes: the deferred Close must not
-	// race its final acknowledgements.
-	dispatched := make(chan struct{})
-	go func() {
-		defer close(dispatched)
-		dispatcher.Run(ctx)
-	}()
+	// The key-encryption key is checked against the stored signing keys
+	// while the server already answers: /healthz must, and /readyz
+	// reports the pod not ready until the check passed, so the Service
+	// sends it nothing else. The check waits for Redis as readiness does
+	// (a pod booting while Redis restarts serves once it answers, never
+	// crash-loops into the restart backoff), and ends the process only
+	// on the definite failure: stored keys, none of which opens.
+	//
+	// Order-webhook delivery starts once it passed, so nothing is signed
+	// before the key is known to open. It stops consuming at the signal,
+	// so its drain runs alongside the HTTP shutdown inside the pod's
+	// grace period; deliveries enqueued meanwhile wait in the stream for
+	// another pod. It is waited for before Redis closes: the deferred
+	// Close must not race its final acknowledgements.
+	var background sync.WaitGroup
+	background.Go(func() {
+		if err := keys.AwaitKEK(ctx, log); err != nil {
+			if errors.Is(err, ucp.ErrKEKOpensNoKey) {
+				abort(err)
+			}
+			return
+		}
+		background.Go(func() { dispatcher.Run(ctx) })
+	})
 	defer func() {
-		stop() // a listen failure returns without the signal
-		<-dispatched
+		abort(nil) // a listen failure returns without the signal
+		background.Wait()
 	}()
 
 	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", cfg.ListenAddr)
 	if err != nil {
 		return err
 	}
-	return serve(ctx, ln, handler,
+	err = serve(ctx, ln, handler,
 		podTiming(completionTail(dj.Timeout())), log)
+	if cause := context.Cause(ctx); errors.Is(cause, ucp.ErrKEKOpensNoKey) {
+		return cause
+	}
+	return err
 }

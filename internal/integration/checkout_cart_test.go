@@ -265,8 +265,8 @@ func TestACartsRecordLivesAsLongAsItsSession(t *testing.T) {
 		assertLivesWithSession(t, f.rdb, s, day)
 	})
 
-	// Redis evicts keys one by one, so a live session can lose its
-	// cart's record. Its next save writes it again.
+	// A flush or a restore can lose a live session's cart record on its
+	// own. Its next save writes it again.
 	t.Run("a save writes again a record Redis lost", func(t *testing.T) {
 		store, rdb := startStore(t)
 		s := newSession()
@@ -279,10 +279,9 @@ func TestACartsRecordLivesAsLongAsItsSession(t *testing.T) {
 		assertLivesWithSession(t, rdb, s, halfHour)
 	})
 
-	// Redis evicts by how recently a key was read. A session is read
-	// by every call on it, its cart's record only by a create: a read of
-	// the session counts as one of the record, so the record is not
-	// evicted from under a session a platform keeps reading.
+	// A session is read by every call on it, its cart's record only by
+	// a create: a read of the session counts as one of the record, so
+	// the record's last read follows its session's.
 	t.Run("a read of the session is a read of its cart's record",
 		func(t *testing.T) {
 			store, rdb := startStore(t)

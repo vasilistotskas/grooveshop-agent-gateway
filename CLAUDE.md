@@ -22,7 +22,7 @@ cluster-only internal endpoint and the operational routes:
 | `/feeds/*` | Product feeds: google.xml, meta.xml, tiktok.xml, acp.json |
 | `POST /chat` | First-party shopping chatbot (SSE; OpenAI-compatible protocol via openai-go — Gemini free tier by default, any compatible provider via CHAT_BASE_URL) |
 | `/internal/*` | Cluster-only: Django order-event push (shared-secret header) |
-| `GET /healthz`, `GET /readyz` | Liveness / readiness (readiness gates on Redis only; Django is reported, never gating) |
+| `GET /healthz`, `GET /readyz` | Liveness / readiness (readiness gates on Redis and the startup check of the signing keys; Django is reported, never gating) |
 | `GET /metrics` | Prometheus metrics (registry from `internal/obs`) |
 
 The gateway is a **protocol adapter**: all commerce state lives in Django
@@ -117,7 +117,9 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   trailing blanks) or, in production and staging, shorter than
   `minInternalSecretLen`; a `SIGNING_KEY_ENCRYPTION_KEY` (required in
   every ENV, never logged) that is not standard base64 of exactly 32
-  bytes; `FEED_STALE_TTL` shorter than
+  bytes; or, checked once Redis answers (`ucp.Keys.AwaitKEK`), one
+  that opens none of the sealed signing keys Redis holds when it holds
+  any, which ends the process; `FEED_STALE_TTL` shorter than
   `FEED_FRESH_TTL`; any numeric setting at zero or below. `ENV`
   (production | staging | development | test) is folded into
   `AllowLocalWebhooks`, `PaymentHandlerEnv` and the secret's minimum
@@ -398,8 +400,12 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   with the context whenever one is in scope (sloglint enforces it); a
   line naming a store uses the key `tenant` (`obs.KeyTenant`), never
   `schema`, and only where no request context carries it.
-  `/healthz` is process-only; `/readyz` gates on Redis ONLY — Django-down
-  must never flip readiness (agents get actionable errors, not 502s).
+  `/healthz` is process-only; `/readyz` gates on Redis and on the
+  startup checks (`started`: the signing keys, `ucp.Keys.Checked`) —
+  Django-down must never flip readiness (agents get actionable errors,
+  not 502s). The server answers from boot while the check waits for
+  Redis, so a pod booting during a Redis restart is unready, not
+  crash-looping; order-webhook delivery starts once the check passed.
 - `internal/server` — mux assembly; new route groups register here.
 - `internal/storefront` — every link into the Nuxt storefront (product,
   cart claim, order success, legal pages, OAuth metadata). The paths are
@@ -441,8 +447,9 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   its own context's when the crawler left, with no log line and no
   mark. A failure an invalidation overtook (its epoch moved) is not
   marked, and one that failed before reading the epoch always is. A revalidation reads the meta key
-  and only TOUCHes the blob (Redis evicts keys one by one, and TOUCH,
-  unlike EXISTS, keeps the blob's LRU clock with the meta key's): an
+  and only TOUCHes the blob (the two keys can be lost apart, by a
+  flush or a restore, and TOUCH, unlike EXISTS, marks the blob read
+  with the meta key): an
   entry without its blob is a miss and regenerates, and so is one whose
   blob is not whole: every body read checks the gzip header and the
   trailer's ISIZE against the stored size, in constant time, with no
@@ -636,7 +643,8 @@ passes, and runs CI's tidy, image and vulnerability checks again.
     record an older release wrote is a miss, and its key runs as after
     expiry). So the buyer data a request carried and its answer
     renders (name, email, phone, address) is kept in Redis for 24
-    hours unless evicted, for all four operations, while an open
+    hours unless the record is lost (a flush or a restore), for all
+    four operations, while an open
     session lives 30 minutes: the spec requires a key's response to be
     kept at least 24 hours (§6.6). Django's own idempotency cache keeps
     order responses as long, and a placed session the same data a day.
@@ -670,8 +678,8 @@ passes, and runs CI's tidy, image and vulnerability checks again.
     answered as a failure.
 - **A checkout no session is stored for is not "nothing happened".**
   The id does not say whether the checkout was never completed, placed
-  an order and is no longer kept (expiry, eviction, a release that
-  changes the session key), or
+  an order and is no longer kept (expiry, a flush or a restore, a
+  release that changes the session key), or
   never existed. Every "no session" answer is `mcpsrv.errCheckoutGone`
   (UCP, `not_found`) or `acp.msgSessionGone` (ACP's 404): an order may exist, check
   before starting another checkout, with the order id if the caller
@@ -892,7 +900,8 @@ passes, and runs CI's tidy, image and vulnerability checks again.
       session is never completed without its order. The record
       `Flow.place` writes beside the session (`Store.IndexOrder`:
       `ag:{schema}:cs:v3:{id}:order`, the order's uuid) is for calls on
-      the session, not events: Redis may evict it;
+      the session, not events: it can be lost (a flush or a
+      restore);
     - a payment-completed event also sets `completed`. No other event
       changes a status.
 
@@ -919,8 +928,9 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   - The record lives as long as its session: every save sets its
     expiry to the session's, and the save that ends a session and
     `Store.Discard` delete it, each only while it names that session.
-    A save writes the record again where Redis holds none (an
-    eviction). A record whose session is not stored holds nothing.
+    A save writes the record again where Redis holds none (lost to a
+    flush or a restore). A record whose session is not stored holds
+    nothing.
   - UCP `create_checkout` with `cart_id` (`mcpsrv.createFromCart`)
     takes a UUID only, in its canonical spelling
     (`checkout.CanonicalCartID`: Django reads every spelling as one
@@ -977,12 +987,10 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   - A cart made for its session (`line_items`, ACP) is taken the same
     way. A held one there is a fault: logged, answered unavailable,
     and no session is handed out.
-  - Redis can lose the record while the session lives (eviction).
-    Every load of a session touches its cart's record (`Store.Load`,
-    `Store.LoadAnyProtocol`),
-    so Redis does not see the record as less recently read than a
-    session a platform keeps reading, and a session's next save writes
-    a lost record again. A session nobody reads or saves, such as one
+  - Redis can lose the record while the session lives (a flush or a
+    restore). Every load of a session touches its cart's record
+    (`Store.Load`, `Store.LoadAnyProtocol`), and a session's next save
+    writes a lost record again. A session nobody reads or saves, such as one
     left awaiting its payment, can still lose it, and the cart can
     then get a second checkout: the gateway cannot close that alone.
     What holds whatever Redis lost is Django, which refuses an
@@ -1083,6 +1091,14 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   A store's UCP signing key is `ag:{schema}:ucp:signing_key:es256:aes256gcm`,
   sealed (see `.claude/rules/ucp.md`): no Redis key holds a secret in
   clear.
+  The gateway's Redis is its own instance, shared with no other service,
+  with `maxmemory-policy noeviction` and AOF persistence (the
+  infrastructure repository's manifests): a record without a TTL (the
+  signing keys) or with a long one (the order links, a year) is never
+  evicted. A full Redis refuses writes instead of dropping records.
+  What the code does for a record that is gone (a session's cart record
+  written again, a missing order link) stays: a flush or a restore can
+  still lose one.
   A Redis write that depends
   on what the key holds is a script (`redis.NewScript`), never a read
   followed by a write.

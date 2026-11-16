@@ -235,21 +235,30 @@ wins over this page.
 - **A key that cannot be read is never a terminal outcome**: a delivery
   is acknowledged as failed only when every attempt reached the
   endpoint; one whose store's key could not be read stays pending.
-- **The signing key is sealed at rest** (`internal/ucp/keys.go`): the
-  Redis instance is shared with other services.
+- **The signing key is sealed at rest** (`internal/ucp/keys.go`):
+  Redis, its AOF files and their backups sit outside the process, and
+  the scalar signs a store's order webhooks.
   `ag:{schema}:ucp:signing_key:es256:aes256gcm` holds the private
   scalar sealed with AES-256-GCM (`cipher.NewGCMWithRandomNonce`) under
   `SIGNING_KEY_ENCRYPTION_KEY`, with the purpose and the schema as
   associated data (`sealContext`), so a record copied to another store
   does not open. A record that does not open is an error, never a key
   minted over it: a new key would rotate the store's published key
-  under the platforms that verify against it. The move from the
+  under the platforms that verify against it. At boot a pod checks its
+  key-encryption key against the sealed keys Redis holds (`AwaitKEK`):
+  it retries until Redis answers, carrying its SCAN cursor across
+  attempts so a scan longer than one attempt completes, is not ready
+  until the check passed (`Checked`, in `/readyz`), and exits only when
+  Redis holds keys and the key opens none of them. The records carry no
+  TTL: the gateway's Redis is its own instance with `noeviction`, so
+  nothing evicts them. A pod holds a key in memory from its first use.
+  The move from the
   unsealed record (`ag:{schema}:ucp:signing_key:es256`,
   `keys_unsealed.go`) keeps every key, kid and published JWK included:
   a store's unsealed key is sealed the first time a pod needs it; a key
   minted for a store with none leaves a sentinel no earlier release can
-  decode in the unsealed record, so an older pod never mints a second
-  key; `/gateway seal-signing-keys` seals the rest and deletes the
+  decode in the unsealed record, expiring after 7 days, so an older pod
+  never mints a second key; `/gateway seal-signing-keys` seals the rest and deletes the
   unsealed records and sentinels once no older pod is left. That code
   goes in the release after every environment has run the command
   (`docs/agent-protocols-runbook.md`, section 12).

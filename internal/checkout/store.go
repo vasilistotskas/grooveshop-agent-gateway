@@ -232,11 +232,11 @@ func (st *Store) read(ctx context.Context, schema, id string) (*Session, error) 
 	return &s, nil
 }
 
-// touchCart counts a read of s as one of its cart's record. Redis evicts
-// keys one by one, by how recently each was read. A session is read by
-// every call on it; its cart's record only by a create. So a read of the
-// session counts as one of the record: Redis then does not see the
-// record as less recently read than a session that is still being read.
+// touchCart counts a read of s as one of its cart's record (TOUCH). A
+// session is read by every call on it, its cart's record only by a
+// create, so the record's last read follows its session's. The gateway's
+// Redis does not evict (noeviction); a record is lost only to a flush or
+// a restore, and the session's next save writes it again (saveScript).
 // Best effort: the session was read.
 func (st *Store) touchCart(ctx context.Context, s *Session) {
 	_ = st.rdb.Touch(ctx, cartKey(s.Schema, s.CartID)).Err()
@@ -261,8 +261,8 @@ const (
 // record still names ARGV[6], the holder its caller saw and may replace.
 // A cart another session holds is not taken: nothing is written, and the
 // answer is 2. A save keeps the record's lifetime the session's, and
-// writes the record again where Redis holds none: Redis evicts keys one
-// by one, and a session whose record it evicted would hold its cart
+// writes the record again where Redis holds none: a record lost on its
+// own (a flush or a restore) would leave its session holding the cart
 // against nobody.
 //
 // A lifetime of 0 or less is a placed session whose day has passed: it

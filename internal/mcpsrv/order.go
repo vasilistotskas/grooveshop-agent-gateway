@@ -171,8 +171,8 @@ func (h *handlers) getOrder(
 	if err != nil {
 		if errors.Is(err, checkout.ErrNotFound) {
 			// No link says only that none is held: the order was placed
-			// elsewhere, or here and its link is gone (expired, or
-			// evicted). The order itself was just read.
+			// elsewhere, or here and its link is gone (expired, or lost
+			// to a flush or a restore). The order itself was just read.
 			return nil, zero, fmt.Errorf(
 				"order %s exists, but no checkout is held for it here: "+
 					"it was not placed through this agent surface, or it "+

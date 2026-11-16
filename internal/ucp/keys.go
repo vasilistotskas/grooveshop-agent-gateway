@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -29,8 +30,11 @@ const Version = "2026-08-25"
 // just as silently. So is the sealing (AES-256-GCM), so a pod that reads
 // another encoding never shares the record.
 func signingKeyRedisKey(schema string) string {
-	return "ag:" + schema + ":ucp:signing_key:es256:aes256gcm"
+	return "ag:" + schema + sealedKeySuffix
 }
+
+// sealedKeySuffix ends the name of every store's sealed signing key.
+const sealedKeySuffix = ":ucp:signing_key:es256:aes256gcm"
 
 // sealPurpose opens the associated data of every sealed signing key.
 const sealPurpose = "grooveshop-agent-gateway/ucp-signing-key/es256"
@@ -52,7 +56,8 @@ const kekBytes = 32
 // store's, and is sealed instead (sealUnsealedOf). With the sealed key it
 // writes the sentinel ARGV[2] to KEYS[2] where nothing is, so a pod of an
 // earlier release finds a record it cannot decode, and answers 503,
-// instead of minting a second key for the store. A run repeated because
+// instead of minting a second key for the store. The sentinel expires
+// after ARGV[3] ms (unsealedSentinelTTL). A run repeated because
 // its reply was lost finds its own record and returns 0, and the caller
 // reads that record.
 //
@@ -63,7 +68,7 @@ if unsealed and unsealed ~= ARGV[2] then
   return -1
 end
 if redis.call('SET', KEYS[1], ARGV[1], 'NX') then
-  redis.call('SET', KEYS[2], ARGV[2], 'NX')
+  redis.call('SET', KEYS[2], ARGV[2], 'NX', 'PX', ARGV[3])
   return 1
 end
 return 0
@@ -125,11 +130,15 @@ func (k *SigningKey) Sign(base []byte) ([]byte, error) {
 //
 // Redis holds each key sealed with AES-256-GCM under the key-encryption
 // key (SIGNING_KEY_ENCRYPTION_KEY), bound to its store (sealContext):
-// the Redis instance is shared with other services, and the scalar signs
-// a store's order webhooks. Only the process memory holds it in clear.
+// Redis, its AOF files and their backups sit outside the process, and
+// the scalar signs a store's order webhooks. Only the process memory
+// holds it in clear. The records carry no TTL; the gateway's Redis does
+// not evict (noeviction).
 type Keys struct {
 	rdb  *redis.Client
 	aead cipher.AEAD
+	// checked is set once AwaitKEK has passed: readiness waits for it.
+	checked atomic.Bool
 
 	mu  sync.RWMutex
 	mem map[string]*SigningKey
@@ -235,7 +244,8 @@ func (k *Keys) loadOrCreate(
 		// a lost race re-reads the winner.
 		stored, err := mintScript.Run(ctx, k.rdb,
 			[]string{redisKey, unsealedKeyRedisKey(schema)},
-			k.seal(schema, scalar), unsealedSentinel).Int()
+			k.seal(schema, scalar), unsealedSentinel,
+			unsealedSentinelTTL.Milliseconds()).Int()
 		switch {
 		case err != nil:
 			return nil, fmt.Errorf("ucp: persist key: %w", err)

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
 // A burst of order events from one Celery pod must all land: Django
@@ -167,6 +170,26 @@ func limitedGateway(t *testing.T, perMin, burst int) http.Handler {
 		Resolver: tenant.NewResolver(dj, rdb, time.Minute, time.Minute,
 			quietLog(), metrics),
 		Version: "test",
+		Keys:    testKeys(t, rdb),
+	})
+}
+
+// testKeys is a store of signing keys under a fresh key-encryption key.
+func testKeys(t *testing.T, rdb *redis.Client) *ucp.Keys {
+	t.Helper()
+	kek := make([]byte, 32)
+	_, err := rand.Read(kek)
+	require.NoError(t, err)
+	keys, err := ucp.NewKeys(rdb, kek)
+	require.NoError(t, err)
+	return keys
+}
+
+// The signing keys are a required dependency: readiness reads their
+// startup check, so a server without them refuses to be built.
+func TestNewRefusesAServerWithoutSigningKeys(t *testing.T) {
+	assert.PanicsWithValue(t, "server: Deps.Keys is required", func() {
+		New(Deps{})
 	})
 }
 

@@ -11,14 +11,18 @@ package ucp
 //   needs the key (loadOrCreate, sealUnsealedOf), never minting another.
 // - A key it mints for a store with none leaves unsealedSentinel in the
 //   unsealed record, so a pod of an earlier release cannot mint a second
-//   key for that store during the rollout (mintScript).
+//   key for that store during the rollout or a rollback
+//   (mintScript). It expires after unsealedSentinelTTL, so the stores
+//   first keyed after the command ran leave nothing behind for long.
 // - The gateway's seal command seals every key still unsealed and
 //   deletes the unsealed records, sentinels included, once no pod of an
 //   earlier release is left (SealUnsealed).
 //
 // Delete this file, mintScript's unsealed record and the gateway's seal
 // command in the release after every environment has run the command
-// (docs/agent-protocols-runbook.md, section 12).
+// (docs/agent-protocols-runbook.md, section 12). Sentinels written until
+// then expire by themselves within unsealedSentinelTTL; that release
+// needs no cleanup of its own.
 
 import (
 	"context"
@@ -27,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -49,6 +54,14 @@ func unsealedKeyRedisKey(schema string) string {
 // release fails to decode it and answers 503, and its SETNX finds the
 // record taken: it never mints a second key for the store.
 const unsealedSentinel = "sealed by a later release: not a key"
+
+// unsealedSentinelTTL is how long a sentinel bars an earlier release from
+// minting: the rollout, and a week in which a rollback may still run.
+// Past it, a pod of an earlier release mints its own key for that store
+// (a rotation that store's platforms see), which is a rollback's cost.
+// Being bounded, sentinels written after the seal command ran expire by
+// themselves.
+const unsealedSentinelTTL = 7 * 24 * time.Hour
 
 // errUnsealedNotAKey reports an unsealed record that holds neither a key
 // nor the sentinel. The store is refused, never given a new key.
@@ -132,8 +145,8 @@ func (k *Keys) sealPlain(
 //
 // A store whose sealed record holds another key keeps both records and
 // is reported. mintScript leaves no way to reach that state while both
-// records live; it takes an unsealed record deleted, or a sealed one
-// evicted, while a pod of an earlier release still runs.
+// records live; it takes a record deleted by hand while a pod of an
+// earlier release still runs.
 func (k *Keys) SealUnsealed(
 	ctx context.Context, deleteUnsealed bool,
 ) (SealReport, error) {

@@ -54,13 +54,19 @@ type Deps struct {
 }
 
 func New(d Deps) http.Handler {
+	// Readiness reads the signing keys' startup check, so a server
+	// without them could not say whether it is ready.
+	if d.Keys == nil {
+		panic("server: Deps.Keys is required")
+	}
 	mux := http.NewServeMux()
 
 	redisPing := func(ctx context.Context) error {
 		return d.Redis.Ping(ctx).Err()
 	}
 	mux.Handle("GET /healthz", obs.Healthz())
-	mux.Handle("GET /readyz", obs.Readyz(redisPing, d.Django.Ping))
+	mux.Handle("GET /readyz",
+		obs.Readyz(redisPing, d.Django.Ping, d.Keys.Checked))
 	mux.Handle("GET /metrics", promhttp.HandlerFor(
 		d.Metrics.Registry, promhttp.HandlerOpts{},
 	))
