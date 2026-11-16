@@ -29,12 +29,10 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
-// Linked is a validated agent credential. Profile is nil when the token
-// is valid but was not granted the `profile` scope — the bearer still
-// works for whichever scopes it does carry.
+// Linked is a validated agent credential: the bearer the account tools
+// forward, whichever scopes it carries (Django enforces them).
 type Linked struct {
-	Bearer  string
-	Profile *django.AgentProfile
+	Bearer string
 }
 
 type contextKey struct{}
@@ -90,14 +88,14 @@ func Middleware(
 				return
 			}
 
-			profile, err := v.Verify(r.Context(), t, token)
+			_, err := v.Verify(r.Context(), t, token)
 			if err != nil {
 				Refuse(w, r, log, mcptool.ServerMCP,
 					storefront.OAuthResourceMetadata(t.Domain), err)
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(NewContext(r.Context(),
-				&Linked{Bearer: token, Profile: profile})))
+				&Linked{Bearer: token})))
 		})
 	}
 }

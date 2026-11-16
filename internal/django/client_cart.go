@@ -2,11 +2,9 @@ package django
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 
 	"github.com/google/uuid"
 )
@@ -91,13 +89,6 @@ type cartItemUpdate struct {
 
 type couponApply struct {
 	Code string `json:"code"`
-}
-
-type productAlertCreate struct {
-	Kind        string      `json:"kind"`
-	Product     int64       `json:"product"`
-	Email       string      `json:"email" contract:"format=email"`
-	TargetPrice json.Number `json:"targetPrice,omitempty" contract:"format=double"`
 }
 
 // GetCart fetches the cart identified by cartID; with an empty id Django
@@ -260,74 +251,6 @@ func (c *Client) RemoveCoupon(
 		return nil, cartRefusal(ctx, err)
 	}
 	if err := servedNamed(named, out.UUID); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// PlacedOrder reads an order the gateway itself placed, for its own work: a
-// platform hears about an order for as long as the order moves, which outlives
-// what a guest's UUID opens. Only for a UUID the gateway holds: one a client
-// hands it goes through OrderByUUID, so the client gets the guest's limit.
-func (c *Client) PlacedOrder(
-	ctx context.Context, host, lang, orderUUID string,
-) (*Order, error) {
-	var out Order
-	err := c.get(ctx, request{
-		path:     "/agent/internal/order/{uuid}",
-		rawPath:  "/agent/internal/order/" + url.PathEscape(orderUUID),
-		host:     host,
-		language: lang,
-		headers:  map[string]string{"X-Internal-Token": c.internalSecret},
-		out:      &out,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// OrderByUUID fetches an order through the guest flow: possession of the
-// unguessable UUID in the path IS the authorization, for as long as Django
-// lets a guest's UUID open the order.
-func (c *Client) OrderByUUID(
-	ctx context.Context, host, lang, orderUUID string,
-) (*Order, error) {
-	var out Order
-	err := c.get(ctx, request{
-		path:     "/order/uuid/{uuid}",
-		rawPath:  "/order/uuid/" + url.PathEscape(orderUUID),
-		host:     host,
-		language: lang,
-		out:      &out,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// CreateProductAlert subscribes an email to restock/price-drop alerts.
-// Duplicate subscriptions surface as ErrConflict.
-func (c *Client) CreateProductAlert(
-	ctx context.Context, host, lang, kind string,
-	productID int64, email string, targetPrice json.Number,
-) (*ProductAlert, error) {
-	var out ProductAlert
-	err := c.send(ctx, http.MethodPost, request{
-		path:     "/product/alert",
-		host:     host,
-		language: lang,
-		headers:  map[string]string{"X-Internal-Gateway": c.internalSecret},
-		body: productAlertCreate{
-			Kind:        kind,
-			Product:     productID,
-			Email:       email,
-			TargetPrice: targetPrice,
-		},
-		out: &out,
-	})
-	if err != nil {
 		return nil, err
 	}
 	return &out, nil
