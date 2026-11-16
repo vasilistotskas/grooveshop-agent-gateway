@@ -1,6 +1,7 @@
 package ucp
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -391,4 +393,57 @@ func TestSignRequestCoversWhatTheRequestCarries(t *testing.T) {
 	}
 	_, err := r.VerifyRequest(t.Context(), req, raw, testWindow, time.Now())
 	require.NoError(t, err)
+}
+
+// A caller that leaves while its refresh is fetched gets its context's
+// error (the middleware answers it 503); the refresh goes on, is cached,
+// and is the one the floor counts.
+func TestARefreshOutlivesItsCaller(t *testing.T) {
+	key, rotated := testSigningKey(t), testSigningKey(t)
+	first := withKeys(t, platformProfileJSON(t, "https://p.example/h"),
+		key.JWK())
+	second := withKeys(t, platformProfileJSON(t, "https://p.example/h"),
+		key.JWK(), rotated.JWK())
+	var hold atomic.Bool
+	arrived := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var released sync.Once
+	srv := serveProfile(t, func(w http.ResponseWriter, _ *http.Request) {
+		if !hold.Load() {
+			_, _ = w.Write([]byte(first))
+			return
+		}
+		arrived <- struct{}{}
+		<-release
+		_, _ = w.Write([]byte(second))
+	})
+	t.Cleanup(func() { released.Do(func() { close(release) }) })
+	r := newTestResolver(t)
+	url := srv.URL + "/profile.json"
+	_, err := r.Resolve(t.Context(), url)
+	require.NoError(t, err)
+
+	hold.Store(true)
+	ctx, cancel := context.WithCancel(t.Context())
+	req, raw := signedRequest(t, rotated, url)
+	verified := make(chan error, 1)
+	go func() {
+		_, err := r.VerifyRequest(ctx, req, raw, testWindow, time.Now())
+		verified <- err
+	}()
+	<-arrived
+	cancel()
+	require.ErrorIs(t, <-verified, context.Canceled)
+
+	released.Do(func() { close(release) })
+	require.Eventually(t, func() bool {
+		p, _, ok := r.cached(url)
+		if !ok || p == nil {
+			return false
+		}
+		_, published := p.key(rotated.KID)
+		return published
+	}, 5*time.Second, 10*time.Millisecond, "the refresh was cached")
+	_, err = r.Refresh(t.Context(), url)
+	require.ErrorIs(t, err, errRefreshSpent)
 }

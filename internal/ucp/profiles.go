@@ -133,7 +133,9 @@ func NewProfileResolver(
 // cache is: when it is full of origins refreshed within the floor, no
 // other origin is refreshed until one ages out. The cached profile is
 // replaced only by one fetched: a refresh that fails keeps it, and one
-// whose fetch never reached the origin does not count against the floor.
+// whose fetch never reached the origin (the discovery budget spent) does
+// not count against the floor. A caller that leaves gets its context's
+// error, and the refresh goes on without it.
 func (r *ProfileResolver) Refresh(
 	ctx context.Context, raw string,
 ) (*PlatformProfile, error) {
@@ -170,22 +172,41 @@ func (r *ProfileResolver) Refresh(
 	r.refreshed[origin] = now
 	r.mu.Unlock()
 
-	p, err := r.refetch(ctx, raw)
-	if _, answered := errors.AsType[*DiscoveryError](err); err != nil &&
-		!answered {
-		// The origin was never asked (the discovery budget was spent, the
-		// caller left): its refresh is not spent.
-		r.mu.Lock()
-		if r.refreshed[origin].Equal(now) {
-			if held {
-				r.refreshed[origin] = last
-			} else {
-				delete(r.refreshed, origin)
+	// Detached from the caller, as Resolve's fetch is, and bounded by the
+	// fetch's own timeout: a caller that leaves neither wastes the refresh
+	// nor spends it, and a profile fetched for it is still cached. The
+	// caller stops waiting on its own context.
+	done := make(chan refreshResult, 1)
+	go func() {
+		p, err := r.refetch(context.WithoutCancel(ctx), raw)
+		if _, answered := errors.AsType[*DiscoveryError](err); err != nil &&
+			!answered {
+			// The origin was never asked (the discovery budget was
+			// spent): its refresh is not spent.
+			r.mu.Lock()
+			if r.refreshed[origin].Equal(now) {
+				if held {
+					r.refreshed[origin] = last
+				} else {
+					delete(r.refreshed, origin)
+				}
 			}
+			r.mu.Unlock()
 		}
-		r.mu.Unlock()
+		done <- refreshResult{profile: p, err: err}
+	}()
+	select {
+	case res := <-done:
+		return res.profile, res.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	return p, err
+}
+
+// refreshResult is what a detached refetch hands its waiting caller.
+type refreshResult struct {
+	profile *PlatformProfile
+	err     error
 }
 
 // refetch fetches the profile at raw on ctx and, only once it has one,
