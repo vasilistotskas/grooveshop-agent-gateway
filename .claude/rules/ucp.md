@@ -22,6 +22,10 @@ wins over this page.
   Responses declare the negotiated capabilities; a missing root
   capability returns the `error_response` branch
   (`capabilities_incompatible`) of the tool's `oneOf` output schema.
+  The five checkout tools share these opening steps (`negotiated` in
+  `internal/mcpsrv/ucp_checkout.go`), and update, complete and cancel
+  share taking the session's lock and answering through `finish`
+  (`onSession`).
   The order webhook URL comes ONLY from the negotiated order
   capability's `config.webhook_url`, and `pay_way_id` needs the
   hosted-selection extension negotiated, not just the tenant gate.

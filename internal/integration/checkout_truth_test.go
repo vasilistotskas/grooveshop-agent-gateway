@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 )
 
 // The reads a call that locks its session makes of it, counted from the
@@ -278,8 +279,9 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 			assert.Equal(t, "409 idempotency_in_flight", answer.refusal, what)
 		}
 		for what, answer := range calls(surfaces["ucp"]) {
-			assert.Contains(t, answer.refusal,
-				"in progress or unconfirmed", what)
+			te := toolError(t, answer.refusal)
+			assert.Equal(t, mcptool.CodeConflict, te.Code, what)
+			assert.Contains(t, te.Hint, "in progress or unconfirmed", what)
 		}
 	})
 

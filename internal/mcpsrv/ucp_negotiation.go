@@ -48,18 +48,10 @@ func resultSchema[Resource any]() *jsonschema.Schema {
 	return &jsonschema.Schema{
 		Type: "object",
 		OneOf: []*jsonschema.Schema{
-			mustSchema(reflect.TypeFor[Resource]()),
-			mustSchema(reflect.TypeFor[ucp.ErrorResponse]()),
+			outputSchema(reflect.TypeFor[Resource]()),
+			outputSchema(reflect.TypeFor[ucp.ErrorResponse]()),
 		},
 	}
-}
-
-func mustSchema(t reflect.Type) *jsonschema.Schema {
-	s, err := jsonschema.ForType(t, &jsonschema.ForOptions{})
-	if err != nil {
-		panic("mcpsrv: output schema for " + t.String() + ": " + err.Error())
-	}
-	return s
 }
 
 // The canonical tools' output schemas: built once, they are identical

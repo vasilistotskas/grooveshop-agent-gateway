@@ -29,11 +29,15 @@ type ShippingOptionOut struct {
 
 type ShippingOptionsOut struct {
 	Options      []ShippingOptionOut `json:"options"`
-	FreeShipping []struct {
-		ProviderCode string `json:"providerCode"`
-		Kind         string `json:"kind"`
-		Threshold    string `json:"threshold"`
-	} `json:"freeShipping,omitempty"`
+	FreeShipping []FreeShippingOut   `json:"freeShipping,omitempty"`
+}
+
+// FreeShippingOut is the order value from which a carrier's delivery of
+// a kind is free.
+type FreeShippingOut struct {
+	ProviderCode string `json:"providerCode"`
+	Kind         string `json:"kind"`
+	Threshold    string `json:"threshold"`
 }
 
 func (h *handlers) getShippingOptions(
@@ -93,11 +97,11 @@ func (h *handlers) getShippingOptions(
 	if info, err := h.deps.Django.FreeShippingInfo(
 		ctx, t.Domain, lang, in.CountryCode); err == nil {
 		for _, p := range info.Providers {
-			out.FreeShipping = append(out.FreeShipping, struct {
-				ProviderCode string `json:"providerCode"`
-				Kind         string `json:"kind"`
-				Threshold    string `json:"threshold"`
-			}{p.ProviderCode, p.Kind, num(p.Threshold)})
+			out.FreeShipping = append(out.FreeShipping, FreeShippingOut{
+				ProviderCode: p.ProviderCode,
+				Kind:         p.Kind,
+				Threshold:    num(p.Threshold),
+			})
 		}
 	}
 

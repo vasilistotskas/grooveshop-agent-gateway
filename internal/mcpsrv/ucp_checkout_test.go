@@ -2,6 +2,7 @@ package mcpsrv
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -281,6 +282,9 @@ func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
 				err := call()
 
 				require.ErrorIs(t, err, errCheckoutGone)
+				te, ok := errors.AsType[*mcptool.ToolError](err)
+				require.True(t, ok, "%v", err)
+				assert.Equal(t, mcptool.CodeNotFound, te.Code)
 				for _, part := range []string{
 					"an order may exist",
 					"do not start another checkout before checking",
@@ -345,6 +349,36 @@ func TestCompleteAndCancelBoundTheIdempotencyKey(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A completion that may still be running is a conflict an agent can
+// branch on, wherever it is found: by the claim of a second complete, by
+// the flow, and by any call that finds the checkout being placed. Its
+// render says the same as plain text.
+func TestACompletionInFlightIsAConflict(t *testing.T) {
+	dj, _ := ucpDjango(t)
+	h := ucpHandlers(t, dj)
+	h.deps.Flow = checkout.NewFlow(dj, h.deps.Checkout, testSite,
+		slog.New(slog.DiscardHandler))
+	s := checkout.NewSession("demostore", "shop.test",
+		checkout.ProtocolUCP, fixtureCartID)
+	s.Status = checkout.StatusCompleteInProgress
+	s.UpdatedAt = time.Now()
+
+	for what, err := range map[string]error{
+		"the flow":  completeErr(s, checkout.ErrCompletionInProgress),
+		"an update": h.closedTo(context.Background(), s, "updated"),
+		"a cancel":  h.closedTo(context.Background(), s, "canceled"),
+	} {
+		require.ErrorIs(t, err, errCompletionInFlight, what)
+		te, ok := errors.AsType[*mcptool.ToolError](err)
+		require.True(t, ok, what)
+		assert.Equal(t, mcptool.CodeConflict, te.Code, what)
+		assert.Contains(t, te.Hint, "in progress or unconfirmed", what)
+		assert.Contains(t, te.Hint, "do not complete it again", what)
+	}
+	assert.Equal(t, errCompletionInFlight.Hint, guidance(
+		h.pending(context.Background(), s)), "a render's text is the hint")
 }
 
 // A checkout that is not open takes no update and no cancel, whatever

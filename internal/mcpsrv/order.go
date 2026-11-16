@@ -36,15 +36,18 @@ type TrackOrderOut struct {
 	GrandTotal    string           `json:"grandTotal"`
 	// Discount fields mirror the order's pricingBreakdown and are
 	// present only when non-zero.
-	Discount        string `json:"discount,omitempty" jsonschema:"promotion/coupon discount included in grandTotal"`
-	LoyaltyDiscount string `json:"loyaltyDiscount,omitempty"`
-	GiftCardAmount  string `json:"giftCardAmount,omitempty" jsonschema:"amount covered by gift cards"`
-	Currency        string `json:"currency"`
-	Tracking        *struct {
-		Carrier string `json:"carrier"`
-		Number  string `json:"number"`
-		URL     string `json:"url"`
-	} `json:"tracking,omitempty"`
+	Discount        string              `json:"discount,omitempty" jsonschema:"promotion/coupon discount included in grandTotal"`
+	LoyaltyDiscount string              `json:"loyaltyDiscount,omitempty"`
+	GiftCardAmount  string              `json:"giftCardAmount,omitempty" jsonschema:"amount covered by gift cards"`
+	Currency        string              `json:"currency"`
+	Tracking        *TrackOrderTracking `json:"tracking,omitempty"`
+}
+
+// TrackOrderTracking is an order's shipment tracking, once it has one.
+type TrackOrderTracking struct {
+	Carrier string `json:"carrier"`
+	Number  string `json:"number"`
+	URL     string `json:"url"`
 }
 
 // orderNotOpened answers a uuid that opens no order. Django refuses a guest's
@@ -102,11 +105,11 @@ func (h *handlers) trackOrder(
 		})
 	}
 	if td := o.TrackingDetails; td != nil && td.HasTracking {
-		out.Tracking = &struct {
-			Carrier string `json:"carrier"`
-			Number  string `json:"number"`
-			URL     string `json:"url"`
-		}{td.ShippingCarrier, td.TrackingNumber, td.TrackingURL}
+		out.Tracking = &TrackOrderTracking{
+			Carrier: td.ShippingCarrier,
+			Number:  td.TrackingNumber,
+			URL:     td.TrackingURL,
+		}
 	}
 
 	trackNote := "No tracking number yet."

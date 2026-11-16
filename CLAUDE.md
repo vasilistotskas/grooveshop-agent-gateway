@@ -185,8 +185,12 @@ passes, and runs CI's tidy, image and vulnerability checks again.
     not register them.
 - `internal/mcptool` — what the tools of both MCP servers answer with:
   `ToolError` and every code the gateway mints, the `Untrusted` marker
-  (`MarkUntrusted`) for text a customer wrote, and `Add`, through which
-  every tool on /mcp, the chat and /mcp/admin is registered.
+  (`MarkUntrusted`) for text a customer wrote, with the sentence a
+  tool's description adds when it returns such text (`UntrustedNote`),
+  and `Add`, through which every tool on /mcp, the chat and /mcp/admin
+  is registered. On /mcp and the chat, `get_product_reviews` marks what
+  the reviewer typed (their name and the comment): the chat reads it
+  into a model that holds cart tools.
   - `Add` logs one info line per call that reaches the handler, "tool
     call", with `server` (`mcptool.ServerMCP`, `ServerChat` or
     `ServerAdmin`), the tool, the outcome (ok, the code, error or panic)
@@ -479,9 +483,13 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   The other failures an agent acts on by their kind are `ToolError`s
   too: no linked account (`unauthorized`), a token without the tool's
   scope (`not_granted`, as on `/mcp/admin`), a refused coupon (its
-  reason as the code) and the checkout store down
+  reason as the code), the checkout store down
   (`errCheckoutUnavailable`, one value, `retryAfterSeconds` as an
-  upstream outage). A cart tool's failure goes through `handlers.cartErr`,
+  upstream outage), and on the UCP checkout tools a checkout no session
+  is stored for (`errCheckoutGone`, `not_found`), one another request
+  holds the lock of (`errCheckoutBusy`, `conflict`) and one whose
+  completion may still be running (`errCompletionInFlight`,
+  `conflict`). A cart tool's failure goes through `handlers.cartErr`,
   or `handlers.cartGoneErr` for a call on the cart itself (a line's or a
   product's 404 stays theirs). There a 404 with Django's code
   `cart_not_found` (`django.CodeCartNotFound`) or a 403 is the cart
@@ -497,7 +505,9 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   refused cart token). A checkout write that failed after
   another landed says so on top of its cause's hint (`withHint`). A list
   with nothing in it is `[]`, never `null`
-  (`TestToolOutputsListNothingAsEmptyArrays`).
+  (`TestToolOutputsListNothingAsEmptyArrays`), and every output schema
+  declares a list an `array`, not `["null","array"]` (`outputSchema`):
+  the SDK checks each result against it.
   `find_pickup_points` reads Django's 400 from BOX NOW's nearest lookup
   as no locker found: Django answers every BOX NOW refusal with it.
   Returning a plain Go error from a typed tool handler is fine — the
@@ -640,7 +650,7 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   an order and is no longer kept (expiry, eviction, a release that
   changes the session key), or
   never existed. Every "no session" answer is `mcpsrv.errCheckoutGone`
-  (UCP) or `acp.msgSessionGone` (ACP's 404): an order may exist, check
+  (UCP, `not_found`) or `acp.msgSessionGone` (ACP's 404): an order may exist, check
   before starting another checkout, with the order id if the caller
   holds one and the store's order confirmation if not. Never answer a
   missing session with only "start a new one".

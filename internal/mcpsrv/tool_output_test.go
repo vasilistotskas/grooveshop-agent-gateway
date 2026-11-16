@@ -179,3 +179,34 @@ func TestToolOutputsListNothingAsEmptyArrays(t *testing.T) {
 		})
 	}
 }
+
+// No tool sends null for a list, so no output schema says it may: each
+// list is an array, on /mcp and in the chat, the UCP objects included.
+// The SDK checks every result against its schema.
+func TestOutputSchemasDeclareNoNullableList(t *testing.T) {
+	ctx := context.Background()
+	d := Deps{Site: testSite, Version: "test",
+		Log: slog.New(slog.DiscardHandler)}
+	for name, server := range map[string]*mcp.Server{
+		"mcp":  NewServer(d, Identity{}, EveryFeature),
+		"chat": NewChatServer(d),
+	} {
+		serverT, clientT := mcp.NewInMemoryTransports()
+		_, err := server.Connect(ctx, serverT, nil)
+		require.NoError(t, err)
+		session, err := mcp.NewClient(&mcp.Implementation{Name: "test"},
+			nil).Connect(ctx, clientT, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = session.Close() })
+		listed, err := session.ListTools(ctx, nil)
+		require.NoError(t, err)
+		require.NotEmpty(t, listed.Tools)
+		for _, tool := range listed.Tools {
+			require.NotNil(t, tool.OutputSchema, "%s %s", name, tool.Name)
+			raw, err := json.Marshal(tool.OutputSchema)
+			require.NoError(t, err)
+			assert.NotContains(t, string(raw), `["null","array"]`,
+				"%s %s", name, tool.Name)
+		}
+	}
+}
