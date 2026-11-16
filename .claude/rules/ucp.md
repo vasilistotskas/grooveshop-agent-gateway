@@ -207,3 +207,49 @@ wins over this page.
   pending entries replay on restart, and a dead consumer's are claimed
   after the visibility timeout. Delivery dials only public addresses and
   never follows redirects.
+- **One webhook target holds at most its share of a pod's workers**
+  (`perTargetDeliveries` of `deliveryWorkers`, `targetSlots`). The
+  target is the registrable domain of the URL's host, its IDNA A-label
+  (`deliveryTarget`: eTLD+1 by the public suffix list, its private
+  section included), or the address as the rate limiter counts one
+  (`httpmw.AddrBucket`): a name under one's own domain is free, so a cap
+  per host or origin would give one owner as many shares as names. A
+  delivery read while its target is at the cap waits in process in the
+  target's queue, first in first out, and the worker that frees one of
+  the target's slots takes it next, so a burst to a busy platform goes
+  out as fast as it answers. A delivery beyond the queues' bounds
+  (`maxQueuedPerTarget`, `maxQueued`), or one not started within
+  `queueMaxWait` of its read (waiting for its target's slot or for a
+  free worker, `handOut`), is left pending, never acknowledged, for
+  reclaim after the visibility timeout. The read time is stamped before
+  the Redis call, and a delivery is cut at `deliveryBudget`, so what a
+  pod holds ends within `queueMaxWait` + `deliveryBudget` + `ackTimeout`
+  of its read, under the visibility timeout: no entry is taken over
+  while its pod still works on it. A reclaim sweep goes on from its last cursor until it has
+  scanned every pending entry. So an endpoint that does not answer
+  delays its own deliveries, never another platform's.
+- **Order webhooks carry no ordering guarantee.** Up to two deliveries
+  to one target run at once, a failed attempt is retried after a
+  backoff, and reclaim takes entries over later, so two events of one
+  order can arrive in either order; each carries the full order entity.
+- **A key that cannot be read is never a terminal outcome**: a delivery
+  is acknowledged as failed only when every attempt reached the
+  endpoint; one whose store's key could not be read stays pending.
+- **The signing key is sealed at rest** (`internal/ucp/keys.go`): the
+  Redis instance is shared with other services.
+  `ag:{schema}:ucp:signing_key:es256:aes256gcm` holds the private
+  scalar sealed with AES-256-GCM (`cipher.NewGCMWithRandomNonce`) under
+  `SIGNING_KEY_ENCRYPTION_KEY`, with the purpose and the schema as
+  associated data (`sealContext`), so a record copied to another store
+  does not open. A record that does not open is an error, never a key
+  minted over it: a new key would rotate the store's published key
+  under the platforms that verify against it. The move from the
+  unsealed record (`ag:{schema}:ucp:signing_key:es256`,
+  `keys_unsealed.go`) keeps every key, kid and published JWK included:
+  a store's unsealed key is sealed the first time a pod needs it; a key
+  minted for a store with none leaves a sentinel no earlier release can
+  decode in the unsealed record, so an older pod never mints a second
+  key; `/gateway seal-signing-keys` seals the rest and deletes the
+  unsealed records and sentinels once no older pod is left. That code
+  goes in the release after every environment has run the command
+  (`docs/agent-protocols-runbook.md`, section 12).

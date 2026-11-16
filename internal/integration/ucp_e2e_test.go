@@ -741,7 +741,7 @@ func startUCPGatewayBehind(
 	resolver := tenant.NewResolver(dj, rdb,
 		cfg.TenantCacheTTL, cfg.NegativeCacheTTL, log, metrics)
 
-	keys := ucp.NewKeys(rdb)
+	keys := newKeys(t, rdb, testKEK(t))
 	// The fixture tenant's key, for signature/KID assertions.
 	key, err := keys.ForSchema(context.Background(), "demostore")
 	require.NoError(t, err)

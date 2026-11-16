@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"log/slog"
 	"strings"
 	"testing"
@@ -18,6 +20,67 @@ func setRequired(t *testing.T) {
 	t.Setenv("ASSETS_HOST", "assets.platform.test")
 	t.Setenv("STAFF_CONNECT_HOST", "connect.platform.test")
 	t.Setenv("STOREFRONT_DEFAULT_LOCALE", "el")
+	t.Setenv("SIGNING_KEY_ENCRYPTION_KEY", testKEK(t))
+}
+
+// testKEK is a fresh key-encryption key, encoded as the variable takes it.
+func testKEK(t *testing.T) string {
+	t.Helper()
+	kek := make([]byte, signingKEKBytes)
+	_, err := rand.Read(kek)
+	require.NoError(t, err)
+	return base64.StdEncoding.EncodeToString(kek)
+}
+
+// The key-encryption key is required in every ENV, development included:
+// a store's signing key is sealed with it wherever it is stored.
+func TestLoadRequiresTheSigningKeyEncryptionKey(t *testing.T) {
+	for _, env := range []string{EnvProduction, EnvDevelopment, EnvTest} {
+		t.Run(env, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("ENV", env)
+			t.Setenv("SIGNING_KEY_ENCRYPTION_KEY", "")
+			_, err := Load()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "SIGNING_KEY_ENCRYPTION_KEY")
+		})
+	}
+}
+
+// Anything but standard base64 of exactly 32 bytes refuses to boot, and
+// the refusal never repeats the value.
+func TestLoadValidatesTheSigningKeyEncryptionKey(t *testing.T) {
+	short := base64.StdEncoding.EncodeToString(make([]byte, 16))
+	long := base64.StdEncoding.EncodeToString(make([]byte, 33))
+	urlSafe := strings.NewReplacer("+", "-", "/", "_").Replace(
+		base64.StdEncoding.EncodeToString(
+			[]byte("\xfb\xff\xfe0123456789abcdef0123456789abc")))
+	for name, value := range map[string]string{
+		"not base64":  "not base64 at all!",
+		"16 bytes":    short,
+		"33 bytes":    long,
+		"url base64":  urlSafe,
+		"hex":         strings.Repeat("ab", signingKEKBytes),
+		"with spaces": " " + testKEK(t),
+	} {
+		t.Run(name, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("SIGNING_KEY_ENCRYPTION_KEY", value)
+			_, err := Load()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "SIGNING_KEY_ENCRYPTION_KEY")
+			assert.NotContains(t, err.Error(), strings.TrimSpace(value))
+		})
+	}
+
+	setRequired(t)
+	kek := testKEK(t)
+	t.Setenv("SIGNING_KEY_ENCRYPTION_KEY", kek)
+	cfg, err := Load()
+	require.NoError(t, err)
+	want, err := base64.StdEncoding.DecodeString(kek)
+	require.NoError(t, err)
+	assert.Equal(t, want, cfg.SigningKeyKEK)
 }
 
 func TestLoadDefaults(t *testing.T) {

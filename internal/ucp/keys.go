@@ -5,6 +5,8 @@ package ucp
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -21,12 +23,51 @@ import (
 // Version is the implemented UCP specification version.
 const Version = "2026-08-25"
 
-// signingKeyRedisKey names the stored ES256 private scalar. The algorithm
-// is part of the name because the value is a bare 32-byte scalar: a key
-// of another algorithm under the same name would parse just as silently.
+// signingKeyRedisKey names a store's sealed ES256 private scalar. The
+// algorithm is part of the name because the value is a bare 32-byte
+// scalar: a key of another algorithm under the same name would parse
+// just as silently. So is the sealing (AES-256-GCM), so a pod that reads
+// another encoding never shares the record.
 func signingKeyRedisKey(schema string) string {
-	return "ag:" + schema + ":ucp:signing_key:es256"
+	return "ag:" + schema + ":ucp:signing_key:es256:aes256gcm"
 }
+
+// sealPurpose opens the associated data of every sealed signing key.
+const sealPurpose = "grooveshop-agent-gateway/ucp-signing-key/es256"
+
+// sealContext is the associated data a store's sealed key is bound to:
+// the purpose and the store. A record copied to another store's key, or
+// read for another purpose, does not open. The purpose is fixed and the
+// NUL never occurs in a schema name, so the store is read unambiguously.
+func sealContext(schema string) []byte {
+	return []byte(sealPurpose + "\x00" + schema)
+}
+
+// kekBytes is the length of the key-encryption key: AES-256.
+const kekBytes = 32
+
+// mintScript stores a newly minted sealed key ARGV[1] at KEYS[1] and
+// returns 1, unless a key is there (0) or the store's unsealed record
+// KEYS[2] holds a key an earlier release minted (-1): that key is the
+// store's, and is sealed instead (sealUnsealedOf). With the sealed key it
+// writes the sentinel ARGV[2] to KEYS[2] where nothing is, so a pod of an
+// earlier release finds a record it cannot decode, and answers 503,
+// instead of minting a second key for the store. A run repeated because
+// its reply was lost finds its own record and returns 0, and the caller
+// reads that record.
+//
+// KEYS[2] and the sentinel go with the unsealed record (keys_unsealed.go).
+var mintScript = redis.NewScript(`
+local unsealed = redis.call('GET', KEYS[2])
+if unsealed and unsealed ~= ARGV[2] then
+  return -1
+end
+if redis.call('SET', KEYS[1], ARGV[1], 'NX') then
+  redis.call('SET', KEYS[2], ARGV[2], 'NX')
+  return 1
+end
+return 0
+`)
 
 // maxKeyEntries bounds the in-process key cache the same way the tenant
 // resolver bounds its map: real schema counts are tiny, the bound only
@@ -81,15 +122,60 @@ func (k *SigningKey) Sign(base []byte) ([]byte, error) {
 
 // Keys loads per-schema signing keys lazily, caching them in process —
 // keys are immutable once minted, so cached entries never go stale.
+//
+// Redis holds each key sealed with AES-256-GCM under the key-encryption
+// key (SIGNING_KEY_ENCRYPTION_KEY), bound to its store (sealContext):
+// the Redis instance is shared with other services, and the scalar signs
+// a store's order webhooks. Only the process memory holds it in clear.
 type Keys struct {
-	rdb *redis.Client
+	rdb  *redis.Client
+	aead cipher.AEAD
 
 	mu  sync.RWMutex
 	mem map[string]*SigningKey
 }
 
-func NewKeys(rdb *redis.Client) *Keys {
-	return &Keys{rdb: rdb, mem: make(map[string]*SigningKey)}
+// NewKeys builds the store of signing keys sealed under kek, an AES-256
+// key (config.Config.SigningKeyKEK).
+func NewKeys(rdb *redis.Client, kek []byte) (*Keys, error) {
+	if len(kek) != kekBytes {
+		return nil, fmt.Errorf(
+			"ucp: the key-encryption key must be %d bytes", kekBytes)
+	}
+	block, err := aes.NewCipher(kek)
+	if err != nil {
+		return nil, fmt.Errorf("ucp: key-encryption key: %w", err)
+	}
+	// A random 96-bit nonce per seal, prepended to the record: one seal
+	// per store's key is far below the 2^32 seals a key allows.
+	aead, err := cipher.NewGCMWithRandomNonce(block)
+	if err != nil {
+		return nil, fmt.Errorf("ucp: key-encryption key: %w", err)
+	}
+	return &Keys{rdb: rdb, aead: aead, mem: make(map[string]*SigningKey)}, nil
+}
+
+// seal returns the record Redis holds for schema's scalar.
+func (k *Keys) seal(schema string, scalar []byte) string {
+	return base64.StdEncoding.EncodeToString(
+		k.aead.Seal(nil, nil, scalar, sealContext(schema)))
+}
+
+// open returns the scalar a record sealed for schema holds. It fails for
+// a record sealed for another store, under another key-encryption key,
+// or changed since, and names no key material.
+func (k *Keys) open(schema, record string) ([]byte, error) {
+	sealed, err := base64.StdEncoding.DecodeString(record)
+	if err != nil {
+		return nil, errors.New("ucp: sealed signing key is not base64")
+	}
+	scalar, err := k.aead.Open(nil, nil, sealed, sealContext(schema))
+	if err != nil {
+		return nil, errors.New("ucp: sealed signing key does not open: " +
+			"another SIGNING_KEY_ENCRYPTION_KEY sealed it, or it is " +
+			"another store's or changed")
+	}
+	return scalar, nil
 }
 
 // ForSchema returns the tenant's persistent signing key, minting and
@@ -138,47 +224,56 @@ func (k *Keys) loadOrCreate(
 	ctx context.Context, schema string,
 ) (*SigningKey, error) {
 	redisKey := signingKeyRedisKey(schema)
-	encoded, err := k.rdb.Get(ctx, redisKey).Result()
+	record, err := k.rdb.Get(ctx, redisKey).Result()
 	switch {
 	case errors.Is(err, redis.Nil):
-		minted, err := newEncodedKey()
+		scalar, err := newScalar()
 		if err != nil {
 			return nil, err
 		}
-		// SETNX so concurrent pods agree on one key; a lost race
-		// re-reads the winner.
-		ok, err := k.rdb.SetNX(ctx, redisKey, minted, 0).Result()
-		if err != nil {
+		// Set only where no key is, so concurrent pods agree on one key;
+		// a lost race re-reads the winner.
+		stored, err := mintScript.Run(ctx, k.rdb,
+			[]string{redisKey, unsealedKeyRedisKey(schema)},
+			k.seal(schema, scalar), unsealedSentinel).Int()
+		switch {
+		case err != nil:
 			return nil, fmt.Errorf("ucp: persist key: %w", err)
-		}
-		if !ok {
+		case stored < 0:
+			// A pod of an earlier release minted the store's key: seal
+			// that key, never a new one, then read it.
+			if err := k.sealUnsealedOf(ctx, schema); err != nil {
+				return nil, err
+			}
+			return k.loadOrCreate(ctx, schema)
+		case stored == 0:
 			return k.loadOrCreate(ctx, schema)
 		}
-		encoded = minted
+		return keyFromScalar(scalar)
 	case err != nil:
 		return nil, fmt.Errorf("ucp: load key: %w", err)
 	}
-	raw, err := base64.StdEncoding.DecodeString(encoded)
+	scalar, err := k.open(schema, record)
 	if err != nil {
-		return nil, fmt.Errorf("ucp: corrupt key: %w", err)
+		return nil, err
 	}
-	return keyFromScalar(raw)
+	return keyFromScalar(scalar)
 }
 
-// newEncodedKey mints the base64 private scalar to persist for a schema
-// with no key yet. Every schema mints the same way: no tenant carries a
-// pre-existing identity, so onboarding the thousandth store runs the code
-// path the first one did.
-func newEncodedKey() (string, error) {
+// newScalar mints the private scalar of a schema with no key yet. Every
+// schema mints the same way: no tenant carries a pre-existing identity,
+// so onboarding the thousandth store runs the code path the first one
+// did.
+func newScalar() ([]byte, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return "", fmt.Errorf("ucp: generate key: %w", err)
+		return nil, fmt.Errorf("ucp: generate key: %w", err)
 	}
 	raw, err := priv.Bytes()
 	if err != nil {
-		return "", fmt.Errorf("ucp: encode key: %w", err)
+		return nil, fmt.Errorf("ucp: encode key: %w", err)
 	}
-	return base64.StdEncoding.EncodeToString(raw), nil
+	return raw, nil
 }
 
 func keyFromScalar(raw []byte) (*SigningKey, error) {

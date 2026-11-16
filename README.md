@@ -58,7 +58,8 @@ Docker for the integration tests.
 ```bash
 git clone https://github.com/vasilistotskas/grooveshop-agent-gateway.git
 cd grooveshop-agent-gateway
-cp .env.example .env       # point DJANGO_BASE_URL and REDIS_URL at the dev stack
+cp .env.example .env       # point DJANGO_BASE_URL and REDIS_URL at the dev stack,
+                           # and set SIGNING_KEY_ENCRYPTION_KEY (openssl rand -base64 32)
 set -a; . ./.env; set +a   # the gateway reads the environment, not .env
 go run ./cmd/gateway       # listens on :8080
 ```

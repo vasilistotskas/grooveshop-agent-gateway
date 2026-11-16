@@ -2,7 +2,6 @@ package ucp
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -87,9 +86,7 @@ func TestProfileEndpointNamesThePrimaryDomain(t *testing.T) {
 
 func testKey(t *testing.T) *SigningKey {
 	t.Helper()
-	encoded, err := newEncodedKey()
-	require.NoError(t, err)
-	raw, err := base64.StdEncoding.DecodeString(encoded)
+	raw, err := newScalar()
 	require.NoError(t, err)
 	key, err := keyFromScalar(raw)
 	require.NoError(t, err)

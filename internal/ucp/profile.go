@@ -1,7 +1,10 @@
 package ucp
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
@@ -98,8 +101,10 @@ func BuildProfile(
 
 // ProfileHandler serves GET /.well-known/ucp. The spec mandates HTTPS
 // (Traefik terminates TLS) and a public Cache-Control of at least 60s.
-// Each tenant's profile publishes only that tenant's own signing key.
-func ProfileHandler(keys *Keys, env string) http.Handler {
+// Each tenant's profile publishes only that tenant's own signing key. A
+// key that cannot be read is a 503, logged: a sealed key that does not
+// open (another SIGNING_KEY_ENCRYPTION_KEY) answers so on every store.
+func ProfileHandler(keys *Keys, env string, log *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t, ok := tenant.FromContext(r.Context())
 		if !ok {
@@ -108,6 +113,10 @@ func ProfileHandler(keys *Keys, env string) http.Handler {
 		}
 		key, err := keys.ForSchema(r.Context(), t.SchemaName)
 		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				log.ErrorContext(r.Context(), "UCP signing key unavailable",
+					slog.String("error", err.Error()))
+			}
 			http.Error(w, "profile temporarily unavailable",
 				http.StatusServiceUnavailable)
 			return

@@ -100,10 +100,12 @@ Use the demo store. Its accounts are the ones testers may use, and it is the onl
 ```bash
 NET=grooveshop-django-api_grooveshop-backbone
 SECRET="<the AGENT_GATEWAY_INTERNAL_SECRET from step 1>"
+KEK="$(openssl rand -base64 32)" # seals the stores' signing keys in this Redis
 docker run -d --name agent-redis-local --network $NET redis:8-alpine
 docker run -d --name agent-gateway-local --network $NET -p 127.0.0.1:18080:8080 \
   -e ENV=development -e DJANGO_BASE_URL=http://backend:8000/api/v1 -e DJANGO_PUBLIC_HOST=localhost \
   -e REDIS_URL=redis://agent-redis-local:6379/0 -e INTERNAL_EVENTS_SECRET="$SECRET" \
+  -e SIGNING_KEY_ENCRYPTION_KEY="$KEK" \
   -e ASSETS_HOST=assets.localhost -e STAFF_CONNECT_HOST=connect.localhost \
   -e STOREFRONT_DEFAULT_LOCALE=el \
   "gro0ve/grooveshop-agent-gateway:$(git describe --tags --abbrev=0)"
@@ -648,3 +650,31 @@ Callers are told "in progress" for three upstream timeouts after the mark, and a
 
    When an order exists, do not delete the session to "unblock" the platform: a new checkout for the same cart would be a second order. The order is the answer.
 
+## 12. Sealing the stores' signing keys
+
+**Applies to:** the release that seals each store's UCP signing key in Redis, and every environment that ran an earlier one.
+
+Each store's ES256 key signs its order webhooks; its public half is in the store's `/.well-known/ucp`, where platforms verify the webhooks. Releases before this one held the private key unsealed (`ag:{schema}:ucp:signing_key:es256`, base64), readable by every service sharing that Redis. This release holds it in `ag:{schema}:ucp:signing_key:es256:aes256gcm`, sealed with AES-256-GCM under `SIGNING_KEY_ENCRYPTION_KEY` and bound to its store. It seals the same key, so the key id and the published key do not change: no platform sees a rotation.
+
+**How the move runs.** A pod of this release reads only the sealed record. The first time it needs a store's key and finds only the unsealed one, it seals that key; it never mints another over it. For a store with no key at all it mints one, sealed, and writes a sentinel into the unsealed record: a pod of the earlier release cannot decode the sentinel (its profile answers 503 for that store) and cannot mint a second key over it. The unsealed records stay until step 3, because pods of the earlier release still read them during the rollout. During the rollout itself, an old pod's dispatcher drops the order webhooks of a store whose first signing key a new pod minted: it reads the sentinel, fails three times and acknowledges them. Only a store that had no key before the rollout is affected; every store that has served its UCP profile already has one.
+
+1. **Before the release, in each environment:** generate a key-encryption key with `openssl rand -base64 32`, one per environment, and save it in Bitwarden (personal vault, GrooveShop) before anything else. Add it as `SIGNING_KEY_ENCRYPTION_KEY` to the SealedSecret `agent-gateway-secrets` in the infrastructure repository (`overlays/staging/` and `overlays/production/sealed-agent-gateway-secrets.yaml`, `kubeseal --merge-into`). The Deployment takes that secret whole (`envFrom`), so nothing else changes. Pods of the earlier release ignore it. A pod of this release without it refuses to start, so a missing value stalls the rollout on the old pods and breaks nothing.
+2. **Deploy the release.**
+3. **Once no pod of the earlier release is left,** seal what is left and delete the unsealed records:
+
+   ```bash
+   kubectl --context grooveshop -n grooveshop-staging exec deploy/agent-gateway -c agent-gateway -- /gateway seal-signing-keys
+   kubectl --context grooveshop -n grooveshop exec deploy/agent-gateway -c agent-gateway -- /gateway seal-signing-keys
+   ```
+
+   It seals every store's key still unsealed, deletes every unsealed record whose key the sealed record holds and every sentinel, logs one `signing keys sealed` line (`sealed`, `already_sealed`, `unsealed_deleted`), and exits non-zero if it left any store alone (`signing key left unsealed`, with the reason). Run it a second time: its line then lists no store under `sealed` or `unsealed_deleted`, which proves nothing unsealed is left.
+4. **A store it left alone** holds one key unsealed and another sealed. That takes an unsealed record deleted, or a sealed one evicted, while an old pod ran. The new pods publish the sealed key; delete the unsealed record by hand once you know which key platforms were last shown.
+
+**Never change `SIGNING_KEY_ENCRYPTION_KEY` in place.** A key sealed under another one does not open: every store's profile answers 503 and its webhooks wait, unsent and pending, until the key is right. Changing it needs every record sealed again under the new key, which no command does yet.
+
+**A rollback** to the earlier release:
+
+- **Before step 3:** every store that had a key before this release keeps it (the unsealed record still holds it). A store whose first key this release minted holds the sentinel: the earlier release answers 503 on its profile and drops its webhooks after three attempts. Deleting that sentinel lets the earlier release mint a new key for the store, a rotation its platforms see.
+- **After step 3:** no unsealed record is left, so the earlier release mints a new key for every store, a rotation every platform sees. Do not roll back past this release once step 3 has run.
+
+The release after every environment has run step 3 deletes the sealing on first use, the sentinel, and the command (`internal/ucp/keys_unsealed.go`, `cmd/gateway/sealkeys.go`).

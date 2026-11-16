@@ -22,7 +22,11 @@ import (
 var version = "dev"
 
 func main() {
-	if err := run(); err != nil {
+	cmd := run
+	if len(os.Args) > 1 && os.Args[1] == ucp.SealCommand {
+		cmd = sealSigningKeys
+	}
+	if err := cmd(); err != nil {
 		slog.Error("fatal", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
@@ -51,8 +55,12 @@ func run() error {
 		dj, rdb, cfg.TenantCacheTTL, cfg.NegativeCacheTTL, log, metrics,
 	)
 
-	// Signing keys are per tenant schema and load lazily at first use.
-	keys := ucp.NewKeys(rdb)
+	// Signing keys are per tenant schema and load lazily at first use,
+	// sealing a key an earlier release stored unsealed.
+	keys, err := ucp.NewKeys(rdb, cfg.SigningKeyKEK)
+	if err != nil {
+		return err
+	}
 	// The pod name: webhook deliveries are claimed per consumer, and a
 	// consumer that disappears has its pending deliveries taken over.
 	consumer, err := os.Hostname()

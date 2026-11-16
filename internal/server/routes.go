@@ -151,7 +151,7 @@ func New(d Deps) http.Handler {
 
 	mux.Handle("GET /.well-known/ucp",
 		tenantMW(tenant.RequireCheckout(
-			ucp.ProfileHandler(d.Keys, d.Cfg.PaymentHandlerEnv))))
+			ucp.ProfileHandler(d.Keys, d.Cfg.PaymentHandlerEnv, d.Log))))
 
 	// Cluster-internal: Django's order-event push. Not tenant-scoped —
 	// the event body carries the schema.
