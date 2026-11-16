@@ -16,6 +16,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	_ "embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -140,6 +141,15 @@ func randomHex() string {
 		panic(err)
 	}
 	return hex.EncodeToString(b)
+}
+
+// randomKEK is a fresh SIGNING_KEY_ENCRYPTION_KEY: 32 bytes, base64.
+func randomKEK() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return base64.StdEncoding.EncodeToString(b)
 }
 
 func oidcKey() (string, error) {
@@ -397,14 +407,15 @@ with schema_context("demostore"):
 	gateway, err := start(gatewayImage, "gateway",
 		testcontainers.WithEnv(map[string]string{
 			// Development lets the gateway fetch a profile over plain http.
-			"ENV":                       "development",
-			"DJANGO_BASE_URL":           "http://backend:8000/api/v1",
-			"DJANGO_PUBLIC_HOST":        platformHost,
-			"REDIS_URL":                 "redis://redis:6379/" + gatewayRedisDB,
-			"INTERNAL_EVENTS_SECRET":    secret,
-			"ASSETS_HOST":               "assets.localhost",
-			"STAFF_CONNECT_HOST":        connectHost,
-			"STOREFRONT_DEFAULT_LOCALE": "el",
+			"ENV":                        "development",
+			"DJANGO_BASE_URL":            "http://backend:8000/api/v1",
+			"DJANGO_PUBLIC_HOST":         platformHost,
+			"REDIS_URL":                  "redis://redis:6379/" + gatewayRedisDB,
+			"INTERNAL_EVENTS_SECRET":     secret,
+			"SIGNING_KEY_ENCRYPTION_KEY": randomKEK(),
+			"ASSETS_HOST":                "assets.localhost",
+			"STAFF_CONNECT_HOST":         connectHost,
+			"STOREFRONT_DEFAULT_LOCALE":  "el",
 		}),
 		testcontainers.WithExposedPorts("8080/tcp"),
 		testcontainers.WithWaitStrategyAndDeadline(startupDeadline,

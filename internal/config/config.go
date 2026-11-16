@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -39,6 +40,10 @@ const (
 // and `openssl rand -hex 32`, how the platform makes its shared
 // secrets, gives 64.
 const minInternalSecretLen = 32
+
+// signingKEKBytes is the length of SIGNING_KEY_ENCRYPTION_KEY once
+// decoded: an AES-256 key.
+const signingKEKBytes = 32
 
 // chatEfforts is every reasoning_effort the chat-completions API admits.
 var chatEfforts = []shared.ReasoningEffort{
@@ -84,6 +89,11 @@ type Config struct {
 	// InternalSecret authenticates Django's order-event pushes to
 	// /internal/* routes.
 	InternalSecret string
+	// SigningKeyKEK is the AES-256 key that seals each store's UCP
+	// signing key in Redis (ucp.Keys), so a service sharing that Redis
+	// cannot read the key that signs a store's order webhooks. Never
+	// logged.
+	SigningKeyKEK []byte
 
 	RedisURL string
 
@@ -292,6 +302,10 @@ func Load() (Config, error) {
 	if cfg.StaffConnectHost == "" {
 		missing = append(missing, "STAFF_CONNECT_HOST")
 	}
+	kek := os.Getenv("SIGNING_KEY_ENCRYPTION_KEY")
+	if kek == "" {
+		missing = append(missing, "SIGNING_KEY_ENCRYPTION_KEY")
+	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf(
 			"config: missing required env vars: %s",
@@ -345,6 +359,9 @@ func Load() (Config, error) {
 		}
 	}
 	if err := checkInternalSecret(cfg.InternalSecret, minSecretLen); err != nil {
+		return Config{}, err
+	}
+	if cfg.SigningKeyKEK, err = decodeKEK(kek); err != nil {
 		return Config{}, err
 	}
 	// A stale window shorter than the fresh one expires a cached feed
@@ -422,6 +439,19 @@ func checkInternalSecret(secret string, minLen int) error {
 			"least %d characters in this ENV", minLen)
 	}
 	return nil
+}
+
+// decodeKEK reads SIGNING_KEY_ENCRYPTION_KEY: standard base64 (`openssl
+// rand -base64 32`) of exactly signingKEKBytes. The error never repeats
+// the value.
+func decodeKEK(value string) ([]byte, error) {
+	kek, err := base64.StdEncoding.Strict().DecodeString(value)
+	if err != nil || len(kek) != signingKEKBytes {
+		return nil, fmt.Errorf("config: SIGNING_KEY_ENCRYPTION_KEY must "+
+			"be %d random bytes in standard base64, as openssl rand "+
+			"-base64 %d makes them", signingKEKBytes, signingKEKBytes)
+	}
+	return kek, nil
 }
 
 func envOr(key, def string) string {

@@ -63,7 +63,7 @@ func TestDispatcherSurvivesShutdownMidDelivery(t *testing.T) {
 	server := httptest.NewServer(platform.handler())
 	t.Cleanup(server.Close)
 
-	keys := ucp.NewKeys(rdb)
+	keys := newKeys(t, rdb, testKEK(t))
 	const consumer = "gateway-pod-0"
 	body := json.RawMessage(`{"id":"b9be45e5-6062-4976-ae7b-2c31eb2ad689"}`)
 	require.NoError(t, ucp.NewDispatcher(rdb, keys, quietLogger(),

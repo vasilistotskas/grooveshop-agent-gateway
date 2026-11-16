@@ -115,7 +115,9 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   placeholder than those and `{schema}`; an `INTERNAL_EVENTS_SECRET`
   that is not a valid header value (control characters, leading or
   trailing blanks) or, in production and staging, shorter than
-  `minInternalSecretLen`; `FEED_STALE_TTL` shorter than
+  `minInternalSecretLen`; a `SIGNING_KEY_ENCRYPTION_KEY` (required in
+  every ENV, never logged) that is not standard base64 of exactly 32
+  bytes; `FEED_STALE_TTL` shorter than
   `FEED_FRESH_TTL`; any numeric setting at zero or below. `ENV`
   (production | staging | development | test) is folded into
   `AllowLocalWebhooks`, `PaymentHandlerEnv` and the secret's minimum
@@ -1047,6 +1049,9 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   found. `TestSessionKeyIsVersioned` pins it. The session that holds a
   cart is named in `ag:{schema}:checkoutcart:{cartId}` (`cartKey`), a
   family of its own: every key under `cs:` belongs to one session.
+  A store's UCP signing key is `ag:{schema}:ucp:signing_key:es256:aes256gcm`,
+  sealed (see `.claude/rules/ucp.md`): no Redis key holds a secret in
+  clear.
   A Redis write that depends
   on what the key holds is a script (`redis.NewScript`), never a read
   followed by a write.

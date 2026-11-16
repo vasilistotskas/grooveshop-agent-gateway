@@ -8,12 +8,17 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/net/publicsuffix"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpsig"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
@@ -23,18 +28,27 @@ const (
 	// Deliberately NOT per-schema: this is one work queue for the whole
 	// pod pool and each delivery carries its own schema, which is what
 	// the signing key is resolved from. Per-schema streams would need a
-	// fair scheduler across an unbounded set of keys to gain anything the
-	// worker pool below does not already give.
+	// fair scheduler across an unbounded set of keys; what one slow
+	// endpoint can hold up is bounded by perTargetDeliveries instead.
 	eventsStream = "ag:webhooks:orders"
 	eventsGroup  = "dispatch"
 	// deliveryField is the stream entry's single field.
 	deliveryField = "delivery"
 
-	// deliveryWorkers bounds concurrent deliveries, so one blackholing
-	// platform endpoint occupies one worker instead of the whole queue:
-	// three attempts at a 15s client timeout plus 5s and 20s of backoff
-	// is up to ~70s per event.
+	// deliveryWorkers bounds concurrent deliveries per pod. A delivery
+	// to an endpoint that does not answer holds its worker for three
+	// attempts at a 15s client timeout plus 5s and 20s of backoff: up to
+	// ~70s per event.
 	deliveryWorkers = 8
+	// perTargetDeliveries caps the deliveries one target (deliveryTarget)
+	// holds at once on a pod, so an endpoint that does not answer
+	// occupies at most this many of the deliveryWorkers, whatever number
+	// of its events is queued, and the others keep delivering for every
+	// other platform. A delivery read while its target is at the cap is
+	// deferred: left pending, unacknowledged, and taken up again by
+	// reclaim once it has been idle visibilityTimeout, by this consumer
+	// or another.
+	perTargetDeliveries = 2
 
 	// visibilityTimeout is how long a delivery may stay unacknowledged
 	// before another consumer takes it over. It must outlast the longest
@@ -151,12 +165,14 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	// a duplicate from whichever consumer takes it over.
 	deliveryCtx, cancelDeliveries := context.WithCancel(
 		context.WithoutCancel(ctx))
-	jobs := make(chan redis.XMessage)
+	jobs := make(chan job)
+	slots := newTargetSlots(perTargetDeliveries)
 	var wg sync.WaitGroup
 	for range deliveryWorkers {
 		wg.Go(func() {
-			for msg := range jobs {
-				d.deliver(deliveryCtx, msg)
+			for j := range jobs {
+				d.deliver(deliveryCtx, j.id, j.dl)
+				slots.release(j.target)
 			}
 		})
 	}
@@ -193,15 +209,99 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			msgs = d.read(ctx, ">")
 		}
 		for _, msg := range msgs {
+			dl, ok := d.decode(ctx, msg)
+			if !ok {
+				continue
+			}
+			target := deliveryTarget(dl.TargetURL)
+			if !slots.acquire(target) {
+				// Its target holds its share of the workers: leave it
+				// pending, for reclaim to take up once it has been idle
+				// visibilityTimeout. Never acknowledged, and not read
+				// again before then.
+				d.log.InfoContext(ctx, "webhook delivery deferred: its "+
+					"target is at its share of the workers",
+					slog.String("delivery", dl.ID),
+					slog.String("target", target),
+					slog.String(obs.KeyTenant, dl.Schema))
+				continue
+			}
 			select {
-			case jobs <- msg:
+			case jobs <- job{id: msg.ID, dl: dl, target: target}:
 			case <-ctx.Done():
 				// Read but not started: it stays pending and is taken
 				// over after visibilityTimeout.
+				slots.release(target)
 				return
 			}
 		}
 	}
+}
+
+// job is one delivery handed to a worker: its stream entry, the delivery
+// and the target whose slot it holds.
+type job struct {
+	id     string
+	dl     Delivery
+	target string
+}
+
+// targetSlots counts the deliveries each target has in flight, up to a
+// cap. Targets with none are forgotten, so the map holds only what is in
+// flight: at most deliveryWorkers entries.
+type targetSlots struct {
+	cap  int
+	mu   sync.Mutex
+	held map[string]int
+}
+
+func newTargetSlots(capacity int) *targetSlots {
+	return &targetSlots{cap: capacity, held: make(map[string]int)}
+}
+
+// acquire takes a slot of target, or reports that it holds them all.
+func (s *targetSlots) acquire(target string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.held[target] >= s.cap {
+		return false
+	}
+	s.held[target]++
+	return true
+}
+
+func (s *targetSlots) release(target string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.held[target] <= 1 {
+		delete(s.held, target)
+		return
+	}
+	s.held[target]--
+}
+
+// deliveryTarget names whose endpoint a delivery waits on, for the cap
+// on deliveries in flight to one target. It is the registrable domain of
+// the URL's host (eTLD+1 by the public suffix list, whose private section
+// makes each customer of a hosting domain its own), because a name under
+// one's own domain costs nothing: a cap per host or per origin would give
+// whoever controls a domain as many shares of the workers as names, or
+// ports, it cares to use. An address is its holder as the rate limiter
+// counts one (httpmw.AddrBucket): an IPv4 address, an IPv6 /64. A host
+// the list cannot place (a single label, as in development) is itself.
+func deliveryTarget(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return httpmw.AddrBucket(addr.WithZone(""))
+	}
+	if site, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
+		return site
+	}
+	return host
 }
 
 func (d *Dispatcher) ensureGroup(ctx context.Context) error {
@@ -275,22 +375,28 @@ func (d *Dispatcher) reclaim(ctx context.Context) []redis.XMessage {
 	return msgs
 }
 
-// deliver attempts one delivery and acknowledges it ONLY on a terminal
-// outcome. A shutdown that aborts delivery first leaves the entry pending
-// for another consumer — never acknowledged, which would drop an
-// undelivered order webhook and break at-least-once.
-func (d *Dispatcher) deliver(ctx context.Context, msg redis.XMessage) {
+// decode reads a stream entry's delivery. One that cannot be delivered
+// as stored is acknowledged and dropped.
+func (d *Dispatcher) decode(
+	ctx context.Context, msg redis.XMessage,
+) (Delivery, bool) {
 	raw, _ := msg.Values[deliveryField].(string)
 	var dl Delivery
 	if err := json.Unmarshal([]byte(raw), &dl); err != nil ||
 		dl.Schema == "" || dl.TargetURL == "" {
-		// Undeliverable as stored: acknowledge and drop.
 		d.log.ErrorContext(ctx, "webhook delivery corrupt",
 			slog.String("entry", msg.ID))
 		d.ack(msg.ID)
-		return
+		return Delivery{}, false
 	}
+	return dl, true
+}
 
+// deliver attempts one delivery of the entry id and acknowledges it ONLY
+// on a terminal outcome. A shutdown that aborts delivery first leaves the
+// entry pending for another consumer — never acknowledged, which would
+// drop an undelivered order webhook and break at-least-once.
+func (d *Dispatcher) deliver(ctx context.Context, id string, dl Delivery) {
 	for attempt := range 3 {
 		if attempt > 0 {
 			select {
@@ -312,7 +418,7 @@ func (d *Dispatcher) deliver(ctx context.Context, msg redis.XMessage) {
 			continue
 		}
 		if d.post(ctx, key, dl) {
-			d.ack(msg.ID)
+			d.ack(id)
 			return
 		}
 		if ctx.Err() != nil {
@@ -325,7 +431,7 @@ func (d *Dispatcher) deliver(ctx context.Context, msg redis.XMessage) {
 	d.log.ErrorContext(ctx, "webhook delivery failed permanently",
 		slog.String("delivery", dl.ID),
 		slog.String(obs.KeyTenant, dl.Schema))
-	d.ack(msg.ID)
+	d.ack(id)
 }
 
 // ack acknowledges and deletes a terminally handled entry. Its context is

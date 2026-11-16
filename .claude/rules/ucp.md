@@ -200,3 +200,33 @@ wins over this page.
   pending entries replay on restart, and a dead consumer's are claimed
   after the visibility timeout. Delivery dials only public addresses and
   never follows redirects.
+- **One webhook target holds at most its share of a pod's workers**
+  (`perTargetDeliveries` of `deliveryWorkers`, `targetSlots`). The
+  target is the registrable domain of the URL's host (`deliveryTarget`:
+  eTLD+1 by the public suffix list, its private section included), or
+  the address as the rate limiter counts one (`httpmw.AddrBucket`): a
+  name under one's own domain is free, so a cap per host or origin
+  would give one owner as many shares as names. A delivery read while
+  its target is at the cap is deferred: left pending, never
+  acknowledged, and not read again until reclaim takes it up after the
+  visibility timeout (by this consumer or another). That holds for the
+  replay of a consumer's own pending entries at boot too: its share at
+  once, the rest after the visibility timeout. So an endpoint that does
+  not answer delays its own deliveries, never another platform's.
+- **The signing key is sealed at rest** (`internal/ucp/keys.go`): the
+  Redis instance is shared with other services.
+  `ag:{schema}:ucp:signing_key:es256:aes256gcm` holds the private scalar sealed with
+  AES-256-GCM (`cipher.NewGCMWithRandomNonce`) under
+  `SIGNING_KEY_ENCRYPTION_KEY`, with the purpose and the schema as
+  associated data (`sealContext`), so a record copied to another store
+  does not open. A record that does not open is an error, never a key
+  minted over it: a new key would rotate the store's published key
+  under the platforms that verify against it. The kid is the JWK
+  thumbprint of the same key as before sealing, so sealing changed no
+  published key. The move from the unsealed record
+  (`ag:{schema}:ucp:signing_key:es256`, `keys_unsealed.go`) seals at
+  each boot, and `/gateway seal-signing-keys` deletes the unsealed
+  records once no older pod is left; meanwhile no key is minted for a
+  store whose unsealed record exists (`ErrKeyUnsealed`). Both go in the
+  release after every environment has run it
+  (`docs/agent-protocols-runbook.md`, section 12).
