@@ -243,9 +243,11 @@ wins over this page.
   associated data (`sealContext`), so a record copied to another store
   does not open. A record that does not open is an error, never a key
   minted over it: a new key would rotate the store's published key
-  under the platforms that verify against it. At boot a pod refuses to
-  start when Redis holds sealed keys and its key-encryption key opens
-  none of them (`CheckKEK`). The records carry no TTL and the shared
+  under the platforms that verify against it. At boot a pod checks its
+  key-encryption key against the sealed keys Redis holds (`AwaitKEK`,
+  `CheckKEK`): it retries until Redis answers, is not ready until the
+  check passed (`Checked`, in `/readyz`), and exits only when Redis
+  holds keys and the key opens none of them. The records carry no TTL and the shared
   Redis evicts by LRU, so every pod re-reads the keys it holds every
   5 minutes (`KeepFresh`, `Refresh`): the read keeps them recent, a
   record evicted anyway is written back from the held key (never a new

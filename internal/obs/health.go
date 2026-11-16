@@ -19,19 +19,30 @@ func Healthz() http.Handler {
 // readyzPingTimeout bounds both of a readiness probe's pings.
 const readyzPingTimeout = 2 * time.Second
 
-// Readyz gates readiness on Redis only: checkout sessions fail closed
-// without it. Django health is reported in the body but never flips
-// readiness — with Django down the gateway still serves actionable tool
-// errors and stale feeds, which beats Traefik 502s.
-func Readyz(redisPing, djangoPing func(context.Context) error) http.Handler {
+// Readyz gates readiness on Redis and on the process's startup checks
+// (started: nil once they passed), never on Django: checkout sessions
+// fail closed without Redis, and a pod whose startup checks have not
+// passed (the signing keys) must not take traffic. Django health is
+// reported in the body but never flips readiness — with Django down the
+// gateway still serves actionable tool errors and stale feeds, which
+// beats Traefik 502s.
+func Readyz(
+	redisPing, djangoPing func(context.Context) error, started func() error,
+) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), readyzPingTimeout)
 		defer cancel()
 
-		body := map[string]string{"redis": "ok", "django": "ok"}
+		body := map[string]string{
+			"redis": "ok", "django": "ok", "startup": "ok",
+		}
 		status := http.StatusOK
 		if err := redisPing(ctx); err != nil {
 			body["redis"] = err.Error()
+			status = http.StatusServiceUnavailable
+		}
+		if err := started(); err != nil {
+			body["startup"] = err.Error()
 			status = http.StatusServiceUnavailable
 		}
 		if err := djangoPing(ctx); err != nil {

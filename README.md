@@ -25,7 +25,7 @@ behind basic auth).
 | `/feeds/*` | Product feeds: `google.xml`, `meta.xml`, `tiktok.xml`, `acp.json` |
 | `POST /chat` | Backend of the storefront's shopping chatbot (server-sent events): an OpenAI-compatible model looping over the same commerce tools |
 | `/internal/*` | Cluster-only, shared secret: Django's order-status push (forwarded to agents as signed UCP order webhooks) and feed invalidation |
-| `GET /healthz`, `GET /readyz`, `GET /metrics` | Liveness, readiness (gated on Redis only) and Prometheus metrics |
+| `GET /healthz`, `GET /readyz`, `GET /metrics` | Liveness, readiness (gated on Redis and the signing keys' startup check, never on Django) and Prometheus metrics |
 
 - **Tenant resolution.** The store comes from the real `Host` header only (an inbound
   `X-Forwarded-Host` is ignored), resolved through Django's `GET /api/v1/tenant/resolve` and cached

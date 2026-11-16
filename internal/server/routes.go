@@ -60,7 +60,8 @@ func New(d Deps) http.Handler {
 		return d.Redis.Ping(ctx).Err()
 	}
 	mux.Handle("GET /healthz", obs.Healthz())
-	mux.Handle("GET /readyz", obs.Readyz(redisPing, d.Django.Ping))
+	mux.Handle("GET /readyz",
+		obs.Readyz(redisPing, d.Django.Ping, d.Keys.Checked))
 	mux.Handle("GET /metrics", promhttp.HandlerFor(
 		d.Metrics.Registry, promhttp.HandlerOpts{},
 	))

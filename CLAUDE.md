@@ -22,7 +22,7 @@ cluster-only internal endpoint and the operational routes:
 | `/feeds/*` | Product feeds: google.xml, meta.xml, tiktok.xml, acp.json |
 | `POST /chat` | First-party shopping chatbot (SSE; OpenAI-compatible protocol via openai-go — Gemini free tier by default, any compatible provider via CHAT_BASE_URL) |
 | `/internal/*` | Cluster-only: Django order-event push (shared-secret header) |
-| `GET /healthz`, `GET /readyz` | Liveness / readiness (readiness gates on Redis only; Django is reported, never gating) |
+| `GET /healthz`, `GET /readyz` | Liveness / readiness (readiness gates on Redis and the startup check of the signing keys; Django is reported, never gating) |
 | `GET /metrics` | Prometheus metrics (registry from `internal/obs`) |
 
 The gateway is a **protocol adapter**: all commerce state lives in Django
@@ -117,8 +117,9 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   trailing blanks) or, in production and staging, shorter than
   `minInternalSecretLen`; a `SIGNING_KEY_ENCRYPTION_KEY` (required in
   every ENV, never logged) that is not standard base64 of exactly 32
-  bytes, or that opens none of the sealed signing keys Redis holds
-  when it holds any (`ucp.Keys.CheckKEK` at boot, before serving); `FEED_STALE_TTL` shorter than
+  bytes; or, checked once Redis answers (`ucp.Keys.AwaitKEK`), one
+  that opens none of the sealed signing keys Redis holds when it holds
+  any, which ends the process; `FEED_STALE_TTL` shorter than
   `FEED_FRESH_TTL`; any numeric setting at zero or below. `ENV`
   (production | staging | development | test) is folded into
   `AllowLocalWebhooks`, `PaymentHandlerEnv` and the secret's minimum
@@ -399,8 +400,13 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   with the context whenever one is in scope (sloglint enforces it); a
   line naming a store uses the key `tenant` (`obs.KeyTenant`), never
   `schema`, and only where no request context carries it.
-  `/healthz` is process-only; `/readyz` gates on Redis ONLY — Django-down
-  must never flip readiness (agents get actionable errors, not 502s).
+  `/healthz` is process-only; `/readyz` gates on Redis and on the
+  startup checks (`started`: the signing keys, `ucp.Keys.Checked`) —
+  Django-down must never flip readiness (agents get actionable errors,
+  not 502s). The server answers from boot while the check waits for
+  Redis, so a pod booting during a Redis restart is unready, not
+  crash-looping; order-webhook delivery and the keys' refresh start
+  once the check passed.
 - `internal/server` — mux assembly; new route groups register here.
 - `internal/storefront` — every link into the Nuxt storefront (product,
   cart claim, order success, legal pages, OAuth metadata). The paths are

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -134,6 +135,8 @@ func (k *SigningKey) Sign(base []byte) ([]byte, error) {
 type Keys struct {
 	rdb  *redis.Client
 	aead cipher.AEAD
+	// checked is set once AwaitKEK has passed: readiness waits for it.
+	checked atomic.Bool
 
 	mu  sync.RWMutex
 	mem map[string]*SigningKey

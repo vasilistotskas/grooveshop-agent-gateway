@@ -63,6 +63,59 @@ func (k *Keys) CheckKEK(ctx context.Context, log *slog.Logger) error {
 	return nil
 }
 
+// kekCheckAttempt bounds one attempt of AwaitKEK; kekRetryFirst and
+// kekRetryMax are its backoff between attempts that could not read Redis.
+const (
+	kekCheckAttempt = 30 * time.Second
+	kekRetryFirst   = time.Second
+	kekRetryMax     = 30 * time.Second
+)
+
+// errKEKUnchecked is what Checked reports until AwaitKEK has passed.
+var errKEKUnchecked = errors.New("the signing keys are not checked yet")
+
+// AwaitKEK runs CheckKEK until it reaches an outcome, as readiness waits
+// for Redis: an attempt that cannot read Redis is logged at warn and
+// retried, each bounded by kekCheckAttempt, with a backoff up to
+// kekRetryMax. It returns nil once the check passed, and from then on
+// Checked reports nil; ErrKEKOpensNoKey, the one definite failure, on
+// which the process must exit; or ctx's error once ctx ends.
+func (k *Keys) AwaitKEK(ctx context.Context, log *slog.Logger) error {
+	wait := kekRetryFirst
+	for {
+		attempt, cancel := context.WithTimeout(ctx, kekCheckAttempt)
+		err := k.CheckKEK(attempt, log)
+		cancel()
+		switch {
+		case err == nil:
+			k.checked.Store(true)
+			return nil
+		case errors.Is(err, ErrKEKOpensNoKey):
+			return err
+		case ctx.Err() != nil:
+			return ctx.Err()
+		}
+		log.WarnContext(ctx, "signing keys not checked yet; retrying",
+			slog.String("error", err.Error()),
+			slog.Duration("retry_in", wait))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+		wait = min(2*wait, kekRetryMax)
+	}
+}
+
+// Checked reports whether AwaitKEK has passed: nil once it has. The pod
+// is not ready until then (obs.Readyz).
+func (k *Keys) Checked() error {
+	if k.checked.Load() {
+		return nil
+	}
+	return errKEKUnchecked
+}
+
 // keyRefreshInterval paces KeepFresh.
 const keyRefreshInterval = 5 * time.Minute
 
