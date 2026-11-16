@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -53,9 +52,7 @@ func startRedis(t *testing.T) *redis.Client {
 }
 
 func quietLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelError + 1,
-	}))
+	return slog.New(slog.DiscardHandler)
 }
 
 func TestResolverSharesRedisTierAcrossInstances(t *testing.T) {
@@ -123,8 +120,13 @@ func TestResolverSharesRedisTierAcrossInstances(t *testing.T) {
 	assert.Equal(t, callsAfterNegative, calls.Load(),
 		"pod B must see the shared negative sentinel")
 
-	// The Redis entry is namespaced per plan: ag:tenant:v7:{host}.
-	val, err := rdb.Get(ctx, "ag:tenant:v7:nope.example.test").Result()
+	// The Redis entry is ag:tenant:<version>:{host}. The version is
+	// redisKeyVersion's alone (internal/tenant, pinned by its cache
+	// guard), so it is found here, not spelled.
+	keys, err := rdb.Keys(ctx, "ag:tenant:*:nope.example.test").Result()
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	val, err := rdb.Get(ctx, keys[0]).Result()
 	require.NoError(t, err)
 	assert.Equal(t, "!", val)
 }

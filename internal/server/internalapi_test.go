@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -21,9 +20,7 @@ import (
 const testSecret = "shared-internal-secret"
 
 func quietLog() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelError + 1,
-	}))
+	return slog.New(slog.DiscardHandler)
 }
 
 // unreachableRedis exercises the Redis-failure path without Docker; the

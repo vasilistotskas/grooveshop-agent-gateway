@@ -11,7 +11,6 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -55,8 +54,7 @@ func unreachableRedis(t *testing.T) *redis.Client {
 }
 
 func quietLog() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	return slog.New(slog.DiscardHandler)
 }
 
 func testHandler(t *testing.T, rdb *redis.Client) *Handler {
