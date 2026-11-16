@@ -3,7 +3,9 @@ paths:
   - "internal/ucp/**"
   - "internal/mcpsrv/ucp_*.go"
   - "internal/mcpsrv/order.go"
+  - "internal/mcpsrv/signature.go"
   - "internal/httpsig/**"
+  - "cmd/ucp-sign/**"
   - "internal/checkout/**"
   - "internal/chat/bridge.go"
 ---
@@ -32,6 +34,36 @@ wins over this page.
   The order webhook URL comes ONLY from the negotiated order
   capability's `config.webhook_url`, and `pay_way_id` needs the
   hosted-selection extension negotiated, not just the tenant gate.
+  On a signed request, `meta.ucp-agent.profile` must name the platform
+  the signature proved (Identity Binding: `checkSigner` in `negotiate`,
+  and `VerifyPlatformSignature` before the handler), else
+  `signature_invalid`.
+- **A platform's RFC 9421 signature** (`signatures.md`, MCP Transport)
+  is verified on every `/mcp` request that carries one
+  (`mcpsrv.VerifyPlatformSignature`, `ucp.ProfileResolver.VerifyRequest`,
+  `httpsig.Verify`; `CLAUDE.md` names the rules), with the keys in the
+  top-level `keys[]` of the profile its `UCP-Agent` header names
+  (`PlatformProfile.Keys`; a key marked `use: enc`, or with `key_ops`
+  that leave out `verify`, is skipped). The signer is that profile's URL,
+  normalized (`NormalizeProfileURL`: scheme and host lowercased, IDNA
+  A-label, default port dropped, empty path as `/`, no fragment).
+  Policy, a fixed one with no switch:
+  - `get_order` takes only a signed request (`signed` in
+    `internal/mcpsrv/server.go`): unsigned, it is 401 `signature_missing`;
+  - a checkout a signed `create_checkout` made belongs to that signer
+    (`Session.Platform`): every later call on it, and the create that
+    would take its cart, must come from the same signer, and any other
+    caller gets the missing-session answer (`Session.Serves`);
+  - an unsigned `create_checkout` stays open, as the spec makes signing
+    a SHOULD for checkout: its checkout belongs to no platform, and any
+    caller reaches it.
+
+  Requiring signatures on the other five tools is a release of its own,
+  never a setting. `created` and `expires` are held to
+  `UCP_SIGNATURE_MAX_AGE` and `UCP_SIGNATURE_CLOCK_SKEW` only when the
+  signature carries them; UCP's own replay protection is the idempotency
+  key. `cmd/ucp-sign` signs requests to a running gateway as a platform
+  (`ucp.SignRequest`), for the runbook and the staging check.
 - **The canonical UCP tools take the wire shapes from the OpenRPC document**
   (`create_checkout`, `get_checkout`, `update_checkout`,
   `complete_checkout`, `cancel_checkout`): `meta` (with
@@ -70,10 +102,11 @@ wins over this page.
   `checkout`, outside the negotiated shape, and the create schema takes
   it or `checkout.line_items`. The capability's aim is
   kept, a cart has one incomplete checkout, by other means: the newest
-  create holds the cart and an open checkout on it is canceled. A
-  checkout is not bound to its platform yet, so the spec's "return the
-  existing checkout" is not offered (`createFromCart`; "One live
-  checkout holds a cart" in `CLAUDE.md`).
+  create holds the cart and an open checkout on it is canceled, unless
+  another platform signed its creation. A checkout created unsigned is
+  bound to no platform, so the spec's "return the existing checkout" is
+  not offered (`createFromCart`; "One live checkout holds a cart" in
+  `CLAUDE.md`).
   These five tools and `get_order` are never
   registered on the chat server (`mcpOnly` in
   `internal/mcpsrv/server.go`) — their input requires `meta`, which a
@@ -186,11 +219,19 @@ wins over this page.
   plus `get_order`. Declaring it asserts a machine-checkable contract.
   Its cart/catalog methods belong to capabilities the profile does not
   advertise, so a negotiating platform never calls them.
-- `get_order` sources the required `checkout_id` from the gateway's own
-  order link (`ag:{schema}:orderlink:{uuid}`: checkout id, storefront
-  domain, webhook target; retained a year — it must outlive the session,
-  which expires in 24h). An order placed on the web has no checkout to
-  name and is refused with that explanation, never a fabricated id.
+- `get_order` serves an order to the platform that placed it, as the
+  order capability's Authorization section describes ("Platform
+  credentials: orders originated by the platform"): the order link
+  (`ag:{schema}:orderlink:{uuid}`: checkout id, storefront domain,
+  webhook target, and the platform that signed the checkout's creation;
+  retained a year, as it must outlive the session, which expires in
+  24h) is read first, and an order whose link names another platform,
+  or none, is the spec's `not_found` error response
+  (`ucp.OrderNotFound`), the same as an id that names no order and
+  without asking the store. The order is then read with the gateway's
+  own credential (`django.Client.PlacedOrder`), for as long as its link
+  is kept. The required `checkout_id` comes from the link, never a
+  fabricated id.
   `order.fulfillment` stays `{}`: an expectation needs a destination the
   order detail deliberately does not decode (PII), and an event needs a
   shipment timestamp upstream does not expose.

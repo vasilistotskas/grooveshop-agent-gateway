@@ -156,9 +156,37 @@ type Session struct {
 	// WebhookURL is the platform's order-update delivery target,
 	// registered at create time.
 	WebhookURL string `json:"webhookUrl,omitempty"`
+	// Platform is the UCP platform that signed the session's creation:
+	// its profile URL, normalized (ucp.NormalizeProfileURL). Only that
+	// platform's signed calls reach the session (Serves), and only it
+	// reads the order the session places (OrderLink.Platform). Empty for
+	// a session created without a signature, which any caller of its
+	// surface reaches.
+	Platform string `json:"platform,omitempty"`
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// Caller is who asks for a session: the surface, and the platform whose
+// verified signature the request carried ("" for none).
+type Caller struct {
+	Protocol string
+	Platform string
+}
+
+// Serves reports whether c may reach the session: a session answers only
+// on the surface that created it, and one a platform signed the creation
+// of only to that platform.
+func (s *Session) Serves(c Caller) bool {
+	return s.Protocol == c.Protocol &&
+		(s.Platform == "" || s.Platform == c.Platform)
+}
+
+// creator is the caller the session serves as itself: the request that
+// holds it reads it again as such.
+func (s *Session) creator() Caller {
+	return Caller{Protocol: s.Protocol, Platform: s.Platform}
 }
 
 // Terminal reports whether the session can no longer change.

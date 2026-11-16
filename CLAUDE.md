@@ -12,7 +12,7 @@ cluster-only internal endpoint and the operational routes:
 
 | Path | Surface |
 |---|---|
-| `POST /mcp` | MCP server (stateless streamable HTTP): the UCP checkout capability's five canonical tools + ergonomic commerce tools + account tools (`my_orders`, `my_loyalty_points`, `my_favourites`); a tool whose store feature is off is neither listed nor callable |
+| `POST /mcp` | MCP server (stateless streamable HTTP): the UCP checkout capability's five canonical tools + `get_order` + ergonomic commerce tools + account tools (`my_orders`, `my_loyalty_points`, `my_favourites`); a tool whose store feature is off is neither listed nor callable. A platform's RFC 9421 signature is verified on any request that carries one, and `get_order` takes only signed ones (`mcpsrv.VerifyPlatformSignature`) |
 | `POST /mcp/admin` | Store-admin MCP server (`internal/adminmcp`): the store's own team reads orders, sales, profit, products and stock, customers, reviews and contact messages, by role, read only. Every call needs a staff bearer from Django's staff issuer on `STAFF_CONNECT_HOST`; `GET /.well-known/oauth-protected-resource/mcp/admin` names it |
 | `GET /mcp/server-card` | MCP Server Card (SEP-2127): identity and remotes only — no tools, which clients read from `tools/list`. Name/title/version match `initialize` (`mcpsrv.IdentityFor`) |
 | `GET /.well-known/ard.json` | Agentic Resource Discovery manifest (ARD v0.91, `application/json`): one entry for the MCP server, with the card's title/description, the tool names the store's `tools/list` serves as `capabilities` and `representativeQueries` |
@@ -120,7 +120,10 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   bytes; or, checked once Redis answers (`ucp.Keys.AwaitKEK`), one
   that opens none of the sealed signing keys Redis holds when it holds
   any, which ends the process; `FEED_STALE_TTL` shorter than
-  `FEED_FRESH_TTL`; any numeric setting at zero or below. `ENV`
+  `FEED_FRESH_TTL`; any numeric setting at zero or below (among them
+  `UCP_SIGNATURE_MAX_AGE`, 5m, and `UCP_SIGNATURE_CLOCK_SKEW`, 1m: the
+  window a platform's request signature's `created` and `expires` are
+  held to, when it carries them). `ENV`
   (production | staging | development | test) is folded into
   `AllowLocalWebhooks`, `PaymentHandlerEnv` and the secret's minimum
   length there so no handler compares environment strings.
@@ -131,6 +134,42 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   every tenant, whatever the tenant's own default.
   Per-tenant values come from Django `tenant/resolve` at request time,
   never env.
+- `internal/httpsig` — RFC 9421 HTTP message signatures with RFC 9530
+  `Content-Digest`: `Sign` for the order webhooks and `Verify` for a
+  platform's requests, structured fields read and written with
+  `github.com/dunglas/httpsfv`. `Verify` applies UCP's Identity
+  Resolution Algorithm: each signature on its own, one that verifies is
+  enough; a tag other than `web-bot-auth` is skipped; an `alg`
+  parameter is refused (the algorithm is the key's: ES256, ES384,
+  Ed25519, ECDSA as fixed-width r||s); a `web-bot-auth` signature's
+  keyid must be its key's RFC 7638 thumbprint; it must cover
+  `@method`, `@authority`, `@path`, `@query` when there is one, the
+  body (`content-digest`, `content-type`) and each of `ucp-agent`,
+  `signature-agent` and `idempotency-key` the request carries; a
+  covered field takes only the `key` parameter (RFC 9421 section
+  2.1.2). A received request's `@authority` is its `Host`, either
+  scheme's default port dropped (TLS ends at Traefik). The refusals
+  carry UCP's codes (`signature_invalid`, `key_not_found`,
+  `digest_mismatch`, `algorithm_unsupported`).
+- **A platform's signature on `/mcp`** (`mcpsrv.VerifyPlatformSignature`,
+  after the identity middleware). A request that carries
+  `Signature-Input` or `Signature` is verified, whatever it calls,
+  against the keys its `UCP-Agent` profile publishes
+  (`ucp.ProfileResolver.VerifyRequest`: the profile is fetched as
+  negotiation fetches it, and fetched again once a TTL floor per origin
+  for a keyid it does not publish, `Refresh`). One that does not verify
+  is answered before the MCP handler with UCP's HTTP status and
+  JSON-RPC error: 401 and -32000 (`signature_invalid`,
+  `key_not_found`), 400 and -32600 (`digest_mismatch`,
+  `algorithm_unsupported`), or the discovery failure (-32001 with
+  400/424/422, or 503 when the budget is spent). A signed request whose
+  tool call names another platform in `meta.ucp-agent.profile` is
+  `signature_invalid` (Identity Binding; `negotiate` checks it again on
+  the meta the tool decoded). The verified platform, its profile URL
+  normalized (`ucp.NormalizeProfileURL`), rides the request context. A
+  tool marked `signed` (`get_order`) refuses an unsigned call with 401
+  and `signature_missing`. The body is read once for this and the
+  account challenge (`readPost`), as the SDK reads it.
 - `internal/identity` — the bearer verification both MCP servers share,
   and /mcp's optional-auth middleware.
   - `Verifier[P]` caches a `Probe`'s verdict for 60s, keyed by
@@ -685,14 +724,20 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   before starting another checkout, with the order id if the caller
   holds one and the store's order confirmation if not. Never answer a
   missing session with only "start a new one".
-- **A checkout session answers only on the surface that created it.**
-  `Session.Protocol` decides. A surface reads a session with
-  `Store.Load(schema, protocol, id)` and locks one with
-  `Store.LockSession(schema, protocol, id)`. A session of another
-  protocol is `ErrNotFound` there, so it gets that surface's
+- **A checkout session answers only on the surface that created it, and
+  one a platform signed the creation of only to that platform.**
+  `Session.Serves(checkout.Caller)` decides, on `Session.Protocol` and
+  `Session.Platform` (the verified signer of UCP's `create_checkout`,
+  empty for an unsigned create, which any caller of its surface
+  reaches). A surface reads a session with
+  `Store.Load(schema, caller, id)` and locks one with
+  `Store.LockSession(schema, caller, id)`. A session the caller may not
+  reach is `ErrNotFound` there, so it gets that surface's
   missing-session answer (above). `LockSession` reads the session
   before it writes the lock, which is keyed by the id alone, so a call
-  on the other surface takes no lock. Two readers reach a session
+  that may not reach it takes no lock. A request that holds a session
+  reads it again as its creator (`Store.Current`,
+  `Flow.saveOverEvent`). Two readers reach a session
   through a record of the gateway's own, not a caller's id, and read
   either protocol with `Store.LoadAnyProtocol`: an order event, through
   its order link (`Flow.ApplyOrderEvent`), and a cart's holder
@@ -899,7 +944,7 @@ passes, and runs CI's tidy, image and vulnerability checks again.
       warn and answered 204, and the session is left as it is: a
       session is never completed without its order. The record
       `Flow.place` writes beside the session (`Store.IndexOrder`:
-      `ag:{schema}:cs:v3:{id}:order`, the order's uuid) is for calls on
+      `ag:{schema}:cs:v4:{id}:order`, the order's uuid) is for calls on
       the session, not events: it can be lost (a flush or a
       restore);
     - a payment-completed event also sets `completed`. No other event
@@ -956,8 +1001,9 @@ passes, and runs CI's tidy, image and vulnerability checks again.
     create that cannot render is discarded the same way: no create
     leaves a checkout nobody was given.
   - A holder whose order is being placed or awaits its payment keeps
-    the cart, and so does an open checkout of another protocol: the
-    create is a `conflict` (`errCartOrderPending`,
+    the cart, and so does an open checkout the caller may not reach
+    (another protocol's, or one another platform signed the creation
+    of): the create is a `conflict` (`errCartOrderPending`,
     `errCartOrderUnpaid`, `errCartElsewhere`). The first two say that
     an order exists or may, tell the caller not to start another
     checkout, and say where to look with the checkout id or order id
@@ -976,8 +1022,8 @@ passes, and runs CI's tidy, image and vulnerability checks again.
     names a canceled order, and a paid order whose payment event never
     arrived (#108 makes a placed checkout read its order).
   - **No answer to a create gives another checkout, or names one or
-    its order.** A checkout is not bound to its platform yet, so the
-    UCP cart capability's "return the existing checkout" is not
+    its order.** A checkout created unsigned is bound to no platform,
+    so the UCP cart capability's "return the existing checkout" is not
     offered.
   - A create that finds the holder changed by another request (a
     cancel that lost its save, a cart another create took), or a call
@@ -1079,11 +1125,13 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   gateway's authenticated call, and none of those is written to the shared
   Redis entry: `publicConfig` clears each, and
   `TestPublicConfigClearsEveryUndocumentedField` finds them by reflection.
-  A checkout session is `ag:{schema}:cs:v3:{id}`, its lock that plus
+  A checkout session is `ag:{schema}:cs:v4:{id}`, its lock that plus
   `:lock`, the order it placed that plus `:order`. The version is of how sessions are written, not only of their
   shape: bump it whenever an older pod writing the key its own way could
   undo what a newer one relies on (v1 pods wrote sessions unconditionally;
-  v2 pods saved one without keeping its cart's record alive),
+  v2 pods saved one without keeping its cart's record alive; v3 pods
+  know nothing of the platform that signed a session's creation, and
+  their save drops it),
   so the two never share a session; a session under an older key is not
   found. `TestSessionKeyIsVersioned` pins it. The session that holds a
   cart is named in `ag:{schema}:checkoutcart:{cartId}` (`cartKey`), a

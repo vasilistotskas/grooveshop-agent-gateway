@@ -46,6 +46,17 @@ func ucpMeta(t *testing.T, idem string) *MetaIn {
 		IdempotencyKey: idem}
 }
 
+// signedAs is ctx as VerifyPlatformSignature leaves it for a request
+// signed by the platform meta names.
+func signedAs(
+	t *testing.T, ctx context.Context, meta *MetaIn,
+) context.Context {
+	t.Helper()
+	signer, err := ucp.NormalizeProfileURL(meta.UCPAgent.Profile)
+	require.NoError(t, err)
+	return context.WithValue(ctx, signerKey{}, signer)
+}
+
 // ucpDjango serves the pay ways and the placed order from their fixtures
 // and records every call it gets.
 func ucpDjango(t *testing.T) (*django.Client, func() []string) {
@@ -214,8 +225,9 @@ func TestCheckoutStoreOutageIsUnavailable(t *testing.T) {
 		"get_order reads the order link": func(
 			ctx context.Context, h *handlers, t *testing.T,
 		) error {
-			_, _, err := h.getOrder(ctx, nil,
-				GetOrderIn{Meta: ucpMeta(t, ""), ID: fixtureOrderUUID})
+			meta := ucpMeta(t, "")
+			_, _, err := h.getOrder(signedAs(t, ctx, meta), nil,
+				GetOrderIn{Meta: meta, ID: fixtureOrderUUID})
 			return err
 		},
 	} {

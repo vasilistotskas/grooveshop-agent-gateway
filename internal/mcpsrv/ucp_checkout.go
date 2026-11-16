@@ -35,8 +35,8 @@ type CreateCheckoutIn struct {
 	// the create schema names it beside `checkout`, outside the
 	// negotiated shape, and a caller sends it or checkout.line_items. The
 	// capability's aim is kept, a cart has one incomplete checkout, but
-	// not its means: a checkout is not bound to its platform yet, so the
-	// spec's "return the existing checkout" is not offered. The newest
+	// not its means: a checkout created unsigned is bound to no platform,
+	// so the spec's "return the existing checkout" is not offered. The newest
 	// create holds the cart, and an open checkout on it is canceled
 	// (createFromCart). (Order webhooks are discovered from the platform
 	// profile, never taken from a request.)
@@ -223,6 +223,9 @@ func (h *handlers) newSession(
 	// order capability (vetted by negotiate); none when it negotiated
 	// no order capability.
 	s.WebhookURL = neg.OrderWebhookURL()
+	// The platform that signed the create owns the checkout, and the
+	// order it places; an unsigned create leaves it unowned.
+	s.Platform, _ = signerFrom(ctx)
 	in.applyTo(s)
 	if err := h.applyRegion(ctx, t, s, in); err != nil {
 		return nil, err
@@ -452,10 +455,12 @@ func (h *handlers) cancel(ctx context.Context, s *checkout.Session) error {
 //   - a checkout whose order is being placed or awaits its payment: an
 //     order exists, or may, and a second checkout could place a second
 //     one;
-//   - an open checkout of another protocol, which is that surface's to
-//     cancel. One whose order Django canceled is canceled here whatever
-//     its protocol: nothing is left of it to finish, and its own surface
-//     refuses to cancel a checkout that placed an order.
+//   - an open checkout this caller may not reach (Session.Serves): one
+//     of another protocol, which is that surface's to cancel, or one
+//     another platform signed the creation of, which is that platform's.
+//     One whose order Django canceled is canceled here whatever its
+//     protocol or platform: nothing is left of it to finish, and its own
+//     surface refuses to cancel a checkout that placed an order.
 //
 // No refusal names the holder or its order.
 func (h *handlers) cartHolder(
@@ -476,7 +481,7 @@ func (h *handlers) cartHolder(
 		if !canceled {
 			return holder, cartOrdered(s)
 		}
-	case s.Protocol != checkout.ProtocolUCP:
+	case !s.Serves(ucpCaller(ctx)):
 		return holder, errCartElsewhere
 	}
 	return holder, nil
@@ -544,14 +549,14 @@ var (
 			"id, read the order with get_order or track_order; if not, " +
 			"ask the shopper for the store's order confirmation"}
 
-	// errCartElsewhere: an open checkout of another protocol holds the
-	// cart.
+	// errCartElsewhere: an open checkout this caller may not reach holds
+	// the cart.
 	errCartElsewhere = &mcptool.ToolError{Code: mcptool.CodeConflict,
 		Hint: "this cart is already in an open checkout that was " +
-			"started outside this server and cannot be changed here, " +
-			"so no checkout was created; that checkout must be finished " +
-			"or canceled where it was started before this cart can be " +
-			"checked out here"}
+			"started outside this server or by another platform, and " +
+			"cannot be changed by this call, so no checkout was " +
+			"created; that checkout must be finished or canceled by " +
+			"whoever started it before this cart can be checked out here"}
 
 	// errCartBusy: in every round another request was at work on the
 	// cart's checkout, or had just changed it.
@@ -702,7 +707,7 @@ func (h *handlers) finish(
 	}
 	var zero CheckoutResult
 	now, err := h.deps.Checkout.Load(
-		ctx, t.SchemaName, checkout.ProtocolUCP, s.ID)
+		ctx, t.SchemaName, ucpCaller(ctx), s.ID)
 	switch {
 	case errors.Is(err, checkout.ErrNotFound):
 		return nil, zero, errCheckoutGone
@@ -1364,7 +1369,7 @@ func (h *handlers) lockedSession(
 		return nil, nil, errIDRequired
 	}
 	s, release, err := h.deps.Checkout.LockSession(
-		ctx, t.SchemaName, checkout.ProtocolUCP, id)
+		ctx, t.SchemaName, ucpCaller(ctx), id)
 	switch {
 	case errors.Is(err, checkout.ErrLocked):
 		return nil, nil, errCheckoutBusy
@@ -1471,7 +1476,7 @@ func (h *handlers) getCheckout(
 				return nil, zero, errIDRequired
 			}
 			s, err := h.deps.Checkout.Load(
-				ctx, t.SchemaName, checkout.ProtocolUCP, in.ID)
+				ctx, t.SchemaName, ucpCaller(ctx), in.ID)
 			switch {
 			case errors.Is(err, checkout.ErrNotFound):
 				return nil, zero, errCheckoutGone

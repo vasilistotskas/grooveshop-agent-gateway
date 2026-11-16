@@ -74,6 +74,7 @@ func TestRunbookCommandsRunAsWritten(t *testing.T) {
 				"GW="+running.gatewayURL,
 				"STORE="+storeHost,
 				"UCP_PROFILE="+running.profileURL,
+				"UCP_SIGNING_KEY="+running.signer.keyFile,
 				"ACP_TOKEN="+running.seeded.ACPToken,
 			)
 			out, err := cmd.CombinedOutput()

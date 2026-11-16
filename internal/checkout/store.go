@@ -102,8 +102,11 @@ func NewStore(rdb *redis.Client, upstreamTimeout time.Duration) *Store {
 //   - v3: a session is stored with its cart's record, and every save
 //     keeps that record alive (a v2 pod's save would let it expire under
 //     a session that still holds the cart).
+//   - v4: a session keeps the platform that signed its creation, and
+//     only that platform reaches it (a v3 pod knows nothing of that
+//     platform, and its save drops it).
 func sessionKey(schema, id string) string {
-	return "ag:" + schema + ":cs:v3:" + id
+	return "ag:" + schema + ":cs:v4:" + id
 }
 
 func lockKey(schema, id string) string {
@@ -182,17 +185,18 @@ func ValidID(id string) bool {
 	return err == nil && u.String() == id
 }
 
-// Load reads a session for the surface that serves protocol. A session
-// answers only on the surface that created it: one of another protocol
-// is ErrNotFound, as a missing one is, and nothing about it is written.
+// Load reads a session for caller. A session answers only on the
+// surface that created it, and one a platform signed the creation of
+// only to that platform (Session.Serves): any other is ErrNotFound, as a
+// missing one is, and nothing about it is written.
 func (st *Store) Load(
-	ctx context.Context, schema, protocol, id string,
+	ctx context.Context, schema string, caller Caller, id string,
 ) (*Session, error) {
 	s, err := st.read(ctx, schema, id)
 	if err != nil {
 		return nil, err
 	}
-	if s.Protocol != protocol {
+	if !s.Serves(caller) {
 		return nil, ErrNotFound
 	}
 	st.touchCart(ctx, s)
@@ -453,7 +457,7 @@ func (st *Store) store(
 // behalf (a cart write in Django), so that it does none for a session it
 // can already see has moved on.
 func (st *Store) Current(ctx context.Context, s *Session) error {
-	stored, err := st.Load(ctx, s.Schema, s.Protocol, s.ID)
+	stored, err := st.Load(ctx, s.Schema, s.creator(), s.ID)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return ErrSessionChanged
@@ -525,24 +529,24 @@ func (st *Store) Settling(ctx context.Context) (
 		settleTimeout(st.timeout))
 }
 
-// LockSession takes a session's lock for the surface that serves
-// protocol and reads the session under it; release frees the lock. A
-// session of another protocol, like a missing one, is ErrNotFound, and
-// is read before any lock is written: the lock is keyed by the id alone,
-// and a call on another surface must not hold it while the session's own
-// surface needs it. A session never changes its protocol, so the read
+// LockSession takes a session's lock for caller and reads the session
+// under it; release frees the lock. A session the caller may not reach
+// (Load), like a missing one, is ErrNotFound, and is read before any
+// lock is written: the lock is keyed by the id alone, and a call that
+// may not reach the session must not hold it while its own callers need
+// it. A session never changes its protocol or its platform, so the read
 // under the lock checks again only that the session is still stored.
 func (st *Store) LockSession(
-	ctx context.Context, schema, protocol, id string,
+	ctx context.Context, schema string, caller Caller, id string,
 ) (*Session, func(), error) {
-	if _, err := st.Load(ctx, schema, protocol, id); err != nil {
+	if _, err := st.Load(ctx, schema, caller, id); err != nil {
 		return nil, nil, err
 	}
 	release, err := st.Lock(ctx, schema, id)
 	if err != nil {
 		return nil, nil, err
 	}
-	s, err := st.Load(ctx, schema, protocol, id)
+	s, err := st.Load(ctx, schema, caller, id)
 	if err != nil {
 		release()
 		return nil, nil, err
@@ -580,12 +584,14 @@ func (st *Store) MarkCompleted(ctx context.Context, c *Claim) (bool, error) {
 }
 
 // OrderLink ties an order placed through a checkout to what outlives
-// that checkout: its id, the storefront domain the order belongs to, and
-// the platform's webhook target.
+// that checkout: its id, the storefront domain the order belongs to, the
+// platform's webhook target, and the platform that signed the checkout's
+// creation (Session.Platform), the one get_order serves the order to.
 type OrderLink struct {
 	CheckoutID string `json:"checkoutId"`
 	Domain     string `json:"domain"`
 	WebhookURL string `json:"webhookUrl,omitempty"`
+	Platform   string `json:"platform,omitempty"`
 }
 
 // placedKey holds the uuid of the order a completion placed, recorded
@@ -606,6 +612,7 @@ func placedKey(schema, id string) string {
 func (st *Store) IndexOrder(ctx context.Context, s *Session) error {
 	link, err := json.Marshal(OrderLink{
 		CheckoutID: s.ID, Domain: s.Domain, WebhookURL: s.WebhookURL,
+		Platform: s.Platform,
 	})
 	if err != nil {
 		return fmt.Errorf("checkout: encode order link: %w", err)

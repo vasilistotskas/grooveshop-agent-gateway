@@ -196,11 +196,13 @@ func startGatewayOn(t *testing.T, djangoH http.Handler) *httptest.Server {
 		StorefrontDefaultLocale: "el",
 		MediaURLTemplate: "https://{assets_host}/media_stream-image/{path}" +
 			"/800/800/contain/entropy/transparent/5/80.webp",
-		TenantCacheTTL:   time.Minute,
-		NegativeCacheTTL: time.Minute,
-		UpstreamTimeout:  5 * time.Second,
-		RateLimitPerMin:  6000,
-		RateLimitBurst:   1000,
+		TenantCacheTTL:        time.Minute,
+		NegativeCacheTTL:      time.Minute,
+		UpstreamTimeout:       5 * time.Second,
+		RateLimitPerMin:       6000,
+		RateLimitBurst:        1000,
+		UCPSignatureMaxAge:    5 * time.Minute,
+		UCPSignatureClockSkew: time.Minute,
 	}
 	dj := django.New(cfg.DjangoBaseURL, cfg.DjangoPublicHost, "test-secret",
 		cfg.UpstreamTimeout, log, metrics)

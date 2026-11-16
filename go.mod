@@ -3,6 +3,7 @@ module github.com/vasilistotskas/grooveshop-agent-gateway
 go 1.27.4
 
 require (
+	github.com/dunglas/httpsfv v1.1.2
 	github.com/google/jsonschema-go v0.4.3
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0

@@ -22,6 +22,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/feeds"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpsig"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/identity"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcpsrv"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
@@ -98,9 +99,13 @@ func New(d Deps) http.Handler {
 		AssetsHost:         d.Cfg.AssetsHost,
 		AllowLocalWebhooks: d.Cfg.AllowLocalWebhooks,
 		Profiles:           d.Profiles,
-		Site:               site,
-		Log:                d.Log,
-		Metrics:            d.Metrics,
+		SignatureWindow: httpsig.Window{
+			MaxAge: d.Cfg.UCPSignatureMaxAge,
+			Skew:   d.Cfg.UCPSignatureClockSkew,
+		},
+		Site:    site,
+		Log:     d.Log,
+		Metrics: d.Metrics,
 		// A store's tool list follows its features and identity, which
 		// the gateway caches per TTL tier (worst case: CLAUDE.md,
 		// internal/mcptool).
@@ -113,10 +118,14 @@ func New(d Deps) http.Handler {
 	// challenge so MCP clients can (re-)run their OAuth flow.
 	identityMW := identity.Middleware(
 		identity.NewShopperVerifier(d.Django, d.Log), d.Log)
+	// A platform's RFC 9421 signature is verified after the identity
+	// check, and before the account challenge, which reads the same body
+	// it read.
 	mux.Handle("/mcp",
 		tenantMW(tenant.RequireAgentCommerce(
-			identityMW(mcpsrv.RequireLinkedAccount(
-				mcpsrv.Handler(mcpDeps))))))
+			identityMW(mcpsrv.VerifyPlatformSignature(mcpDeps)(
+				mcpsrv.RequireLinkedAccount(
+					mcpsrv.Handler(mcpDeps)))))))
 	// The store-admin MCP server: the store's own team, by role, read
 	// only. A separate server with its own tools and authorization server
 	// (Django's staff issuer on the platform's connect host); every call

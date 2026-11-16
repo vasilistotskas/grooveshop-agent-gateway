@@ -87,7 +87,7 @@ func testKey(t *testing.T) *SigningKey {
 	t.Helper()
 	raw, err := newScalar()
 	require.NoError(t, err)
-	key, err := keyFromScalar(raw)
+	key, err := SigningKeyFromScalar(raw)
 	require.NoError(t, err)
 	return key
 }

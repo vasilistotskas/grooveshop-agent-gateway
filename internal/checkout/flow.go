@@ -244,7 +244,7 @@ func (f *Flow) Complete(
 // knows more (the payment page it opened), so its outcome is stored over
 // the event's, keeping "completed" if the event said the order is paid.
 func (f *Flow) saveOverEvent(ctx context.Context, s *Session) error {
-	stored, err := f.st.Load(ctx, s.Schema, s.Protocol, s.ID)
+	stored, err := f.st.Load(ctx, s.Schema, s.creator(), s.ID)
 	if err != nil {
 		return err
 	}

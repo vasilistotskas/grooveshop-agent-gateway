@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,7 +87,14 @@ type ProfileResolver struct {
 
 	mu    sync.Mutex
 	cache map[string]profileEntry
+	// refreshed is when each origin's profile was last fetched again
+	// before its time (Refresh).
+	refreshed map[string]time.Time
 }
+
+// errRefreshSpent is a Refresh the origin's last one forbids.
+var errRefreshSpent = errors.New(
+	"ucp: the profile was refreshed within the TTL floor")
 
 type profileEntry struct {
 	profile *PlatformProfile
@@ -113,7 +121,48 @@ func NewProfileResolver(
 		limiter:    rate.NewLimiter(fetchRate, fetchBurst),
 		log:        log,
 		cache:      map[string]profileEntry{},
+		refreshed:  map[string]time.Time{},
 	}, nil
+}
+
+// Refresh fetches the profile at raw again, whatever its cache entry
+// says: a signature named a key the cached profile does not publish, and
+// the platform may have rotated its keys since. The spec allows it once
+// a TTL floor per origin (overview, Fetching, rule 6); a Refresh sooner
+// than that is errRefreshSpent. The record of origins is bounded as the
+// cache is: when it is full of origins refreshed within the floor, no
+// other origin is refreshed until one ages out.
+func (r *ProfileResolver) Refresh(
+	ctx context.Context, raw string,
+) (*PlatformProfile, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, discoveryErr(CodeInvalidProfileURL,
+			"the profile URL cannot be parsed")
+	}
+	origin := strings.ToLower(u.Scheme + "://" + u.Host)
+	now := time.Now()
+	r.mu.Lock()
+	if last, ok := r.refreshed[origin]; ok &&
+		now.Sub(last) < profileTTLFloor {
+		r.mu.Unlock()
+		return nil, errRefreshSpent
+	}
+	if len(r.refreshed) >= maxProfiles {
+		for o, last := range r.refreshed {
+			if now.Sub(last) >= profileTTLFloor {
+				delete(r.refreshed, o)
+			}
+		}
+	}
+	if len(r.refreshed) >= maxProfiles {
+		r.mu.Unlock()
+		return nil, errRefreshSpent
+	}
+	r.refreshed[origin] = now
+	delete(r.cache, raw)
+	r.mu.Unlock()
+	return r.Resolve(ctx, raw)
 }
 
 // Resolve returns the validated profile at raw. Every failure is a

@@ -259,7 +259,7 @@ func (k *Keys) loadOrCreate(
 		case stored == 0:
 			return k.loadOrCreate(ctx, schema)
 		}
-		return keyFromScalar(scalar)
+		return SigningKeyFromScalar(scalar)
 	case err != nil:
 		return nil, fmt.Errorf("ucp: load key: %w", err)
 	}
@@ -267,7 +267,7 @@ func (k *Keys) loadOrCreate(
 	if err != nil {
 		return nil, err
 	}
-	return keyFromScalar(scalar)
+	return SigningKeyFromScalar(scalar)
 }
 
 // newScalar mints the private scalar of a schema with no key yet. Every
@@ -286,7 +286,10 @@ func newScalar() ([]byte, error) {
 	return raw, nil
 }
 
-func keyFromScalar(raw []byte) (*SigningKey, error) {
+// SigningKeyFromScalar is the ES256 key whose private scalar is raw (the
+// fixed-width big-endian encoding ecdsa.PrivateKey.Bytes gives), with
+// its kid the public key's RFC 7638 thumbprint.
+func SigningKeyFromScalar(raw []byte) (*SigningKey, error) {
 	priv, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), raw)
 	if err != nil {
 		return nil, fmt.Errorf("ucp: corrupt key: %w", err)
@@ -297,26 +300,20 @@ func keyFromScalar(raw []byte) (*SigningKey, error) {
 	}
 	x := point[1 : 1+p256FieldBytes]
 	y := point[1+p256FieldBytes:]
-	kid, err := jwkThumbprint(x, y)
-	if err != nil {
-		return nil, err
-	}
-	return &SigningKey{Private: priv, KID: kid, x: x, y: y}, nil
-}
-
-// jwkThumbprint computes the RFC 7638 SHA-256 thumbprint of the EC JWK:
-// the required members crv, kty, x, y in lexicographic order, which
-// encoding/json's sorted map keys produce.
-func jwkThumbprint(x, y []byte) (string, error) {
-	canonical, err := json.Marshal(map[string]string{
+	kid := thumbprint(map[string]string{
 		"crv": "P-256",
 		"kty": "EC",
 		"x":   base64.RawURLEncoding.EncodeToString(x),
 		"y":   base64.RawURLEncoding.EncodeToString(y),
 	})
-	if err != nil {
-		return "", err
-	}
+	return &SigningKey{Private: priv, KID: kid, x: x, y: y}, nil
+}
+
+// thumbprint is the RFC 7638 SHA-256 thumbprint of a JWK, given its
+// required members: encoding/json writes a map's keys in lexicographic
+// order and without whitespace, as the thumbprint's input is written.
+func thumbprint(required map[string]string) string {
+	canonical, _ := json.Marshal(required) // a map of strings always encodes
 	sum := sha256.Sum256(canonical)
-	return base64.RawURLEncoding.EncodeToString(sum[:]), nil
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
