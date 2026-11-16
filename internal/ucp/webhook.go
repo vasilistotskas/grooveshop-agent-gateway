@@ -40,9 +40,11 @@ const (
 	deliveryWorkers = 8
 	// postTimeout bounds one attempt of a delivery.
 	postTimeout = 15 * time.Second
-	// longestDelivery is how long a delivery to an endpoint that does not
-	// answer holds its worker: three attempts plus 5s and 20s of backoff.
-	longestDelivery = 3*postTimeout + 5*time.Second + 20*time.Second
+	// deliveryBudget is the most a delivery may take: three attempts, 5s
+	// and 20s of backoff between them, and 10s for loading the signing
+	// key. A delivery still running at its end is cut and left pending.
+	deliveryBudget = 3*postTimeout + 5*time.Second + 20*time.Second +
+		10*time.Second
 
 	// perTargetDeliveries caps the deliveries one target (deliveryTarget)
 	// holds at once on a pod, so an endpoint that does not answer
@@ -54,17 +56,21 @@ const (
 	// its target's queue, and the worker that frees one of the target's
 	// slots takes it next: a burst to a platform goes out as fast as the
 	// platform answers. A queue holds at most maxQueuedPerTarget, all
-	// queues together maxQueued; a delivery beyond either, or one that
-	// has waited queueMaxWait, is left pending, never acknowledged, for
-	// reclaim to take up once it has been idle visibilityTimeout.
+	// queues together maxQueued; a delivery beyond either is left
+	// pending, never acknowledged, for reclaim to take up once it has
+	// been idle visibilityTimeout.
 	maxQueuedPerTarget = 64
 	maxQueued          = 256
-	queueMaxWait       = time.Minute
+	// queueMaxWait bounds how long after its read a delivery may start:
+	// one that has not started by then, waiting for its target's slot or
+	// for a free worker, is left pending instead (handOut, next).
+	queueMaxWait = time.Minute
 
 	// visibilityTimeout is how long a delivery may stay unacknowledged
-	// before another consumer takes it over. It must outlast the longest
-	// a live pod holds an entry it has read, queueMaxWait plus
-	// longestDelivery, or that work would be claimed and sent twice
+	// before another consumer takes it over. It outlasts the longest a
+	// live pod holds an entry it has read: started within queueMaxWait of
+	// the read, ended within deliveryBudget, acknowledged within
+	// ackTimeout. Otherwise that work would be claimed and sent twice
 	// (TestVisibilityTimeoutOutlastsWhatAPodHolds).
 	visibilityTimeout = 3 * time.Minute
 	// reclaimInterval paces the takeover of deliveries a dead consumer
@@ -187,7 +193,10 @@ func (d *Dispatcher) Run(ctx context.Context) {
 				// Then the target's queue, in order, on the slot this
 				// delivery held; none once the consume loop has stopped.
 				for ok := true; ok; {
-					d.deliver(deliveryCtx, j.id, j.dl)
+					budget, cancel := context.WithTimeout(deliveryCtx,
+						deliveryBudget)
+					d.deliver(budget, j.id, j.dl)
+					cancel()
 					var stale []job
 					j, stale, ok = slots.next(j.target, time.Now(),
 						ctx.Err() == nil)
@@ -219,6 +228,10 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	var lastReclaim time.Time
 	for ctx.Err() == nil {
 		var msgs []redis.XMessage
+		// When Redis handed the entries over, at the latest: stamped
+		// before each call, so a delivery's wait counts from no later than
+		// the moment its idle time was reset.
+		readAt := time.Now()
 		switch {
 		case pendingFrom != "":
 			msgs = d.read(ctx, pendingFrom)
@@ -235,32 +248,60 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			msgs, reclaimFrom = d.reclaim(ctx, reclaimFrom)
 		}
 		if len(msgs) == 0 && pendingFrom == "" {
+			readAt = time.Now()
 			msgs = d.read(ctx, ">")
 		}
+		batch := make([]job, 0, len(msgs))
 		for _, msg := range msgs {
-			dl, ok := d.decode(ctx, msg)
-			if !ok {
-				continue
-			}
-			j := job{id: msg.ID, dl: dl, target: deliveryTarget(dl.TargetURL),
-				readAt: time.Now()}
-			switch slots.admit(j) {
-			case queued:
-				continue
-			case refused:
-				d.logLeftPending(ctx, j, "its target's queue is full")
-				continue
-			}
-			select {
-			case jobs <- j:
-			case <-ctx.Done():
-				// Read but not started: it stays pending and is taken
-				// over after visibilityTimeout.
-				slots.release(j.target)
-				return
+			if dl, ok := d.decode(ctx, msg); ok {
+				batch = append(batch, job{id: msg.ID, dl: dl,
+					target: deliveryTarget(dl.TargetURL), readAt: readAt})
 			}
 		}
+		if !d.handOut(ctx, jobs, slots, batch, queueMaxWait) {
+			return
+		}
 	}
+}
+
+// handOut gives each job of a batch to a worker, or queues it behind its
+// target's slots, or leaves it pending for reclaim. Whatever it gives a
+// worker starts within maxWait of its read: a job older than that, or
+// one no worker takes by then (every worker busy), is left pending, its
+// slot freed. It returns false once ctx has ended; what it had not
+// handed out stays pending.
+func (d *Dispatcher) handOut(
+	ctx context.Context, jobs chan<- job, slots *targetSlots, batch []job,
+	maxWait time.Duration,
+) bool {
+	for _, j := range batch {
+		deadline := j.readAt.Add(maxWait)
+		wait := time.Until(deadline)
+		if wait <= 0 {
+			d.logLeftPending(ctx, j, "it waited too long")
+			continue
+		}
+		switch slots.admit(j) {
+		case queued:
+			continue
+		case refused:
+			d.logLeftPending(ctx, j, "its target's queue is full")
+			continue
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case jobs <- j:
+			timer.Stop()
+		case <-timer.C:
+			slots.release(j.target)
+			d.logLeftPending(ctx, j, "no worker was free in time")
+		case <-ctx.Done():
+			timer.Stop()
+			slots.release(j.target)
+			return false
+		}
+	}
+	return true
 }
 
 // logLeftPending records a delivery left pending for reclaim.

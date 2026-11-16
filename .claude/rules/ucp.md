@@ -211,10 +211,14 @@ wins over this page.
   target's queue, first in first out, and the worker that frees one of
   the target's slots takes it next, so a burst to a busy platform goes
   out as fast as it answers. A delivery beyond the queues' bounds
-  (`maxQueuedPerTarget`, `maxQueued`), or one queued longer than
-  `queueMaxWait`, is left pending, never acknowledged, for reclaim after
-  the visibility timeout, which outlasts `queueMaxWait` plus the longest
-  delivery. A reclaim sweep goes on from its last cursor until it has
+  (`maxQueuedPerTarget`, `maxQueued`), or one not started within
+  `queueMaxWait` of its read (waiting for its target's slot or for a
+  free worker, `handOut`), is left pending, never acknowledged, for
+  reclaim after the visibility timeout. The read time is stamped before
+  the Redis call, and a delivery is cut at `deliveryBudget`, so what a
+  pod holds ends within `queueMaxWait` + `deliveryBudget` + `ackTimeout`
+  of its read, under the visibility timeout: no entry is taken over
+  while its pod still works on it. A reclaim sweep goes on from its last cursor until it has
   scanned every pending entry. So an endpoint that does not answer
   delays its own deliveries, never another platform's.
 - **Order webhooks carry no ordering guarantee.** Up to two deliveries

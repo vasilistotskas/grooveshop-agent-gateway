@@ -1,6 +1,8 @@
 package ucp
 
 import (
+	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -120,8 +122,81 @@ func TestTargetSlotsDropWhatWaitedTooLong(t *testing.T) {
 }
 
 // Reclaim takes over an entry once it has been idle visibilityTimeout:
-// that must outlast everything a live pod does with an entry it read, or
-// the entry is sent twice.
+// that must outlast everything a live pod does with an entry it read
+// (start within queueMaxWait, finish within deliveryBudget, acknowledge
+// within ackTimeout), or the entry is sent twice.
 func TestVisibilityTimeoutOutlastsWhatAPodHolds(t *testing.T) {
-	assert.Greater(t, visibilityTimeout, queueMaxWait+longestDelivery)
+	assert.Greater(t, visibilityTimeout,
+		queueMaxWait+deliveryBudget+ackTimeout)
+}
+
+// testDispatcher is a Dispatcher for handOut alone: no Redis.
+func testDispatcher() *Dispatcher {
+	return &Dispatcher{log: slog.New(slog.DiscardHandler)}
+}
+
+// With every worker busy, a delivery is not held past the bound: the
+// send gives up at its read time plus maxWait, frees the target's slot
+// and leaves the entry pending, and the rest of the batch, read at the
+// same moment, is past the bound too and left pending at once.
+func TestHandOutHoldsNothingPastTheBoundWhenEveryWorkerIsBusy(t *testing.T) {
+	d := testDispatcher()
+	slots := newTargetSlots(2, 64, 256)
+	busy := make(chan job) // no worker takes anything
+	readAt := time.Now()
+	batch := []job{
+		testJob("1", "a", readAt), testJob("2", "b", readAt),
+		testJob("3", "c", readAt),
+	}
+	const maxWait = 150 * time.Millisecond
+
+	start := time.Now()
+	require.True(t, d.handOut(context.Background(), busy, slots, batch,
+		maxWait))
+	took := time.Since(start)
+	assert.GreaterOrEqual(t, took, maxWait-10*time.Millisecond)
+	assert.Less(t, took, maxWait+time.Second,
+		"one bound for the batch, not one per job")
+	assert.Empty(t, slots.held, "every slot is freed")
+	assert.Empty(t, slots.queue)
+}
+
+// A job read longer ago than the bound is neither handed out nor queued.
+func TestHandOutLeavesAStaleJobPending(t *testing.T) {
+	d := testDispatcher()
+	slots := newTargetSlots(1, 64, 256)
+	// Its target is at its cap, so it would be queued.
+	require.Equal(t, admitted, slots.admit(testJob("busy", "a", time.Now())))
+	jobs := make(chan job, 1)
+	stale := testJob("old", "a", time.Now().Add(-time.Minute))
+	require.True(t, d.handOut(context.Background(), jobs, slots,
+		[]job{stale}, time.Second))
+	assert.Empty(t, jobs)
+	assert.Empty(t, slots.queue, "a stale job is not queued")
+	assert.Equal(t, 1, slots.held["a"])
+}
+
+// A free worker gets the job at once; one beyond the target's cap is
+// queued, not sent.
+func TestHandOutGivesAFreeWorkerTheJob(t *testing.T) {
+	d := testDispatcher()
+	slots := newTargetSlots(1, 64, 256)
+	jobs := make(chan job, 2)
+	now := time.Now()
+	require.True(t, d.handOut(context.Background(), jobs, slots,
+		[]job{testJob("1", "a", now), testJob("2", "a", now)}, time.Second))
+	require.Len(t, jobs, 1)
+	assert.Equal(t, "1", (<-jobs).id)
+	assert.Len(t, slots.queue["a"], 1)
+}
+
+// A stopped consumer hands nothing out and frees the slot it took.
+func TestHandOutStopsWithItsContext(t *testing.T) {
+	d := testDispatcher()
+	slots := newTargetSlots(2, 64, 256)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	assert.False(t, d.handOut(ctx, make(chan job), slots,
+		[]job{testJob("1", "a", time.Now())}, time.Minute))
+	assert.Empty(t, slots.held)
 }
