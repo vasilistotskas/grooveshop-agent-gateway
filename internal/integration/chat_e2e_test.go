@@ -215,6 +215,7 @@ func chatGatewayHandler(
 	return server.New(server.Deps{
 		Cfg: cfg, Log: log, Metrics: metrics, Redis: rdb,
 		Django: dj, Resolver: resolver, Version: "test",
+		Keys:     newKeys(t, rdb, testKEK(t)),
 		Profiles: newProfiles(t),
 		ChatOpts: []option.RequestOption{
 			option.WithBaseURL(modelSrv.URL),

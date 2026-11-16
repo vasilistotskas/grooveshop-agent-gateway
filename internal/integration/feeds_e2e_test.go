@@ -133,6 +133,7 @@ func TestFeedsEndToEnd(t *testing.T) {
 	handler := server.New(server.Deps{
 		Cfg: cfg, Log: log, Metrics: metrics, Redis: rdb,
 		Django: dj, Resolver: resolver, Version: "test",
+		Keys:     newKeys(t, rdb, testKEK(t)),
 		Profiles: newProfiles(t),
 	})
 	gw := httptest.NewServer(handler)

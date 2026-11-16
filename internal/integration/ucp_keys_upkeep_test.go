@@ -71,11 +71,13 @@ func TestAwaitKEKPassesWhenAKeyOpens(t *testing.T) {
 	require.NoError(t, awaitKEK(t, newKeys(t, rdb, kek)))
 }
 
-// failNthGet fails the nth GET once with err, and counts the SCANs that
-// start over from cursor 0.
+// failNthGet fails the nth GET once with err, after the attempt's
+// deadline when atDeadline, and counts the SCANs that start over from
+// cursor 0.
 type failNthGet struct {
 	n           int32
 	err         error
+	atDeadline  bool
 	gets        atomic.Int32
 	scansFromNo atomic.Int32
 }
@@ -99,6 +101,9 @@ func (h *failNthGet) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 			}
 		case "get":
 			if h.gets.Add(1) == h.n {
+				if h.atDeadline {
+					<-ctx.Done()
+				}
 				cmd.SetErr(h.err)
 				return h.err
 			}
@@ -108,9 +113,10 @@ func (h *failNthGet) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 }
 
 // scanWithAFailure runs the boot check over more records than one SCAN
-// returns, its 2,000th read failing once with err, and returns how many
-// SCANs started from cursor 0.
-func scanWithAFailure(t *testing.T, err error) int32 {
+// returns, its 2,000th read failing once with err (once the attempt's
+// deadline passed, when atDeadline), and returns how many SCANs started
+// from cursor 0.
+func scanWithAFailure(t *testing.T, err error, atDeadline bool) int32 {
 	t.Helper()
 	rdb := startRedis(t)
 	ctx := context.Background()
@@ -124,7 +130,7 @@ func scanWithAFailure(t *testing.T, err error) int32 {
 	_, pipeErr := pipe.Exec(ctx)
 	require.NoError(t, pipeErr)
 
-	hook := &failNthGet{n: 2000, err: err}
+	hook := &failNthGet{n: 2000, err: err, atDeadline: atDeadline}
 	rdb.AddHook(hook)
 	keys := newKeys(t, rdb, kek)
 	require.NoError(t, awaitKEK(t, keys))
@@ -136,7 +142,8 @@ func scanWithAFailure(t *testing.T, err error) int32 {
 // An attempt that ran out of time goes on from its cursor in the next,
 // so a scan longer than one attempt still completes.
 func TestAwaitKEKResumesAScanThatRanOutOfTime(t *testing.T) {
-	assert.EqualValues(t, 1, scanWithAFailure(t, context.DeadlineExceeded),
+	assert.EqualValues(t, 1,
+		scanWithAFailure(t, context.DeadlineExceeded, false),
 		"the scan goes on from its cursor")
 }
 
@@ -145,7 +152,16 @@ func TestAwaitKEKResumesAScanThatRanOutOfTime(t *testing.T) {
 // can skip keys.
 func TestAwaitKEKRestartsAScanThatFailed(t *testing.T) {
 	assert.EqualValues(t, 2,
-		scanWithAFailure(t, errors.New("connection reset by peer")),
+		scanWithAFailure(t, errors.New("connection reset by peer"), false),
+		"the scan starts again from cursor 0")
+}
+
+// A Redis failure that comes back just as the attempt's deadline passes
+// is still a failure, not the deadline: the scan starts again from 0.
+// It waits out one attempt (30 s).
+func TestAwaitKEKRestartsAScanThatFailedAtTheDeadline(t *testing.T) {
+	assert.EqualValues(t, 2,
+		scanWithAFailure(t, errors.New("connection reset by peer"), true),
 		"the scan starts again from cursor 0")
 }
 

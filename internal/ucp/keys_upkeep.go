@@ -69,8 +69,10 @@ func (k *Keys) AwaitKEK(ctx context.Context, log *slog.Logger) error {
 	for {
 		attempt, cancel := context.WithTimeout(ctx, kekCheckAttempt)
 		err := k.scanKEK(attempt, log, &scan)
-		outOfTime := errors.Is(err, context.DeadlineExceeded) ||
-			errors.Is(attempt.Err(), context.DeadlineExceeded)
+		// Only the attempt's own deadline keeps the cursor: a Redis
+		// failure that came back as the deadline passed may still have
+		// been a restart.
+		outOfTime := errors.Is(err, context.DeadlineExceeded)
 		cancel()
 		if err != nil && (!outOfTime || ctx.Err() != nil) {
 			scan.cursor = 0

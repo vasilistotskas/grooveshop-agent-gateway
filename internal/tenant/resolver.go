@@ -474,15 +474,14 @@ func (r *Resolver) storeRedis(ctx context.Context, domain string, cfg *django.Te
 }
 
 // publicConfig copies a tenant config with the per-tenant CREDENTIALS
-// cleared, for the shared Redis cache tier.
+// cleared, for the Redis cache tier.
 //
-// Redis DB 4 lives on the same server, behind the same password, as the
-// caches Django, Nuxt, media-stream and Celery all use — so marshalling
-// the whole config put every tenant's model-provider key and
-// agentic-platform bearer in plaintext under a fully predictable key,
-// readable from any of those workloads. Credentials stay in the
-// process-memory tier only; routes that need one go through
-// Resolver.EnsureSecrets.
+// The gateway's Redis is its own instance, but anything holding its
+// password reads every key, and its volume is backed up off-site:
+// marshalling the whole config would put every tenant's model-provider
+// key and agentic-platform bearer in plaintext under a fully
+// predictable key there. Credentials stay in the process-memory tier
+// only; routes that need one go through Resolver.EnsureSecrets.
 func publicConfig(cfg *django.TenantConfig) django.TenantConfig {
 	public := *cfg
 	public.ChatAPIKey = ""

@@ -54,6 +54,11 @@ type Deps struct {
 }
 
 func New(d Deps) http.Handler {
+	// Readiness reads the signing keys' startup check, so a server
+	// without them could not say whether it is ready.
+	if d.Keys == nil {
+		panic("server: Deps.Keys is required")
+	}
 	mux := http.NewServeMux()
 
 	redisPing := func(ctx context.Context) error {

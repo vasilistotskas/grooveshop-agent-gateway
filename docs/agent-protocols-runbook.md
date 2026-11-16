@@ -681,4 +681,12 @@ The release after every environment has run step 3 deletes the sealing on first 
 
 **Eviction does not happen.** The signing keys carry no TTL, and the gateway's Redis is its own instance with `maxmemory-policy noeviction` and AOF persistence, so nothing evicts them; a full Redis refuses writes instead.
 
-**Giving a store a new key on purpose** (its key leaked): delete its record in the gateway's Redis (`DEL ag:<schema>:ucp:signing_key:es256:aes256gcm`, reached as in section 10), then `kubectl --context grooveshop -n <namespace> rollout restart deploy/agent-gateway`. Each pod holds the key it read in memory until it restarts, and the first pod to need the key after the restart mints the new one. Platforms see a rotation: the profile publishes only the new key, so a webhook signed with the old one before the restart no longer verifies.
+**Giving a store a new key on purpose** (its key leaked). Only once step 3 has run in that environment and no pod of the earlier release is left: while the store's unsealed record holds its key, a pod that finds no sealed record seals that same key again, so deleting the sealed record alone changes nothing. Delete both records, then restart the pods. Run `redis-cli` where it reaches the gateway's Redis, with `REDISCLI_AUTH` set to the password in the gateway's `REDIS_URL` and `-n` its database number, as in section 10:
+
+```bash
+R="redis-cli -e -n <database in the gateway's REDIS_URL>"
+$R DEL ag:<schema>:ucp:signing_key:es256:aes256gcm ag:<schema>:ucp:signing_key:es256
+kubectl --context grooveshop -n <namespace> rollout restart deploy/agent-gateway
+```
+
+Each pod holds the key it read in memory until it restarts, and the first pod to need the key after the restart mints the new one. Platforms see a rotation: the profile publishes only the new key, so a webhook signed with the old one before the restart no longer verifies.
