@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
@@ -18,9 +17,7 @@ import (
 )
 
 func quietLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelError + 1,
-	}))
+	return slog.New(slog.DiscardHandler)
 }
 
 func TestRequestIDMintsAndEchoes(t *testing.T) {
