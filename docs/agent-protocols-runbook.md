@@ -656,22 +656,25 @@ Callers are told "in progress" for three upstream timeouts after the mark, and a
 
 Each store's ES256 key signs its order webhooks; its public half is in the store's `/.well-known/ucp`, where platforms verify the webhooks. Releases before this one held the private key unsealed (`ag:{schema}:ucp:signing_key:es256`, base64), readable by every service sharing that Redis. This release holds it in `ag:{schema}:ucp:signing_key:es256:aes256gcm`, sealed with AES-256-GCM under `SIGNING_KEY_ENCRYPTION_KEY` and bound to its store. It seals the same key, so the key id and the published key do not change: no platform sees a rotation.
 
-**How the move runs.** Each pod of this release seals every unsealed key at boot, before it serves, and reads only the sealed record. The unsealed records stay until the step below deletes them, because pods of the earlier release still read them during the rollout. A store whose key exists only unsealed (first used by an old pod after the new pods booted) is refused by the new pods, never given a new key: its profile answers 503 and its webhooks fail, logged "signing key unavailable", until it is sealed.
+**How the move runs.** A pod of this release reads only the sealed record. The first time it needs a store's key and finds only the unsealed one, it seals that key; it never mints another over it. For a store with no key at all it mints one, sealed, and writes a sentinel into the unsealed record: a pod of the earlier release cannot decode the sentinel (its profile answers 503 for that store) and cannot mint a second key over it. The unsealed records stay until step 3, because pods of the earlier release still read them during the rollout.
 
 1. **Before the release, in each environment:** generate a key-encryption key with `openssl rand -base64 32`, one per environment, and save it in Bitwarden (personal vault, GrooveShop) before anything else. Add it as `SIGNING_KEY_ENCRYPTION_KEY` to the SealedSecret `agent-gateway-secrets` in the infrastructure repository (`overlays/staging/` and `overlays/production/sealed-agent-gateway-secrets.yaml`, `kubeseal --merge-into`). The Deployment takes that secret whole (`envFrom`), so nothing else changes. Pods of the earlier release ignore it. A pod of this release without it refuses to start, so a missing value stalls the rollout on the old pods and breaks nothing.
-2. **Deploy the release.** Each new pod logs `signing keys sealed` at boot with the stores it sealed.
-3. **Once no pod of the earlier release is left,** delete the unsealed records:
+2. **Deploy the release.**
+3. **Once no pod of the earlier release is left,** seal what is left and delete the unsealed records:
 
    ```bash
    kubectl --context grooveshop -n grooveshop-staging exec deploy/agent-gateway -c agent-gateway -- /gateway seal-signing-keys
    kubectl --context grooveshop -n grooveshop exec deploy/agent-gateway -c agent-gateway -- /gateway seal-signing-keys
    ```
 
-   It seals any store still unsealed, deletes every unsealed record whose key the sealed record holds, logs the stores it deleted, and exits non-zero if it left any store alone (`signing key left unsealed`, with the reason). Then check that nothing unsealed is left, with `R="redis-cli -e -n 4"` as in section 10: `$R --scan --pattern 'ag:*:ucp:signing_key:es256'` prints nothing.
-4. **A store it left alone** holds one key unsealed and another sealed: an old pod minted the first while new pods were up. The new pods publish the sealed one, so delete the unsealed record by hand (`$R DEL ag:<schema>:ucp:signing_key:es256`) after reading which key platforms were last shown.
+   It seals every store's key still unsealed, deletes every unsealed record whose key the sealed record holds and every sentinel, logs one `signing keys sealed` line (`sealed`, `already_sealed`, `unsealed_deleted`), and exits non-zero if it left any store alone (`signing key left unsealed`, with the reason). Run it a second time: its line then lists no store under `sealed` or `unsealed_deleted`, which proves nothing unsealed is left.
+4. **A store it left alone** holds one key unsealed and another sealed. That takes an unsealed record deleted, or a sealed one evicted, while an old pod ran. The new pods publish the sealed key; delete the unsealed record by hand once you know which key platforms were last shown.
 
-**Never change `SIGNING_KEY_ENCRYPTION_KEY` in place.** A key sealed under another one does not open: every store's profile answers 503 and every webhook fails. Changing it needs every record sealed again under the new key, which no command does yet.
+**Never change `SIGNING_KEY_ENCRYPTION_KEY` in place.** A key sealed under another one does not open: every store's profile answers 503 and its webhooks wait, unsent and pending, until the key is right. Changing it needs every record sealed again under the new key, which no command does yet.
 
-**A rollback** to the earlier release before step 3 is safe: it reads the unsealed records, which still hold the same keys. After step 3 it finds none and mints a new key per store, a rotation platforms see, so roll back no further than this release once step 3 has run.
+**A rollback** to the earlier release:
 
-The release after every environment has run step 3 deletes the boot-time seal, the command and the refusal (`internal/ucp/keys_unsealed.go`, `cmd/gateway/sealkeys.go`).
+- **Before step 3:** every store that had a key before this release keeps it (the unsealed record still holds it). A store whose first key this release minted holds the sentinel: the earlier release answers 503 on its profile and drops its webhooks after three attempts. Deleting that sentinel lets the earlier release mint a new key for the store, a rotation its platforms see.
+- **After step 3:** no unsealed record is left, so the earlier release mints a new key for every store, a rotation every platform sees. Do not roll back past this release once step 3 has run.
+
+The release after every environment has run step 3 deletes the sealing on first use, the sentinel, and the command (`internal/ucp/keys_unsealed.go`, `cmd/gateway/sealkeys.go`).

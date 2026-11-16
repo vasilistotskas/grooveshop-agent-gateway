@@ -99,9 +99,12 @@ func TestSigningKeyIsSealedInRedis(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(raw), string(scalar))
 
-	n, err := rdb.Exists(ctx, unsealedKeyName("alpha")).Result()
+	// The unsealed record holds no key: only a value an earlier release
+	// cannot decode.
+	unsealed, err := rdb.Get(ctx, unsealedKeyName("alpha")).Result()
 	require.NoError(t, err)
-	assert.Zero(t, n, "no key is written unsealed")
+	_, err = base64.StdEncoding.DecodeString(unsealed)
+	require.Error(t, err)
 }
 
 // A sealed key opens only where it was sealed. Another key-encryption
@@ -161,7 +164,8 @@ func TestSealUnsealedKeepsEveryStoresKey(t *testing.T) {
 	kek := testKEK(t)
 	alphaPlain := unsealedScalar(t, rdb, "alpha")
 	betaPlain := unsealedScalar(t, rdb, "beta")
-	// A store this release already serves from a sealed record.
+	// A store whose key this release minted: sealed, and a sentinel in
+	// the unsealed record.
 	gamma, err := newKeys(t, rdb, kek).ForSchema(ctx, "gamma")
 	require.NoError(t, err)
 
@@ -189,12 +193,13 @@ func TestSealUnsealedKeepsEveryStoresKey(t *testing.T) {
 	assert.Equal(t, gamma.KID, again.KID)
 
 	// Run again, deleting: nothing is sealed twice, and every unsealed
-	// record whose key is sealed is gone.
+	// record whose key is sealed is gone, the sentinel too.
 	report, err = newKeys(t, rdb, kek).SealUnsealed(ctx, true)
 	require.NoError(t, err)
 	assert.Empty(t, report.Sealed)
 	assert.ElementsMatch(t, []string{"alpha", "beta"}, report.AlreadySealed)
-	assert.ElementsMatch(t, []string{"alpha", "beta"}, report.Deleted)
+	assert.ElementsMatch(t, []string{"alpha", "beta", "gamma"},
+		report.Deleted)
 	left, err := rdb.Keys(ctx, "ag:*:ucp:signing_key:es256").Result()
 	require.NoError(t, err)
 	assert.Empty(t, left)
@@ -229,28 +234,68 @@ func TestSealUnsealedLeavesConflictsAlone(t *testing.T) {
 	assert.EqualValues(t, 2, n)
 }
 
-// A store that has only an unsealed record is not given a new key: that
-// would publish another key than the one platforms hold. It is refused
-// until the record is sealed, and then served with its own key.
-func TestNoKeyIsMintedOverAnUnsealedOne(t *testing.T) {
+// A store whose key an earlier release stored unsealed is served with
+// that key from its first use: sealed on demand, never a new one, so the
+// published key does not change. The unsealed record stays for the pods
+// of the earlier release.
+func TestAnUnsealedKeyIsSealedOnFirstUse(t *testing.T) {
 	rdb := startRedis(t)
 	ctx := context.Background()
 	kek := testKEK(t)
 	plain := unsealedScalar(t, rdb, "alpha")
 
-	_, err := newKeys(t, rdb, kek).ForSchema(ctx, "alpha")
-	require.ErrorIs(t, err, ucp.ErrKeyUnsealed)
-	n, err := rdb.Exists(ctx, sealedKeyName("alpha")).Result()
-	require.NoError(t, err)
-	assert.Zero(t, n)
-
-	_, err = newKeys(t, rdb, kek).SealUnsealed(ctx, false)
-	require.NoError(t, err)
 	key, err := newKeys(t, rdb, kek).ForSchema(ctx, "alpha")
 	require.NoError(t, err)
 	scalar, err := key.Private.Bytes()
 	require.NoError(t, err)
 	assert.Equal(t, plain, base64.StdEncoding.EncodeToString(scalar))
+
+	n, err := rdb.Exists(ctx, sealedKeyName("alpha")).Result()
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, n)
+	still, err := rdb.Get(ctx, unsealedKeyName("alpha")).Result()
+	require.NoError(t, err)
+	assert.Equal(t, plain, still)
+
+	again, err := newKeys(t, rdb, kek).ForSchema(ctx, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, key.KID, again.KID)
+}
+
+// An unsealed record that is not a key is refused, never replaced by a
+// new key.
+func TestAnUnsealedRecordThatIsNotAKeyIsRefused(t *testing.T) {
+	rdb := startRedis(t)
+	ctx := context.Background()
+	require.NoError(t, rdb.Set(ctx, unsealedKeyName("alpha"), "not a key",
+		0).Err())
+
+	_, err := newKeys(t, rdb, testKEK(t)).ForSchema(ctx, "alpha")
+	require.Error(t, err)
+	n, err := rdb.Exists(ctx, sealedKeyName("alpha")).Result()
+	require.NoError(t, err)
+	assert.Zero(t, n)
+}
+
+// A key this release mints leaves the unsealed record taken by a value
+// that is not base64: a pod of an earlier release, which SETNXes that
+// record and decodes it, can neither mint a second key for the store nor
+// read one, so the store never has two keys.
+func TestAMintedKeyBarsAnEarlierReleaseFromMintingAnother(t *testing.T) {
+	rdb := startRedis(t)
+	ctx := context.Background()
+	_, err := newKeys(t, rdb, testKEK(t)).ForSchema(ctx, "alpha")
+	require.NoError(t, err)
+
+	// What a pod of the earlier release does on a cold cache.
+	minted := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	set, err := rdb.SetNX(ctx, unsealedKeyName("alpha"), minted, 0).Result()
+	require.NoError(t, err)
+	assert.False(t, set, "the earlier release mints no second key")
+	held, err := rdb.Get(ctx, unsealedKeyName("alpha")).Result()
+	require.NoError(t, err)
+	_, err = base64.StdEncoding.DecodeString(held)
+	require.Error(t, err, "and it cannot read one: it answers 503")
 }
 
 func TestProfilePublishesOnlyOwnKey(t *testing.T) {

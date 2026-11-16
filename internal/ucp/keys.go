@@ -46,24 +46,24 @@ func sealContext(schema string) []byte {
 // kekBytes is the length of the key-encryption key: AES-256.
 const kekBytes = 32
 
-// ErrKeyUnsealed reports a store whose signing key Redis still holds in
-// the unsealed record only. The key is not minted anew over it: that
-// would rotate the store's published key under its platforms.
-var ErrKeyUnsealed = errors.New(
-	"ucp: the store's signing key is stored unsealed; run the gateway's " +
-		SealCommand + " command")
-
-// mintScript stores a newly minted sealed key at KEYS[1] unless one is
-// there (0) or the store's unsealed record KEYS[2] still exists (-1);
-// 1 when it stored it. A run repeated because its reply was lost finds
-// its own record and returns 0, and the caller reads that record.
+// mintScript stores a newly minted sealed key ARGV[1] at KEYS[1] and
+// returns 1, unless a key is there (0) or the store's unsealed record
+// KEYS[2] holds a key an earlier release minted (-1): that key is the
+// store's, and is sealed instead (sealUnsealedOf). With the sealed key it
+// writes the sentinel ARGV[2] to KEYS[2] where nothing is, so a pod of an
+// earlier release finds a record it cannot decode, and answers 503,
+// instead of minting a second key for the store. A run repeated because
+// its reply was lost finds its own record and returns 0, and the caller
+// reads that record.
 //
-// The KEYS[2] check goes with the unsealed record (keys_unsealed.go).
+// KEYS[2] and the sentinel go with the unsealed record (keys_unsealed.go).
 var mintScript = redis.NewScript(`
-if redis.call('EXISTS', KEYS[2]) == 1 then
+local unsealed = redis.call('GET', KEYS[2])
+if unsealed and unsealed ~= ARGV[2] then
   return -1
 end
 if redis.call('SET', KEYS[1], ARGV[1], 'NX') then
+  redis.call('SET', KEYS[2], ARGV[2], 'NX')
   return 1
 end
 return 0
@@ -235,12 +235,17 @@ func (k *Keys) loadOrCreate(
 		// a lost race re-reads the winner.
 		stored, err := mintScript.Run(ctx, k.rdb,
 			[]string{redisKey, unsealedKeyRedisKey(schema)},
-			k.seal(schema, scalar)).Int()
+			k.seal(schema, scalar), unsealedSentinel).Int()
 		switch {
 		case err != nil:
 			return nil, fmt.Errorf("ucp: persist key: %w", err)
 		case stored < 0:
-			return nil, ErrKeyUnsealed
+			// A pod of an earlier release minted the store's key: seal
+			// that key, never a new one, then read it.
+			if err := k.sealUnsealedOf(ctx, schema); err != nil {
+				return nil, err
+			}
+			return k.loadOrCreate(ctx, schema)
 		case stored == 0:
 			return k.loadOrCreate(ctx, schema)
 		}

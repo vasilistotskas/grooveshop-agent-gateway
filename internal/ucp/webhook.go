@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/net/idna"
 	"golang.org/x/net/publicsuffix"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
@@ -35,25 +36,36 @@ const (
 	// deliveryField is the stream entry's single field.
 	deliveryField = "delivery"
 
-	// deliveryWorkers bounds concurrent deliveries per pod. A delivery
-	// to an endpoint that does not answer holds its worker for three
-	// attempts at a 15s client timeout plus 5s and 20s of backoff: up to
-	// ~70s per event.
+	// deliveryWorkers bounds concurrent deliveries per pod.
 	deliveryWorkers = 8
+	// postTimeout bounds one attempt of a delivery.
+	postTimeout = 15 * time.Second
+	// longestDelivery is how long a delivery to an endpoint that does not
+	// answer holds its worker: three attempts plus 5s and 20s of backoff.
+	longestDelivery = 3*postTimeout + 5*time.Second + 20*time.Second
+
 	// perTargetDeliveries caps the deliveries one target (deliveryTarget)
 	// holds at once on a pod, so an endpoint that does not answer
 	// occupies at most this many of the deliveryWorkers, whatever number
 	// of its events is queued, and the others keep delivering for every
-	// other platform. A delivery read while its target is at the cap is
-	// deferred: left pending, unacknowledged, and taken up again by
-	// reclaim once it has been idle visibilityTimeout, by this consumer
-	// or another.
+	// other platform.
 	perTargetDeliveries = 2
+	// A delivery read while its target is at the cap waits in process, in
+	// its target's queue, and the worker that frees one of the target's
+	// slots takes it next: a burst to a platform goes out as fast as the
+	// platform answers. A queue holds at most maxQueuedPerTarget, all
+	// queues together maxQueued; a delivery beyond either, or one that
+	// has waited queueMaxWait, is left pending, never acknowledged, for
+	// reclaim to take up once it has been idle visibilityTimeout.
+	maxQueuedPerTarget = 64
+	maxQueued          = 256
+	queueMaxWait       = time.Minute
 
 	// visibilityTimeout is how long a delivery may stay unacknowledged
 	// before another consumer takes it over. It must outlast the longest
-	// delivery (~70s above), or a live pod's in-flight work would be
-	// claimed and sent twice.
+	// a live pod holds an entry it has read, queueMaxWait plus
+	// longestDelivery, or that work would be claimed and sent twice
+	// (TestVisibilityTimeoutOutlastsWhatAPodHolds).
 	visibilityTimeout = 3 * time.Minute
 	// reclaimInterval paces the takeover of deliveries a dead consumer
 	// left pending.
@@ -129,7 +141,7 @@ func NewDispatcher(
 	return &Dispatcher{
 		rdb:      rdb,
 		keys:     keys,
-		hc:       platformClient(allowLocal, 15*time.Second),
+		hc:       platformClient(allowLocal, postTimeout),
 		log:      log,
 		consumer: consumer,
 	}
@@ -166,13 +178,23 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	deliveryCtx, cancelDeliveries := context.WithCancel(
 		context.WithoutCancel(ctx))
 	jobs := make(chan job)
-	slots := newTargetSlots(perTargetDeliveries)
+	slots := newTargetSlots(perTargetDeliveries, maxQueuedPerTarget,
+		maxQueued)
 	var wg sync.WaitGroup
 	for range deliveryWorkers {
 		wg.Go(func() {
 			for j := range jobs {
-				d.deliver(deliveryCtx, j.id, j.dl)
-				slots.release(j.target)
+				// Then the target's queue, in order, on the slot this
+				// delivery held; none once the consume loop has stopped.
+				for ok := true; ok; {
+					d.deliver(deliveryCtx, j.id, j.dl)
+					var stale []job
+					j, stale, ok = slots.next(j.target, time.Now(),
+						ctx.Err() == nil)
+					for _, s := range stale {
+						d.logLeftPending(ctx, s, "it waited too long")
+					}
+				}
 			}
 		})
 	}
@@ -190,6 +212,10 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	// Paged by id, since history reads return pending entries until
 	// they are acknowledged.
 	pendingFrom := "0"
+	// A reclaim sweep runs every reclaimInterval and goes on from where
+	// its last call stopped until it has scanned every pending entry, so
+	// entries past one call's window are reached too.
+	reclaimFrom := "0-0"
 	var lastReclaim time.Time
 	for ctx.Err() == nil {
 		var msgs []redis.XMessage
@@ -201,9 +227,12 @@ func (d *Dispatcher) Run(ctx context.Context) {
 				continue
 			}
 			pendingFrom = msgs[len(msgs)-1].ID
-		case time.Since(lastReclaim) >= reclaimInterval:
-			lastReclaim = time.Now()
-			msgs = d.reclaim(ctx)
+		case reclaimFrom != "0-0" ||
+			time.Since(lastReclaim) >= reclaimInterval:
+			if reclaimFrom == "0-0" {
+				lastReclaim = time.Now()
+			}
+			msgs, reclaimFrom = d.reclaim(ctx, reclaimFrom)
 		}
 		if len(msgs) == 0 && pendingFrom == "" {
 			msgs = d.read(ctx, ">")
@@ -213,71 +242,142 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			if !ok {
 				continue
 			}
-			target := deliveryTarget(dl.TargetURL)
-			if !slots.acquire(target) {
-				// Its target holds its share of the workers: leave it
-				// pending, for reclaim to take up once it has been idle
-				// visibilityTimeout. Never acknowledged, and not read
-				// again before then.
-				d.log.InfoContext(ctx, "webhook delivery deferred: its "+
-					"target is at its share of the workers",
-					slog.String("delivery", dl.ID),
-					slog.String("target", target),
-					slog.String(obs.KeyTenant, dl.Schema))
+			j := job{id: msg.ID, dl: dl, target: deliveryTarget(dl.TargetURL),
+				readAt: time.Now()}
+			switch slots.admit(j) {
+			case queued:
+				continue
+			case refused:
+				d.logLeftPending(ctx, j, "its target's queue is full")
 				continue
 			}
 			select {
-			case jobs <- job{id: msg.ID, dl: dl, target: target}:
+			case jobs <- j:
 			case <-ctx.Done():
 				// Read but not started: it stays pending and is taken
 				// over after visibilityTimeout.
-				slots.release(target)
+				slots.release(j.target)
 				return
 			}
 		}
 	}
 }
 
-// job is one delivery handed to a worker: its stream entry, the delivery
-// and the target whose slot it holds.
+// logLeftPending records a delivery left pending for reclaim.
+func (d *Dispatcher) logLeftPending(ctx context.Context, j job, why string) {
+	d.log.InfoContext(ctx, "webhook delivery left pending: "+why,
+		slog.String("delivery", j.dl.ID),
+		slog.String("target", j.target),
+		slog.String(obs.KeyTenant, j.dl.Schema))
+}
+
+// job is one delivery: its stream entry, the delivery, its target and
+// when it was read.
 type job struct {
 	id     string
 	dl     Delivery
 	target string
+	readAt time.Time
 }
+
+// admission is what targetSlots.admit did with a delivery.
+type admission int
+
+const (
+	// admitted: it holds a slot of its target; hand it to a worker.
+	admitted admission = iota
+	// queued: it waits in its target's queue.
+	queued
+	// refused: the queue is full; leave it pending.
+	refused
+)
 
 // targetSlots counts the deliveries each target has in flight, up to a
-// cap. Targets with none are forgotten, so the map holds only what is in
-// flight: at most deliveryWorkers entries.
+// cap, and queues the ones read beyond it, per target and in order.
+// Targets with nothing in flight are forgotten, so the maps hold only
+// what is in flight or queued.
 type targetSlots struct {
-	cap  int
-	mu   sync.Mutex
-	held map[string]int
+	cap, perTarget, total int
+
+	mu     sync.Mutex
+	held   map[string]int
+	queue  map[string][]job
+	queued int
 }
 
-func newTargetSlots(capacity int) *targetSlots {
-	return &targetSlots{cap: capacity, held: make(map[string]int)}
+func newTargetSlots(capacity, perTarget, total int) *targetSlots {
+	return &targetSlots{
+		cap: capacity, perTarget: perTarget, total: total,
+		held: make(map[string]int), queue: make(map[string][]job),
+	}
 }
 
-// acquire takes a slot of target, or reports that it holds them all.
-func (s *targetSlots) acquire(target string) bool {
+// admit takes a slot of j's target for j, or queues j behind the target's
+// slots, or refuses it when the queues are full.
+func (s *targetSlots) admit(j job) admission {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.held[target] >= s.cap {
-		return false
+	if s.held[j.target] < s.cap {
+		s.held[j.target]++
+		return admitted
 	}
-	s.held[target]++
-	return true
+	if len(s.queue[j.target]) >= s.perTarget || s.queued >= s.total {
+		return refused
+	}
+	s.queue[j.target] = append(s.queue[j.target], j)
+	s.queued++
+	return queued
 }
 
+// next is called by a worker that finished a delivery to target. With
+// more, it returns the target's next queued delivery, which keeps the
+// slot; otherwise, or with none queued, it frees the slot. A queued
+// delivery read more than queueMaxWait before now is dropped from the queue
+// and returned as stale, to be left pending for reclaim.
+func (s *targetSlots) next(
+	target string, now time.Time, more bool,
+) (job, []job, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var stale []job
+	q := s.queue[target]
+	for more && len(q) > 0 {
+		j := q[0]
+		q = q[1:]
+		s.queued--
+		if now.Sub(j.readAt) > queueMaxWait {
+			stale = append(stale, j)
+			continue
+		}
+		s.setQueue(target, q)
+		return j, stale, true
+	}
+	s.setQueue(target, q)
+	s.releaseLocked(target)
+	return job{}, stale, false
+}
+
+// release frees a slot of target.
 func (s *targetSlots) release(target string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.releaseLocked(target)
+}
+
+func (s *targetSlots) releaseLocked(target string) {
 	if s.held[target] <= 1 {
 		delete(s.held, target)
 		return
 	}
 	s.held[target]--
+}
+
+func (s *targetSlots) setQueue(target string, q []job) {
+	if len(q) == 0 {
+		delete(s.queue, target)
+		return
+	}
+	s.queue[target] = q
 }
 
 // deliveryTarget names whose endpoint a delivery waits on, for the cap
@@ -289,6 +389,8 @@ func (s *targetSlots) release(target string) {
 // ports, it cares to use. An address is its holder as the rate limiter
 // counts one (httpmw.AddrBucket): an IPv4 address, an IPv6 /64. A host
 // the list cannot place (a single label, as in development) is itself.
+// An internationalised name is read as its A-label, so its spellings are
+// one target.
 func deliveryTarget(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -297,6 +399,11 @@ func deliveryTarget(rawURL string) string {
 	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	if addr, err := netip.ParseAddr(host); err == nil {
 		return httpmw.AddrBucket(addr.WithZone(""))
+	}
+	// One name in any of its spellings: Unicode, its case, and its
+	// A-label (IDNA2008 lookup mapping).
+	if ascii, err := idna.Lookup.ToASCII(host); err == nil {
+		host = ascii
 	}
 	if site, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
 		return site
@@ -345,20 +452,28 @@ func (d *Dispatcher) read(ctx context.Context, id string) []redis.XMessage {
 	return nil
 }
 
-// reclaim takes over deliveries another consumer has held past
-// visibilityTimeout, and removes consumers that are long gone.
-func (d *Dispatcher) reclaim(ctx context.Context) []redis.XMessage {
-	msgs, _, err := d.rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+// reclaim takes over deliveries a consumer (this one included) has held
+// past visibilityTimeout, scanning the pending entries from from, and
+// returns them with where the sweep goes on: "0-0" once it has scanned
+// them all. A call scans a bounded window, so a sweep takes as many calls
+// as the pending entries need. It also removes consumers long gone.
+func (d *Dispatcher) reclaim(
+	ctx context.Context, from string,
+) ([]redis.XMessage, string) {
+	msgs, next, err := d.rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 		Stream:   eventsStream,
 		Group:    eventsGroup,
 		Consumer: d.consumer,
 		MinIdle:  visibilityTimeout,
-		Start:    "0-0",
+		Start:    from,
 		Count:    deliveryWorkers,
 	}).Result()
-	if err != nil && ctx.Err() == nil {
-		d.log.WarnContext(ctx, "webhook reclaim failed",
-			slog.String("error", err.Error()))
+	if err != nil {
+		if ctx.Err() == nil {
+			d.log.WarnContext(ctx, "webhook reclaim failed",
+				slog.String("error", err.Error()))
+		}
+		next = "0-0"
 	}
 
 	consumers, err := d.rdb.XInfoConsumers(ctx, eventsStream, eventsGroup).
@@ -372,7 +487,7 @@ func (d *Dispatcher) reclaim(ctx context.Context) []redis.XMessage {
 			}
 		}
 	}
-	return msgs
+	return msgs, next
 }
 
 // decode reads a stream entry's delivery. One that cannot be delivered
@@ -393,10 +508,13 @@ func (d *Dispatcher) decode(
 }
 
 // deliver attempts one delivery of the entry id and acknowledges it ONLY
-// on a terminal outcome. A shutdown that aborts delivery first leaves the
-// entry pending for another consumer — never acknowledged, which would
-// drop an undelivered order webhook and break at-least-once.
+// on a terminal outcome: delivered, or refused by the endpoint on every
+// attempt. A shutdown that aborts delivery first, or a signing key that
+// cannot be read, leaves the entry pending for reclaim — never
+// acknowledged, which would drop an undelivered order webhook and break
+// at-least-once.
 func (d *Dispatcher) deliver(ctx context.Context, id string, dl Delivery) {
+	keyFailed := false
 	for attempt := range 3 {
 		if attempt > 0 {
 			select {
@@ -415,6 +533,7 @@ func (d *Dispatcher) deliver(ctx context.Context, id string, dl Delivery) {
 			d.log.WarnContext(ctx, "webhook signing key unavailable",
 				slog.String(obs.KeyTenant, dl.Schema),
 				slog.String("error", err.Error()))
+			keyFailed = true
 			continue
 		}
 		if d.post(ctx, key, dl) {
@@ -424,6 +543,16 @@ func (d *Dispatcher) deliver(ctx context.Context, id string, dl Delivery) {
 		if ctx.Err() != nil {
 			return
 		}
+	}
+	if keyFailed {
+		// Not every attempt reached the endpoint: the store's key could
+		// not be read (Redis, or a sealed record that does not open).
+		// Never a terminal outcome; reclaim tries again.
+		d.log.ErrorContext(ctx, "webhook delivery left pending: the "+
+			"store's signing key is unavailable",
+			slog.String("delivery", dl.ID),
+			slog.String(obs.KeyTenant, dl.Schema))
+		return
 	}
 	// Retries exhausted against a live endpoint: give up so the entry
 	// does not cycle forever. There is no dead-letter stream by design;

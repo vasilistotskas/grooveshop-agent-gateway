@@ -55,19 +55,11 @@ func run() error {
 		dj, rdb, cfg.TenantCacheTTL, cfg.NegativeCacheTTL, log, metrics,
 	)
 
-	// Signing keys are per tenant schema and load lazily at first use.
+	// Signing keys are per tenant schema and load lazily at first use,
+	// sealing a key an earlier release stored unsealed.
 	keys, err := ucp.NewKeys(rdb, cfg.SigningKeyKEK)
 	if err != nil {
 		return err
-	}
-	// Before serving, seal every store's key an earlier release stored
-	// unsealed, so this pod publishes the key platforms already hold. A
-	// failure does not stop the pod: a store whose key is still unsealed
-	// is refused until it is sealed, never given a new key.
-	if err := sealUnsealedKeys(context.Background(), keys, false,
-		log); err != nil {
-		log.Error("signing keys not sealed at boot",
-			slog.String("error", err.Error()))
 	}
 	// The pod name: webhook deliveries are claimed per consumer, and a
 	// consumer that disappears has its pending deliveries taken over.

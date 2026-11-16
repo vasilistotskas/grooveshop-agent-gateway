@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -78,9 +79,8 @@ func serveOn(t *testing.T, addr string, h http.Handler) *httptest.Server {
 // An endpoint that does not answer holds at most its share of the
 // workers: more of its deliveries than there are workers wait in the
 // stream, unacknowledged and read once, while another platform's
-// delivery goes out at once. They are not lost: the consumer's next boot
-// replays them, its share at once, and leaves the rest pending for
-// reclaim to take up after the visibility timeout.
+// delivery goes out at once. Once the endpoint answers, the rest go out
+// from the target's queue, each once.
 func TestDispatcherIsolatesAStalledTarget(t *testing.T) {
 	rdb := startRedis(t)
 	ctx := context.Background()
@@ -166,42 +166,208 @@ func TestDispatcherIsolatesAStalledTarget(t *testing.T) {
 			"a deferred delivery is read once, not polled")
 	}
 
-	// The endpoint answers again: the two in flight are delivered and
-	// acknowledged.
+	// The endpoint answers again: the two in flight are delivered, and
+	// the workers take the rest from the target's queue, each once, two
+	// at a time, without a restart or the visibility timeout.
 	stalled.answer()
 	assert.Eventually(t, func() bool {
 		n, err := rdb.XLen(ctx, webhookStream).Result()
-		return err == nil && n == stalledEvents-2
-	}, 5*time.Second, 50*time.Millisecond)
-	cancel()
-	<-done
+		return err == nil && n == 0
+	}, 10*time.Second, 50*time.Millisecond,
+		"every queued delivery goes out once its target answers")
+	assert.EqualValues(t, stalledEvents, stalled.hits.Load(),
+		"each delivery is posted once")
+	assert.LessOrEqual(t, stalled.mostHeld(), int32(2))
+}
 
-	// The consumer's next boot replays what it holds: the target's share
-	// at once, the rest still pending, never acknowledged undelivered.
-	runCtx2, cancel2 := context.WithCancel(ctx)
-	done2 := make(chan struct{})
+// countingPlatform answers every delivery after a delay, and counts the
+// deliveries by Webhook-Id.
+type countingPlatform struct {
+	delay time.Duration
+	mu    sync.Mutex
+	seen  map[string]int
+	held  atomic.Int32
+	most  atomic.Int32
+}
+
+func (p *countingPlatform) handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		n := p.held.Add(1)
+		defer p.held.Add(-1)
+		for {
+			m := p.most.Load()
+			if n <= m || p.most.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		time.Sleep(p.delay)
+		p.mu.Lock()
+		p.seen[r.Header.Get("Webhook-Id")]++
+		p.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+}
+
+func (p *countingPlatform) counts() map[string]int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make(map[string]int, len(p.seen))
+	for k, v := range p.seen {
+		out[k] = v
+	}
+	return out
+}
+
+// runDispatcher runs a dispatcher as consumer until the test ends.
+func runDispatcher(t *testing.T, rdb *redis.Client, keys *ucp.Keys,
+	consumer string,
+) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	go func() {
-		ucp.NewDispatcher(rdb, keys, quietLogger(), consumer, true).
-			Run(runCtx2)
-		close(done2)
+		ucp.NewDispatcher(rdb, keys, quietLogger(), consumer, true).Run(ctx)
+		close(done)
 	}()
 	t.Cleanup(func() {
-		cancel2()
-		<-done2
+		cancel()
+		<-done
 	})
+}
+
+// A burst to one healthy platform goes out as fast as the platform
+// answers: two at a time, the rest from the target's queue, with no wait
+// for the visibility timeout, every event once.
+func TestDispatcherDeliversABurstToOneTargetPromptly(t *testing.T) {
+	rdb := startRedis(t)
+	ctx := context.Background()
+	keys := newKeys(t, rdb, testKEK(t))
+	platform := &countingPlatform{delay: 200 * time.Millisecond,
+		seen: map[string]int{}}
+	srv := serveOn(t, "127.0.0.1:0", platform.handler())
+
+	const events = 20
+	enqueue := ucp.NewDispatcher(rdb, keys, quietLogger(), "pod-0", true)
+	want := map[string]int{}
+	for i := range events {
+		id := fmt.Sprintf("burst-%02d", i)
+		want[id] = 1
+		require.NoError(t, enqueue.Enqueue(ctx, ucp.Delivery{
+			ID: id, Schema: "alpha", Domain: "alpha.example.test",
+			TargetURL: srv.URL + "/ucp/orders",
+			Body:      json.RawMessage(`{"n":` + strconv.Itoa(i) + `}`),
+		}))
+	}
+	runDispatcher(t, rdb, keys, "pod-0")
+
+	// 20 events, two at a time, 200ms each: about 2s.
 	assert.Eventually(t, func() bool {
-		return stalled.hits.Load() == 4
-	}, 5*time.Second, 50*time.Millisecond,
-		"the replay delivers the target's share at once")
-	time.Sleep(time.Second)
-	assert.EqualValues(t, 4, stalled.hits.Load(),
-		"the replay holds the target to its share")
-	n, err = rdb.XLen(ctx, webhookStream).Result()
+		n, err := rdb.XLen(ctx, webhookStream).Result()
+		return err == nil && n == 0
+	}, 15*time.Second, 50*time.Millisecond,
+		"the burst is delivered without waiting out the visibility timeout")
+	assert.Equal(t, want, platform.counts(), "every event once")
+	assert.LessOrEqual(t, platform.most.Load(), int32(2))
+}
+
+// backdate makes the pending entry id, held by consumer, look idle for
+// an hour, as a dead pod's entry does.
+func backdate(t *testing.T, rdb *redis.Client, consumer, id string) {
+	t.Helper()
+	require.NoError(t, rdb.Do(context.Background(), "XCLAIM", webhookStream,
+		"dispatch", consumer, 0, id, "IDLE", time.Hour.Milliseconds()).Err())
+}
+
+// readAs reads n new entries as consumer, which then holds them pending.
+func readAs(t *testing.T, rdb *redis.Client, consumer string, n int64,
+) []redis.XMessage {
+	t.Helper()
+	streams, err := rdb.XReadGroup(context.Background(),
+		&redis.XReadGroupArgs{
+			Group: "dispatch", Consumer: consumer,
+			Streams: []string{webhookStream, ">"}, Count: n,
+		}).Result()
 	require.NoError(t, err)
-	assert.EqualValues(t, stalledEvents-4, n)
-	left, err := rdb.XPending(ctx, webhookStream, "dispatch").Result()
+	require.Len(t, streams, 1)
+	require.Len(t, streams[0].Messages, int(n))
+	return streams[0].Messages
+}
+
+// Reclaim reaches a dead pod's deliveries behind more pending entries
+// than one scan window covers: a sweep goes on from where its last call
+// stopped instead of starting over at the head.
+func TestDispatcherReclaimReachesPastTheFirstScanWindow(t *testing.T) {
+	rdb := startRedis(t)
+	ctx := context.Background()
+	keys := newKeys(t, rdb, testKEK(t))
+	platform := &countingPlatform{seen: map[string]int{}}
+	srv := serveOn(t, "127.0.0.1:0", platform.handler())
+	enqueue := ucp.NewDispatcher(rdb, keys, quietLogger(), "pod-0", true)
+	require.NoError(t, rdb.XGroupCreateMkStream(ctx, webhookStream,
+		"dispatch", "0").Err())
+	add := func(id string) {
+		require.NoError(t, enqueue.Enqueue(ctx, ucp.Delivery{
+			ID: id, Schema: "alpha", Domain: "alpha.example.test",
+			TargetURL: srv.URL + "/ucp/orders", Body: json.RawMessage(`{}`),
+		}))
+	}
+
+	// The head of the pending list: entries a live pod holds and is
+	// working on, far more than one call scans.
+	const busy = 200
+	for i := range busy {
+		add(fmt.Sprintf("busy-%03d", i))
+	}
+	readAs(t, rdb, "live-pod", busy)
+	// Behind them, a dead pod's deliveries, idle long past the timeout.
+	const dead = 3
+	for i := range dead {
+		add(fmt.Sprintf("dead-%d", i))
+	}
+	for _, msg := range readAs(t, rdb, "dead-pod", dead) {
+		backdate(t, rdb, "dead-pod", msg.ID)
+	}
+
+	runDispatcher(t, rdb, keys, "pod-0")
+	assert.Eventually(t, func() bool {
+		c := platform.counts()
+		return c["dead-0"] == 1 && c["dead-1"] == 1 && c["dead-2"] == 1
+	}, 30*time.Second, 100*time.Millisecond,
+		"a dead pod's deliveries are reclaimed behind the first window")
+	for id := range platform.counts() {
+		assert.NotContains(t, id, "busy-",
+			"a live pod's deliveries are not taken over")
+	}
+}
+
+// A delivery whose store's signing key cannot be read is never
+// acknowledged: it is not a terminal outcome, and it stays pending for
+// reclaim instead of being dropped.
+func TestDispatcherKeepsADeliveryWhoseKeyIsUnavailable(t *testing.T) {
+	rdb := startRedis(t)
+	ctx := context.Background()
+	keys := newKeys(t, rdb, testKEK(t))
+	// A sealed record no key-encryption key of this test opens.
+	require.NoError(t, rdb.Set(ctx, sealedKeyName("alpha"),
+		base64.StdEncoding.EncodeToString(make([]byte, 60)), 0).Err())
+	platform := &countingPlatform{seen: map[string]int{}}
+	srv := serveOn(t, "127.0.0.1:0", platform.handler())
+
+	enqueue := ucp.NewDispatcher(rdb, keys, quietLogger(), "pod-0", true)
+	require.NoError(t, enqueue.Enqueue(ctx, ucp.Delivery{
+		ID: "keyless", Schema: "alpha", Domain: "alpha.example.test",
+		TargetURL: srv.URL + "/ucp/orders", Body: json.RawMessage(`{}`),
+	}))
+	runDispatcher(t, rdb, keys, "pod-0")
+
+	// Three attempts, 5s and 20s apart, then it gives up for now.
+	time.Sleep(28 * time.Second)
+	assert.Empty(t, platform.counts(), "nothing is sent unsigned")
+	n, err := rdb.XLen(ctx, webhookStream).Result()
 	require.NoError(t, err)
-	assert.EqualValues(t, stalledEvents-4, left.Count,
-		"what the replay deferred stays pending for reclaim")
-	assert.LessOrEqual(t, stalled.mostHeld(), int32(2))
+	assert.EqualValues(t, 1, n, "the delivery is not dropped")
+	pending, err := rdb.XPending(ctx, webhookStream, "dispatch").Result()
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, pending.Count, "it stays pending for reclaim")
 }

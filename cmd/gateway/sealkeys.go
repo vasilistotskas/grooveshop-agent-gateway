@@ -25,8 +25,9 @@ var errSealConflicts = errors.New(
 // sealSigningKeys is the ucp.SealCommand subcommand, `/gateway
 // seal-signing-keys`, which an operator runs once no pod of a release
 // before the sealed keys is left: with the pod's own configuration it
-// seals any store's key still unsealed, deletes every unsealed record
-// whose key is sealed, and exits.
+// seals every store's key still unsealed, deletes every unsealed record
+// whose key is sealed and every sentinel, logs what it did, and exits.
+// It exits non-zero when it left a store's records alone.
 func sealSigningKeys() error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -43,26 +44,14 @@ func sealSigningKeys() error {
 	if err != nil {
 		return err
 	}
-	return sealUnsealedKeys(context.Background(), keys, true, log)
-}
 
-// sealUnsealedKeys runs keys.SealUnsealed and logs what it did. A store
-// it left alone is logged at error and fails the deleting run. At boot
-// nothing it reports stops the pod: a store whose key it could not seal
-// is refused (ucp.ErrKeyUnsealed), never given a new key.
-func sealUnsealedKeys(
-	ctx context.Context, keys *ucp.Keys, deleteUnsealed bool,
-	log *slog.Logger,
-) error {
-	report, err := keys.SealUnsealed(ctx, deleteUnsealed)
-	if len(report.Sealed)+len(report.Deleted) > 0 || deleteUnsealed {
-		log.InfoContext(ctx, "signing keys sealed",
-			slog.String("sealed", strings.Join(report.Sealed, ",")),
-			slog.String("already_sealed",
-				strings.Join(report.AlreadySealed, ",")),
-			slog.String("unsealed_deleted",
-				strings.Join(report.Deleted, ",")))
-	}
+	ctx := context.Background()
+	report, err := keys.SealUnsealed(ctx, true)
+	log.InfoContext(ctx, "signing keys sealed",
+		slog.String("sealed", strings.Join(report.Sealed, ",")),
+		slog.String("already_sealed",
+			strings.Join(report.AlreadySealed, ",")),
+		slog.String("unsealed_deleted", strings.Join(report.Deleted, ",")))
 	for _, schema := range slices.Sorted(maps.Keys(report.Conflicts)) {
 		log.ErrorContext(ctx, "signing key left unsealed",
 			slog.String(obs.KeyTenant, schema),
@@ -71,7 +60,7 @@ func sealUnsealedKeys(
 	if err != nil {
 		return err
 	}
-	if deleteUnsealed && len(report.Conflicts) > 0 {
+	if len(report.Conflicts) > 0 {
 		return errSealConflicts
 	}
 	return nil
