@@ -130,8 +130,10 @@ func (k *SigningKey) Sign(base []byte) ([]byte, error) {
 //
 // Redis holds each key sealed with AES-256-GCM under the key-encryption
 // key (SIGNING_KEY_ENCRYPTION_KEY), bound to its store (sealContext):
-// the Redis instance is shared with other services, and the scalar signs
-// a store's order webhooks. Only the process memory holds it in clear.
+// Redis, its AOF files and their backups sit outside the process, and
+// the scalar signs a store's order webhooks. Only the process memory
+// holds it in clear. The records carry no TTL; the gateway's Redis does
+// not evict (noeviction).
 type Keys struct {
 	rdb  *redis.Client
 	aead cipher.AEAD

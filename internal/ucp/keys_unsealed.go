@@ -145,8 +145,8 @@ func (k *Keys) sealPlain(
 //
 // A store whose sealed record holds another key keeps both records and
 // is reported. mintScript leaves no way to reach that state while both
-// records live; it takes an unsealed record deleted, or a sealed one
-// evicted, while a pod of an earlier release still runs.
+// records live; it takes a record deleted by hand while a pod of an
+// earlier release still runs.
 func (k *Keys) SealUnsealed(
 	ctx context.Context, deleteUnsealed bool,
 ) (SealReport, error) {

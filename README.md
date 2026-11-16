@@ -46,7 +46,7 @@ behind basic auth).
 
 - Go 1.27 (the exact toolchain is in `go.mod`), standard library `net/http` routing
 - [MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk), [openai-go](https://github.com/openai/openai-go)
-- Redis
+- Redis: the gateway's own instance, `noeviction` with AOF persistence
 - golangci-lint (v2 config), testcontainers for the integration tests
 - Distroless container image
 

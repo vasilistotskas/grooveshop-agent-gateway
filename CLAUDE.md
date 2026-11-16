@@ -405,8 +405,7 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   Django-down must never flip readiness (agents get actionable errors,
   not 502s). The server answers from boot while the check waits for
   Redis, so a pod booting during a Redis restart is unready, not
-  crash-looping; order-webhook delivery and the keys' refresh start
-  once the check passed.
+  crash-looping; order-webhook delivery starts once the check passed.
 - `internal/server` — mux assembly; new route groups register here.
 - `internal/storefront` — every link into the Nuxt storefront (product,
   cart claim, order success, legal pages, OAuth metadata). The paths are
@@ -1090,6 +1089,14 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   A store's UCP signing key is `ag:{schema}:ucp:signing_key:es256:aes256gcm`,
   sealed (see `.claude/rules/ucp.md`): no Redis key holds a secret in
   clear.
+  The gateway's Redis is its own instance, shared with no other service,
+  with `maxmemory-policy noeviction` and AOF persistence (the
+  infrastructure repository's manifests): a record without a TTL (the
+  signing keys) or with a long one (the order links, a year) is never
+  evicted. A full Redis refuses writes instead of dropping records.
+  What the code does for a record that is gone (a session's cart record
+  written again, a missing order link) stays: a flush or a restore can
+  still lose one.
   A Redis write that depends
   on what the key holds is a script (`redis.NewScript`), never a read
   followed by a write.

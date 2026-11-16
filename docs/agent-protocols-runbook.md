@@ -668,7 +668,7 @@ Each store's ES256 key signs its order webhooks; its public half is in the store
    ```
 
    It seals every store's key still unsealed, deletes every unsealed record whose key the sealed record holds and every sentinel, logs one `signing keys sealed` line (`sealed`, `already_sealed`, `unsealed_deleted`), and exits non-zero if it left any store alone (`signing key left unsealed`, with the reason). Run it a second time right after: its line then lists no store under `sealed` or `unsealed_deleted`, which proves nothing unsealed is left. Later runs may list stores under `unsealed_deleted`: a store first keyed after step 3 still gets a sentinel, which expires by itself 7 days after it was written, so nothing needs deleting by hand.
-4. **A store it left alone** holds one key unsealed and another sealed. That takes an unsealed record deleted, or a sealed one evicted, while an old pod ran. The new pods publish the sealed key; delete the unsealed record by hand once you know which key platforms were last shown.
+4. **A store it left alone** holds one key unsealed and another sealed. That takes a record deleted by hand while an old pod ran. The new pods publish the sealed key; delete the unsealed record by hand once you know which key platforms were last shown.
 
 **Never change `SIGNING_KEY_ENCRYPTION_KEY` in place.** A key sealed under another one does not open: every store's profile answers 503 and its webhooks wait, unsent and pending, until the key is right. Changing it needs every record sealed again under the new key, which no command does yet.
 
@@ -679,4 +679,6 @@ Each store's ES256 key signs its order webhooks; its public half is in the store
 
 The release after every environment has run step 3 deletes the sealing on first use, the sentinel, and the command (`internal/ucp/keys_unsealed.go`, `cmd/gateway/sealkeys.go`). Sentinels written until then expire within 7 days, so that release needs no cleanup of its own.
 
-**Eviction.** The gateway's Redis evicts the least recently used keys when full, and the signing keys carry no TTL. Every pod re-reads the keys it holds every 5 minutes (`Keys.KeepFresh`), which keeps them recent; a record evicted anyway is written back from the key the pod holds, so the store keeps its key. A record that holds another key than the pod's (minted by a pod that found none) is adopted and logged at error (`signing key differs from the stored one`): the store's key changed, and its platforms see a rotation. That happens only when no running pod held the key when it was evicted.
+**Eviction does not happen.** The signing keys carry no TTL, and the gateway's Redis is its own instance with `maxmemory-policy noeviction` and AOF persistence, so nothing evicts them; a full Redis refuses writes instead.
+
+**Giving a store a new key on purpose** (its key leaked): delete its record in the gateway's Redis (`DEL ag:<schema>:ucp:signing_key:es256:aes256gcm`, reached as in section 10), then `kubectl --context grooveshop -n <namespace> rollout restart deploy/agent-gateway`. Each pod holds the key it read in memory until it restarts, and the first pod to need the key after the restart mints the new one. Platforms see a rotation: the profile publishes only the new key, so a webhook signed with the old one before the restart no longer verifies.

@@ -4,8 +4,11 @@ package integration
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,17 +19,26 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
+// awaitKEK runs the boot check of keys to its outcome.
+func awaitKEK(t *testing.T, keys *ucp.Keys) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	return keys.AwaitKEK(ctx, quietLogger())
+}
+
 // A fresh environment, with no signing key stored, passes the boot
 // check: there is nothing to check the key-encryption key against.
-func TestCheckKEKPassesAnEnvironmentWithNoKeys(t *testing.T) {
+func TestAwaitKEKPassesAnEnvironmentWithNoKeys(t *testing.T) {
 	rdb := startRedis(t)
-	require.NoError(t, newKeys(t, rdb, testKEK(t)).
-		CheckKEK(context.Background(), quietLogger()))
+	keys := newKeys(t, rdb, testKEK(t))
+	require.NoError(t, awaitKEK(t, keys))
+	require.NoError(t, keys.Checked())
 }
 
 // A key-encryption key that opens none of the stored keys (another
-// environment's) refuses the boot; the right one passes.
-func TestCheckKEKRefusesAKeyThatOpensNone(t *testing.T) {
+// environment's) is the definite failure; the right one passes.
+func TestAwaitKEKRefusesAKeyThatOpensNone(t *testing.T) {
 	rdb := startRedis(t)
 	ctx := context.Background()
 	kek := testKEK(t)
@@ -35,15 +47,18 @@ func TestCheckKEKRefusesAKeyThatOpensNone(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	err := newKeys(t, rdb, testKEK(t)).CheckKEK(ctx, quietLogger())
-	require.ErrorIs(t, err, ucp.ErrKEKOpensNoKey)
-	require.NoError(t, newKeys(t, rdb, kek).CheckKEK(ctx, quietLogger()))
+	wrong := newKeys(t, rdb, testKEK(t))
+	require.ErrorIs(t, awaitKEK(t, wrong), ucp.ErrKEKOpensNoKey)
+	require.Error(t, wrong.Checked(), "never ready")
+	right := newKeys(t, rdb, kek)
+	require.NoError(t, awaitKEK(t, right))
+	require.NoError(t, right.Checked())
 }
 
 // One record that does not open (copied from another store) beside keys
 // that do is that store's fault, not the key-encryption key's: the boot
 // goes on.
-func TestCheckKEKPassesWhenAKeyOpens(t *testing.T) {
+func TestAwaitKEKPassesWhenAKeyOpens(t *testing.T) {
 	rdb := startRedis(t)
 	ctx := context.Background()
 	kek := testKEK(t)
@@ -53,16 +68,71 @@ func TestCheckKEKPassesWhenAKeyOpens(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, rdb.Set(ctx, sealedKeyName("beta"), sealed, 0).Err())
 
-	require.NoError(t, newKeys(t, rdb, kek).CheckKEK(ctx, quietLogger()))
+	require.NoError(t, awaitKEK(t, newKeys(t, rdb, kek)))
 }
 
-// The check ends with its context: a Redis that does not answer fails
-// the boot instead of holding it.
-func TestCheckKEKIsBoundByItsContext(t *testing.T) {
+// failNthGet fails the nth GET once, as a connection lost mid-scan, and
+// counts the SCANs that start over from cursor 0.
+type failNthGet struct {
+	n           int32
+	gets        atomic.Int32
+	scansFromNo atomic.Int32
+}
+
+func (h *failNthGet) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *failNthGet) ProcessPipelineHook(
+	next redis.ProcessPipelineHook,
+) redis.ProcessPipelineHook {
+	return next
+}
+
+func (h *failNthGet) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		switch cmd.Name() {
+		case "scan":
+			if fmt.Sprint(cmd.Args()[1]) == "0" {
+				h.scansFromNo.Add(1)
+			}
+		case "get":
+			if h.gets.Add(1) == h.n {
+				err := errors.New("connection reset by peer")
+				cmd.SetErr(err)
+				return err
+			}
+		}
+		return next(ctx, cmd)
+	}
+}
+
+// A scan cut short goes on from its cursor in the next attempt instead
+// of starting over, so a scan of more records than one attempt reads
+// still completes.
+func TestAwaitKEKResumesItsScan(t *testing.T) {
 	rdb := startRedis(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	require.Error(t, newKeys(t, rdb, testKEK(t)).CheckKEK(ctx, quietLogger()))
+	ctx := context.Background()
+	kek := testKEK(t)
+	_, err := newKeys(t, rdb, kek).ForSchema(ctx, "alpha")
+	require.NoError(t, err)
+	// More records than one SCAN returns: the check reads them in
+	// several batches.
+	pipe := rdb.Pipeline()
+	for i := range 3000 {
+		pipe.Set(ctx, sealedKeyName(fmt.Sprintf("store%04d", i)), "junk", 0)
+	}
+	_, err = pipe.Exec(ctx)
+	require.NoError(t, err)
+
+	hook := &failNthGet{n: 2000}
+	rdb.AddHook(hook)
+	keys := newKeys(t, rdb, kek)
+	require.NoError(t, awaitKEK(t, keys))
+	require.NoError(t, keys.Checked())
+	assert.GreaterOrEqual(t, hook.gets.Load(), int32(3001))
+	assert.EqualValues(t, 1, hook.scansFromNo.Load(),
+		"the scan goes on from its cursor after a failure")
 }
 
 // proxyTo serves addr by forwarding each connection to target, until the
@@ -132,20 +202,6 @@ func TestAwaitKEKWaitsForRedisAndThenPasses(t *testing.T) {
 	require.NoError(t, keys.Checked(), "ready once the check passed")
 }
 
-// The definite failure (stored keys, none of which opens) ends the wait
-// at once, and the pod never becomes ready: the process exits on it.
-func TestAwaitKEKEndsOnAKeyThatOpensNone(t *testing.T) {
-	rdb := startRedis(t)
-	ctx := context.Background()
-	_, err := newKeys(t, rdb, testKEK(t)).ForSchema(ctx, "alpha")
-	require.NoError(t, err)
-
-	keys := newKeys(t, rdb, testKEK(t))
-	require.ErrorIs(t, keys.AwaitKEK(ctx, quietLogger()),
-		ucp.ErrKEKOpensNoKey)
-	require.Error(t, keys.Checked())
-}
-
 // The wait ends with its context: a shutdown stops it.
 func TestAwaitKEKStopsWithItsContext(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1",
@@ -157,64 +213,6 @@ func TestAwaitKEKStopsWithItsContext(t *testing.T) {
 	require.ErrorIs(t, keys.AwaitKEK(ctx, quietLogger()),
 		context.DeadlineExceeded)
 	require.Error(t, keys.Checked())
-}
-
-// A record evicted while a pod holds the key is written back from the
-// key the pod holds: an eviction never becomes a new key.
-func TestRefreshWritesBackAnEvictedKey(t *testing.T) {
-	rdb := startRedis(t)
-	ctx := context.Background()
-	kek := testKEK(t)
-	pod := newKeys(t, rdb, kek)
-	held, err := pod.ForSchema(ctx, "alpha")
-	require.NoError(t, err)
-
-	require.NoError(t, rdb.Del(ctx, sealedKeyName("alpha")).Err())
-	pod.Refresh(ctx, quietLogger())
-
-	again, err := newKeys(t, rdb, kek).ForSchema(ctx, "alpha")
-	require.NoError(t, err)
-	assert.Equal(t, held.KID, again.KID, "the same key is back")
-}
-
-// A record holding another key than the pod's (another pod minted one
-// after an eviction) is adopted, so every pod signs with the stored key.
-func TestRefreshAdoptsTheStoredKey(t *testing.T) {
-	rdb := startRedis(t)
-	ctx := context.Background()
-	kek := testKEK(t)
-	pod := newKeys(t, rdb, kek)
-	held, err := pod.ForSchema(ctx, "alpha")
-	require.NoError(t, err)
-
-	require.NoError(t, rdb.Del(ctx, sealedKeyName("alpha")).Err())
-	minted, err := newKeys(t, rdb, kek).ForSchema(ctx, "alpha")
-	require.NoError(t, err)
-	require.NotEqual(t, held.KID, minted.KID)
-
-	pod.Refresh(ctx, quietLogger())
-	now, err := pod.ForSchema(ctx, "alpha")
-	require.NoError(t, err)
-	assert.Equal(t, minted.KID, now.KID, "the pod adopts the stored key")
-}
-
-// The refresh reads each held record, which keeps it recently used for
-// the shared Redis's LRU eviction.
-func TestRefreshKeepsTheRecordRecent(t *testing.T) {
-	rdb := startRedis(t)
-	ctx := context.Background()
-	pod := newKeys(t, rdb, testKEK(t))
-	_, err := pod.ForSchema(ctx, "alpha")
-	require.NoError(t, err)
-
-	time.Sleep(2500 * time.Millisecond)
-	idle, err := rdb.ObjectIdleTime(ctx, sealedKeyName("alpha")).Result()
-	require.NoError(t, err)
-	require.GreaterOrEqual(t, idle, 2*time.Second)
-	pod.Refresh(ctx, quietLogger())
-	idle, err = rdb.ObjectIdleTime(ctx, sealedKeyName("alpha")).Result()
-	require.NoError(t, err)
-	assert.Less(t, idle, 2*time.Second)
 }
 
 // The sentinel a mint leaves expires by itself, so stores first keyed

@@ -106,12 +106,12 @@ func run() error {
 	// crash-loops into the restart backoff), and ends the process only
 	// on the definite failure: stored keys, none of which opens.
 	//
-	// Order-webhook delivery and the keys' refresh start once it passed.
-	// Delivery stops consuming at the signal, so its drain runs alongside
-	// the HTTP shutdown inside the pod's grace period; deliveries
-	// enqueued meanwhile wait in the stream for another pod. Both are
-	// waited for before Redis closes: the deferred Close must not race
-	// the final acknowledgements.
+	// Order-webhook delivery starts once it passed, so nothing is signed
+	// before the key is known to open. It stops consuming at the signal,
+	// so its drain runs alongside the HTTP shutdown inside the pod's
+	// grace period; deliveries enqueued meanwhile wait in the stream for
+	// another pod. It is waited for before Redis closes: the deferred
+	// Close must not race its final acknowledgements.
 	var background sync.WaitGroup
 	background.Go(func() {
 		if err := keys.AwaitKEK(ctx, log); err != nil {
@@ -121,10 +121,6 @@ func run() error {
 			return
 		}
 		background.Go(func() { dispatcher.Run(ctx) })
-		// The signing keys this pod holds are re-read every few minutes,
-		// so the shared Redis does not evict them as idle, and written
-		// back if it did.
-		background.Go(func() { keys.KeepFresh(ctx, log) })
 	})
 	defer func() {
 		abort(nil) // a listen failure returns without the signal
