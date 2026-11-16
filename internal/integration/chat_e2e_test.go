@@ -158,6 +158,9 @@ func newChatGatewayOn(
 	return srv
 }
 
+// chatMaxTurns is the harness's CHAT_MAX_TURNS.
+const chatMaxTurns = 10
+
 // chatGatewayHandler is one gateway pod's handler, its model API served
 // by model.
 func chatGatewayHandler(
@@ -190,7 +193,7 @@ func chatGatewayHandler(
 		ChatModel:               "gemini-3.7-flash",
 		ChatEffort:              "low",
 		ChatMaxTokens:           1024,
-		ChatMaxTurns:            10,
+		ChatMaxTurns:            chatMaxTurns,
 		ChatMaxIterations:       4,
 		ChatTurnTimeout:         30 * time.Second,
 		ChatRatePerMin:          600,
