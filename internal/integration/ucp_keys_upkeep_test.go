@@ -71,10 +71,11 @@ func TestAwaitKEKPassesWhenAKeyOpens(t *testing.T) {
 	require.NoError(t, awaitKEK(t, newKeys(t, rdb, kek)))
 }
 
-// failNthGet fails the nth GET once, as a connection lost mid-scan, and
-// counts the SCANs that start over from cursor 0.
+// failNthGet fails the nth GET once with err, and counts the SCANs that
+// start over from cursor 0.
 type failNthGet struct {
 	n           int32
+	err         error
 	gets        atomic.Int32
 	scansFromNo atomic.Int32
 }
@@ -98,41 +99,54 @@ func (h *failNthGet) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 			}
 		case "get":
 			if h.gets.Add(1) == h.n {
-				err := errors.New("connection reset by peer")
-				cmd.SetErr(err)
-				return err
+				cmd.SetErr(h.err)
+				return h.err
 			}
 		}
 		return next(ctx, cmd)
 	}
 }
 
-// A scan cut short goes on from its cursor in the next attempt instead
-// of starting over, so a scan of more records than one attempt reads
-// still completes.
-func TestAwaitKEKResumesItsScan(t *testing.T) {
+// scanWithAFailure runs the boot check over more records than one SCAN
+// returns, its 2,000th read failing once with err, and returns how many
+// SCANs started from cursor 0.
+func scanWithAFailure(t *testing.T, err error) int32 {
+	t.Helper()
 	rdb := startRedis(t)
 	ctx := context.Background()
 	kek := testKEK(t)
-	_, err := newKeys(t, rdb, kek).ForSchema(ctx, "alpha")
-	require.NoError(t, err)
-	// More records than one SCAN returns: the check reads them in
-	// several batches.
+	_, keyErr := newKeys(t, rdb, kek).ForSchema(ctx, "alpha")
+	require.NoError(t, keyErr)
 	pipe := rdb.Pipeline()
 	for i := range 3000 {
 		pipe.Set(ctx, sealedKeyName(fmt.Sprintf("store%04d", i)), "junk", 0)
 	}
-	_, err = pipe.Exec(ctx)
-	require.NoError(t, err)
+	_, pipeErr := pipe.Exec(ctx)
+	require.NoError(t, pipeErr)
 
-	hook := &failNthGet{n: 2000}
+	hook := &failNthGet{n: 2000, err: err}
 	rdb.AddHook(hook)
 	keys := newKeys(t, rdb, kek)
 	require.NoError(t, awaitKEK(t, keys))
 	require.NoError(t, keys.Checked())
-	assert.GreaterOrEqual(t, hook.gets.Load(), int32(3001))
-	assert.EqualValues(t, 1, hook.scansFromNo.Load(),
-		"the scan goes on from its cursor after a failure")
+	require.GreaterOrEqual(t, hook.gets.Load(), int32(3001))
+	return hook.scansFromNo.Load()
+}
+
+// An attempt that ran out of time goes on from its cursor in the next,
+// so a scan longer than one attempt still completes.
+func TestAwaitKEKResumesAScanThatRanOutOfTime(t *testing.T) {
+	assert.EqualValues(t, 1, scanWithAFailure(t, context.DeadlineExceeded),
+		"the scan goes on from its cursor")
+}
+
+// An attempt that failed otherwise (Redis restarted, the connection
+// dropped) scans again from the start: a cursor taken before a restart
+// can skip keys.
+func TestAwaitKEKRestartsAScanThatFailed(t *testing.T) {
+	assert.EqualValues(t, 2,
+		scanWithAFailure(t, errors.New("connection reset by peer")),
+		"the scan starts again from cursor 0")
 }
 
 // proxyTo serves addr by forwarding each connection to target, until the

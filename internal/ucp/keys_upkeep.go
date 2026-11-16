@@ -37,8 +37,12 @@ const (
 // errKEKUnchecked is what Checked reports until AwaitKEK has passed.
 var errKEKUnchecked = errors.New("the signing keys are not checked yet")
 
-// kekScan is how far the check has scanned the sealed records, kept
-// across attempts so a scan longer than one attempt still completes.
+// kekScan is how far the check has scanned the sealed records, and what
+// it found. The cursor is kept across an attempt that ran out of time,
+// so a scan longer than one attempt still completes; after any other
+// failure it starts again from 0, because a cursor taken before Redis
+// restarted can skip keys (Redis seeds its hash afresh at each start).
+// What was found stays: a key that opened did open.
 type kekScan struct {
 	cursor         uint64
 	opened, failed bool
@@ -54,16 +58,23 @@ type kekScan struct {
 // contents.
 //
 // An attempt that cannot read Redis is logged at warn and retried with a
-// backoff up to kekRetryMax. Each attempt is bounded by kekCheckAttempt,
-// and the scan goes on from its cursor in the next one, so it completes
-// however many records there are. It writes nothing (no canary record).
+// backoff up to kekRetryMax. Each attempt is bounded by kekCheckAttempt;
+// one that ran out of time goes on from its cursor in the next, so the
+// scan completes however many records there are, and one that failed
+// otherwise scans again from the start (kekScan). It writes nothing (no
+// canary record).
 func (k *Keys) AwaitKEK(ctx context.Context, log *slog.Logger) error {
 	var scan kekScan
 	wait := kekRetryFirst
 	for {
 		attempt, cancel := context.WithTimeout(ctx, kekCheckAttempt)
 		err := k.scanKEK(attempt, log, &scan)
+		outOfTime := errors.Is(err, context.DeadlineExceeded) ||
+			errors.Is(attempt.Err(), context.DeadlineExceeded)
 		cancel()
+		if err != nil && (!outOfTime || ctx.Err() != nil) {
+			scan.cursor = 0
+		}
 		switch {
 		case err == nil && scan.failed && !scan.opened:
 			return ErrKEKOpensNoKey

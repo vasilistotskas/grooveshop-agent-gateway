@@ -447,8 +447,9 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   its own context's when the crawler left, with no log line and no
   mark. A failure an invalidation overtook (its epoch moved) is not
   marked, and one that failed before reading the epoch always is. A revalidation reads the meta key
-  and only TOUCHes the blob (Redis evicts keys one by one, and TOUCH,
-  unlike EXISTS, keeps the blob's LRU clock with the meta key's): an
+  and only TOUCHes the blob (the two keys can be lost apart, by a
+  flush or a restore, and TOUCH, unlike EXISTS, marks the blob read
+  with the meta key): an
   entry without its blob is a miss and regenerates, and so is one whose
   blob is not whole: every body read checks the gzip header and the
   trailer's ISIZE against the stored size, in constant time, with no
@@ -642,7 +643,8 @@ passes, and runs CI's tidy, image and vulnerability checks again.
     record an older release wrote is a miss, and its key runs as after
     expiry). So the buyer data a request carried and its answer
     renders (name, email, phone, address) is kept in Redis for 24
-    hours unless evicted, for all four operations, while an open
+    hours unless the record is lost (a flush or a restore), for all
+    four operations, while an open
     session lives 30 minutes: the spec requires a key's response to be
     kept at least 24 hours (§6.6). Django's own idempotency cache keeps
     order responses as long, and a placed session the same data a day.
@@ -676,8 +678,8 @@ passes, and runs CI's tidy, image and vulnerability checks again.
     answered as a failure.
 - **A checkout no session is stored for is not "nothing happened".**
   The id does not say whether the checkout was never completed, placed
-  an order and is no longer kept (expiry, eviction, a release that
-  changes the session key), or
+  an order and is no longer kept (expiry, a flush or a restore, a
+  release that changes the session key), or
   never existed. Every "no session" answer is `mcpsrv.errCheckoutGone`
   (UCP, `not_found`) or `acp.msgSessionGone` (ACP's 404): an order may exist, check
   before starting another checkout, with the order id if the caller
@@ -898,7 +900,8 @@ passes, and runs CI's tidy, image and vulnerability checks again.
       session is never completed without its order. The record
       `Flow.place` writes beside the session (`Store.IndexOrder`:
       `ag:{schema}:cs:v3:{id}:order`, the order's uuid) is for calls on
-      the session, not events: Redis may evict it;
+      the session, not events: it can be lost (a flush or a
+      restore);
     - a payment-completed event also sets `completed`. No other event
       changes a status.
 
@@ -925,8 +928,9 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   - The record lives as long as its session: every save sets its
     expiry to the session's, and the save that ends a session and
     `Store.Discard` delete it, each only while it names that session.
-    A save writes the record again where Redis holds none (an
-    eviction). A record whose session is not stored holds nothing.
+    A save writes the record again where Redis holds none (lost to a
+    flush or a restore). A record whose session is not stored holds
+    nothing.
   - UCP `create_checkout` with `cart_id` (`mcpsrv.createFromCart`)
     takes a UUID only, in its canonical spelling
     (`checkout.CanonicalCartID`: Django reads every spelling as one
@@ -983,12 +987,10 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   - A cart made for its session (`line_items`, ACP) is taken the same
     way. A held one there is a fault: logged, answered unavailable,
     and no session is handed out.
-  - Redis can lose the record while the session lives (eviction).
-    Every load of a session touches its cart's record (`Store.Load`,
-    `Store.LoadAnyProtocol`),
-    so Redis does not see the record as less recently read than a
-    session a platform keeps reading, and a session's next save writes
-    a lost record again. A session nobody reads or saves, such as one
+  - Redis can lose the record while the session lives (a flush or a
+    restore). Every load of a session touches its cart's record
+    (`Store.Load`, `Store.LoadAnyProtocol`), and a session's next save
+    writes a lost record again. A session nobody reads or saves, such as one
     left awaiting its payment, can still lose it, and the cart can
     then get a second checkout: the gateway cannot close that alone.
     What holds whatever Redis lost is Django, which refuses an
