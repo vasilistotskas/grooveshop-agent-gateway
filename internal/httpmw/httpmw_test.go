@@ -61,7 +61,7 @@ func TestRequestIDHonorsInbound(t *testing.T) {
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			if tc.want == "" {
-				assert.NoError(t, uuid.Validate(seen))
+				require.NoError(t, uuid.Validate(seen))
 			} else {
 				assert.Equal(t, tc.want, seen)
 			}

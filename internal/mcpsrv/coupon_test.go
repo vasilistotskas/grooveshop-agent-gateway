@@ -1,7 +1,6 @@
 package mcpsrv
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -102,14 +101,14 @@ func TestRemoveCouponReturnsTheNewTotals(t *testing.T) {
 // A guest names the cart; a refused token is the unreachable cart.
 func TestCouponToolsNeedACart(t *testing.T) {
 	h, seen := couponDjango(t, http.StatusOK)
-	guest := tenant.NewContext(context.Background(), cartTenant())
+	guest := tenant.NewContext(t.Context(), cartTenant())
 
 	_, _, err := h.applyCoupon(guest, nil, ApplyCouponIn{Code: "SAVE10"})
-	assert.EqualError(t, err, "cartId and code are required")
+	require.EqualError(t, err, "cartId and code are required")
 	_, _, err = h.applyCoupon(signedIn(t), nil, ApplyCouponIn{Code: " "})
-	assert.EqualError(t, err, "cartId and code are required")
+	require.EqualError(t, err, "cartId and code are required")
 	_, _, err = h.removeCoupon(guest, nil, RemoveCouponIn{})
-	assert.EqualError(t, err, "cartId is required")
+	require.EqualError(t, err, "cartId is required")
 	assert.Empty(t, *seen)
 
 	h, _ = couponDjango(t, http.StatusUnauthorized)

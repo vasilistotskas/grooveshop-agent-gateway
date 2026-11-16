@@ -2,9 +2,7 @@ package django
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -54,7 +52,7 @@ func TestResolveTenantDecodesFixture(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	cfg, _, err := c.ResolveTenant(context.Background(), "shop.example.test")
+	cfg, _, err := c.ResolveTenant(t.Context(), "shop.example.test")
 	require.NoError(t, err)
 
 	assert.Equal(t, "https", gotProto)
@@ -137,9 +135,9 @@ func TestResolveTenantNotFound(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ResolveTenant(context.Background(), "nope.example.test")
+	_, _, err := c.ResolveTenant(t.Context(), "nope.example.test")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrNotFound)
+	require.ErrorIs(t, err, ErrNotFound)
 
 	var apiErr *APIError
 	require.ErrorAs(t, err, &apiErr)
@@ -160,7 +158,7 @@ func TestGetRetriesServerErrors(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	cfg, _, err := c.ResolveTenant(context.Background(), "shop.example.test")
+	cfg, _, err := c.ResolveTenant(t.Context(), "shop.example.test")
 	require.NoError(t, err)
 	assert.Equal(t, int32(3), calls.Load())
 	assert.Equal(t, "demostore", cfg.SchemaName)
@@ -176,9 +174,9 @@ func TestGetDoesNotRetryClientErrors(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ResolveTenant(context.Background(), "shop.example.test")
+	_, _, err := c.ResolveTenant(t.Context(), "shop.example.test")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrValidation)
+	require.ErrorIs(t, err, ErrValidation)
 	assert.Equal(t, int32(1), calls.Load())
 }
 
@@ -198,7 +196,7 @@ func TestAnErrorAnswerIsLoggedAtDebug(t *testing.T) {
 		2*time.Second, slog.New(slog.NewJSONHandler(&out,
 			&slog.HandlerOptions{Level: slog.LevelDebug})), nil)
 
-	err := c.do(context.Background(), request{method: http.MethodPost,
+	err := c.do(t.Context(), request{method: http.MethodPost,
 		path: "/cart/item/{id}", rawPath: "/cart/item/7",
 		host: "shop.example.test"})
 
@@ -222,7 +220,7 @@ func TestGetPersistentServerErrorWrapsUpstreamDown(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ResolveTenant(context.Background(), "shop.example.test")
+	_, _, err := c.ResolveTenant(t.Context(), "shop.example.test")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUpstreamDown)
 }
@@ -230,7 +228,7 @@ func TestGetPersistentServerErrorWrapsUpstreamDown(t *testing.T) {
 func TestConnectionRefusedWrapsUpstreamDown(t *testing.T) {
 	c := New("http://127.0.0.1:1/api/v1", "api.example.test", "test-secret",
 		200*time.Millisecond, testLogger(), nil)
-	_, _, err := c.ResolveTenant(context.Background(), "shop.example.test")
+	_, _, err := c.ResolveTenant(t.Context(), "shop.example.test")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUpstreamDown)
 }
@@ -249,6 +247,6 @@ func TestAPIErrorSentinels(t *testing.T) {
 	}
 	for _, tc := range cases {
 		err := &APIError{Status: tc.status, Detail: "x"}
-		assert.True(t, errors.Is(err, tc.want), "status %d", tc.status)
+		assert.ErrorIs(t, err, tc.want, "status %d", tc.status)
 	}
 }

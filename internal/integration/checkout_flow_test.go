@@ -48,9 +48,7 @@ func startFlow(t *testing.T, upstreamTimeout time.Duration) flowStack {
 			quietLogger()),
 		store: store, rdb: rdb, faults: faults,
 		tenant: &tenant.Tenant{
-			TenantConfig: django.TenantConfig{
-				SchemaName: "demostore", DefaultLocale: "el",
-			},
+			SchemaName: "demostore", DefaultLocale: "el",
 			Domain: "shop.test",
 		},
 	}
@@ -75,14 +73,14 @@ func (f flowStack) readySession(t *testing.T) *checkout.Session {
 	s.PayWayID = 1
 	s.Recompute()
 	require.Equal(t, checkout.StatusReadyForComplete, s.Status)
-	require.NoError(t, f.store.Create(context.Background(), s,
+	require.NoError(t, f.store.Create(t.Context(), s,
 		checkout.CartHolder{}))
 	return s
 }
 
 func (f flowStack) stored(t *testing.T, s *checkout.Session) *checkout.Session {
 	t.Helper()
-	got, err := f.store.LoadAnyProtocol(context.Background(), s.Schema, s.ID)
+	got, err := f.store.LoadAnyProtocol(t.Context(), s.Schema, s.ID)
 	require.NoError(t, err)
 	return got
 }
@@ -126,7 +124,7 @@ func setsKey(cmd redis.Cmder, part string) bool {
 func TestCompleteSavesAPlacedOrderAfterTheCallerLeft(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
 	s := f.readySession(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
 		if setsKey(cmd, ":orderlink:") {
@@ -144,7 +142,7 @@ func TestCompleteSavesAPlacedOrderAfterTheCallerLeft(t *testing.T) {
 	assert.Equal(t, checkout.StatusCompleted, stored.Status)
 	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
 	link, err := f.store.OrderLinkFor(
-		context.Background(), s.Schema, fixtureOrderUUID)
+		t.Context(), s.Schema, fixtureOrderUUID)
 	require.NoError(t, err, "the order link exists")
 	assert.Equal(t, s.ID, link.CheckoutID)
 }
@@ -155,7 +153,7 @@ func TestCompleteSavesAPlacedOrderAfterTheCallerLeft(t *testing.T) {
 func TestCompleteFinishesAnOrderAnsweredAfterTheCallerLeft(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
 	s := f.readySession(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	hold := func(r *http.Request) {
 		cancel()
@@ -176,7 +174,7 @@ func TestCompleteFinishesAnOrderAnsweredAfterTheCallerLeft(t *testing.T) {
 	assert.Equal(t, checkout.StatusCompleted, stored.Status)
 	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
 	link, err := f.store.OrderLinkFor(
-		context.Background(), s.Schema, fixtureOrderUUID)
+		t.Context(), s.Schema, fixtureOrderUUID)
 	require.NoError(t, err, "the order link exists")
 	assert.Equal(t, s.ID, link.CheckoutID)
 }
@@ -188,7 +186,7 @@ func TestCompleteLeavesAnUnansweredOrderInProgress(t *testing.T) {
 	const upstreamTimeout = time.Second
 	f := startFlow(t, upstreamTimeout)
 	s := f.readySession(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	hold := func(r *http.Request) {
 		cancel()
@@ -202,7 +200,7 @@ func TestCompleteLeavesAnUnansweredOrderInProgress(t *testing.T) {
 	require.ErrorIs(t, err, checkout.ErrOrderOutcomeUnknown)
 	assert.Equal(t, checkout.OrderMayExist, placement,
 		"the key is spent: the order may exist")
-	assert.NotErrorIs(t, err, context.Canceled,
+	require.NotErrorIs(t, err, context.Canceled,
 		"ended by the store's silence, not by the caller leaving")
 	assert.GreaterOrEqual(t, time.Since(started), upstreamTimeout)
 	stored := f.stored(t, s)
@@ -221,7 +219,7 @@ func TestCompleteRefusalStoresTheSessionReadyAgain(t *testing.T) {
 	s := f.readySession(t)
 	f.faults.orderRefuse.Store(true)
 
-	placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+	placement, err := f.flow.Complete(t.Context(), f.tenant, s)
 
 	require.ErrorIs(t, err, django.ErrValidation)
 	assert.Equal(t, checkout.NothingPlaced, placement,
@@ -257,7 +255,7 @@ func TestCompleteStoresNothingForASessionItDoesNotAdmit(t *testing.T) {
 			s.Buyer.FirstName = "unsaved"
 
 			placement, err := f.flow.Complete(
-				context.Background(), f.tenant, s)
+				t.Context(), f.tenant, s)
 
 			require.ErrorIs(t, err, tc.want)
 			assert.Equal(t, checkout.NothingPlaced, placement)
@@ -275,7 +273,7 @@ func TestCompleteStoresNothingForASessionItDoesNotAdmit(t *testing.T) {
 // it sends nothing to the store, writes nothing and frees its key.
 func TestCompleteLosesToASessionStoredSinceItLoadedIt(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
-	ctx := context.Background()
+	ctx := t.Context()
 	save := func(edit func(*checkout.Session)) func(*testing.T, *checkout.Session) {
 		return func(t *testing.T, other *checkout.Session) {
 			t.Helper()
@@ -326,7 +324,7 @@ func TestCompleteLosesToASessionStoredSinceItLoadedIt(t *testing.T) {
 // writes differ in nothing but the revision each gives its own.
 func TestCompletesAtOncePlaceOneOrder(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
-	ctx := context.Background()
+	ctx := t.Context()
 	s := f.readySession(t)
 	type outcome struct {
 		placement checkout.Placement
@@ -353,7 +351,7 @@ func TestCompletesAtOncePlaceOneOrder(t *testing.T) {
 			assert.Equal(t, checkout.OrderMayExist, o.placement)
 			continue
 		}
-		assert.ErrorIs(t, o.err, checkout.ErrSessionChanged)
+		require.ErrorIs(t, o.err, checkout.ErrSessionChanged)
 		assert.Equal(t, checkout.NothingPlaced, o.placement)
 	}
 	assert.Equal(t, 1, placed)
@@ -366,7 +364,7 @@ func TestCompletesAtOncePlaceOneOrder(t *testing.T) {
 // lifetime is how long Redis still keeps the session.
 func (f flowStack) lifetime(t *testing.T, s *checkout.Session) time.Duration {
 	t.Helper()
-	ttl, err := f.rdb.PTTL(context.Background(),
+	ttl, err := f.rdb.PTTL(t.Context(),
 		sessionRedisKey(s.ID)).Result()
 	require.NoError(t, err)
 	return ttl
@@ -402,7 +400,7 @@ func TestARefusedOrderDoesNotLeaveASessionClaimingOne(t *testing.T) {
 			}))
 
 			placement, err := f.flow.Complete(
-				context.Background(), f.tenant, s)
+				t.Context(), f.tenant, s)
 
 			require.ErrorIs(t, err, django.ErrValidation)
 			assert.Equal(t, checkout.NothingPlaced, placement)
@@ -418,7 +416,7 @@ func TestARefusedOrderDoesNotLeaveASessionClaimingOne(t *testing.T) {
 // does not cost it.
 func TestAFailedOrderRecordStillLinksTheOrder(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
-	ctx := context.Background()
+	ctx := t.Context()
 	s := f.readySession(t)
 	record := sessionRedisKey(s.ID) + ":order"
 	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
@@ -469,7 +467,7 @@ func (replyLost) ProcessPipelineHook(
 // stored. Paid online, the session awaits its payment, which an order
 // event never leaves, so only recognising its own write can save it.
 func TestAPlacedOrdersSaveWhoseReplyWasLostIsItsOwn(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	f := startFlow(t, 5*time.Second)
 	f.tenant.AgentCommerceEnabled = true
 	f.tenant.AgentHostedPaymentEnabled = true
@@ -511,7 +509,7 @@ func TestAMarkWhoseReplyWasLostPlacesTheOrder(t *testing.T) {
 			lost.CompareAndSwap(false, true)
 	}))
 
-	placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+	placement, err := f.flow.Complete(t.Context(), f.tenant, s)
 
 	require.True(t, lost.Load(), "the mark's reply was lost")
 	require.NoError(t, err)
@@ -555,7 +553,7 @@ func TestAMarkWhoseRepliesWereBothLostPlacesTheOrder(t *testing.T) {
 	s := f.readySession(t)
 	lost := fenceRepliesLost(f.rdb, s.ID)
 
-	placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+	placement, err := f.flow.Complete(t.Context(), f.tenant, s)
 
 	require.EqualValues(t, 2, lost.Load(), "both replies were lost")
 	require.NoError(t, err)
@@ -583,7 +581,7 @@ func TestAMarkThatCannotBeReadBackSendsNoOrder(t *testing.T) {
 		return nil
 	}))
 
-	placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+	placement, err := f.flow.Complete(t.Context(), f.tenant, s)
 
 	require.True(t, refused.Load(), "the session was not read back")
 	require.ErrorIs(t, err, checkout.ErrUnavailable)
@@ -631,7 +629,7 @@ func TestAMarkReadBackPastTheBudgetSendsNoOrder(t *testing.T) {
 		}))
 
 	began := time.Now()
-	placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+	placement, err := f.flow.Complete(t.Context(), f.tenant, s)
 	took := time.Since(began)
 
 	require.True(t, paused.Load(), "the session was not read back")
@@ -665,7 +663,7 @@ func TestAnUnansweredOrdersMarkIsTriedAgain(t *testing.T) {
 		return nil
 	}))
 
-	placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+	placement, err := f.flow.Complete(t.Context(), f.tenant, s)
 
 	require.ErrorIs(t, err, checkout.ErrOrderOutcomeUnknown)
 	assert.Equal(t, checkout.OrderMayExist, placement)
@@ -681,7 +679,7 @@ func TestAnUnansweredOrdersMarkIsTriedAgain(t *testing.T) {
 // over the event's, and what the event said (the order is paid) is kept.
 func TestCompleteStoresItsOutcomeOverAnOrderEvent(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
-	ctx := context.Background()
+	ctx := t.Context()
 	s := f.readySession(t)
 	placed := time.Now()
 	f.faults.orderCreatedAt.Store(&placed)
@@ -712,7 +710,7 @@ func TestCompleteStoresItsOutcomeOverAnOrderEvent(t *testing.T) {
 // day counts. A payment event then completes it.
 func TestOrderEventRecordsTheOrderItsSessionNeverSaved(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
-	ctx := context.Background()
+	ctx := t.Context()
 	s := f.readySession(t)
 	redisDown := errors.New("redis is down")
 	var linked, down atomic.Bool
@@ -763,7 +761,7 @@ func TestOrderEventRecordsTheOrderItsSessionNeverSaved(t *testing.T) {
 // recorded by such an event has already ended.
 func TestOrderEventForAnOldOrderDoesNotKeepItsSession(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
-	ctx := context.Background()
+	ctx := t.Context()
 	s := f.readySession(t)
 	s.Status = checkout.StatusCompleteInProgress
 	require.NoError(t, f.store.Save(ctx, s))
@@ -783,7 +781,7 @@ func TestOrderEventForAnOldOrderDoesNotKeepItsSession(t *testing.T) {
 // the request again".
 func TestCompleteReportsAPlacedOrderWhoseSessionIsGone(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
-	ctx := context.Background()
+	ctx := t.Context()
 	s := f.readySession(t)
 	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
 		if !setsKey(cmd, ":orderlink:") {
@@ -795,7 +793,7 @@ func TestCompleteReportsAPlacedOrderWhoseSessionIsGone(t *testing.T) {
 	placement, err := f.flow.Complete(ctx, f.tenant, s)
 
 	require.ErrorIs(t, err, checkout.ErrSessionNotSaved)
-	assert.NotErrorIs(t, err, checkout.ErrSessionChanged)
+	require.NotErrorIs(t, err, checkout.ErrSessionChanged)
 	assert.Equal(t, checkout.OrderMayExist, placement)
 	assert.Equal(t, fixtureOrderUUID, s.OrderUUID)
 	assert.EqualValues(t, 1, f.faults.orderCreates.Load())
@@ -819,7 +817,7 @@ func TestCompleteSendsNoOrderWithoutTheInProgressSave(t *testing.T) {
 		return redisDown
 	}))
 
-	placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+	placement, err := f.flow.Complete(t.Context(), f.tenant, s)
 
 	require.ErrorIs(t, err, redisDown)
 	assert.Equal(t, checkout.NothingPlaced, placement)
@@ -851,14 +849,14 @@ func TestCompleteReportsAPlacedOrderItCouldNotSave(t *testing.T) {
 		return nil
 	}))
 
-	placement, err := f.flow.Complete(context.Background(), f.tenant, s)
+	placement, err := f.flow.Complete(t.Context(), f.tenant, s)
 
 	require.ErrorIs(t, err, checkout.ErrSessionNotSaved)
 	assert.Equal(t, checkout.OrderMayExist, placement)
 	assert.Equal(t, fixtureOrderUUID, s.OrderUUID)
 	assert.Equal(t, checkout.StatusCompleteInProgress, f.stored(t, s).Status)
 	link, err := f.store.OrderLinkFor(
-		context.Background(), s.Schema, fixtureOrderUUID)
+		t.Context(), s.Schema, fixtureOrderUUID)
 	require.NoError(t, err, "the order link exists")
 	assert.Equal(t, s.ID, link.CheckoutID)
 }

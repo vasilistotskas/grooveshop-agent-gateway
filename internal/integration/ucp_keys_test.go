@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -57,14 +56,14 @@ func unsealedScalar(t *testing.T, rdb *redis.Client, schema string) string {
 	require.NoError(t, err)
 	raw[0] &= 0x7f // below the P-256 order
 	encoded := base64.StdEncoding.EncodeToString(raw)
-	require.NoError(t, rdb.Set(context.Background(), unsealedKeyName(schema),
+	require.NoError(t, rdb.Set(t.Context(), unsealedKeyName(schema),
 		encoded, 0).Err())
 	return encoded
 }
 
 func TestSigningKeysDistinctPerSchema(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	kek := testKEK(t)
 	keys := newKeys(t, rdb, kek)
 
@@ -86,7 +85,7 @@ func TestSigningKeysDistinctPerSchema(t *testing.T) {
 // nothing under the unsealed record's name.
 func TestSigningKeyIsSealedInRedis(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	key, err := newKeys(t, rdb, testKEK(t)).ForSchema(ctx, "alpha")
 	require.NoError(t, err)
 
@@ -112,7 +111,7 @@ func TestSigningKeyIsSealedInRedis(t *testing.T) {
 // minted over it, which would rotate the store's published key.
 func TestSealedSigningKeyIsNeverReplaced(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	kek := testKEK(t)
 	alpha, err := newKeys(t, rdb, kek).ForSchema(ctx, "alpha")
 	require.NoError(t, err)
@@ -140,7 +139,7 @@ func TestSealedSigningKeyIsNeverReplaced(t *testing.T) {
 // key is inert and every schema mints its own identity.
 func TestNoSchemaAdoptsAGlobalKey(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	require.NoError(t,
 		rdb.Set(ctx, "ag:ucp:signing_key", "stale-global-seed", 0).Err())
 
@@ -160,7 +159,7 @@ func TestNoSchemaAdoptsAGlobalKey(t *testing.T) {
 // until the deleting run, which removes it.
 func TestSealUnsealedKeepsEveryStoresKey(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	kek := testKEK(t)
 	alphaPlain := unsealedScalar(t, rdb, "alpha")
 	betaPlain := unsealedScalar(t, rdb, "beta")
@@ -215,7 +214,7 @@ func TestSealUnsealedKeepsEveryStoresKey(t *testing.T) {
 // may hold. So does a record that is not a key.
 func TestSealUnsealedLeavesConflictsAlone(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	kek := testKEK(t)
 	_, err := newKeys(t, rdb, kek).ForSchema(ctx, "alpha")
 	require.NoError(t, err)
@@ -240,7 +239,7 @@ func TestSealUnsealedLeavesConflictsAlone(t *testing.T) {
 // of the earlier release.
 func TestAnUnsealedKeyIsSealedOnFirstUse(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	kek := testKEK(t)
 	plain := unsealedScalar(t, rdb, "alpha")
 
@@ -266,7 +265,7 @@ func TestAnUnsealedKeyIsSealedOnFirstUse(t *testing.T) {
 // new key.
 func TestAnUnsealedRecordThatIsNotAKeyIsRefused(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	require.NoError(t, rdb.Set(ctx, unsealedKeyName("alpha"), "not a key",
 		0).Err())
 
@@ -283,7 +282,7 @@ func TestAnUnsealedRecordThatIsNotAKeyIsRefused(t *testing.T) {
 // read one, so the store never has two keys.
 func TestAMintedKeyBarsAnEarlierReleaseFromMintingAnother(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err := newKeys(t, rdb, testKEK(t)).ForSchema(ctx, "alpha")
 	require.NoError(t, err)
 
@@ -300,7 +299,7 @@ func TestAMintedKeyBarsAnEarlierReleaseFromMintingAnother(t *testing.T) {
 
 func TestProfilePublishesOnlyOwnKey(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	keys := newKeys(t, rdb, testKEK(t))
 
 	alpha, err := keys.ForSchema(ctx, "alpha")

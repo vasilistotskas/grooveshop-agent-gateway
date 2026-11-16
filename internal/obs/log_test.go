@@ -27,13 +27,13 @@ func TestContextHandlerAddsRequestIDAndTenant(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(NewContextHandler(slog.NewJSONHandler(&buf, nil)))
 
-	ctx := WithTenantSlot(WithRequestID(context.Background(), "req-1"))
+	ctx := WithTenantSlot(WithRequestID(t.Context(), "req-1"))
 	log.InfoContext(ctx, "before the tenant is known")
 	SetTenant(ctx, "demostore")
 	log.InfoContext(ctx, "plain")
 	log.With(slog.String("tool", "search")).InfoContext(ctx, "with")
 	log.WithGroup("call").InfoContext(ctx, "group", slog.Int("n", 1))
-	log.InfoContext(context.Background(), "no request")
+	log.InfoContext(t.Context(), "no request")
 	log.InfoContext(ctx, "names its own",
 		slog.String(KeyTenant, "acme"))
 
@@ -70,7 +70,7 @@ func TestContextHandlerFollowsADetachedContext(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(NewContextHandler(slog.NewJSONHandler(&buf, nil)))
 	reqCtx, cancel := context.WithCancel(
-		WithTenantSlot(WithRequestID(context.Background(), "req-1")))
+		WithTenantSlot(WithRequestID(t.Context(), "req-1")))
 	detached := context.WithoutCancel(reqCtx)
 	cancel()
 	SetTenant(reqCtx, "demostore")
@@ -92,6 +92,6 @@ func TestContextHandlerKeepsTheLevel(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(NewContextHandler(slog.NewJSONHandler(&buf,
 		&slog.HandlerOptions{Level: slog.LevelWarn})))
-	log.InfoContext(WithRequestID(context.Background(), "req-1"), "dropped")
+	log.InfoContext(WithRequestID(t.Context(), "req-1"), "dropped")
 	assert.Empty(t, buf.String())
 }

@@ -60,7 +60,7 @@ func startServe(
 
 func stoppable(t *testing.T) (context.Context, context.CancelFunc) {
 	t.Helper()
-	ctx, stop := context.WithCancel(context.Background())
+	ctx, stop := context.WithCancel(t.Context())
 	t.Cleanup(stop)
 	return ctx, stop
 }
@@ -69,7 +69,7 @@ func stoppable(t *testing.T) (context.Context, context.CancelFunc) {
 // once the handler has flushed the first line.
 func openStream(t *testing.T, url, body string) *bufio.Reader {
 	t.Helper()
-	req, err := http.NewRequestWithContext(context.Background(),
+	req, err := http.NewRequestWithContext(t.Context(),
 		http.MethodPost, url, strings.NewReader(body))
 	require.NoError(t, err)
 	resp, err := http.DefaultClient.Do(req)
@@ -124,7 +124,7 @@ func TestServeEndsAStreamWithAFinalEvent(t *testing.T) {
 	require.NoError(t, waitServe(t, done, tm.drain+tm.final))
 	assert.GreaterOrEqual(t, time.Since(began), tm.drain,
 		"the request kept a live context through the drain")
-	assert.ErrorIs(t, <-causes, httpmw.ErrShuttingDown)
+	require.ErrorIs(t, <-causes, httpmw.ErrShuttingDown)
 	rest, err := io.ReadAll(body)
 	require.NoError(t, err)
 	assert.Equal(t, "final\n", string(rest))
@@ -169,7 +169,7 @@ func TestServeLogsAMiddlewarePanicThroughTheGatewayLogger(t *testing.T) {
 	ctx, stop := stoppable(t)
 	url, logs, done := startServe(t, ctx, handler, podTiming(0))
 
-	req, err := http.NewRequestWithContext(context.Background(),
+	req, err := http.NewRequestWithContext(t.Context(),
 		http.MethodGet, url, nil)
 	require.NoError(t, err)
 	resp, err := http.DefaultClient.Do(req)
@@ -209,7 +209,7 @@ func TestServeCutsWhatOutlivesTheWindow(t *testing.T) {
 
 	require.NoError(t, waitServe(t, done, 5*time.Second))
 	_, err := io.ReadAll(body)
-	assert.Error(t, err, "the cut stream ends without its chunked end")
+	require.Error(t, err, "the cut stream ends without its chunked end")
 	assert.Contains(t, logs.String(), "level=WARN")
 }
 
@@ -228,7 +228,7 @@ func TestServeStopsAtOnceWithNothingInFlight(t *testing.T) {
 
 // A signal that arrived before serve started is a clean stop.
 func TestServeWithAContextAlreadyDone(t *testing.T) {
-	ctx, stop := context.WithCancel(context.Background())
+	ctx, stop := context.WithCancel(t.Context())
 	stop()
 
 	_, logs, done := startServe(t, ctx, http.NotFoundHandler(), podTiming(0))
@@ -271,7 +271,7 @@ func TestServeReturnsAListenerFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, ln.Close())
 
-	err = serve(context.Background(), ln, http.NotFoundHandler(),
+	err = serve(t.Context(), ln, http.NotFoundHandler(),
 		podTiming(0), slog.New(slog.DiscardHandler))
 
 	assert.Error(t, err)
@@ -303,13 +303,13 @@ func TestServeWaitsForAToolThatOutlivesItsRequest(t *testing.T) {
 		servesUntilTheToolReturns(t, func(url string) {
 			session, err := mcp.NewClient(
 				&mcp.Implementation{Name: "test"}, nil,
-			).Connect(context.Background(),
+			).Connect(t.Context(),
 				&mcp.StreamableClientTransport{Endpoint: url}, nil)
 			if err != nil {
 				return
 			}
 			defer func() { _ = session.Close() }()
-			_, _ = session.CallTool(context.Background(),
+			_, _ = session.CallTool(t.Context(),
 				&mcp.CallToolParams{Name: "place"})
 		})
 	})
@@ -420,7 +420,7 @@ func TestServeCutsAToolOnAnOldProtocol(t *testing.T) {
 
 	stop()
 
-	assert.ErrorIs(t, <-causes, httpmw.ErrShuttingDown)
+	require.ErrorIs(t, <-causes, httpmw.ErrShuttingDown)
 	require.NoError(t, waitServe(t, done, tm.drain+tm.final))
 	assert.NotContains(t, logs.String(), "level=WARN")
 }

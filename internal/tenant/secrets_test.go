@@ -156,7 +156,7 @@ func TestAFailedTopUpIsRememberedForTheNegativeTTL(t *testing.T) {
 
 	_, err := podB.EnsureSecrets(t.Context(), b)
 	require.ErrorIs(t, err, django.ErrUpstreamDown)
-	assert.NotErrorIs(t, err, ErrUnknownTenant)
+	require.NotErrorIs(t, err, ErrUnknownTenant)
 	assert.Greater(t, f.calls.Load(), before)
 	assertTopUpTTL(t, podB, testNegTTL)
 
@@ -569,7 +569,7 @@ func TestARedisReadDoesNotOverwriteATopUp(t *testing.T) {
 	}
 	resolved := make(chan result, 1)
 	go func() {
-		got, err := podB.Resolve(context.Background(), secretsHost)
+		got, err := podB.Resolve(t.Context(), secretsHost)
 		resolved <- result{got, err}
 	}()
 	select {
@@ -1304,7 +1304,7 @@ func TestALateJoinerGetsNoCredentialsOfAnotherStore(t *testing.T) {
 	}
 	first := make(chan result, 1)
 	go func() {
-		got, err := pod.EnsureSecrets(context.Background(), old)
+		got, err := pod.EnsureSecrets(t.Context(), old)
 		first <- result{got, err}
 	}()
 	select {
@@ -1329,7 +1329,7 @@ func TestALateJoinerGetsNoCredentialsOfAnotherStore(t *testing.T) {
 		reflect.ValueOf(pod.shared).Pointer()).Name(), "-fm")
 	late := make(chan result, 1)
 	go func() {
-		got, err := pod.EnsureSecrets(context.Background(), moved)
+		got, err := pod.EnsureSecrets(t.Context(), moved)
 		late <- result{got, err}
 	}()
 	require.Eventually(t, func() bool {
@@ -1358,7 +1358,7 @@ func TestATopUpLeaderHangingUpDoesNotFailItsFollowers(t *testing.T) {
 	f.mu.Unlock()
 	before := f.calls.Load()
 
-	leaderCtx, cancel := context.WithCancel(context.Background())
+	leaderCtx, cancel := context.WithCancel(t.Context())
 	leader := make(chan error, 1)
 	go func() {
 		_, err := podB.EnsureSecrets(leaderCtx, b)
@@ -1372,7 +1372,7 @@ func TestATopUpLeaderHangingUpDoesNotFailItsFollowers(t *testing.T) {
 	}
 	follower := make(chan result, 1)
 	go func() {
-		got, err := podB.EnsureSecrets(context.Background(), b)
+		got, err := podB.EnsureSecrets(t.Context(), b)
 		follower <- result{got, err}
 	}()
 	cancel()

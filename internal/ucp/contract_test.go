@@ -1,7 +1,6 @@
 package ucp
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -140,8 +139,7 @@ func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	log := slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	log := slog.New(slog.DiscardHandler)
 	return django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, log, obs.NewMetrics())
 }
@@ -166,7 +164,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 
 	t.Run("incomplete session", func(t *testing.T) {
 		s := newSession(checkout.StatusIncomplete)
-		payload, err := b.BuildCheckout(context.Background(), tn, s, checkoutCaps)
+		payload, err := b.BuildCheckout(t.Context(), tn, s, checkoutCaps)
 		require.NoError(t, err)
 		require.NoError(t, schema.Validate(roundTrip(t, payload)))
 
@@ -191,7 +189,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 	t.Run("escalated session carries continue_url", func(t *testing.T) {
 		s := newSession(checkout.StatusRequiresEscalation)
 		s.PaymentURL = "https://www.vivapayments.com/web/checkout?ref=42"
-		payload, err := b.BuildCheckout(context.Background(), tn, s, checkoutCaps)
+		payload, err := b.BuildCheckout(t.Context(), tn, s, checkoutCaps)
 		require.NoError(t, err)
 		require.NoError(t, schema.Validate(roundTrip(t, payload)))
 		assert.Equal(t, s.PaymentURL, payload.ContinueURL)
@@ -201,7 +199,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 		func(t *testing.T) {
 			s := newSession(checkout.StatusRequiresEscalation)
 			s.OrderID, s.OrderUUID = 684, "b9be45e5-6062-4976-ae7b-2c31eb2ad689"
-			payload, err := b.BuildCheckout(context.Background(), tn, s,
+			payload, err := b.BuildCheckout(t.Context(), tn, s,
 				checkoutCaps)
 			require.NoError(t, err)
 			require.NoError(t, schema.Validate(roundTrip(t, payload)))
@@ -227,7 +225,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 			)
 			s := newSession(checkout.StatusIncomplete)
 			payload, err := couponBuilder.BuildCheckout(
-				context.Background(), tn, s, checkoutCaps)
+				t.Context(), tn, s, checkoutCaps)
 			require.NoError(t, err)
 			require.NoError(t, schema.Validate(roundTrip(t, payload)))
 
@@ -246,7 +244,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 		s := newSession(checkout.StatusCompleted)
 		s.OrderID = 684
 		s.OrderUUID = "b9be45e5-6062-4976-ae7b-2c31eb2ad689"
-		payload, err := b.BuildCheckout(context.Background(), tn, s, checkoutCaps)
+		payload, err := b.BuildCheckout(t.Context(), tn, s, checkoutCaps)
 		require.NoError(t, err)
 		require.NoError(t, schema.Validate(roundTrip(t, payload)))
 		require.NotNil(t, payload.Order)
@@ -309,7 +307,7 @@ func TestBuildCheckoutPaymentParity(t *testing.T) {
 			"29eb4495-e018-45e7-b59c-6646302bd4ef")
 		s.Status = st
 		s.PaymentURL = paymentURL
-		payload, err := b.BuildCheckout(context.Background(), tn, s, checkoutCaps)
+		payload, err := b.BuildCheckout(t.Context(), tn, s, checkoutCaps)
 		require.NoError(t, err)
 		require.NoError(t, schema.Validate(roundTrip(t, payload)))
 		return payload

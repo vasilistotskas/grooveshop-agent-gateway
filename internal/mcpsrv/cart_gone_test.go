@@ -105,7 +105,7 @@ func TestChatCartToolsNeverAnswerAGoneCartWithCreateCart(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := goneCartDjango(t, chatSurface)
 			ctx, activity := listening(
-				tenant.NewContext(context.Background(), cartTenant()))
+				tenant.NewContext(t.Context(), cartTenant()))
 
 			err := call(h, ctx)
 
@@ -182,7 +182,7 @@ func TestChatCartAnswered404IsUnreachable(t *testing.T) {
 		} {
 			t.Run(name+" "+http.StatusText(a.status), func(t *testing.T) {
 				h := refusingDjango(t, chatSurface, a.status, a.body)
-				ctx := tenant.NewContext(context.Background(), cartTenant())
+				ctx := tenant.NewContext(t.Context(), cartTenant())
 
 				err := goneCartCalls[name](h, ctx)
 
@@ -207,7 +207,7 @@ func TestMCPCartAnswered404IsNotFound(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := refusingDjango(t, mcpSurface, http.StatusNotFound,
 				cartGone404)
-			ctx := tenant.NewContext(context.Background(), cartTenant())
+			ctx := tenant.NewContext(t.Context(), cartTenant())
 
 			err := goneCartCalls[name](h, ctx)
 
@@ -230,7 +230,7 @@ func TestCartAnsweredABare404IsAFeatureOff(t *testing.T) {
 			}
 			t.Run(s.label()+" "+name, func(t *testing.T) {
 				h := notFoundDjango(t, s)
-				ctx := tenant.NewContext(context.Background(), cartTenant())
+				ctx := tenant.NewContext(t.Context(), cartTenant())
 
 				err := goneCartCalls[name](h, ctx)
 
@@ -248,7 +248,7 @@ func TestCartAnsweredABare404IsAFeatureOff(t *testing.T) {
 func TestAddToCartAnswered404IsTheProduct(t *testing.T) {
 	for _, s := range []surface{mcpSurface, chatSurface} {
 		h := notFoundDjango(t, s)
-		ctx := tenant.NewContext(context.Background(), cartTenant())
+		ctx := tenant.NewContext(t.Context(), cartTenant())
 
 		err := goneCartCalls["add_to_cart"](h, ctx)
 
@@ -271,7 +271,7 @@ func TestMCPCartToolsAnswerAGoneCartWithCreateCart(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			h := goneCartDjango(t, mcpSurface)
-			ctx := tenant.NewContext(context.Background(), cartTenant())
+			ctx := tenant.NewContext(t.Context(), cartTenant())
 
 			err := call(h, ctx)
 

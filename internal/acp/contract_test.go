@@ -1,7 +1,6 @@
 package acp
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -92,8 +91,7 @@ func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	log := slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	log := slog.New(slog.DiscardHandler)
 	return django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, log, obs.NewMetrics())
 }
@@ -112,7 +110,7 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 	t.Run("fresh session is not_ready_for_payment", func(t *testing.T) {
 		s := newSession()
 		s.Recompute()
-		payload, err := Render(context.Background(), dj, tn, testLinks(tn), s)
+		payload, err := Render(t.Context(), dj, tn, testLinks(tn), s)
 		require.NoError(t, err)
 		require.NoError(t, sessionSchema.Validate(roundTrip(t, payload)))
 
@@ -154,7 +152,7 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 			s.PayWayID = 1
 			require.Equal(t, checkout.StatusReadyForComplete, s.Status)
 
-			payload, err := Render(context.Background(), dj, tn, testLinks(tn), s)
+			payload, err := Render(t.Context(), dj, tn, testLinks(tn), s)
 			require.NoError(t, err)
 			require.NoError(t, sessionSchema.Validate(roundTrip(t, payload)))
 
@@ -172,7 +170,7 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 			s.Status = checkout.StatusCompleted
 			s.OrderID = 684
 			s.OrderUUID = "b9be45e5-6062-4976-ae7b-2c31eb2ad689"
-			payload, err := Render(context.Background(), dj, tn, testLinks(tn), s)
+			payload, err := Render(t.Context(), dj, tn, testLinks(tn), s)
 			require.NoError(t, err)
 			require.NoError(t,
 				withOrderSchema.Validate(roundTrip(t, payload)))
@@ -190,7 +188,7 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 	t.Run("a store with promotions declares the discount extension", func(t *testing.T) {
 		s := newSession()
 		s.Recompute()
-		payload, err := Render(context.Background(), dj, tn, testLinks(tn), s)
+		payload, err := Render(t.Context(), dj, tn, testLinks(tn), s)
 		require.NoError(t, err)
 		require.Len(t, payload.Capabilities.Extensions, 1)
 		ext := payload.Capabilities.Extensions[0]
@@ -205,7 +203,7 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 			off.Features.Promotions = false
 			s := newSession()
 			s.Recompute()
-			payload, err := Render(context.Background(), dj, off, testLinks(off), s)
+			payload, err := Render(t.Context(), dj, off, testLinks(off), s)
 			require.NoError(t, err)
 			assert.Empty(t, payload.Capabilities.Extensions)
 			require.NoError(t, sessionSchema.Validate(roundTrip(t, payload)))
@@ -217,7 +215,7 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 		s.DiscountCodes = []string{"SAVE10"}
 		s.Recompute()
 
-		payload, err := Render(context.Background(), couponDj, tn, testLinks(tn), s)
+		payload, err := Render(t.Context(), couponDj, tn, testLinks(tn), s)
 		require.NoError(t, err)
 		require.NoError(t, sessionSchema.Validate(roundTrip(t, payload)))
 
@@ -252,7 +250,7 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 			}}
 			s.Recompute()
 
-			payload, err := Render(context.Background(), dj, tn, testLinks(tn), s)
+			payload, err := Render(t.Context(), dj, tn, testLinks(tn), s)
 			require.NoError(t, err)
 			require.NoError(t, sessionSchema.Validate(roundTrip(t, payload)))
 
@@ -283,7 +281,7 @@ func TestRenderMatchesCheckoutSessionSchema(t *testing.T) {
 	t.Run("canceled session keeps the shared status name", func(t *testing.T) {
 		s := newSession()
 		s.Status = checkout.StatusCanceled
-		payload, err := Render(context.Background(), dj, tn, testLinks(tn), s)
+		payload, err := Render(t.Context(), dj, tn, testLinks(tn), s)
 		require.NoError(t, err)
 		require.NoError(t, sessionSchema.Validate(roundTrip(t, payload)))
 		assert.Equal(t, "canceled", payload.Status)

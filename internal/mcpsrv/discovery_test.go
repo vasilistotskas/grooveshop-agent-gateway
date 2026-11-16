@@ -1,9 +1,9 @@
 package mcpsrv
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -34,13 +34,11 @@ var ardSchemaFile = filepath.Join("..", "..", "testdata", "schemas", "ard",
 // long enough that the description must be cut.
 func idnTenant() *tenant.Tenant {
 	return &tenant.Tenant{
-		TenantConfig: django.TenantConfig{
-			SchemaName: "alpha",
-			StoreName: "Κατάστημα Φυτών και Βοτάνων της Αλφα με Παράδοση " +
-				"Τριών Γενεών",
-			PrimaryDomain: "Φυτά.example.test",
-		},
-		Domain: "www.alpha.example.test",
+		SchemaName: "alpha",
+		StoreName: "Κατάστημα Φυτών και Βοτάνων της Αλφα με Παράδοση " +
+			"Τριών Γενεών",
+		PrimaryDomain: "Φυτά.example.test",
+		Domain:        "www.alpha.example.test",
 	}
 }
 
@@ -50,9 +48,7 @@ func serve(
 ) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, "/", nil)
-	for k, v := range header {
-		req.Header[k] = v
-	}
+	maps.Copy(req.Header, header)
 	if tn != nil {
 		req = req.WithContext(tenant.NewContext(req.Context(), tn))
 	}
@@ -207,7 +203,7 @@ func TestARDCapabilitiesAreTheRegisteredTools(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			tn := cardTenant()
 			tn.Features = features
-			ctx := context.Background()
+			ctx := t.Context()
 			serverT, clientT := mcp.NewInMemoryTransports()
 			_, err := NewServer(Deps{Version: "test"}, IdentityFor(tn), tn.Features).
 				Connect(ctx, serverT, nil)

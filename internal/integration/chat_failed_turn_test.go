@@ -56,7 +56,7 @@ func storedConversation(
 	t *testing.T, rdb *redis.Client, id string,
 ) map[string]any {
 	t.Helper()
-	raw, err := rdb.Get(context.Background(),
+	raw, err := rdb.Get(t.Context(),
 		"ag:demostore:chat:"+id).Result()
 	if errors.Is(err, redis.Nil) {
 		return nil
@@ -69,7 +69,7 @@ func storedConversation(
 
 func storedConversations(t *testing.T, rdb *redis.Client) []string {
 	t.Helper()
-	keys, err := rdb.Keys(context.Background(),
+	keys, err := rdb.Keys(t.Context(),
 		"ag:demostore:chat:????????-*").Result()
 	require.NoError(t, err)
 	return keys
@@ -207,7 +207,7 @@ func TestChatTurnCutByShutdownReportsAndKeepsTheCart(t *testing.T) {
 	rdb := startRedis(t)
 	handler := chatGatewayHandler(t, rdb, fake.handler(),
 		fakeDjangoMux(t), quietLogger())
-	base, shutdown := context.WithCancelCause(context.Background())
+	base, shutdown := context.WithCancelCause(t.Context())
 	t.Cleanup(func() { shutdown(nil) })
 	gw := httptest.NewUnstartedServer(handler)
 	gw.Config.BaseContext = func(net.Listener) context.Context { return base }

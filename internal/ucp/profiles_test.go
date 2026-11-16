@@ -1,7 +1,6 @@
 package ucp
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -89,7 +88,7 @@ func TestResolveValidatesAndCachesTheProfile(t *testing.T) {
 		_, _ = w.Write([]byte(body))
 	})
 	r := newTestResolver(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	p, err := r.Resolve(ctx, srv.URL+"/profile.json")
 	require.NoError(t, err)
@@ -111,7 +110,7 @@ func TestResolveBacksOffAFailingProfile(t *testing.T) {
 	})
 	r := newTestResolver(t)
 	for range 3 {
-		_, err := r.Resolve(context.Background(), srv.URL)
+		_, err := r.Resolve(t.Context(), srv.URL)
 		assert.Equal(t, CodeProfileUnreachable, discoveryCode(t, err))
 	}
 	assert.EqualValues(t, 1, srv.hits.Load())
@@ -139,7 +138,7 @@ func TestResolveRejectsWhatTheSpecRejects(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			srv := serveProfile(t, tc.handler)
-			_, err := newTestResolver(t).Resolve(context.Background(), srv.URL)
+			_, err := newTestResolver(t).Resolve(t.Context(), srv.URL)
 			assert.Equal(t, tc.code, discoveryCode(t, err))
 		})
 	}
@@ -155,7 +154,7 @@ func TestResolveRefusesUnsafeProfileURLs(t *testing.T) {
 		"https://ucp.dev@evil.example/profile.json",
 		"",
 	} {
-		_, err := r.Resolve(context.Background(), raw)
+		_, err := r.Resolve(t.Context(), raw)
 		assert.Equal(t, CodeInvalidProfileURL, discoveryCode(t, err), raw)
 	}
 }
@@ -190,11 +189,11 @@ func TestResolveBudgetExhaustionIsNotCached(t *testing.T) {
 	})
 	r := newTestResolver(t)
 	r.limiter = rate.NewLimiter(0, 0)
-	_, err := r.Resolve(context.Background(), srv.URL)
-	assert.ErrorIs(t, err, ErrDiscoveryBusy)
+	_, err := r.Resolve(t.Context(), srv.URL)
+	require.ErrorIs(t, err, ErrDiscoveryBusy)
 
 	r.limiter = rate.NewLimiter(rate.Inf, 1)
-	_, err = r.Resolve(context.Background(), srv.URL)
+	_, err = r.Resolve(t.Context(), srv.URL)
 	assert.NoError(t, err, "the busy answer was not remembered")
 }
 
@@ -204,7 +203,7 @@ func TestResolveBudgetExhaustionIsNotCached(t *testing.T) {
 func TestResolveReturnsPanicAsError(t *testing.T) {
 	r := newTestResolver(t)
 	r.limiter = nil // taking a token panics
-	_, err := r.Resolve(context.Background(),
+	_, err := r.Resolve(t.Context(),
 		"http://127.0.0.1:1/profile.json")
 	require.EqualError(t, err, "ucp: profile fetch: panicked")
 }
@@ -216,7 +215,7 @@ func TestResolveHidesTransportErrorDetail(t *testing.T) {
 	require.NoError(t, err)
 	r.hc = platformClient(false, time.Second)
 	// A public-looking name that resolves nowhere public in tests.
-	_, err = r.Resolve(context.Background(),
+	_, err = r.Resolve(t.Context(),
 		"https://profile.invalid/profile.json")
 	derr, ok := errors.AsType[*DiscoveryError](err)
 	require.True(t, ok, "got %v", err)

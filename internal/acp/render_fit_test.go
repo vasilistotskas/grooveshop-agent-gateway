@@ -1,7 +1,6 @@
 package acp
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -55,8 +54,7 @@ func unfitDjango(t *testing.T, flags string) *django.Client {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	log := slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	log := slog.New(slog.DiscardHandler)
 	return django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, log, obs.NewMetrics())
 }
@@ -80,7 +78,7 @@ func TestAnUnfitSelectionIsNeitherOfferedNorEchoed(t *testing.T) {
 			}
 			s.Recompute()
 
-			payload, err := Render(context.Background(),
+			payload, err := Render(t.Context(),
 				unfitDjango(t, flags), tn, testLinks(tn), s)
 			require.NoError(t, err)
 

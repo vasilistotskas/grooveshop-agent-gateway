@@ -308,7 +308,8 @@ func (d *Dispatcher) handOut(
 
 // logLeftPending records a delivery left pending for reclaim.
 func (d *Dispatcher) logLeftPending(ctx context.Context, j job, why string) {
-	d.log.InfoContext(ctx, "webhook delivery left pending: "+why,
+	d.log.InfoContext(ctx, "webhook delivery left pending",
+		slog.String("reason", why),
 		slog.String("delivery", j.dl.ID),
 		slog.String("target", j.target),
 		slog.String(obs.KeyTenant, j.dl.Schema))

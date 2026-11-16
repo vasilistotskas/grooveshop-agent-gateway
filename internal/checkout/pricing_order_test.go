@@ -1,7 +1,6 @@
 package checkout
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -52,11 +51,11 @@ func TestComputePricingPlacedOrder(t *testing.T) {
 	dj := django.New(srv.URL+"/api/v1", "platform.test", "secret",
 		time.Second, slog.New(slog.DiscardHandler), obs.NewMetrics())
 	tn := &tenant.Tenant{
-		TenantConfig: django.TenantConfig{DefaultLocale: "el"},
-		Domain:       "demostore.test",
+		DefaultLocale: "el",
+		Domain:        "demostore.test",
 	}
 
-	p, cart, err := ComputePricing(context.Background(), dj, tn,
+	p, cart, err := ComputePricing(t.Context(), dj, tn,
 		&Session{CartID: "gone", OrderUUID: placedOrderUUID})
 	require.NoError(t, err)
 
@@ -89,7 +88,7 @@ func TestComputePricingPlacedOrderUnreadable(t *testing.T) {
 	dj := django.New(srv.URL+"/api/v1", "platform.test", "secret",
 		time.Second, slog.New(slog.DiscardHandler), obs.NewMetrics())
 
-	_, _, err := ComputePricing(context.Background(), dj,
+	_, _, err := ComputePricing(t.Context(), dj,
 		&tenant.Tenant{Domain: "demostore.test"},
 		&Session{OrderUUID: placedOrderUUID})
 	assert.ErrorIs(t, err, django.ErrUpstreamDown)

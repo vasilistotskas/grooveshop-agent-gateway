@@ -126,7 +126,7 @@ func TestVerifyCachesPositiveAndNegative(t *testing.T) {
 	}
 	for range 3 {
 		_, err := v.Verify(t.Context(), testTenant(), "expired")
-		assert.ErrorIs(t, err, ErrInvalidToken)
+		require.ErrorIs(t, err, ErrInvalidToken)
 	}
 	// One upstream probe per distinct token — the rest served from cache.
 	assert.Equal(t, int64(2), hits.Load())

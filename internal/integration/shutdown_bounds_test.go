@@ -49,7 +49,7 @@ func pauseRedis(t *testing.T, rdb *redis.Client, d time.Duration) error {
 	t.Helper()
 	pauser := redis.NewClient(&redis.Options{Addr: rdb.Options().Addr})
 	defer func() { _ = pauser.Close() }()
-	return pauser.ClientPause(context.Background(), d).Err()
+	return pauser.ClientPause(t.Context(), d).Err()
 }
 
 // A command a silent Redis does not answer ends at its context's
@@ -59,7 +59,7 @@ func pauseRedis(t *testing.T, rdb *redis.Client, d time.Duration) error {
 func TestARedisCommandEndsAtItsContextDeadline(t *testing.T) {
 	rdb := startRedis(t)
 	require.NoError(t, pauseRedis(t, rdb, 2*time.Second))
-	ctx, cancel := context.WithTimeout(context.Background(),
+	ctx, cancel := context.WithTimeout(t.Context(),
 		200*time.Millisecond)
 	defer cancel()
 
@@ -117,12 +117,12 @@ func TestACompletionsStepsAfterItsOrderFitTheShutdownWindow(t *testing.T) {
 			watched.Store(&id)
 			defer watched.Store(nil)
 
-			got := surface.answer(context.Background(), id,
+			got := surface.answer(t.Context(), id,
 				uuid.NewString(), nil)
 
 			require.Equal(t, "completed", got.status, got.refusal)
 			assert.Eventually(t, func() bool {
-				n, err := stack.rdb.Exists(context.Background(),
+				n, err := stack.rdb.Exists(t.Context(),
 					lockRedisKey(id)).Result()
 				return err == nil && n == 0
 			}, ucpUpstreamTimeout, 10*time.Millisecond,

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Sessions live under a versioned key, and their locks beside them: a
@@ -71,11 +72,11 @@ func TestAnIDNoSessionCanHaveTakesNoLock(t *testing.T) {
 	} {
 		assert.False(t, ValidID(id), id)
 		_, err := st.Lock(t.Context(), "alpha", id)
-		assert.ErrorIs(t, err, ErrNotFound, id)
+		require.ErrorIs(t, err, ErrNotFound, id)
 		_, _, err = st.LockSession(t.Context(), "alpha", ProtocolUCP, id)
-		assert.ErrorIs(t, err, ErrNotFound, id)
+		require.ErrorIs(t, err, ErrNotFound, id)
 		_, err = st.Load(t.Context(), "alpha", ProtocolUCP, id)
-		assert.ErrorIs(t, err, ErrNotFound, id)
+		require.ErrorIs(t, err, ErrNotFound, id)
 		_, err = st.LoadAnyProtocol(t.Context(), "alpha", id)
 		assert.ErrorIs(t, err, ErrNotFound, id)
 	}

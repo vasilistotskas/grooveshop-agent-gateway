@@ -379,7 +379,8 @@ func (s *Service) await(
 func (s *Service) notCached(
 	ctx context.Context, schema string, epoch int64, msg string,
 ) error {
-	s.log.ErrorContext(ctx, msg)
+	s.log.ErrorContext(ctx, "generated feed not readable",
+		slog.String("reason", msg))
 	s.mark(ctx, schema, epoch)
 	return errGenerationNotCached
 }

@@ -22,7 +22,7 @@ func tokenContext(t *testing.T) (context.Context, *CartToken) {
 	t.Helper()
 	tok, err := ParseCartToken(testCartToken)
 	require.NoError(t, err)
-	return WithCartToken(context.Background(), tok), tok
+	return WithCartToken(t.Context(), tok), tok
 }
 
 // cartCalls makes every call on the routes Django accepts the token on,
@@ -77,7 +77,7 @@ func TestCartCallsSendTheTokenInsteadOfTheCartID(t *testing.T) {
 	ctx, tok := tokenContext(t)
 
 	for name, err := range cartCalls(ctx, newTestClient(t, srv.URL)) {
-		assert.NoError(t, err, name)
+		require.NoError(t, err, name)
 	}
 	assert.Equal(t, int32(6), calls.Load())
 	assert.False(t, tok.Refused())
@@ -93,8 +93,8 @@ func TestCartCallsWithoutATokenNameTheCart(t *testing.T) {
 			r.Header.Get("X-Cart-Id"))
 	})
 
-	errs := cartCalls(context.Background(), newTestClient(t, srv.URL))
-	assert.NoError(t, errs["RemoveCartItem"], "a 204 names no cart")
+	errs := cartCalls(t.Context(), newTestClient(t, srv.URL))
+	require.NoError(t, errs["RemoveCartItem"], "a 204 names no cart")
 	delete(errs, "RemoveCartItem")
 	for name, err := range errs {
 		assert.ErrorIs(t, err, ErrCartUnreachable, name)
@@ -119,9 +119,9 @@ func TestRefusedCartTokenIsReportedAndNotRetried(t *testing.T) {
 	ctx, tok := tokenContext(t)
 
 	for name, err := range cartCalls(ctx, newTestClient(t, srv.URL)) {
-		assert.ErrorIs(t, err, ErrCartTokenRefused, name)
-		assert.ErrorIs(t, err, ErrCartUnreachable, name)
-		assert.NotErrorIs(t, err, ErrUnauthorized, name)
+		require.ErrorIs(t, err, ErrCartTokenRefused, name)
+		require.ErrorIs(t, err, ErrCartUnreachable, name)
+		require.NotErrorIs(t, err, ErrUnauthorized, name)
 	}
 	assert.True(t, tok.Refused())
 	assert.Equal(t, int32(1), calls.Load())
@@ -135,9 +135,9 @@ func TestUnauthorizedWithoutATokenIsNotARefusedToken(t *testing.T) {
 		}))
 	defer srv.Close()
 
-	_, err := newTestClient(t, srv.URL).GetCart(context.Background(),
+	_, err := newTestClient(t, srv.URL).GetCart(t.Context(),
 		"shop.example.test", "el", fixtureCartID)
-	assert.ErrorIs(t, err, ErrUnauthorized)
+	require.ErrorIs(t, err, ErrUnauthorized)
 	assert.NotErrorIs(t, err, ErrCartTokenRefused)
 }
 
@@ -172,7 +172,7 @@ func TestParseCartTokenChecksTheShape(t *testing.T) {
 		"spaces inside": "abc def",
 	} {
 		_, err := ParseCartToken(raw)
-		assert.ErrorIs(t, err, ErrInvalidCartToken, name)
+		require.ErrorIs(t, err, ErrInvalidCartToken, name)
 	}
 	_, err := ParseCartToken(testCartToken)
 	assert.NoError(t, err)
@@ -184,7 +184,6 @@ func TestCartTokenNeverPrintsItsValue(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(&buf, nil))
 	log.Info("turn", slog.Any("token", tok))
-	log.Info("turn", "raw", tok)
 	out := buf.String() + fmt.Sprintf("%v %+v %#v %s", tok, tok, tok, tok)
 
 	assert.NotContains(t, out, testCartToken)

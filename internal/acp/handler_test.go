@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
@@ -117,8 +116,7 @@ func TestAuthPerTenantBearer(t *testing.T) {
 		},
 	}
 
-	log := slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	log := slog.New(slog.DiscardHandler)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &Handler{log: log}
@@ -180,8 +178,7 @@ func TestDecodeBodyReadsDiscounts(t *testing.T) {
 }
 
 func TestAuthWithoutTenantIs404(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(os.Stderr,
-		&slog.HandlerOptions{Level: slog.LevelError + 1}))
+	log := slog.New(slog.DiscardHandler)
 	h := &Handler{log: log}
 	req := httptest.NewRequest(http.MethodGet, "/acp/checkout_sessions/x", nil)
 	req.Header.Set("Authorization", "Bearer whatever")

@@ -60,7 +60,7 @@ func callerHeadersVia(
 		func(_ http.ResponseWriter, r *http.Request) {
 			_, err := c.GetCart(derive(r.Context()), "shop.example.test",
 				"el", fixtureCartID)
-			require.NoError(t, err)
+			assert.NoError(t, err)
 		}))
 	req := httptest.NewRequest(http.MethodPost, "/chat", nil)
 	req.Header = inbound
@@ -114,7 +114,7 @@ func TestACallWithoutARequestNamesNoCaller(t *testing.T) {
 		}))
 	t.Cleanup(srv.Close)
 
-	_, err := newTestClient(t, srv.URL).GetCart(context.Background(),
+	_, err := newTestClient(t, srv.URL).GetCart(t.Context(),
 		"shop.example.test", "el", fixtureCartID)
 
 	require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestACallCarriesTheRequestIDAsCorrelationID(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	_, err := newTestClient(t, srv.URL).GetCart(
-		obs.WithRequestID(context.Background(), "req-1"),
+		obs.WithRequestID(t.Context(), "req-1"),
 		"shop.example.test", "el", fixtureCartID)
 
 	require.NoError(t, err)

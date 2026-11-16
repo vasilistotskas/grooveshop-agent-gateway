@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoadRejectsMalformedConversationID(t *testing.T) {
@@ -16,7 +17,7 @@ func TestLoadRejectsMalformedConversationID(t *testing.T) {
 func TestLoadEmptyIDStartsFresh(t *testing.T) {
 	s := NewStore(nil, 0, 10)
 	c, err := s.Load(t.Context(), "demostore", "")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotEmpty(t, c.ID)
 	assert.Empty(t, c.Turns)
 }

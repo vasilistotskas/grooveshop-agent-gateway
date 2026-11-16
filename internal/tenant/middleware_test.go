@@ -17,7 +17,7 @@ func TestMiddlewareInjectsTenant(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		var ok bool
 		got, ok = FromContext(req.Context())
-		require.True(t, ok)
+		assert.True(t, ok)
 		w.WriteHeader(http.StatusNoContent)
 	})
 

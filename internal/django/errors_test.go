@@ -1,8 +1,8 @@
 package django
 
 import (
-	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -20,16 +20,14 @@ func errorFrom(
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, _ *http.Request) {
-			for k, v := range header {
-				w.Header()[k] = v
-			}
+			maps.Copy(w.Header(), header)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = w.Write([]byte(body))
 		}))
 	t.Cleanup(srv.Close)
 	c := newTestClient(t, srv.URL)
-	_, err := c.AddCartItem(context.Background(), "shop.example.test", "el",
+	_, err := c.AddCartItem(t.Context(), "shop.example.test", "el",
 		"", 1, 1, nil)
 	require.Error(t, err)
 	apiErr, ok := errors.AsType[*APIError](err)

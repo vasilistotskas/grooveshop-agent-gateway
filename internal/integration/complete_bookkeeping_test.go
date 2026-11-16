@@ -216,9 +216,7 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 			ctx context.Context, id, key string, submit map[string]any,
 		) surfaceAnswer {
 			body := map[string]any{"payment_data": map[string]any{}}
-			for member, value := range submit {
-				body[member] = value
-			}
+			maps.Copy(body, submit)
 			return acpAnswer(ctx, base+"/"+id+"/complete", key, body)
 		},
 		update: func(ctx context.Context, id string) surfaceAnswer {
@@ -435,7 +433,7 @@ func (stack ucpStack) bookkeeping(
 	t *testing.T, id, keyName string,
 ) bookkeeping {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	store := checkout.NewStore(stack.rdb, ucpUpstreamTimeout)
 	s, err := store.LoadAnyProtocol(ctx, "demostore", id)
 	require.NoError(t, err)
@@ -494,7 +492,7 @@ func TestCompleteBookkeepingIsTheSameOnBothSurfaces(t *testing.T) {
 	for _, outcome := range outcomes {
 		for _, surface := range surfaces {
 			t.Run(outcome.name+" over "+surface.name, func(t *testing.T) {
-				ctx := context.Background()
+				ctx := t.Context()
 				id := surface.ready(t)
 				if outcome.fault != nil {
 					outcome.fault.Store(true)
@@ -572,7 +570,7 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 			stack.faults.orderHold.Store(&hold)
 
 			key := uuid.NewString()
-			ctx, hangUp := context.WithCancel(context.Background())
+			ctx, hangUp := context.WithCancel(t.Context())
 			defer hangUp()
 			gone := make(chan struct{})
 			go func() {
@@ -618,7 +616,7 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 			// The abandoned attempt holds the session lock until it
 			// returns, and a retry meanwhile is told the session is busy.
 			require.Eventually(t, func() bool {
-				held, err := stack.rdb.Exists(context.Background(),
+				held, err := stack.rdb.Exists(t.Context(),
 					lockRedisKey(id)).Result()
 				return err == nil && held == 0
 			}, 10*time.Second, 20*time.Millisecond)
@@ -631,7 +629,7 @@ func TestCompleteOutlivesAPlatformThatHangsUp(t *testing.T) {
 			assert.Contains(t, placed, "tenant=demostore")
 
 			assert.Equal(t, "completed",
-				surface.complete(context.Background(), id, key, nil),
+				surface.complete(t.Context(), id, key, nil),
 				"the retry is answered with the order")
 			assert.Equal(t, before+1, stack.faults.orderCreates.Load(),
 				"and places nothing")
@@ -731,7 +729,7 @@ func (stack ucpStack) storedSession(
 ) *checkout.Session {
 	t.Helper()
 	s, err := checkout.NewStore(stack.rdb, ucpUpstreamTimeout).
-		LoadAnyProtocol(context.Background(), "demostore", id)
+		LoadAnyProtocol(t.Context(), "demostore", id)
 	require.NoError(t, err)
 	return s
 }
@@ -740,7 +738,7 @@ func (stack ucpStack) storedSession(
 // through updatedAt if through nothing else.
 func (stack ucpStack) storedBytes(t *testing.T, id string) string {
 	t.Helper()
-	raw, err := stack.rdb.Get(context.Background(),
+	raw, err := stack.rdb.Get(t.Context(),
 		sessionRedisKey(id)).Result()
 	require.NoError(t, err)
 	return raw
@@ -782,7 +780,7 @@ func TestRefusedCompleteKeepsWhatItSubmitted(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name+" over "+tc.surface, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			surface := surfaces[tc.surface]
 			id := surface.ready(t)
 			creates := stack.faults.orderCreates.Load()
@@ -820,7 +818,7 @@ func TestRefusedCompleteKeepsWhatItSubmitted(t *testing.T) {
 // store's pay ways cannot be read.
 func TestACPCompleteKeepsTheBuyerItCouldNotOrderFor(t *testing.T) {
 	stack := startUCPGateway(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	var acpSurface completionSurface
 	for _, surface := range completionSurfaces(t, stack) {
 		if surface.name == "acp" {
@@ -889,7 +887,7 @@ func TestCompleteWithoutItsClaimWritesNothing(t *testing.T) {
 		"another attempt's": "inflight:" + uuid.NewString(), "done": "done",
 	} {
 		t.Run("a key that is "+name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			id := ucpSurface.ready(t)
 			key := uuid.NewString()
 			require.NoError(t, stack.rdb.Set(ctx,
@@ -909,7 +907,7 @@ func TestCompleteWithoutItsClaimWritesNothing(t *testing.T) {
 // is refused and changes nothing in it.
 func TestCompleteLeavesAClosedSessionAsItIs(t *testing.T) {
 	stack := startUCPGateway(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	surfaces := map[string]completionSurface{}
 	for _, surface := range completionSurfaces(t, stack) {
 		surfaces[surface.name] = surface

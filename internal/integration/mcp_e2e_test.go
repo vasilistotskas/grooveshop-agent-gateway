@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -34,7 +33,8 @@ func fixturePath(name string) string {
 func serveFixture(t *testing.T, w http.ResponseWriter, name string) {
 	t.Helper()
 	b, err := os.ReadFile(fixturePath(name))
-	if !assert.NoError(t, err) {
+	if err != nil {
+		t.Errorf("read the fixture: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -183,9 +183,7 @@ func startGatewayOn(t *testing.T, djangoH http.Handler) *httptest.Server {
 	djangoSrv := httptest.NewServer(djangoH)
 	t.Cleanup(djangoSrv.Close)
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelError + 1,
-	}))
+	log := slog.New(slog.DiscardHandler)
 	metrics := obs.NewMetrics()
 	cfg := config.Config{
 		Env: config.EnvTest,
@@ -230,7 +228,7 @@ func connectMCP(t *testing.T, gatewayURL string) *mcp.ClientSession {
 	client := mcp.NewClient(&mcp.Implementation{
 		Name: "e2e-test-client", Version: "test",
 	}, nil)
-	session, err := client.Connect(context.Background(),
+	session, err := client.Connect(t.Context(),
 		&mcp.StreamableClientTransport{
 			Endpoint:             gatewayURL + "/mcp",
 			DisableStandaloneSSE: true,
@@ -244,7 +242,7 @@ func callTool(
 	t *testing.T, s *mcp.ClientSession, name string, args map[string]any,
 ) *mcp.CallToolResult {
 	t.Helper()
-	res, err := s.CallTool(context.Background(), &mcp.CallToolParams{
+	res, err := s.CallTool(t.Context(), &mcp.CallToolParams{
 		Name: name, Arguments: args,
 	})
 	require.NoError(t, err)
@@ -281,7 +279,7 @@ func TestMCPEndToEnd(t *testing.T) {
 	})
 
 	t.Run("lists all tools", func(t *testing.T) {
-		res, err := session.ListTools(context.Background(), nil)
+		res, err := session.ListTools(t.Context(), nil)
 		require.NoError(t, err)
 		names := make([]string, 0, len(res.Tools))
 		for _, tool := range res.Tools {
@@ -522,7 +520,7 @@ func connectMCPWithBearer(
 	client := mcp.NewClient(&mcp.Implementation{
 		Name: "e2e-linked-client", Version: "test",
 	}, nil)
-	session, err := client.Connect(context.Background(),
+	session, err := client.Connect(t.Context(),
 		&mcp.StreamableClientTransport{
 			Endpoint:             gatewayURL + "/mcp",
 			HTTPClient:           &http.Client{Transport: bearerTransport{token}},

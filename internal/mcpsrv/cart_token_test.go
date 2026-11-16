@@ -52,7 +52,7 @@ func signedIn(t *testing.T) context.Context {
 	tok, err := django.ParseCartToken("Zk3n_Q8vX2-rT5yLmW9aB4cD7eF0gH1iJ6k")
 	require.NoError(t, err)
 	return django.WithCartToken(
-		tenant.NewContext(context.Background(), cartTenant()), tok)
+		tenant.NewContext(t.Context(), cartTenant()), tok)
 }
 
 // A signed-in shopper's cart is theirs already: the link goes straight
@@ -73,7 +73,7 @@ func TestCheckoutLinkForASignedInShopper(t *testing.T) {
 // A guest's link still claims the named cart into the browser session.
 func TestCheckoutLinkForAGuestClaimsTheCart(t *testing.T) {
 	h, seen := cartHandlers(t, http.StatusOK)
-	ctx := tenant.NewContext(context.Background(), cartTenant())
+	ctx := tenant.NewContext(t.Context(), cartTenant())
 
 	_, out, err := h.getCheckoutLink(ctx, nil,
 		CheckoutLinkIn{CartID: fixtureCartID})

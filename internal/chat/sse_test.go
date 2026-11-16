@@ -42,23 +42,23 @@ func eventOf(t *testing.T, name string, v any) string {
 func TestTurnEndEventsCarryTheCartMembers(t *testing.T) {
 	cart := turnCart{CartID: testCartID, CartMutated: true}
 
-	assert.Equal(t, `{"conversationId":"c-1","cartId":"`+testCartID+
+	assert.JSONEq(t, `{"conversationId":"c-1","cartId":"`+testCartID+
 		`","cartMutated":true,"cartTokenRefused":false}`,
 		eventOf(t, "done", doneEvent{ConversationID: "c-1", turnCart: cart}))
-	assert.Equal(t, `{"message":"m","code":"rate_limited","retryAfter":3,`+
+	assert.JSONEq(t, `{"message":"m","code":"rate_limited","retryAfter":3,`+
 		`"conversationId":"c-1","cartId":"`+testCartID+
 		`","cartMutated":true,"cartTokenRefused":false}`,
 		eventOf(t, "error", errorEvent{Message: "m", Code: codeRateLimited,
 			RetryAfter: 3, ConversationID: "c-1", turnCart: cart}))
 	// A turn that changed nothing still says so; what it has no value
 	// for is left out.
-	assert.Equal(t,
+	assert.JSONEq(t,
 		`{"message":"m","cartMutated":false,"cartTokenRefused":false}`,
 		eventOf(t, "error", errorEvent{Message: "m"}))
-	assert.Equal(t,
+	assert.JSONEq(t,
 		`{"message":"m","cartMutated":true,"cartTokenRefused":true}`,
-		eventOf(t, "error", errorEvent{Message: "m", turnCart: turnCart{
-			CartMutated: true, CartTokenRefused: true}}))
+		eventOf(t, "error", errorEvent{Message: "m",
+			CartMutated: true, CartTokenRefused: true}))
 }
 
 // However a turn fails, whoever still reads the stream is told what its
@@ -70,7 +70,7 @@ func TestEndFailedSaysWhatTheTurnDidToTheCart(t *testing.T) {
 		`please try again.","cartId":"` + testCartID +
 		`","cartMutated":true,"cartTokenRefused":false}`
 	ended := func(cause error) context.Context {
-		ctx, cancel := context.WithCancelCause(context.Background())
+		ctx, cancel := context.WithCancelCause(t.Context())
 		cancel(cause)
 		return ctx
 	}
@@ -84,7 +84,7 @@ func TestEndFailedSaysWhatTheTurnDidToTheCart(t *testing.T) {
 	}
 
 	for name, ctx := range map[string]context.Context{
-		"the provider failed": context.Background(),
+		"the provider failed": t.Context(),
 		"the pod is stopping": ended(httpmw.ErrShuttingDown),
 	} {
 		t.Run(name, func(t *testing.T) {

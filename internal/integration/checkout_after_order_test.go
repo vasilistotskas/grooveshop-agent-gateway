@@ -83,7 +83,7 @@ func (stack ucpStack) storedMeanwhile(t *testing.T, id string) {
 			!armed.CompareAndSwap(true, false) {
 			return nil
 		}
-		ctx := context.Background()
+		ctx := t.Context()
 		other, err := store.LoadAnyProtocol(ctx, "demostore", id)
 		if err != nil {
 			return err
@@ -101,7 +101,7 @@ func awaitingPayment(
 	t.Helper()
 	id := ucpSurface.readyKeeping(t)
 	require.Equal(t, "requires_escalation", ucpSurface.complete(
-		context.Background(), id, uuid.NewString(), nil))
+		t.Context(), id, uuid.NewString(), nil))
 	return id
 }
 
@@ -110,7 +110,7 @@ func awaitingPayment(
 // link lost, and a payment event never delivered again.
 func TestALostSaveIsNeverAnsweredAsDone(t *testing.T) {
 	stack := startUCPGateway(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	surfaces := surfacesByName(t, stack)
 
 	for name, surface := range surfaces {
@@ -191,7 +191,7 @@ func TestALostSaveIsNeverAnsweredAsDone(t *testing.T) {
 // and the buyer could still pay a checkout that reads canceled.
 func TestACheckoutThatMayHaveAnOrderTakesNoChange(t *testing.T) {
 	stack := startUCPGateway(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	surfaces := surfacesByName(t, stack)
 	states := []struct {
 		name string
@@ -289,7 +289,7 @@ func TestAnUpdatePastItsLockIsNotToldToStartOver(t *testing.T) {
 	}
 	for name, refusal := range want {
 		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			stack := startUCPGateway(t)
 			surface := surfacesByName(t, stack)[name]
 			id := surface.ready(t)
@@ -318,7 +318,7 @@ func TestAnUpdatePastItsLockIsNotToldToStartOver(t *testing.T) {
 	// The cart of a checkout that is still open really is gone: that
 	// answer is unchanged.
 	t.Run("a cart that is gone under an open checkout", func(t *testing.T) {
-		ctx := context.Background()
+		ctx := t.Context()
 		stack := startUCPGateway(t)
 		surfaces := surfacesByName(t, stack)
 		ids := map[string]string{
@@ -345,7 +345,7 @@ func TestAnUpdatePastItsLockIsNotToldToStartOver(t *testing.T) {
 // not say which, so the answer never says only "start a new one".
 func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
 	stack := startUCPGateway(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	surfaces := surfacesByName(t, stack)
 	base := stack.gw.URL + "/acp/checkout_sessions"
 

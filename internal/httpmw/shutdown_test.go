@@ -5,16 +5,17 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // A context that lost its cancellation still ends at the server's cut.
 func TestUntilShutdownReachesADetachedContext(t *testing.T) {
-	requests, cut := context.WithCancelCause(context.Background())
+	requests, cut := context.WithCancelCause(t.Context())
 	detached := context.WithoutCancel(WithShutdown(requests))
 
 	ctx, stop := UntilShutdown(detached)
 	defer stop()
-	assert.NoError(t, ctx.Err())
+	require.NoError(t, ctx.Err())
 
 	cut(ErrShuttingDown)
 
@@ -24,7 +25,7 @@ func TestUntilShutdownReachesADetachedContext(t *testing.T) {
 
 // A context that came through no server is left as it is.
 func TestUntilShutdownWithoutAServer(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	got, stop := UntilShutdown(ctx)
 	defer stop()
@@ -34,7 +35,7 @@ func TestUntilShutdownWithoutAServer(t *testing.T) {
 
 // A call that starts after the cut is cut at once, not a moment later.
 func TestUntilShutdownAfterTheCut(t *testing.T) {
-	requests, cut := context.WithCancelCause(context.Background())
+	requests, cut := context.WithCancelCause(t.Context())
 	cut(ErrShuttingDown)
 
 	ctx, stop := UntilShutdown(context.WithoutCancel(WithShutdown(requests)))

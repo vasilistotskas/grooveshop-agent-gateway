@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -99,9 +100,9 @@ func toolStatuses(events []sseEvent) []any {
 
 func lastEvent(t *testing.T, events []sseEvent, name string) map[string]any {
 	t.Helper()
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].name == name {
-			return events[i].data
+	for _, event := range slices.Backward(events) {
+		if event.name == name {
+			return event.data
 		}
 	}
 	require.Failf(t, "no event", "no %q event in %v", name, events)
@@ -265,7 +266,7 @@ func TestChatTurnCutByShutdownEndsWithAnErrorEvent(t *testing.T) {
 	logs := &lockedBuffer{}
 	handler := chatGatewayHandler(t, startRedis(t), model,
 		fakeDjangoMux(t), slog.New(slog.NewJSONHandler(logs, nil)))
-	base, shutdown := context.WithCancelCause(context.Background())
+	base, shutdown := context.WithCancelCause(t.Context())
 	t.Cleanup(func() { shutdown(nil) })
 	gw := httptest.NewUnstartedServer(handler)
 	gw.Config.BaseContext = func(net.Listener) context.Context { return base }

@@ -2,7 +2,6 @@ package django
 
 import (
 	"bytes"
-	"context"
 	"log/slog"
 	"net"
 	"testing"
@@ -27,7 +26,7 @@ func TestATransportFailureLeavesTheQueryOut(t *testing.T) {
 		2*time.Second, slog.New(slog.NewTextHandler(&logged, nil)),
 		obs.NewMetrics())
 
-	_, err = c.StaffCustomers(context.Background(), "shop.example.test",
+	_, err = c.StaffCustomers(t.Context(), "shop.example.test",
 		"el", "token", "jane@example.gr", 5)
 
 	require.ErrorIs(t, err, ErrUpstreamDown)

@@ -8,7 +8,7 @@ import (
 )
 
 func TestRunes(t *testing.T) {
-	assert.Equal(t, "", Runes("abc", 0))
+	assert.Empty(t, Runes("abc", 0))
 	assert.Equal(t, "abc", Runes("abc", 3))
 	assert.Equal(t, "abc", Runes("abc", 10))
 	assert.Equal(t, "ab", Runes("abc", 2))

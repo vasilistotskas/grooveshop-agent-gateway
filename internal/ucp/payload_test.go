@@ -1,7 +1,6 @@
 package ucp
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
@@ -28,7 +27,7 @@ func built(
 	caps map[string][]CapabilityRef,
 ) map[string]any {
 	t.Helper()
-	payload, err := b.BuildCheckout(context.Background(), testTenant(), s, caps)
+	payload, err := b.BuildCheckout(t.Context(), testTenant(), s, caps)
 	require.NoError(t, err)
 	require.NoError(t, checkoutSchema(t).Validate(roundTrip(t, payload)))
 	raw, err := json.Marshal(payload)

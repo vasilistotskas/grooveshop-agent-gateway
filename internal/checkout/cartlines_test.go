@@ -1,7 +1,6 @@
 package checkout
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -52,7 +51,7 @@ func TestSyncCartLinesBooksTheCartAsTheAgents(t *testing.T) {
 
 	for _, protocol := range []string{ProtocolUCP, ProtocolACP} {
 		adds = nil
-		require.NoError(t, SyncCartLines(context.Background(), dj,
+		require.NoError(t, SyncCartLines(t.Context(), dj,
 			pricingTenant(), protocol, cartID,
 			[]Line{{ProductID: 7, Quantity: 2}}))
 		require.Len(t, adds, 1)

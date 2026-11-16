@@ -26,7 +26,7 @@ import (
 
 func startRedis(t *testing.T) *redis.Client {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	container, err := testcontainers.GenericContainer(ctx,
 		testcontainers.GenericContainerRequest{
 			Image:        "redis:8-alpine",
@@ -35,7 +35,10 @@ func startRedis(t *testing.T) *redis.Client {
 			Started:      true,
 		})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
+	// t.Context() is cancelled before cleanups run.
+	t.Cleanup(func() {
+		_ = container.Terminate(context.WithoutCancel(t.Context()))
+	})
 
 	host, err := container.Host(ctx)
 	require.NoError(t, err)
@@ -91,7 +94,7 @@ func TestResolverSharesRedisTierAcrossInstances(t *testing.T) {
 	podB := tenant.NewResolver(dj, rdb, time.Minute, time.Minute,
 		quietLogger(), nil)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	got, err := podA.Resolve(ctx, "shop.example.test")
 	require.NoError(t, err)
 	assert.Equal(t, "demostore", got.SchemaName)
@@ -112,11 +115,11 @@ func TestResolverSharesRedisTierAcrossInstances(t *testing.T) {
 
 	// Negative results are shared too.
 	_, err = podA.Resolve(ctx, "nope.example.test")
-	assert.ErrorIs(t, err, tenant.ErrUnknownTenant)
+	require.ErrorIs(t, err, tenant.ErrUnknownTenant)
 	callsAfterNegative := calls.Load()
 
 	_, err = podB.Resolve(ctx, "nope.example.test")
-	assert.ErrorIs(t, err, tenant.ErrUnknownTenant)
+	require.ErrorIs(t, err, tenant.ErrUnknownTenant)
 	assert.Equal(t, callsAfterNegative, calls.Load(),
 		"pod B must see the shared negative sentinel")
 

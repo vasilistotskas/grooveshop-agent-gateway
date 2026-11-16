@@ -1,7 +1,6 @@
 package mcpsrv
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -35,7 +34,7 @@ func TestServerTitleIsPerTenant(t *testing.T) {
 // A stateless server has no session to send list-changed notifications
 // on, and logging is deprecated as of 2026-07-28: advertise tools only.
 func TestServerAdvertisesOnlyWhatItHonours(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	serverT, clientT := mcp.NewInMemoryTransports()
 	_, err := NewServer(Deps{Version: "test"},
 		Identity{Name: "test.acme/store", Title: "Acme Store"}, EveryFeature).
@@ -80,7 +79,7 @@ func TestServerCacheIsBounded(t *testing.T) {
 // toolsListed connects a client to a store's server and lists its tools.
 func toolsListed(t *testing.T, features django.StoreFeatures) []string {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	serverT, clientT := mcp.NewInMemoryTransports()
 	_, err := NewServer(Deps{Version: "test"},
 		Identity{Name: "test.acme/store", Title: "Acme Store"}, features).

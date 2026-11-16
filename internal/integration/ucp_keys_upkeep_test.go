@@ -22,7 +22,7 @@ import (
 // awaitKEK runs the boot check of keys to its outcome.
 func awaitKEK(t *testing.T, keys *ucp.Keys) error {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	return keys.AwaitKEK(ctx, quietLogger())
 }
@@ -40,7 +40,7 @@ func TestAwaitKEKPassesAnEnvironmentWithNoKeys(t *testing.T) {
 // environment's) is the definite failure; the right one passes.
 func TestAwaitKEKRefusesAKeyThatOpensNone(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	kek := testKEK(t)
 	for _, schema := range []string{"alpha", "beta"} {
 		_, err := newKeys(t, rdb, kek).ForSchema(ctx, schema)
@@ -60,7 +60,7 @@ func TestAwaitKEKRefusesAKeyThatOpensNone(t *testing.T) {
 // goes on.
 func TestAwaitKEKPassesWhenAKeyOpens(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	kek := testKEK(t)
 	_, err := newKeys(t, rdb, kek).ForSchema(ctx, "alpha")
 	require.NoError(t, err)
@@ -119,7 +119,7 @@ func (h *failNthGet) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 func scanWithAFailure(t *testing.T, err error, atDeadline bool) int32 {
 	t.Helper()
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	kek := testKEK(t)
 	_, keyErr := newKeys(t, rdb, kek).ForSchema(ctx, "alpha")
 	require.NoError(t, keyErr)
@@ -195,7 +195,7 @@ func proxyTo(t *testing.T, addr, target string) {
 // Redis answers, the check passes and the pod is ready.
 func TestAwaitKEKWaitsForRedisAndThenPasses(t *testing.T) {
 	upstream := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	kek := testKEK(t)
 	_, err := newKeys(t, upstream, kek).ForSchema(ctx, "alpha")
 	require.NoError(t, err)
@@ -238,7 +238,7 @@ func TestAwaitKEKStopsWithItsContext(t *testing.T) {
 		MaxRetries: -1})
 	t.Cleanup(func() { _ = rdb.Close() })
 	keys := newKeys(t, rdb, testKEK(t))
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	require.ErrorIs(t, keys.AwaitKEK(ctx, quietLogger()),
 		context.DeadlineExceeded)
@@ -250,7 +250,7 @@ func TestAwaitKEKStopsWithItsContext(t *testing.T) {
 // itself never expires.
 func TestTheSentinelExpires(t *testing.T) {
 	rdb := startRedis(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err := newKeys(t, rdb, testKEK(t)).ForSchema(ctx, "alpha")
 	require.NoError(t, err)
 	ttl, err := rdb.PTTL(ctx, unsealedKeyName("alpha")).Result()

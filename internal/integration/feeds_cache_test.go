@@ -102,19 +102,19 @@ func TestFeedFromAnotherBuildIsRegenerated(t *testing.T) {
 	ten := feedTenant()
 
 	meta, err := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Hour,
-		obs.NewMetrics()).Meta(context.Background(), ten, feeds.KindGoogle)
+		obs.NewMetrics()).Meta(t.Context(), ten, feeds.KindGoogle)
 	require.NoError(t, err)
 	assert.Equal(t, "v1.0.0", meta.Generator)
 	require.EqualValues(t, 1, g.sweeps.Load())
 
 	next := feedServiceOf(srv.URL, rdb, "v1.1.0", time.Hour,
 		obs.NewMetrics())
-	meta, err = next.Meta(context.Background(), ten, feeds.KindGoogle)
+	meta, err = next.Meta(t.Context(), ten, feeds.KindGoogle)
 	require.NoError(t, err)
 	assert.Equal(t, "v1.1.0", meta.Generator)
 	assert.EqualValues(t, 2, g.sweeps.Load(), "the new build swept again")
 
-	_, err = next.Meta(context.Background(), ten, feeds.KindGoogle)
+	_, err = next.Meta(t.Context(), ten, feeds.KindGoogle)
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, g.sweeps.Load(), "its own feed is served")
 }
@@ -138,7 +138,7 @@ func TestFeedInvalidationDuringSweepIsNotLostToIt(t *testing.T) {
 	t.Cleanup(srv.Close)
 	svc := newFeedService(t, srv.URL)
 	ten := feedTenant()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	done := make(chan feeds.Meta, 1)
 	go func() {
@@ -172,7 +172,7 @@ func TestFeedSweepOutlivesTheFirstCaller(t *testing.T) {
 	svc := newFeedService(t, srv.URL)
 	ten := feedTenant()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	first := make(chan error, 1)
 	go func() {
 		_, err := svc.Meta(ctx, ten, feeds.KindMeta)
@@ -184,7 +184,7 @@ func TestFeedSweepOutlivesTheFirstCaller(t *testing.T) {
 	g.release()
 
 	require.Eventually(t, func() bool {
-		meta, err := svc.Meta(context.Background(), ten, feeds.KindACP)
+		meta, err := svc.Meta(t.Context(), ten, feeds.KindACP)
 		return err == nil && !meta.GeneratedAt.IsZero()
 	}, 10*time.Second, 50*time.Millisecond)
 	assert.EqualValues(t, 1, g.sweeps.Load(),
@@ -206,7 +206,7 @@ func TestFailedFeedRefreshIsNotRetriedByEveryRequest(t *testing.T) {
 	other := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Nanosecond,
 		obs.NewMetrics())
 	ten := feedTenant()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	first, err := svc.Meta(ctx, ten, feeds.KindGoogle)
 	require.NoError(t, err)
@@ -259,7 +259,7 @@ func TestFeedWithItsBlobLostRegenerates(t *testing.T) {
 	rdb := startRedis(t)
 	svc := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Hour, obs.NewMetrics())
 	ten := feedTenant()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	first, err := svc.Meta(ctx, ten, feeds.KindGoogle)
 	require.NoError(t, err)
@@ -291,7 +291,7 @@ func TestFeedNotCachedAfterAGenerationBacksOff(t *testing.T) {
 	rdb.AddHook(blobAlwaysGone{})
 	svc := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Hour, obs.NewMetrics())
 	ten := feedTenant()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	_, err := svc.Meta(ctx, ten, feeds.KindGoogle)
 	require.Error(t, err)
@@ -373,7 +373,7 @@ func TestBrokenBlobDropSparesAReplacement(t *testing.T) {
 	t.Cleanup(func() { _ = other.Close() })
 	svc := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Hour, obs.NewMetrics())
 	ten := feedTenant()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	_, err := svc.Meta(ctx, ten, feeds.KindGoogle)
 	require.NoError(t, err)
@@ -454,7 +454,7 @@ func TestFailedSweepOvertakenByAnInvalidationIsNotMarked(t *testing.T) {
 	metrics := obs.NewMetrics()
 	svc := feedServiceOf(srv.URL, rdb, "v1.0.0", time.Hour, metrics)
 	ten := feedTenant()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	done := make(chan error, 1)
 	go func() {
@@ -487,7 +487,7 @@ func TestFailedFeedGenerationBacksOffAMiss(t *testing.T) {
 	svc := feedServiceOf(srv.URL, startRedis(t), "v1.0.0", time.Hour,
 		metrics)
 	ten := feedTenant()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	_, err := svc.Meta(ctx, ten, feeds.KindGoogle)
 	require.Error(t, err)

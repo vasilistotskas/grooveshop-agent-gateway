@@ -1,7 +1,6 @@
 package django
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,7 +19,7 @@ func TestServedLocalesWithoutAList(t *testing.T) {
 func TestLanguageIsTheTurnsElseTheStoresDefault(t *testing.T) {
 	c := TenantConfig{DefaultLocale: "el"}
 
-	assert.Equal(t, "el", Language(context.Background(), c))
+	assert.Equal(t, "el", Language(t.Context(), c))
 	assert.Equal(t, "en",
-		Language(WithLanguage(context.Background(), "en"), c))
+		Language(WithLanguage(t.Context(), "en"), c))
 }

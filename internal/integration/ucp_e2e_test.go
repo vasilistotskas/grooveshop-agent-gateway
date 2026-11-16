@@ -139,7 +139,7 @@ func verifyWebhook(t *testing.T, hook receivedWebhook, jwk map[string]string) {
 		assert.Contains(t, strings.Fields(m[1]), name, "covered components")
 	}
 	var base strings.Builder
-	for _, quoted := range strings.Fields(m[1]) {
+	for quoted := range strings.FieldsSeq(m[1]) {
 		name := strings.Trim(quoted, `"`)
 		var value string
 		switch name {
@@ -743,10 +743,10 @@ func startUCPGatewayBehind(
 
 	keys := newKeys(t, rdb, testKEK(t))
 	// The fixture tenant's key, for signature/KID assertions.
-	key, err := keys.ForSchema(context.Background(), "demostore")
+	key, err := keys.ForSchema(t.Context(), "demostore")
 	require.NoError(t, err)
 	dispatcher := ucp.NewDispatcher(rdb, keys, log, "e2e", true)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	go dispatcher.Run(ctx)
 	t.Cleanup(cancel)
 
@@ -827,10 +827,10 @@ func TestUCPCompletedCheckoutRendersFromTheOrder(t *testing.T) {
 			total := row.(map[string]any)
 			amounts[total["type"].(string)] = total["amount"].(float64)
 		}
-		assert.EqualValues(t, fixtureOrderSubtotal, amounts["subtotal"])
-		assert.EqualValues(t, fixtureOrderFee, amounts["fee"])
-		assert.EqualValues(t, -fixtureOrderDiscount, amounts["discount"])
-		assert.EqualValues(t, fixtureOrderTotal, amounts["total"])
+		assert.InDelta(t, fixtureOrderSubtotal, amounts["subtotal"], 0)
+		assert.InDelta(t, fixtureOrderFee, amounts["fee"], 0)
+		assert.InDelta(t, -fixtureOrderDiscount, amounts["discount"], 0)
+		assert.InDelta(t, fixtureOrderTotal, amounts["total"], 0)
 		lines := out["line_items"].([]any)
 		require.Len(t, lines, 1)
 		assert.Equal(t, fixtureSoldName,
@@ -1679,7 +1679,7 @@ func TestUCPEndToEnd(t *testing.T) {
 		func(t *testing.T) {
 			dead := httptest.NewServer(http.NotFoundHandler())
 			t.Cleanup(dead.Close)
-			_, err := session.CallTool(context.Background(),
+			_, err := session.CallTool(t.Context(),
 				&mcp.CallToolParams{Name: "get_checkout", Arguments: map[string]any{
 					"meta": map[string]any{"ucp-agent": map[string]any{
 						"profile": dead.URL + "/profile.json"}},
@@ -1700,7 +1700,7 @@ func TestUCPEndToEnd(t *testing.T) {
 				return strings.Replace(s, `"version": "2026-08-25"`,
 					`"version": "2026-01-23"`, 1)
 			})
-		_, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		_, err := session.CallTool(t.Context(), &mcp.CallToolParams{
 			Name: "get_checkout", Arguments: map[string]any{
 				"meta": map[string]any{"ucp-agent": map[string]any{
 					"profile": old}},
@@ -1805,7 +1805,7 @@ func TestUCPEndToEnd(t *testing.T) {
 			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
 				"no longer exists here", call.tool)
 		}
-		keys, err := stack.rdb.Keys(context.Background(),
+		keys, err := stack.rdb.Keys(t.Context(),
 			"*"+bogus+"*").Result()
 		require.NoError(t, err)
 		assert.Empty(t, keys)

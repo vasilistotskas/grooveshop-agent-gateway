@@ -1,9 +1,7 @@
 package django
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -34,7 +32,7 @@ func TestApplyCouponReturnsUpdatedCart(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	cart, err := c.ApplyCoupon(context.Background(),
+	cart, err := c.ApplyCoupon(t.Context(),
 		"shop.example.test", "el", fixtureCartID, "SAVE10")
 	require.NoError(t, err)
 
@@ -85,7 +83,7 @@ func TestApplyCouponRejectionSurfacesReason(t *testing.T) {
 			defer srv.Close()
 
 			c := newTestClient(t, srv.URL)
-			_, err := c.ApplyCoupon(context.Background(),
+			_, err := c.ApplyCoupon(t.Context(),
 				"shop.example.test", "el", fixtureCartID, "X")
 			require.Error(t, err)
 
@@ -109,12 +107,12 @@ func TestApplyCouponReasonlessBadRequestStaysAPIError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, err := c.ApplyCoupon(context.Background(),
+	_, err := c.ApplyCoupon(t.Context(),
 		"shop.example.test", "el", fixtureCartID, "")
 	require.Error(t, err)
 
 	var rejected *CouponRejectedError
-	assert.False(t, errors.As(err, &rejected),
+	assert.NotErrorAs(t, err, &rejected,
 		"a body without a reason must not map to a coupon rejection")
 	assert.ErrorIs(t, err, ErrValidation)
 }
@@ -132,7 +130,7 @@ func TestRemoveCouponReturnsUpdatedCart(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	cart, err := c.RemoveCoupon(context.Background(),
+	cart, err := c.RemoveCoupon(t.Context(),
 		"shop.example.test", "el", fixtureCartID)
 	require.NoError(t, err)
 
@@ -178,7 +176,7 @@ func TestCreateProductAlertSendsTargetPriceAsNumber(t *testing.T) {
 			defer srv.Close()
 
 			c := newTestClient(t, srv.URL)
-			_, err := c.CreateProductAlert(context.Background(),
+			_, err := c.CreateProductAlert(t.Context(),
 				"shop.example.test", "el", tc.kind, 7, "a@example.test",
 				tc.target)
 			require.NoError(t, err)
@@ -206,7 +204,7 @@ func TestCartCallsRefuseAnotherCartServedForTheNamedOne(t *testing.T) {
 		}))
 	defer srv.Close()
 	c := newTestClient(t, srv.URL)
-	ctx := context.Background()
+	ctx := t.Context()
 	const host, other = "shop.example.test", "6f1c1f3e-2d6a-4b0f-9a3e-2f6d6c1b9a10"
 
 	_, err := c.GetCart(ctx, host, "el", other)
@@ -244,7 +242,7 @@ func TestAddCartItemSendsAttribution(t *testing.T) {
 		}))
 	defer srv.Close()
 	c := newTestClient(t, srv.URL)
-	ctx := context.Background()
+	ctx := t.Context()
 	const host = "shop.example.test"
 
 	_, err := c.AddCartItem(ctx, host, "el", fixtureCartID, 7, 2,

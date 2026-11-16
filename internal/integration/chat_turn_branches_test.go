@@ -383,13 +383,15 @@ func TestChatSendsEachStoresOwnModelKey(t *testing.T) {
 				raw, _ := json.Marshal(map[string]any{"message": "γεια"})
 				req, err := http.NewRequestWithContext(t.Context(),
 					http.MethodPost, gw.URL+"/chat", bytes.NewReader(raw))
-				if !assert.NoError(t, err) {
+				if err != nil {
+					t.Errorf("build the chat turn: %v", err)
 					return
 				}
 				req.Host = host
 				req.Header.Set("Content-Type", "application/json")
 				resp, err := http.DefaultClient.Do(req)
-				if !assert.NoError(t, err) {
+				if err != nil {
+					t.Errorf("send the chat turn: %v", err)
 					return
 				}
 				defer func() { _ = resp.Body.Close() }()

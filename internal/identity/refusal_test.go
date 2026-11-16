@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -60,9 +61,7 @@ func meAnswers(
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, _ *http.Request) {
-			for k, v := range header {
-				w.Header()[k] = v
-			}
+			maps.Copy(w.Header(), header)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = w.Write([]byte(body))

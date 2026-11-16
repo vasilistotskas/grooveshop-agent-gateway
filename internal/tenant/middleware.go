@@ -69,7 +69,8 @@ func writeResolveError(
 		return
 	}
 	if !errors.Is(err, context.Canceled) && !errors.Is(err, errNoCredentials) {
-		log.ErrorContext(req.Context(), msg,
+		log.ErrorContext(req.Context(), "store resolution failed",
+			slog.String("reason", msg),
 			slog.String("host", req.Host),
 			slog.String("error", err.Error()),
 		)
