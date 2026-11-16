@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -20,6 +21,10 @@ import (
 
 // version is stamped at build time via -ldflags "-X main.version=...".
 var version = "dev"
+
+// bootCheckTimeout bounds the check, before serving, that the
+// key-encryption key opens the stored signing keys.
+const bootCheckTimeout = 30 * time.Second
 
 func main() {
 	cmd := run
@@ -58,6 +63,16 @@ func run() error {
 	// Signing keys are per tenant schema and load lazily at first use,
 	// sealing a key an earlier release stored unsealed.
 	keys, err := ucp.NewKeys(rdb, cfg.SigningKeyKEK)
+	if err != nil {
+		return err
+	}
+	// A key-encryption key that opens none of the stored keys (another
+	// environment's) would boot and then serve every profile as 503:
+	// refuse to start instead, as config.Load refuses a malformed one.
+	bootCtx, cancelBoot := context.WithTimeout(context.Background(),
+		bootCheckTimeout)
+	err = keys.CheckKEK(bootCtx, log)
+	cancelBoot()
 	if err != nil {
 		return err
 	}
@@ -102,9 +117,18 @@ func run() error {
 		defer close(dispatched)
 		dispatcher.Run(ctx)
 	}()
+	// The signing keys this pod holds are re-read every few minutes, so
+	// the shared Redis does not evict them as idle, and written back if
+	// it did. Stopped before Redis closes, like the dispatcher.
+	refreshed := make(chan struct{})
+	go func() {
+		defer close(refreshed)
+		keys.KeepFresh(ctx, log)
+	}()
 	defer func() {
 		stop() // a listen failure returns without the signal
 		<-dispatched
+		<-refreshed
 	}()
 
 	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", cfg.ListenAddr)

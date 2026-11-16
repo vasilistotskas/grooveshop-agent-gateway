@@ -117,7 +117,8 @@ passes, and runs CI's tidy, image and vulnerability checks again.
   trailing blanks) or, in production and staging, shorter than
   `minInternalSecretLen`; a `SIGNING_KEY_ENCRYPTION_KEY` (required in
   every ENV, never logged) that is not standard base64 of exactly 32
-  bytes; `FEED_STALE_TTL` shorter than
+  bytes, or that opens none of the sealed signing keys Redis holds
+  when it holds any (`ucp.Keys.CheckKEK` at boot, before serving); `FEED_STALE_TTL` shorter than
   `FEED_FRESH_TTL`; any numeric setting at zero or below. `ENV`
   (production | staging | development | test) is folded into
   `AllowLocalWebhooks`, `PaymentHandlerEnv` and the secret's minimum

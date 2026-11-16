@@ -243,13 +243,20 @@ wins over this page.
   associated data (`sealContext`), so a record copied to another store
   does not open. A record that does not open is an error, never a key
   minted over it: a new key would rotate the store's published key
-  under the platforms that verify against it. The move from the
+  under the platforms that verify against it. At boot a pod refuses to
+  start when Redis holds sealed keys and its key-encryption key opens
+  none of them (`CheckKEK`). The records carry no TTL and the shared
+  Redis evicts by LRU, so every pod re-reads the keys it holds every
+  5 minutes (`KeepFresh`, `Refresh`): the read keeps them recent, a
+  record evicted anyway is written back from the held key (never a new
+  key), and a record holding another key is adopted, logged at error,
+  so pods converge. The move from the
   unsealed record (`ag:{schema}:ucp:signing_key:es256`,
   `keys_unsealed.go`) keeps every key, kid and published JWK included:
   a store's unsealed key is sealed the first time a pod needs it; a key
   minted for a store with none leaves a sentinel no earlier release can
-  decode in the unsealed record, so an older pod never mints a second
-  key; `/gateway seal-signing-keys` seals the rest and deletes the
+  decode in the unsealed record, expiring after 7 days, so an older pod
+  never mints a second key; `/gateway seal-signing-keys` seals the rest and deletes the
   unsealed records and sentinels once no older pod is left. That code
   goes in the release after every environment has run the command
   (`docs/agent-protocols-runbook.md`, section 12).
