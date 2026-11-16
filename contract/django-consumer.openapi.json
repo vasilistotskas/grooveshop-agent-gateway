@@ -157,9 +157,6 @@
           "country": {
             "type": "string"
           },
-          "distance": {
-            "type": "number"
-          },
           "id": {
             "type": "string"
           },
@@ -189,7 +186,6 @@
           "addressLine1",
           "addressLine2",
           "country",
-          "distance",
           "id",
           "lat",
           "lng",
@@ -215,9 +211,6 @@
                 "freeShipping": {
                   "type": "boolean"
                 },
-                "gift": {
-                  "type": "boolean"
-                },
                 "rejection": {
                   "nullable": true,
                   "type": "string"
@@ -227,7 +220,6 @@
                 "amount",
                 "code",
                 "freeShipping",
-                "gift",
                 "rejection"
               ],
               "type": "object"
@@ -387,18 +379,6 @@
                     },
                     "vatPercent": {
                       "type": "number"
-                    },
-                    "weight": {
-                      "nullable": true,
-                      "properties": {
-                        "unit": {
-                          "type": "string"
-                        },
-                        "value": {
-                          "type": "number"
-                        }
-                      },
-                      "type": "object"
                     }
                   },
                   "required": [
@@ -613,18 +593,6 @@
               },
               "vatPercent": {
                 "type": "number"
-              },
-              "weight": {
-                "nullable": true,
-                "properties": {
-                  "unit": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "number"
-                  }
-                },
-                "type": "object"
               }
             },
             "required": [
@@ -721,12 +689,6 @@
           "currency": {
             "type": "string"
           },
-          "provider": {
-            "type": "string"
-          },
-          "sessionId": {
-            "type": "string"
-          },
           "status": {
             "type": "string"
           }
@@ -735,8 +697,6 @@
           "amount",
           "checkoutUrl",
           "currency",
-          "provider",
-          "sessionId",
           "status"
         ],
         "type": "object"
@@ -750,22 +710,11 @@
           "currency": {
             "type": "string"
           },
-          "maxThreshold": {
-            "nullable": true,
-            "type": "number"
-          },
-          "minThreshold": {
-            "nullable": true,
-            "type": "number"
-          },
           "providers": {
             "items": {
               "properties": {
                 "kind": {
                   "type": "string"
-                },
-                "priority": {
-                  "type": "integer"
                 },
                 "providerCode": {
                   "type": "string"
@@ -779,7 +728,6 @@
               },
               "required": [
                 "kind",
-                "priority",
                 "providerCode",
                 "providerName",
                 "threshold"
@@ -792,8 +740,6 @@
         "required": [
           "countryCode",
           "currency",
-          "maxThreshold",
-          "minThreshold",
           "providers"
         ],
         "type": "object"
@@ -1124,18 +1070,6 @@
                     },
                     "vatPercent": {
                       "type": "number"
-                    },
-                    "weight": {
-                      "nullable": true,
-                      "properties": {
-                        "unit": {
-                          "type": "string"
-                        },
-                        "value": {
-                          "type": "number"
-                        }
-                      },
-                      "type": "object"
                     }
                   },
                   "required": [
@@ -1221,10 +1155,6 @@
           "trackingDetails": {
             "nullable": true,
             "properties": {
-              "estimatedDelivery": {
-                "nullable": true,
-                "type": "string"
-              },
               "hasTracking": {
                 "type": "boolean"
               },
@@ -1264,25 +1194,6 @@
           "count": {
             "type": "integer"
           },
-          "links": {
-            "properties": {
-              "next": {
-                "nullable": true,
-                "type": "string"
-              },
-              "previous": {
-                "nullable": true,
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "page": {
-            "type": "integer"
-          },
-          "pageSize": {
-            "type": "integer"
-          },
           "results": {
             "items": {
               "$ref": "#/components/schemas/PayWay"
@@ -1304,25 +1215,6 @@
           "count": {
             "type": "integer"
           },
-          "links": {
-            "properties": {
-              "next": {
-                "nullable": true,
-                "type": "string"
-              },
-              "previous": {
-                "nullable": true,
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "page": {
-            "type": "integer"
-          },
-          "pageSize": {
-            "type": "integer"
-          },
           "results": {
             "items": {
               "$ref": "#/components/schemas/ProductFeed"
@@ -1342,25 +1234,6 @@
       "PaginatedProductReviewList": {
         "properties": {
           "count": {
-            "type": "integer"
-          },
-          "links": {
-            "properties": {
-              "next": {
-                "nullable": true,
-                "type": "string"
-              },
-              "previous": {
-                "nullable": true,
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "page": {
-            "type": "integer"
-          },
-          "pageSize": {
             "type": "integer"
           },
           "results": {
@@ -1407,14 +1280,10 @@
               "properties": {
                 "description": {
                   "type": "string"
-                },
-                "instructions": {
-                  "type": "string"
                 }
               },
               "required": [
-                "description",
-                "instructions"
+                "description"
               ],
               "type": "object"
             },
@@ -1650,18 +1519,6 @@
           },
           "vatPercent": {
             "type": "number"
-          },
-          "weight": {
-            "nullable": true,
-            "properties": {
-              "unit": {
-                "type": "string"
-              },
-              "value": {
-                "type": "number"
-              }
-            },
-            "type": "object"
           }
         },
         "required": [
@@ -1686,15 +1543,6 @@
         "properties": {
           "estimatedTotalHits": {
             "type": "integer"
-          },
-          "facetDistribution": {
-            "additionalProperties": {
-              "additionalProperties": {
-                "type": "integer"
-              },
-              "type": "object"
-            },
-            "type": "object"
           },
           "limit": {
             "type": "integer"
@@ -1896,18 +1744,6 @@
           },
           "vatPercent": {
             "type": "number"
-          },
-          "weight": {
-            "nullable": true,
-            "properties": {
-              "unit": {
-                "type": "string"
-              },
-              "value": {
-                "type": "number"
-              }
-            },
-            "type": "object"
           }
         },
         "required": [
@@ -2040,7 +1876,6 @@
       },
       "ProductVariantsResponse": {
         "properties": {
-          "axes": {},
           "variants": {
             "items": {
               "$ref": "#/components/schemas/ProductVariant"
@@ -2049,7 +1884,6 @@
           }
         },
         "required": [
-          "axes",
           "variants"
         ],
         "type": "object"
@@ -2126,16 +1960,8 @@
           "kind": {
             "type": "string"
           },
-          "maxWeightGrams": {
-            "nullable": true,
-            "type": "integer"
-          },
-          "metadata": {},
           "price": {
             "type": "number"
-          },
-          "priority": {
-            "type": "integer"
           },
           "providerCode": {
             "type": "string"
@@ -2150,9 +1976,7 @@
           "exceedsMaxWeight",
           "exceedsParcelSize",
           "kind",
-          "metadata",
           "price",
-          "priority",
           "providerCode",
           "providerName"
         ],

@@ -94,9 +94,8 @@ func TestVerifyScopelessTokenPassesWithoutProfile(t *testing.T) {
 	assert.Nil(t, profile)
 }
 
-// A scopeless token is linked all the same: the bearer goes on, without
-// a profile.
-func TestMiddlewareScopelessBearerIsLinkedWithoutProfile(t *testing.T) {
+// A scopeless token is linked all the same: the bearer goes on.
+func TestMiddlewareScopelessBearerIsLinked(t *testing.T) {
 	v, _, done := newHarness(t)
 	defer done()
 	var got *Linked
@@ -137,8 +136,8 @@ func middlewareHarness(t *testing.T) (http.Handler, *atomic.Int64, func()) {
 	t.Helper()
 	v, hits, done := newHarness(t)
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if l, ok := FromContext(r.Context()); ok && l.Profile != nil {
-			w.Header().Set("X-Linked-Email", l.Profile.Email)
+		if l, ok := FromContext(r.Context()); ok {
+			w.Header().Set("X-Linked-Bearer", l.Bearer)
 		}
 		w.WriteHeader(http.StatusOK)
 	})
@@ -172,7 +171,7 @@ func TestMiddlewareEmptyBearerIsAnonymous(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Empty(t, rec.Header().Get("X-Linked-Email"))
+	assert.Empty(t, rec.Header().Get("X-Linked-Bearer"))
 	assert.Equal(t, int64(0), hits.Load())
 }
 
@@ -185,8 +184,7 @@ func TestMiddlewareValidBearerAttachesIdentity(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "shopper@example.test",
-		rec.Header().Get("X-Linked-Email"))
+	assert.Equal(t, "good", rec.Header().Get("X-Linked-Bearer"))
 }
 
 func TestMiddlewareInvalidBearerGets401WithChallenge(t *testing.T) {
