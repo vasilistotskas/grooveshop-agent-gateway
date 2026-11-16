@@ -1429,6 +1429,10 @@ func (h *handlers) getCheckout(
 // A terminal session is re-rendered rather than refused: cancel is
 // idempotent by nature, and a platform retrying after a lost response
 // must not receive an error for work already done.
+//
+// The spec requires meta.idempotency-key on cancel, so it is validated
+// (MetaIn.validate); it is never used after that, because cancel is
+// idempotent by nature.
 func (h *handlers) cancelCheckout(
 	ctx context.Context, _ *mcp.CallToolRequest, in CancelCheckoutIn,
 ) (*mcp.CallToolResult, CheckoutResult, error) {

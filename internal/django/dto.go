@@ -1,9 +1,7 @@
 package django
 
 import (
-	"bytes"
 	"encoding/json"
-	"errors"
 )
 
 // DTOs are hand-written and hold only the fields the gateway consumes —
@@ -18,14 +16,8 @@ import (
 
 // Page is the DRF pagination envelope shared by every list endpoint.
 type Page[T any] struct {
-	Links struct {
-		Next     *string `json:"next"`
-		Previous *string `json:"previous"`
-	} `json:"links" contract:"optional"`
 	Count      int64 `json:"count"`
 	TotalPages int   `json:"totalPages" contract:"optional"`
-	PageSize   int   `json:"pageSize" contract:"optional"`
-	Page       int   `json:"page" contract:"optional"`
 	Results    []T   `json:"results"`
 }
 
@@ -52,14 +44,10 @@ type Product struct {
 	BrandName    *string `json:"brandName"`
 	// Gtin and Mpn are the identifiers the store entered; empty when it
 	// has none.
-	Gtin   string `json:"gtin" contract:"optional"`
-	Mpn    string `json:"mpn" contract:"optional"`
-	Stock  int    `json:"stock" contract:"optional"`
-	Active bool   `json:"active" contract:"optional"`
-	Weight *struct {
-		Unit  string      `json:"unit" contract:"optional"`
-		Value json.Number `json:"value" contract:"optional"`
-	} `json:"weight"`
+	Gtin       string      `json:"gtin" contract:"optional"`
+	Mpn        string      `json:"mpn" contract:"optional"`
+	Stock      int         `json:"stock" contract:"optional"`
+	Active     bool        `json:"active" contract:"optional"`
 	VatPercent json.Number `json:"vatPercent"`
 	Pricing
 	MainImagePath string `json:"mainImagePath"`
@@ -112,10 +100,8 @@ type Pricing struct {
 	AnnouncedDiscountPercent json.Number `json:"announcedDiscountPercent" contract:"nullable"`
 }
 
-// ProductVariants is the /product/{id}/variants payload. Axes stay raw: the
-// gateway forwards them verbatim and the shape varies per variant group.
+// ProductVariants is the /product/{id}/variants payload.
 type ProductVariants struct {
-	Axes     json.RawMessage  `json:"axes"`
 	Variants []ProductVariant `json:"variants"`
 }
 
@@ -150,11 +136,10 @@ type SearchHit struct {
 }
 
 type SearchProductResponse struct {
-	Limit              int                         `json:"limit"`
-	Offset             int                         `json:"offset"`
-	EstimatedTotalHits int64                       `json:"estimatedTotalHits"`
-	Results            []SearchHit                 `json:"results"`
-	FacetDistribution  map[string]map[string]int64 `json:"facetDistribution" contract:"optional"`
+	Limit              int         `json:"limit"`
+	Offset             int         `json:"offset"`
+	EstimatedTotalHits int64       `json:"estimatedTotalHits"`
+	Results            []SearchHit `json:"results"`
 }
 
 type TrendingResponse struct {
@@ -192,8 +177,7 @@ type Region struct {
 // PayWayTranslation is the customer-facing copy; the method's name is
 // not translated upstream — it is derived from PayWay.Key (Label).
 type PayWayTranslation struct {
-	Description  string `json:"description"`
-	Instructions string `json:"instructions"`
+	Description string `json:"description"`
 }
 
 type PayWay struct {
@@ -256,17 +240,14 @@ func (p PayWay) HasKnownSettlement() bool {
 // (ExceedsParcelSize), is still listed so a storefront can explain why it
 // is unavailable; Django refuses to create an order with it.
 type ShippingOption struct {
-	ProviderCode      string          `json:"providerCode"`
-	ProviderName      string          `json:"providerName"`
-	Kind              string          `json:"kind"`
-	Price             json.Number     `json:"price"`
-	Currency          string          `json:"currency"`
-	Priority          int             `json:"priority"`
-	CountryCode       string          `json:"countryCode"`
-	MaxWeightGrams    *int            `json:"maxWeightGrams"`
-	ExceedsMaxWeight  bool            `json:"exceedsMaxWeight"`
-	ExceedsParcelSize bool            `json:"exceedsParcelSize"`
-	Metadata          json.RawMessage `json:"metadata"`
+	ProviderCode      string      `json:"providerCode"`
+	ProviderName      string      `json:"providerName"`
+	Kind              string      `json:"kind"`
+	Price             json.Number `json:"price"`
+	Currency          string      `json:"currency"`
+	CountryCode       string      `json:"countryCode"`
+	ExceedsMaxWeight  bool        `json:"exceedsMaxWeight"`
+	ExceedsParcelSize bool        `json:"exceedsParcelSize"`
 }
 
 // FitsCart reports whether Django would ship the cart this way: within
@@ -281,11 +262,8 @@ type FreeShippingInfo struct {
 		ProviderName string      `json:"providerName"`
 		Kind         string      `json:"kind"`
 		Threshold    json.Number `json:"threshold"`
-		Priority     int         `json:"priority"`
 	} `json:"providers"`
-	MinThreshold json.Number `json:"minThreshold" contract:"nullable"`
-	MaxThreshold json.Number `json:"maxThreshold" contract:"nullable"`
-	Currency     string      `json:"currency"`
+	Currency string `json:"currency"`
 	// CountryCode is the destination the thresholds were resolved for —
 	// the requested one, or the store's first shippable country.
 	CountryCode string `json:"countryCode" contract:"nullable"`
@@ -310,18 +288,17 @@ type AcsStation struct {
 
 // BoxNowLocker mirrors the boxnow lockers/nearest proxy response.
 type BoxNowLocker struct {
-	ID           string      `json:"id"`
-	Type         string      `json:"type"`
-	Lat          string      `json:"lat"`
-	Lng          string      `json:"lng"`
-	Title        string      `json:"title"`
-	Name         string      `json:"name"`
-	PostalCode   string      `json:"postalCode"`
-	Country      string      `json:"country"`
-	Note         string      `json:"note"`
-	AddressLine1 string      `json:"addressLine1"`
-	AddressLine2 string      `json:"addressLine2"`
-	Distance     json.Number `json:"distance"`
+	ID           string `json:"id"`
+	Type         string `json:"type"`
+	Lat          string `json:"lat"`
+	Lng          string `json:"lng"`
+	Title        string `json:"title"`
+	Name         string `json:"name"`
+	PostalCode   string `json:"postalCode"`
+	Country      string `json:"country"`
+	Note         string `json:"note"`
+	AddressLine1 string `json:"addressLine1"`
+	AddressLine2 string `json:"addressLine2"`
 }
 
 // Review deliberately decodes only the reviewer's first name: the upstream
@@ -390,7 +367,6 @@ type AppliedCoupon struct {
 	Code         string      `json:"code"`
 	Amount       json.Number `json:"amount"`
 	FreeShipping bool        `json:"freeShipping"`
-	Gift         bool        `json:"gift"`
 	Rejection    string      `json:"rejection" contract:"nullable"`
 }
 
@@ -408,11 +384,10 @@ type OrderItem struct {
 }
 
 type TrackingDetails struct {
-	TrackingNumber    string  `json:"trackingNumber" contract:"optional,nullable"`
-	ShippingCarrier   string  `json:"shippingCarrier" contract:"optional,nullable"`
-	HasTracking       bool    `json:"hasTracking" contract:"optional"`
-	EstimatedDelivery *string `json:"estimatedDelivery"`
-	TrackingURL       string  `json:"trackingUrl" contract:"optional,nullable"`
+	TrackingNumber  string `json:"trackingNumber" contract:"optional,nullable"`
+	ShippingCarrier string `json:"shippingCarrier" contract:"optional,nullable"`
+	HasTracking     bool   `json:"hasTracking" contract:"optional"`
+	TrackingURL     string `json:"trackingUrl" contract:"optional,nullable"`
 }
 
 type PricingBreakdown struct {
@@ -450,145 +425,4 @@ type ProductAlert struct {
 	Email       string       `json:"email" contract:"optional,nullable"`
 	TargetPrice *json.Number `json:"targetPrice"`
 	IsActive    bool         `json:"isActive"`
-}
-
-// TenantConfig mirrors the tenant/resolve wire shape (camelCase, produced
-// by djangorestframework-camel-case from TenantConfigSerializer).
-type TenantConfig struct {
-	SchemaName    string `json:"schemaName"`
-	Name          string `json:"name"`
-	StoreName     string `json:"storeName"`
-	FaviconURL    string `json:"faviconUrl"`
-	DefaultLocale string `json:"defaultLocale"`
-	// AvailableLocales are the languages the storefront serves the
-	// store in; empty means its default alone (ServedLocales).
-	AvailableLocales []string `json:"availableLocales" contract:"optional"`
-	DefaultCurrency  string   `json:"defaultCurrency"`
-	PrimaryDomain    string   `json:"primaryDomain"`
-	// AssetsDomain is the tenant's OWN media host, and is empty for
-	// every tenant that has not opted into white-label asset URLs —
-	// which is the documented default. Resolve it through
-	// media.Host so an empty value falls back to the platform origin
-	// instead of producing assets.<tenant-domain>, a hostname standard
-	// onboarding never creates.
-	AssetsDomain string `json:"assetsDomain"`
-	// Features is each optional store feature's EFFECTIVE state (the
-	// plan flag AND the store's own settings), resolved by Django from
-	// one table (tenant/features.py). A tool or surface that serves a
-	// feature is offered only while it is on.
-	Features StoreFeatures `json:"features"`
-	// AgentCommerceEnabled / ProductFeedsEnabled gate this gateway's
-	// surfaces per tenant. Django serves the EFFECTIVE value (plan
-	// flag AND merchant extra-setting) on every resolve, and its cache
-	// key includes the payload shape, so the fields are never absent;
-	// a payload without them decodes as off. Use the
-	// AgentCommerceOn/ProductFeedsOn accessors, which encode the
-	// subordination, never the raw fields.
-	AgentCommerceEnabled bool `json:"agentCommerceEnabled"`
-	ProductFeedsEnabled  bool `json:"productFeedsEnabled"`
-	// ChatAPIKey is the tenant's own model-provider credential. Django
-	// includes it only on internally-authenticated resolves (the
-	// X-Internal-Token header); empty means chat is off for the tenant.
-	ChatAPIKey string `json:"chatApiKey" contract:"undocumented"`
-	// AgentPaymentInstruments lists the provider codes an agent can
-	// settle unaided, in the merchant's presentation order. Django
-	// derives it from the tenant's ACTIVE OFFLINE pay-ways, so every
-	// entry needs no payment credential — the buyer settles with the
-	// carrier. Empty means the store has nothing an agent can complete
-	// on its own and checkout must escalate to the browser.
-	AgentPaymentInstruments []string `json:"agentPaymentInstruments"`
-	// AgentHostedPaymentEnabled is the EFFECTIVE two-tier gate (platform
-	// plan flag AND merchant extra-setting) for letting an agent pick a
-	// method the business settles on its own hosted page. Off degrades
-	// gracefully — agents settle only what they can settle themselves
-	// and card buyers are handed off, which is the plain UCP escalation
-	// flow.
-	AgentHostedPaymentEnabled bool `json:"agentHostedPaymentEnabled"`
-	// ACPBearerToken authenticates the tenant's agentic-commerce platform
-	// on /acp/*. Like ChatAPIKey it arrives only on internally
-	// authenticated resolves; empty means no platform is enrolled.
-	ACPBearerToken string `json:"acpBearerToken" contract:"undocumented"`
-}
-
-// tenantResolve is the tenant/resolve body: the config, and whether Django
-// recognised the caller's X-Internal-Token. Django adds chatApiKey and
-// acpBearerToken, possibly empty, only then (grooveshop-django-api
-// tenant/views.py, tenant_resolve), so their presence is the answer. The
-// flag is unexported and lives beside TenantConfig, never in it: the
-// cached shape and the contract stay what they are.
-type tenantResolve struct {
-	TenantConfig
-	recognised bool
-}
-
-func (r *tenantResolve) UnmarshalJSON(b []byte) error {
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.UseNumber()
-	if err := dec.Decode(&r.TenantConfig); err != nil {
-		return err
-	}
-	var keys struct {
-		Chat *json.RawMessage `json:"chatApiKey"`
-		ACP  *json.RawMessage `json:"acpBearerToken"`
-	}
-	if err := json.Unmarshal(b, &keys); err != nil {
-		return err
-	}
-	if (keys.Chat == nil) != (keys.ACP == nil) {
-		return errors.New("tenant/resolve sent one credential key " +
-			"without the other")
-	}
-	r.recognised = keys.Chat != nil
-	return nil
-}
-
-// StoreFeatures is the part of TenantConfig.features the gateway reads:
-// the features some tool or surface of it serves.
-type StoreFeatures struct {
-	// CustomerAccounts: shoppers can sign in, so an agent can link one's
-	// account. Django folds it into every feature that needs an account
-	// (reviews, favourites, loyalty), which read off with it.
-	CustomerAccounts bool `json:"customerAccounts"`
-	// Catalogue: the store publishes its products (listings, product
-	// pages, search).
-	Catalogue bool `json:"catalogue"`
-	// Cart: the store takes orders. Django folds the catalogue into it.
-	Cart           bool `json:"cart"`
-	ProductReviews bool `json:"productReviews"`
-	ProductAlerts  bool `json:"productAlerts"`
-	Favourites     bool `json:"favourites"`
-	Loyalty        bool `json:"loyalty"`
-	Promotions     bool `json:"promotions"`
-	// StaffAIAccess: the store lets its team connect their own AI app to
-	// /mcp/admin. Off by default: what the app reads goes to its provider.
-	StaffAIAccess bool `json:"staffAiAccess"`
-}
-
-// AgentCommerceOn reports whether the agent-commerce surface (MCP,
-// UCP, ACP, chat) is enabled for the tenant.
-func (t TenantConfig) AgentCommerceOn() bool {
-	return t.AgentCommerceEnabled
-}
-
-// HostedPaymentOn reports whether an agent may choose a method the
-// business settles on its own hosted page. Subordinate to the
-// agent-commerce gate.
-func (t TenantConfig) HostedPaymentOn() bool {
-	return t.AgentCommerceEnabled && t.AgentHostedPaymentEnabled
-}
-
-// ProductFeedsOn reports whether catalog feed syndication is enabled.
-// Subordinate to the agent-commerce gate, and to the catalogue: a feed
-// of products the store does not publish lists pages that 404.
-func (t TenantConfig) ProductFeedsOn() bool {
-	return t.AgentCommerceEnabled && t.ProductFeedsEnabled &&
-		t.Features.Catalogue
-}
-
-// CheckoutOn reports whether agents may check out at the store: the
-// UCP profile and ACP sessions. Subordinate to the agent-commerce gate,
-// and to the cart: a store that takes no orders has nothing to check
-// out.
-func (t TenantConfig) CheckoutOn() bool {
-	return t.AgentCommerceEnabled && t.Features.Cart
 }

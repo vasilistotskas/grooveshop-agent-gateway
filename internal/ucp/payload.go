@@ -280,9 +280,9 @@ func (b *Builder) BuildCheckout(
 		// requires_escalation. With a hosted PSP page it is that page.
 		// With an order but no page (the link could not be created) it is
 		// the order, never the cart: the cart is kept until payment, and
-		// claiming it would let the buyer check out a second order. With
-		// neither — a store with no agent-completable method — it is the
-		// storefront's own claim page for this cart.
+		// claiming it would let the buyer check out a second order. The
+		// status is set only once the order exists, so one of the two is
+		// always there.
 		switch {
 		case s.PaymentURL != "":
 			out.ContinueURL = s.PaymentURL
@@ -298,13 +298,6 @@ func (b *Builder) BuildCheckout(
 				Text: "The order is placed but its payment link could not " +
 					"be created; call complete_checkout again to retry.",
 				Severity: "recoverable",
-			})
-		default:
-			out.ContinueURL = links.CartClaim(s.CartID)
-			out.Messages = append(out.Messages, Message{
-				Type: "info", Code: "requires_buyer_review",
-				Text: "The buyer must open continue_url to finish " +
-					"checkout on the store.",
 			})
 		}
 	case checkout.StatusIncomplete:

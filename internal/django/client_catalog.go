@@ -2,7 +2,9 @@ package django
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -193,47 +195,32 @@ func (c *Client) ListProductsPage(
 	return &out, nil
 }
 
-// Regions lists a country's delivery regions; a country without any, or
-// one Django does not know, answers an empty list.
-func (c *Client) Regions(
-	ctx context.Context, host, lang, countryCode string,
-) ([]Region, error) {
-	var out []Region
-	err := c.get(ctx, request{
-		path: "/region/{alpha}/get_regions_by_country_alpha_2",
-		rawPath: "/region/" + url.PathEscape(countryCode) +
-			"/get_regions_by_country_alpha_2",
-		host:     host,
-		language: lang,
-		out:      &out,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
+type productAlertCreate struct {
+	Kind        string      `json:"kind"`
+	Product     int64       `json:"product"`
+	Email       string      `json:"email" contract:"format=email"`
+	TargetPrice json.Number `json:"targetPrice,omitempty" contract:"format=double"`
 }
 
-// PayWays lists active payment methods, optionally filtered by carrier
-// compatibility (providerCode + kind), mirroring the storefront checkout.
-func (c *Client) PayWays(
-	ctx context.Context, host, lang, shippingProviderCode, shippingKind string,
-) (*Page[PayWay], error) {
-	// One page holds every method a store could plausibly configure; the
-	// paginator's default of 12 would silently hide the rest.
-	q := url.Values{"pageSize": {"100"}}
-	if shippingProviderCode != "" {
-		q.Set("shippingProviderCode", shippingProviderCode)
-	}
-	if shippingKind != "" {
-		q.Set("shippingKind", shippingKind)
-	}
-	var out Page[PayWay]
-	err := c.get(ctx, request{
-		path:     "/pay_way",
+// CreateProductAlert subscribes an email to restock/price-drop alerts.
+// Duplicate subscriptions surface as ErrConflict.
+func (c *Client) CreateProductAlert(
+	ctx context.Context, host, lang, kind string,
+	productID int64, email string, targetPrice json.Number,
+) (*ProductAlert, error) {
+	var out ProductAlert
+	err := c.send(ctx, http.MethodPost, request{
+		path:     "/product/alert",
 		host:     host,
 		language: lang,
-		query:    q,
-		out:      &out,
+		headers:  map[string]string{"X-Internal-Gateway": c.internalSecret},
+		body: productAlertCreate{
+			Kind:        kind,
+			Product:     productID,
+			Email:       email,
+			TargetPrice: targetPrice,
+		},
+		out: &out,
 	})
 	if err != nil {
 		return nil, err
