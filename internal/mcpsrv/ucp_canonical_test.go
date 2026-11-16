@@ -76,7 +76,8 @@ func TestCheckoutInLines(t *testing.T) {
 	}}
 	_, err = neg.lines()
 	te := codeOf(t, err, mcptool.CodeInvalid)
-	assert.Contains(t, te.Hint, "every quantity must be at least 1")
+	assert.Equal(t, "checkout.line_items: product 7 asks for -3: "+
+		checkout.ErrInvalidQuantity.Error(), te.Hint)
 
 	// A non-numeric id is a caller error, not an empty checkout.
 	bad := &UCPCheckoutIn{LineItems: []UCPLineItemReqIn{
@@ -243,7 +244,8 @@ func TestResolvePayWayRejectsWhatTheStoreCannotSettle(t *testing.T) {
 	// A type this store never advertised.
 	_, err := resolvePayWay(context.Background(), dj, tn,
 		checkout.Fulfillment{}, 0, []UCPInstrumentIn{{Type: "card"}})
-	assert.ErrorContains(t, err, "not available")
+	assert.Contains(t, codeOf(t, err, mcptool.CodeUnsupported).Hint,
+		"not available")
 
 	// A handler that is not ours — the id must match what we advertised.
 	_, err = resolvePayWay(context.Background(), dj, tn,
@@ -251,7 +253,8 @@ func TestResolvePayWayRejectsWhatTheStoreCannotSettle(t *testing.T) {
 			HandlerID: "com.stripe.payments",
 			Type:      ucp.InstrumentCashOnDelivery,
 		}})
-	assert.ErrorContains(t, err, "unknown payment handler_id")
+	assert.Contains(t, codeOf(t, err, mcptool.CodeInvalid).Hint,
+		"unknown payment handler_id")
 }
 
 // A pay way whose settlement we cannot read is NOT an instrument.
@@ -488,11 +491,25 @@ func TestApplyHostedSelectionRefusesUnlessNegotiated(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := &checkout.Session{PayWayID: 7}
 			err := (&UCPPaymentChoice{PayWayID: 2}).applyHostedSelection(s, neg)
-			assert.ErrorContains(t, err, "pay_way_id is not accepted")
+			assert.Contains(t, codeOf(t, err, mcptool.CodeInvalid).Hint,
+				"pay_way_id is not accepted")
 			assert.EqualValues(t, 7, s.PayWayID,
 				"the prior selection must stand")
 		})
 	}
+}
+
+// pay_way_id and instruments select competing methods: a call sending
+// both is refused, even where the extension is negotiated.
+func TestApplyHostedSelectionRefusesBothSelections(t *testing.T) {
+	s := &checkout.Session{PayWayID: 7}
+	err := (&UCPPaymentChoice{PayWayID: 2, Payment: &UCPPaymentIn{
+		Instruments: []UCPInstrumentIn{{
+			Type: ucp.InstrumentCashOnDelivery}},
+	}}).applyHostedSelection(s, negotiatedFor(t, gatedTenant(true), true))
+	assert.Contains(t, codeOf(t, err, mcptool.CodeInvalid).Hint,
+		"not both")
+	assert.EqualValues(t, 7, s.PayWayID, "the prior selection must stand")
 }
 
 func TestApplyHostedSelectionHonoursWhenNegotiated(t *testing.T) {

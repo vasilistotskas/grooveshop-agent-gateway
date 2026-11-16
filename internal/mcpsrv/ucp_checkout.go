@@ -1199,11 +1199,11 @@ func (h *handlers) closedTo(
 	case s.Status == checkout.StatusCompleteInProgress:
 		return h.pending(ctx, s)
 	case s.Status == checkout.StatusCanceled:
-		return &mcptool.ToolError{Code: mcptool.CodeConflict,
+		return &mcptool.ToolError{Code: mcptool.CodeCheckoutClosed,
 			Hint: fmt.Sprintf("checkout %s is canceled and cannot be %s",
 				s.ID, action)}
 	}
-	return &mcptool.ToolError{Code: mcptool.CodeConflict,
+	return &mcptool.ToolError{Code: mcptool.CodeCheckoutClosed,
 		Hint: fmt.Sprintf("checkout %s already placed order %s and cannot "+
 			"be %s here; the order is managed by the store, and "+
 			"get_order or track_order reads it", s.ID, s.OrderUUID,

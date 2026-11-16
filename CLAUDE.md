@@ -491,9 +491,13 @@ passes, and runs CI's tidy, image and vulnerability checks again.
     (`invalidInput`);
   - a checkout no session is stored for: `not_found`
     (`errCheckoutGone`);
-  - a checkout another request holds the lock of (`errCheckoutBusy`),
-    one whose completion may still be running (`errCompletionInFlight`),
-    and one canceled or with its order placed (`closedTo`): `conflict`;
+  - a checkout another request holds the lock of (`errCheckoutBusy`,
+    send again shortly) and one whose completion may still be running
+    (`errCompletionInFlight`, read it, never complete again):
+    `conflict`;
+  - a checkout canceled or with its order placed (`closedTo`), for
+    good: `checkout_closed`, never retried. UCP defines no code for it
+    (`error_code.json`), and ACP answers it with its 405;
   - not ready to complete, or no payment method: `missing`;
   - a payment method the delivery or this surface cannot take:
     `unsupported`;

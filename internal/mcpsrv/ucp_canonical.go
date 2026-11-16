@@ -2,6 +2,7 @@ package mcpsrv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -215,13 +216,10 @@ func (c *UCPCheckoutIn) lines() ([]checkout.Line, error) {
 			checkout.Line{ProductID: id, Quantity: li.Quantity})
 	}
 	merged, err := checkout.MergeLines(out)
-	if err != nil {
-		// checkout.ErrInvalidQuantity, its only error.
-		return nil, invalidInput("checkout.line_items: every quantity " +
-			"must be at least 1, and a product's lines together at most " +
-			"9007199254740991")
+	if errors.Is(err, checkout.ErrInvalidQuantity) {
+		return nil, invalidInput("checkout.line_items: %v", err)
 	}
-	return merged, nil
+	return merged, err
 }
 
 // resolvePayWay maps a submitted instrument onto the merchant pay-way

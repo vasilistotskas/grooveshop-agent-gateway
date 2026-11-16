@@ -481,10 +481,10 @@ func TestCheckoutRefusalsCarryACode(t *testing.T) {
 			mcptool.CodeUnsupported,
 			[]string{"get_checkout_link"}},
 		"a canceled checkout": {
-			h.closedTo(ctx, canceled, "updated"), mcptool.CodeConflict,
+			h.closedTo(ctx, canceled, "updated"), mcptool.CodeCheckoutClosed,
 			[]string{"is canceled and cannot be updated"}},
 		"a checkout that placed its order": {
-			h.closedTo(ctx, placed, "canceled"), mcptool.CodeConflict,
+			h.closedTo(ctx, placed, "canceled"), mcptool.CodeCheckoutClosed,
 			[]string{"already placed order " + fixtureOrderUUID,
 				"get_order or track_order"}},
 		"no id": {errIDRequired, mcptool.CodeInvalid,

@@ -25,7 +25,10 @@ wins over this page.
   The five checkout tools share these opening steps (`negotiated` in
   `internal/mcpsrv/ucp_checkout.go`), and update, complete and cancel
   share taking the session's lock and answering through `finish`
-  (`onSession`).
+  (`onSession`). Their refusals are `mcptool.ToolError`s whose codes
+  are listed in `CLAUDE.md` (MCP tool conventions); a checkout that is
+  canceled or placed its order is `checkout_closed`, which the spec's
+  `error_code.json` does not define.
   The order webhook URL comes ONLY from the negotiated order
   capability's `config.webhook_url`, and `pay_way_id` needs the
   hosted-selection extension negotiated, not just the tenant gate.

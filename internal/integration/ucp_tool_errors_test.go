@@ -92,8 +92,21 @@ func TestUCPCheckoutAnswersCarryACode(t *testing.T) {
 			"cancel": surface.abandon(ctx, id),
 		} {
 			te := toolError(t, answer.refusal)
-			assert.Equal(t, mcptool.CodeConflict, te.Code, what)
+			assert.Equal(t, mcptool.CodeCheckoutClosed, te.Code, what)
 			assert.Contains(t, te.Hint, "already placed order", what)
+		}
+	})
+
+	t.Run("a canceled checkout", func(t *testing.T) {
+		id := surface.ready(t)
+		require.Equal(t, "canceled", surface.abandon(ctx, id).status)
+		for what, answer := range map[string]surfaceAnswer{
+			"update":   surface.update(ctx, id),
+			"complete": surface.answer(ctx, id, uuid.NewString(), nil),
+		} {
+			te := toolError(t, answer.refusal)
+			assert.Equal(t, mcptool.CodeCheckoutClosed, te.Code, what)
+			assert.Contains(t, te.Hint, "is canceled and cannot be", what)
 		}
 	})
 }

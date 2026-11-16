@@ -66,6 +66,10 @@ const (
 	// The checkout's own states, named as ACP's Error codes name them.
 	// CodeMissing: the checkout lacks what completing it needs.
 	CodeMissing = "missing"
+	// CodeCheckoutClosed: the checkout is canceled or placed its order,
+	// for good: no retry or change of it will be taken. UCP defines no
+	// code for it (error_code.json), and ACP answers it with its 405.
+	CodeCheckoutClosed = "checkout_closed"
 	// CodeUnsupported: a payment the store cannot take here.
 	CodeUnsupported = "unsupported"
 	// CodeOutOfStock: the store has less stock than the checkout holds.
@@ -114,7 +118,8 @@ func UntrustedNote(typed string) string {
 var gatewayCodes = []string{
 	CodeNotFound, CodeCartUnreachable, CodeUnauthorized, CodeNotGranted,
 	CodeNotAllowed, CodeAccessOff, CodeThrottled, CodeConflict,
-	CodeInvalid, CodeUnavailable, CodeMissing, CodeUnsupported,
+	CodeInvalid, CodeUnavailable, CodeMissing, CodeCheckoutClosed,
+	CodeUnsupported,
 	CodeOutOfStock, CodeOrderPlaced, CodeOrderOutcomeUnknown,
 	CodePaymentLinkFailed,
 }
@@ -188,8 +193,15 @@ func Add[In, Out any](
 ) {
 	titled := *def
 	titled.Title = def.Annotations.Title
-	if out := reflect.TypeFor[Out](); titled.OutputSchema == nil &&
-		out.Kind() != reflect.Interface {
+	out := reflect.TypeFor[Out]()
+	if out.Kind() == reflect.Pointer {
+		// The SDK sends a nil *T as T's zero value only when it infers
+		// the schema itself; with the schema given here, it would send
+		// null, which the schema does not allow.
+		panic("mcptool: tool " + def.Name + ": its result type " +
+			out.String() + " is a pointer; return the struct itself")
+	}
+	if titled.OutputSchema == nil && out.Kind() != reflect.Interface {
 		titled.OutputSchema = OutputSchema(out)
 	}
 	mcp.AddTool(srv, &titled, func(
