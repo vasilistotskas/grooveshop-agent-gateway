@@ -190,6 +190,36 @@ func TestHandOutGivesAFreeWorkerTheJob(t *testing.T) {
 	assert.Len(t, slots.queue["a"], 1)
 }
 
+// A target whose last slot is freed while a delivery is queued behind it
+// (the hand-off of the slot's job gave up) has its queue dropped: nothing
+// of the target is in flight to take the next one, and a free slot must
+// mean an empty queue. The dropped delivery is left pending.
+func TestReleasingATargetsLastSlotDropsItsQueue(t *testing.T) {
+	now := time.Now()
+	slots := newTargetSlots(1, 64, 256)
+	require.Equal(t, admitted, slots.admit(testJob("A", "t", now)))
+	require.Equal(t, queued, slots.admit(testJob("B", "t", now)))
+	require.Equal(t, admitted, slots.admit(testJob("C", "u", now)))
+	require.Equal(t, queued, slots.admit(testJob("D", "u", now)))
+
+	dropped := slots.release("t")
+	require.Len(t, dropped, 1)
+	assert.Equal(t, "B", dropped[0].id)
+	assert.NotContains(t, slots.held, "t")
+	assert.NotContains(t, slots.queue, "t")
+	assert.Equal(t, 1, slots.queued, "only the other target's queue is left")
+	assert.Equal(t, admitted, slots.admit(testJob("E", "t", now)),
+		"a free slot takes the next delivery at once")
+
+	// A stopped consumer's worker frees the slot the same way.
+	_, dropped, ok := slots.next("u", now, false)
+	assert.False(t, ok)
+	require.Len(t, dropped, 1)
+	assert.Equal(t, "D", dropped[0].id)
+	assert.Zero(t, slots.queued)
+	assert.Empty(t, slots.queue)
+}
+
 // A stopped consumer hands nothing out and frees the slot it took.
 func TestHandOutStopsWithItsContext(t *testing.T) {
 	d := testDispatcher()

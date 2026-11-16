@@ -201,7 +201,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 					j, stale, ok = slots.next(j.target, time.Now(),
 						ctx.Err() == nil)
 					for _, s := range stale {
-						d.logLeftPending(ctx, s, "it waited too long")
+						d.logLeftPending(ctx, s, "it was not started in time")
 					}
 				}
 			}
@@ -293,8 +293,10 @@ func (d *Dispatcher) handOut(
 		case jobs <- j:
 			timer.Stop()
 		case <-timer.C:
-			slots.release(j.target)
 			d.logLeftPending(ctx, j, "no worker was free in time")
+			for _, q := range slots.release(j.target) {
+				d.logLeftPending(ctx, q, "its target has nothing in flight")
+			}
 		case <-ctx.Done():
 			timer.Stop()
 			slots.release(j.target)
@@ -373,8 +375,9 @@ func (s *targetSlots) admit(j job) admission {
 // next is called by a worker that finished a delivery to target. With
 // more, it returns the target's next queued delivery, which keeps the
 // slot; otherwise, or with none queued, it frees the slot. A queued
-// delivery read more than queueMaxWait before now is dropped from the queue
-// and returned as stale, to be left pending for reclaim.
+// delivery read more than queueMaxWait before now, or left queued when
+// the target's last slot is freed, is dropped from the queue and
+// returned as stale, to be left pending for reclaim.
 func (s *targetSlots) next(
 	target string, now time.Time, more bool,
 ) (job, []job, bool) {
@@ -394,23 +397,30 @@ func (s *targetSlots) next(
 		return j, stale, true
 	}
 	s.setQueue(target, q)
-	s.releaseLocked(target)
-	return job{}, stale, false
+	return job{}, append(stale, s.releaseLocked(target)...), false
 }
 
-// release frees a slot of target.
-func (s *targetSlots) release(target string) {
+// release frees a slot of target, and returns what releaseLocked dropped.
+func (s *targetSlots) release(target string) []job {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.releaseLocked(target)
+	return s.releaseLocked(target)
 }
 
-func (s *targetSlots) releaseLocked(target string) {
-	if s.held[target] <= 1 {
-		delete(s.held, target)
-		return
+// releaseLocked frees a slot of target. Freeing its last also drops its
+// queue and returns it: with nothing of the target in flight, nothing
+// would take the next one, and a free slot must mean an empty queue.
+// The dropped deliveries are left pending for reclaim.
+func (s *targetSlots) releaseLocked(target string) []job {
+	if s.held[target] > 1 {
+		s.held[target]--
+		return nil
 	}
-	s.held[target]--
+	delete(s.held, target)
+	dropped := s.queue[target]
+	s.queued -= len(dropped)
+	delete(s.queue, target)
+	return dropped
 }
 
 func (s *targetSlots) setQueue(target string, q []job) {
