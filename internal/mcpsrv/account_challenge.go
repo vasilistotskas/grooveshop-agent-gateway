@@ -2,20 +2,15 @@ package mcpsrv
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	sdkjson "github.com/segmentio/encoding/json"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/identity"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
@@ -71,24 +66,15 @@ func RequireLinkedAccount(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		body, err := io.ReadAll(
-			http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
-		if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
-			httpmw.WriteJSONError(w, http.StatusRequestEntityTooLarge,
-				"request body too large")
+		r, body, ok := readPost(w, r)
+		if !ok {
 			return
 		}
-		if err != nil {
-			httpmw.WriteJSONError(w, http.StatusBadRequest,
-				"request body could not be read")
-			return
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
 
 		// Any account tool the body calls, in a batch too. A tool the
 		// store does not serve is unknown, not locked.
-		if !slices.ContainsFunc(calledTools(body), func(name string) bool {
-			return needsAccount(name, t.Features)
+		if !slices.ContainsFunc(body.toolCalls(), func(c calledTool) bool {
+			return needsAccount(c.name, t.Features)
 		}) {
 			next.ServeHTTP(w, r)
 			return
@@ -97,48 +83,6 @@ func RequireLinkedAccount(next http.Handler) http.Handler {
 			`scope="`+linkScopes(t.Features)+`"`,
 			"this tool needs a linked account")
 	})
-}
-
-// calledTools names the tools a request body calls, read exactly as the
-// MCP SDK's streamable HTTP handler reads it, so that no body the SDK
-// would run an account tool from passes unchallenged:
-//   - a body nested deeper than sdkMaxDepth is not decoded (decodeAsSDK;
-//     jsonrpc.DecodeMessage applies the same bound) and calls nothing
-//     here. It is passed on, and the SDK refuses it whole, with a 400,
-//     before it reads any message in it, so no tool in it runs;
-//   - a JSON array is a batch of messages, anything else one message
-//     (the SDK's readBatch);
-//   - each message is decoded by the SDK's own jsonrpc.DecodeMessage;
-//   - a tools/call's params are decoded into the SDK's CallToolParamsRaw
-//     with the decoder and options the SDK uses: segmentio/encoding with
-//     case-sensitive field names, so `Name` is not `name`.
-//
-// The SDK refuses a batch on protocol 2025-06-18 and later; such a body is
-// still read here, and challenging one the SDK would refuse costs
-// nothing. A body that is not JSON-RPC calls nothing: the MCP handler
-// refuses it.
-func calledTools(body []byte) []string {
-	var batch []json.RawMessage
-	raws := []json.RawMessage{body}
-	if decodeAsSDK(body, &batch) == nil {
-		raws = batch
-	}
-	var names []string
-	for _, raw := range raws {
-		msg, err := jsonrpc.DecodeMessage(raw)
-		if err != nil {
-			return nil
-		}
-		req, ok := msg.(*jsonrpc.Request)
-		if !ok || req.Method != "tools/call" || req.Params == nil {
-			continue
-		}
-		var params mcp.CallToolParamsRaw
-		if decodeAsSDK(req.Params, &params) == nil {
-			names = append(names, params.Name)
-		}
-	}
-	return names
 }
 
 // sdkMaxDepth is the nesting the MCP SDK reads a JSON body to:

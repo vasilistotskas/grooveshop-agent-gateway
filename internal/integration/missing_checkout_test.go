@@ -86,18 +86,5 @@ func TestAMissingCheckoutMayHavePlacedAnOrder(t *testing.T) {
 				"ask the shopper for the store's order confirmation", tool)
 		}
 
-		// get_order for an order no checkout link is held for: it was
-		// placed elsewhere, or here and its link is gone (expired, or
-		// lost to a flush or a restore). The answer is true in both, and names the tool that
-		// reads the order from the store.
-		res := callTool(t, session, "get_order", map[string]any{
-			"meta": meta(""), "id": fixtureOrderUUID,
-		})
-		require.True(t, res.IsError)
-		text := res.Content[0].(*mcp.TextContent).Text
-		assert.Contains(t, text, "order "+fixtureOrderUUID+" exists")
-		assert.Contains(t, text,
-			"or it was and its checkout record is no longer kept")
-		assert.Contains(t, text, "track_order")
 	})
 }

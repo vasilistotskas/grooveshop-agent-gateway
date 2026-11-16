@@ -18,6 +18,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpsig"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
@@ -38,8 +39,12 @@ type Deps struct {
 	// 127.0.0.1. Production keeps the strict public-https rule.
 	AllowLocalWebhooks bool
 	// Profiles resolves the calling platform's UCP profile for
-	// capability negotiation on every canonical tool.
+	// capability negotiation on every canonical tool, and for the keys
+	// that verify its signed requests.
 	Profiles *ucp.ProfileResolver
+	// SignatureWindow bounds a request signature's created and expires
+	// (VerifyPlatformSignature).
+	SignatureWindow httpsig.Window
 	// Site builds the links into each store's storefront pages.
 	Site    storefront.Site
 	Log     *slog.Logger
@@ -148,6 +153,17 @@ type tool struct {
 	// changesCart: the tool changes the shopper's cart, and its result
 	// names the cart, which the chat widget adopts (ChangesCart).
 	changesCart bool
+	// signedOnly: the tool serves a platform only by its verified RFC
+	// 9421 signature (VerifyPlatformSignature), and refuses an unsigned
+	// call.
+	signedOnly bool
+}
+
+// signed makes t a tool that serves only a verified platform. Its input
+// carries meta, which a model cannot supply, so it is /mcp's alone.
+func signed(t tool) tool {
+	t.signedOnly = true
+	return mcpOnly(t)
 }
 
 // chatOnly serves t to the chat alone.
@@ -577,16 +593,18 @@ func toolset(h *handlers) []tool {
 
 		// UCP order capability (dev.ucp.shopping.order), MCP transport
 		// binding. Its conformance section requires exactly this tool.
-		mcpOnly(toolOf(&mcp.Tool{
+		signed(toolOf(&mcp.Tool{
 			Name:         "get_order",
 			InputSchema:  getOrderInput,
 			Annotations:  mcptool.ReadOnly("Get an order"),
 			OutputSchema: orderResultSchema,
-			Description: "UCP: the current state of an order placed through " +
-				"this surface — line items with per-line fulfilment status, " +
-				"totals and the permalink. Use track_order for shipment " +
-				"tracking or for orders placed on the web. Requires " +
-				"meta.ucp-agent.profile.",
+			Description: "UCP: the current state of an order your platform " +
+				"placed through this surface — line items with per-line " +
+				"fulfilment status, totals and the permalink. Requires " +
+				"meta.ucp-agent.profile and a request signed per RFC 9421 " +
+				"with a key your UCP profile publishes, the platform that " +
+				"signed the order's create_checkout. Use track_order for " +
+				"shipment tracking or for orders placed on the web.",
 		}, h.getOrder)),
 
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{

@@ -2,13 +2,16 @@ package mcpsrv
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 
+	"github.com/google/uuid"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpsig"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
@@ -129,14 +132,36 @@ type GetOrderIn struct {
 	ID   string  `json:"id"`
 }
 
-// getOrder renders the canonical UCP order object.
+// canonicalUUID reports whether id is a UUID in the one spelling Django
+// gives an order's: the only spelling an order link is keyed by.
+func canonicalUUID(id string) bool {
+	u, err := uuid.Parse(id)
+	return err == nil && u.String() == id
+}
+
+// errSignatureMissing answers a get_order without a verified platform.
+// VerifyPlatformSignature answers such a request before the handler,
+// with its 401; this holds it should the tool be reached another way.
+var errSignatureMissing = &jsonrpc.Error{
+	Code: -32000, Message: ucpSignatureFailed,
+	Data: json.RawMessage(`{"code":"` + httpsig.CodeSignatureMissing +
+		`","content":"get_order serves a platform by its RFC 9421 ` +
+		`signature"}`),
+}
+
+// getOrder renders the canonical UCP order object for the platform that
+// placed the order: the one whose verified signature created its
+// checkout (UCP order capability, Get Order, Authorization: "orders
+// originated by the platform"). The order is read with the gateway's
+// own credential (django.Client.PlacedOrder), so for as long as the
+// order's link is kept, not only as long as a guest's id opens it.
 //
-// The order's `checkout_id` comes from the gateway's own order index
+// The order's `checkout_id` comes from the gateway's own order link
 // rather than from the order payload: nothing upstream records which
 // agent session placed an order, and the schema requires the link for
-// reconciliation. An order placed outside this gateway — on the web, say
-// — therefore has no checkout to name, and saying so is better than
-// inventing one.
+// reconciliation. Any order this platform did not place through a
+// checkout it signed is answered as an id that names no order: the
+// spec's not_found, the same bytes whichever it is.
 func (h *handlers) getOrder(
 	ctx context.Context, _ *mcp.CallToolRequest, in GetOrderIn,
 ) (*mcp.CallToolResult, OrderResult, error) {
@@ -144,6 +169,10 @@ func (h *handlers) getOrder(
 	t, err := h.tenantFor(ctx)
 	if err != nil {
 		return nil, zero, err
+	}
+	signer, signed := signerFrom(ctx)
+	if !signed {
+		return nil, zero, errSignatureMissing
 	}
 	lang := django.Language(ctx, t.TenantConfig)
 	if err := in.Meta.validate(false); err != nil {
@@ -160,30 +189,32 @@ func (h *handlers) getOrder(
 	if in.ID == "" {
 		return nil, zero, errIDRequired
 	}
+	notFound := OrderResult{failure: ucp.OrderNotFound(
+		neg.Declaration(ucp.CapabilityOrder))}
 
-	order, err := h.deps.Django.OrderByUUID(
-		ctx, t.Domain, lang, in.ID)
-	if err != nil {
-		return nil, zero, upstreamErr(err, orderNotOpened(t.Features))
+	// A link is keyed by the order's uuid; an id of any other form names
+	// none, and builds no key.
+	if !canonicalUUID(in.ID) {
+		return nil, notFound, nil
 	}
-
 	link, err := h.deps.Checkout.OrderLinkFor(ctx, t.SchemaName, in.ID)
-	if err != nil {
-		if errors.Is(err, checkout.ErrNotFound) {
-			// No link says only that none is held: the order was placed
-			// elsewhere, or here and its link is gone (expired, or lost
-			// to a flush or a restore). The order itself was just read.
-			return nil, zero, fmt.Errorf(
-				"order %s exists, but no checkout is held for it here: "+
-					"it was not placed through this agent surface, or it "+
-					"was and its checkout record is no longer kept. "+
-					"get_order needs that record; use track_order, which "+
-					"reads the order's status from the store by its id",
-				in.ID)
-		}
+	switch {
+	case errors.Is(err, checkout.ErrNotFound):
+		return nil, notFound, nil
+	case err != nil:
 		return nil, zero, errCheckoutUnavailable
+	case link.Platform == "" || link.Platform != signer:
+		return nil, notFound, nil
 	}
 
+	order, err := h.deps.Django.PlacedOrder(ctx, t.Domain, lang, in.ID)
+	if errors.Is(err, django.ErrNotFound) {
+		return nil, notFound, nil
+	}
+	if err != nil {
+		return nil, zero, upstreamErr(err,
+			"the store could not read the order; retry shortly")
+	}
 	out, err := ucp.BuildOrder(t, h.linksFor(ctx, t), order,
 		link.CheckoutID,
 		neg.Declaration(ucp.CapabilityOrder))

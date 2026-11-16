@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"reflect"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -79,6 +80,9 @@ func (h *handlers) negotiate(
 	ctx context.Context, t *tenant.Tenant, meta *MetaIn, continueURL string,
 ) (ucp.Negotiated, error) {
 	var zero ucp.Negotiated
+	if err := checkSigner(ctx, meta); err != nil {
+		return zero, err
+	}
 	p, err := h.deps.Profiles.Resolve(ctx, meta.UCPAgent.Profile)
 	if err == nil {
 		err = ucp.CheckVersion(p)
@@ -99,33 +103,72 @@ func (h *handlers) negotiate(
 			}
 		}
 	}
+	if err != nil {
+		if rpcErr, _ := discoveryFailure(err, continueURL); rpcErr != nil {
+			return zero, rpcErr
+		}
+		return zero, err
+	}
+	return neg, nil
+}
+
+// checkSigner refuses a call whose meta names another platform than the
+// one its request's signature proved (overview, Identity Binding), as
+// signature_invalid: VerifyPlatformSignature answers it with its 401
+// before the handler, and this holds it on the meta the tool decoded.
+func checkSigner(ctx context.Context, meta *MetaIn) error {
+	signer, ok := signerFrom(ctx)
+	if !ok {
+		return nil
+	}
+	if err := checkBinding(meta.UCPAgent.Profile, signer); err != nil {
+		data, _ := json.Marshal(map[string]string{
+			"code":    errOtherPlatform.Code,
+			"content": errOtherPlatform.Content,
+		})
+		return &jsonrpc.Error{
+			Code: -32000, Message: ucpSignatureFailed, Data: data,
+		}
+	}
+	return nil
+}
+
+// discoveryFailure is the spec's JSON-RPC error, and the HTTP status of
+// the REST binding, for a platform profile that could not be had: nil
+// for an error that is not one.
+//   - The gateway's discovery budget spent (ucp.ErrDiscoveryBusy): the
+//     retryable 503, -32000 with data.retry_after.
+//   - A *ucp.DiscoveryError: -32001 (overview, Negotiation Errors) with
+//     its code and content, and continueURL, the web handoff.
+func discoveryFailure(err error, continueURL string) (*jsonrpc.Error, int) {
 	if errors.Is(err, ucp.ErrDiscoveryBusy) {
-		// The spec's retryable 503: -32000 with data.retry_after.
 		data, _ := json.Marshal(map[string]int{
 			"retry_after": ucp.DiscoveryRetryAfter,
 		})
-		return zero, &jsonrpc.Error{
+		return &jsonrpc.Error{
 			Code: -32000, Message: "Service temporarily unavailable",
 			Data: data,
-		}
+		}, http.StatusServiceUnavailable
 	}
-	if err != nil {
-		derr, ok := errors.AsType[*ucp.DiscoveryError](err)
-		if !ok {
-			return zero, err
-		}
-		message := "UCP discovery failed"
-		if derr.Code == ucp.CodeVersionUnsupported {
-			message = "Protocol version not supported"
-		}
-		data, _ := json.Marshal(map[string]string{
-			"code":         derr.Code,
-			"content":      derr.Content,
-			"continue_url": continueURL,
-		})
-		return zero, &jsonrpc.Error{
-			Code: ucpDiscoveryFailed, Message: message, Data: data,
-		}
+	derr, ok := errors.AsType[*ucp.DiscoveryError](err)
+	if !ok {
+		return nil, 0
 	}
-	return neg, nil
+	message, status := "UCP discovery failed", http.StatusUnprocessableEntity
+	switch derr.Code {
+	case ucp.CodeVersionUnsupported:
+		message = "Protocol version not supported"
+	case ucp.CodeInvalidProfileURL:
+		status = http.StatusBadRequest
+	case ucp.CodeProfileUnreachable:
+		status = http.StatusFailedDependency
+	}
+	fields := map[string]string{"code": derr.Code, "content": derr.Content}
+	if continueURL != "" {
+		fields["continue_url"] = continueURL
+	}
+	data, _ := json.Marshal(fields)
+	return &jsonrpc.Error{
+		Code: ucpDiscoveryFailed, Message: message, Data: data,
+	}, status
 }

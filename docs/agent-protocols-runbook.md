@@ -88,6 +88,18 @@ export UCP_PROFILE=https://raw.githubusercontent.com/vasilistotskas/grooveshop-a
 
 The gateway fetches a platform profile only over public https, so staging uses the one in the public repository. It names no webhook, so nothing is delivered from staging.
 
+That profile publishes no signing key, so calls made with it are unsigned, and `get_order` refuses them (U1, U5). To sign as a platform, make a throwaway key and a profile that publishes it, and publish that profile at a public https URL, for example as a secret gist (an unlisted gist is still served publicly by its raw URL):
+
+```bash
+KEY="$(mktemp -d)/platform.key"
+go run ./cmd/ucp-sign keygen -key "$KEY" < testdata/fixtures/ucp/runbook_platform_profile.json > signed-profile.json
+gh gist create --filename profile.json signed-profile.json   # prints the gist's URL
+export UCP_SIGNING_KEY="$KEY"
+export UCP_PROFILE="<the gist's raw URL of profile.json, from its Raw button>"
+```
+
+With `UCP_SIGNING_KEY` set, `scripts/agent-lib.sh` signs every `/mcp` call (`go run ./cmd/ucp-sign post`), so source it from the repository's root. Delete the gist, `signed-profile.json` and the key when done.
+
 Use the demo store. Its accounts are the ones testers may use, and it is the only staging store whose OAuth paths skip basic auth. `demo-staging` holds cash on delivery, BOX NOW pay on the go and Viva.
 
 ### Local
@@ -111,7 +123,7 @@ docker run -d --name agent-gateway-local --network $NET -p 127.0.0.1:18080:8080 
   "gro0ve/grooveshop-agent-gateway:$(git describe --tags --abbrev=0)"
 ```
 
-3. Point the helpers at it. `ENV=development` lets the gateway fetch a profile over plain http, so serve one from any container on the same network:
+3. Point the helpers at it. `ENV=development` lets the gateway fetch a profile over plain http, so serve one from any container on the same network. To sign, serve the profile `go run ./cmd/ucp-sign keygen` printed and set `UCP_SIGNING_KEY`, as for staging:
 
 ```bash
 . scripts/agent-lib.sh
@@ -221,6 +233,8 @@ claude -p "Find a USB-C cable at this store, tell me its price with VAT, put one
 
 UCP runs over `/mcp`: the five canonical checkout tools plus `get_order`, each carrying `meta.ucp-agent.profile`.
 
+`get_order` serves only a request signed per RFC 9421 by the platform whose signed `create_checkout` placed the order, and a checkout created signed answers only its signer. So U1 runs signed: set `UCP_SIGNING_KEY` and a `UCP_PROFILE` that publishes its key (section 2).
+
 ### U1. Buy with cash on delivery
 
 **Label:** Staging. **Purpose:** discovery to a placed order, read back.
@@ -243,7 +257,7 @@ tool get_order "{\"meta\":$(ucp_meta),\"id\":\"$ORDER\"}" | j 'JSON.stringify({i
 tool track_order "{\"orderUuid\":\"$ORDER\"}" | j 't.status'
 ```
 
-**Expected:** `incomplete`, `ready_for_complete`, `completed` with an order, then the same totals from `get_order`.
+**Expected:** `incomplete`, `ready_for_complete`, `completed` with an order, then the same totals from `get_order`. Unsigned, the same block stops at `get_order` with `signature_missing`.
 
 An update replaces the checkout, so it carries the lines and the buyer every time; the delivery and the payment selection are kept when omitted. A `complete_checkout` never places an order at a total the checkout did not show. One whose instrument selects another method than the checkout holds places nothing and answers `incomplete` with the error `payment_method_changed`. One that names the first method of a checkout that holds none places the order when the method adds no fee for that cart; when it adds one, it places nothing and answers `incomplete` with the error `payment_fee_added`, which says the fee and the new total. Either way the platform selects the method with `update_checkout`, which shows the total, and completes again; the same idempotency key can be used.
 
@@ -301,6 +315,23 @@ tool cancel_checkout "{\"meta\":$(ucp_meta "$(uuid)"),\"id\":\"$(j 't.id' <<<"$R
 ```
 
 **Expected:** `canceled`. **Observed:** PASS on local and on staging.
+
+### U5. A signed request through the edge
+
+**Label:** Staging. **Purpose:** a platform's signature covers the request's `Host`, path, `Content-Type` and body bytes, so Cloudflare and Traefik must pass them to the pod unchanged, or every signed call fails.
+
+Set up a signing platform as in section 2, then:
+
+```bash
+. scripts/agent-lib.sh
+export GW=https://demo-staging.grooveshop.space STORE=demo-staging.grooveshop.space
+export UCP_SIGNING_KEY="<the key file keygen wrote>" UCP_PROFILE="<the raw URL of the published profile>"
+UNKNOWN=00000000-0000-4000-8000-000000000000
+tool get_order "{\"meta\":$(ucp_meta),\"id\":\"$UNKNOWN\"}" | j 't.messages[0].code'
+UCP_SIGNING_KEY= tool get_order "{\"meta\":$(ucp_meta),\"id\":\"$UNKNOWN\"}"
+```
+
+**Expected:** `not_found` from the signed call: the signature verified, and the order is not this platform's. The unsigned one prints the JSON-RPC error `signature_missing`, which the gateway sends with HTTP 401. A signed call answered `signature_invalid` or `digest_mismatch` means something on the way changed what was signed; the gateway's log line does not say what, so compare the request as sent with what the pod received.
 
 ## 5. ACP
 
@@ -557,12 +588,13 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 
 ## 10. Before deploying a release that moves the checkout session key
 
-**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Two have so far:
+**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Three have so far:
 
 | Release | Key | Why an older pod must not share a session |
 |---|---|---|
 | The one that fixed gateway #84 | `ag:{schema}:cs:{id}` to `ag:{schema}:cs:v2:{id}` | It writes a session without checking what the key holds |
 | The one with gateway #141's cart record | `cs:v2` to `cs:v3` | It saves a session without keeping its cart's record alive, so the record would expire under a session that still holds the cart |
+| The one that binds a checkout to the platform that signed its creation | `cs:v3` to `cs:v4` | It knows nothing of that platform: it would answer any caller for the session, and its save would drop the platform |
 
 **The pods it replaces must already answer a missing session truthfully.** Since the release with gateway #138, a checkout no session is stored for is answered "an order may exist, check before starting another", never only "start a new one". While a key-moving release rolls out, a pod of either kind then answers truthfully for a session it cannot see. Do not deploy one onto pods older than that.
 
@@ -571,7 +603,7 @@ The new pods do not read sessions the old pods stored, and the reverse, on purpo
 | The session | During the rollout (pods of both releases) | After it |
 |---|---|---|
 | Open (`incomplete`, `ready_for_complete`), stored by either kind | Found on pods of its kind. On the other kind: the missing-session answer; a platform that follows it finds no order and starts again | An old one is gone for good, a new one is found everywhere |
-| `complete_in_progress` or `requires_escalation`: an order exists, or may | Found on pods of its kind (do not start another checkout; the order; its payment page). On the other kind: the missing-session answer, which says an order may exist and how to check. A platform that starts another checkout anyway orders twice: for a hosted payment the first order's cart is still there | An old one: the missing-session answer until the platform stops asking. The order itself is unaffected: `get_order` and the order webhooks go through the order link, which does not move |
+| `complete_in_progress` or `requires_escalation`: an order exists, or may | Found on pods of its kind (do not start another checkout; the order; its payment page). On the other kind: the missing-session answer, which says an order may exist and how to check. A platform that starts another checkout anyway orders twice: for a hosted payment the first order's cart is still there | An old one: the missing-session answer until the platform stops asking. The order webhooks go through the order link, which does not move. From the `cs:v4` release on, `get_order` serves an order only to the platform that signed its checkout's creation, so an order placed before that release (its link names no platform) answers `not_found` on the new pods for good: the platform still must not start another checkout, and the order is read from the shopper's order confirmation, or with `track_order` by its id |
 | `completed`, `canceled` | As above; only the session's own read is lost | As above |
 | A payment event for a session a **new** pod stored, delivered to an **old** pod | The old pod finds the order link, looks under the old key, finds no session and answers 204, which is final for Django. The order webhook still goes out. That session stays `requires_escalation` until it ends, 24 hours after its order was placed: `get_checkout` keeps showing the payment page of a paid order, `get_order` shows the truth | Cannot happen |
 
@@ -611,7 +643,7 @@ EOF
 - Every session the newer release stored, under its own key, is invisible to the old pods and gets the missing-session answer. It is still in Redis until it ends, with the placed-order record beside it (`…:order`), and is found again if this release is deployed again before then.
 - A session stored under the old key before the upgrade is visible again if it has not ended.
 - A payment event for a session under the newer key that reaches an old pod is answered 204 and is not sent again: after a new deploy that session still reads `requires_escalation` until it ends, while `get_order` shows the paid order.
-- What the newer release adds is gone until it is deployed again. Back from `v2`: the old pods store a session without checking what it holds, and two completions of one checkout can again place two orders. Back from `v3`: no checkout holds its cart, and two checkouts on one cart can again each place an order.
+- What the newer release adds is gone until it is deployed again. Back from `v2`: the old pods store a session without checking what it holds, and two completions of one checkout can again place two orders. Back from `v3`: no checkout holds its cart, and two checkouts on one cart can again each place an order. Back from `v4`: a checkout is no longer bound to the platform that signed its creation, and `get_order` reads no platform's orders.
 
 So run the check above before a rollback too, and do not roll back further than the release with #138: older pods answer a session they cannot see with only "start a new one".
 

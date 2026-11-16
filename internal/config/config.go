@@ -133,6 +133,14 @@ type Config struct {
 	NegativeCacheTTL time.Duration
 	UpstreamTimeout  time.Duration
 
+	// UCPSignatureMaxAge is how long after its created time a platform's
+	// request signature verifies, and UCPSignatureClockSkew the clock
+	// difference allowed against its created and expires. Each is
+	// checked only when the signature carries it: UCP makes created
+	// optional (httpsig.Window).
+	UCPSignatureMaxAge    time.Duration
+	UCPSignatureClockSkew time.Duration
+
 	RateLimitPerMin int
 	RateLimitBurst  int
 
@@ -229,6 +237,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.UpstreamTimeout, err = positiveOr("UPSTREAM_TIMEOUT", 10*time.Second, time.ParseDuration); err != nil {
+		return Config{}, err
+	}
+	if cfg.UCPSignatureMaxAge, err = positiveOr("UCP_SIGNATURE_MAX_AGE", 5*time.Minute, time.ParseDuration); err != nil {
+		return Config{}, err
+	}
+	if cfg.UCPSignatureClockSkew, err = positiveOr("UCP_SIGNATURE_CLOCK_SKEW", time.Minute, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
 	if cfg.RateLimitPerMin, err = positiveOr("RATE_LIMIT_PER_MIN", 120, strconv.Atoi); err != nil {

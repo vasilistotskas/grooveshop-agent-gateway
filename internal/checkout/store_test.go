@@ -13,8 +13,8 @@ import (
 // pod that still writes sessions unconditionally keeps its own, under
 // the unversioned key, and never shares one with a pod that fences them.
 func TestSessionKeyIsVersioned(t *testing.T) {
-	assert.Equal(t, "ag:alpha:cs:v3:id", sessionKey("alpha", "id"))
-	assert.Equal(t, "ag:alpha:cs:v3:id:lock", lockKey("alpha", "id"))
+	assert.Equal(t, "ag:alpha:cs:v4:id", sessionKey("alpha", "id"))
+	assert.Equal(t, "ag:alpha:cs:v4:id:lock", lockKey("alpha", "id"))
 }
 
 // The session that holds a cart is named in a key family of its own:
@@ -73,9 +73,9 @@ func TestAnIDNoSessionCanHaveTakesNoLock(t *testing.T) {
 		assert.False(t, ValidID(id), id)
 		_, err := st.Lock(t.Context(), "alpha", id)
 		require.ErrorIs(t, err, ErrNotFound, id)
-		_, _, err = st.LockSession(t.Context(), "alpha", ProtocolUCP, id)
+		_, _, err = st.LockSession(t.Context(), "alpha", Caller{Protocol: ProtocolUCP}, id)
 		require.ErrorIs(t, err, ErrNotFound, id)
-		_, err = st.Load(t.Context(), "alpha", ProtocolUCP, id)
+		_, err = st.Load(t.Context(), "alpha", Caller{Protocol: ProtocolUCP}, id)
 		require.ErrorIs(t, err, ErrNotFound, id)
 		_, err = st.LoadAnyProtocol(t.Context(), "alpha", id)
 		assert.ErrorIs(t, err, ErrNotFound, id)

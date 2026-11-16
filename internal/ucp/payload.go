@@ -35,8 +35,27 @@ type ErrorResponse struct {
 
 // ErrorEnvelope is the ucp member of an error response.
 type ErrorEnvelope struct {
-	Version string `json:"version"`
-	Status  string `json:"status"`
+	Version      string                     `json:"version"`
+	Status       string                     `json:"status"`
+	Capabilities map[string][]CapabilityRef `json:"capabilities,omitempty"`
+}
+
+// OrderNotFound is get_order's answer for an order it does not serve
+// the caller, in the words of the spec's own example (order capability,
+// Get Order, Error Responses): an id that names no order, and one that
+// names an order the calling platform did not place, are answered alike.
+func OrderNotFound(
+	capabilities map[string][]CapabilityRef,
+) *ErrorResponse {
+	return &ErrorResponse{
+		UCP: ErrorEnvelope{
+			Version: Version, Status: "error", Capabilities: capabilities,
+		},
+		Messages: []Message{{
+			Type: "error", Code: "not_found",
+			Text: "Order not found.", Severity: "unrecoverable",
+		}},
+	}
 }
 
 // CapabilitiesIncompatible is the negotiation-failure response: the

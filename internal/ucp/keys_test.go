@@ -45,16 +45,20 @@ func TestSigningKeySignsES256VerifiableFromTheJWK(t *testing.T) {
 		new(big.Int).SetBytes(sig[:32]), new(big.Int).SetBytes(sig[32:])))
 }
 
-// The key id is the RFC 7638 thumbprint, recomputable from the JWK.
+// The key id is the RFC 7638 thumbprint, recomputable from the JWK. The
+// thumbprint is checked against RFC 8037 appendix A.3.
 func TestSigningKeyIDIsTheJWKThumbprint(t *testing.T) {
+	assert.Equal(t, "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k",
+		thumbprint(map[string]string{
+			"crv": "Ed25519", "kty": "OKP",
+			"x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+		}))
+
 	key := testKey(t)
-	x, err := base64.RawURLEncoding.DecodeString(key.JWK()["x"])
-	require.NoError(t, err)
-	y, err := base64.RawURLEncoding.DecodeString(key.JWK()["y"])
-	require.NoError(t, err)
-	kid, err := jwkThumbprint(x, y)
-	require.NoError(t, err)
-	assert.Equal(t, kid, key.KID)
+	jwk := key.JWK()
+	assert.Equal(t, thumbprint(map[string]string{
+		"crv": jwk["crv"], "kty": jwk["kty"], "x": jwk["x"], "y": jwk["y"],
+	}), key.KID)
 	assert.Equal(t, key.KID, key.KeyID())
 }
 
@@ -62,13 +66,13 @@ func TestSigningKeyIDIsTheJWKThumbprint(t *testing.T) {
 func TestSigningKeyReloadsFromItsScalar(t *testing.T) {
 	raw, err := newScalar()
 	require.NoError(t, err)
-	first, err := keyFromScalar(raw)
+	first, err := SigningKeyFromScalar(raw)
 	require.NoError(t, err)
-	again, err := keyFromScalar(raw)
+	again, err := SigningKeyFromScalar(raw)
 	require.NoError(t, err)
 	assert.Equal(t, first.JWK(), again.JWK())
 
-	_, err = keyFromScalar([]byte("short"))
+	_, err = SigningKeyFromScalar([]byte("short"))
 	assert.Error(t, err)
 }
 

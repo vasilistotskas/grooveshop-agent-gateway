@@ -4,22 +4,36 @@
 #   GW     base URL of the gateway, e.g. https://demo-staging.grooveshop.space
 #   STORE  the tenant host, e.g. demo-staging.grooveshop.space
 # Optional: BEARER (OAuth access token on /mcp), ACP_TOKEN (the tenant's ACP
-# bearer), UCP_PROFILE (URL of the calling platform's UCP profile).
+# bearer), UCP_PROFILE (URL of the calling platform's UCP profile), and
+# UCP_SIGNING_KEY (the key file `go run ./cmd/ucp-sign keygen` wrote, whose
+# public half UCP_PROFILE publishes): with it every /mcp call is signed per
+# RFC 9421 as that platform, which get_order requires. Signing runs the Go
+# tool, so source this file from the repository's root.
 
 # rpc METHOD [PARAMS_JSON]: one JSON-RPC call on /mcp, prints the response.
-# Returns curl's status, so a failed call fails its caller whatever its shell
-# options.
+# Returns the sender's status, so a failed call fails its caller whatever its
+# shell options.
 rpc() {
   local auth=() params="${2:-}"
   [ -n "$params" ] || params='{}'
   [ -n "${BEARER:-}" ] && auth=(-H "authorization: Bearer $BEARER")
   printf '{"jsonrpc":"2.0","id":1,"method":"%s","params":%s}' "$1" "$params" \
-    | curl -sS -m 40 -X POST "$GW/mcp" -H "Host: $STORE" \
-      -H 'content-type: application/json' \
-      -H 'accept: application/json, text/event-stream' \
-      -H 'mcp-protocol-version: 2025-11-25' "${auth[@]}" --data-binary @- \
+    | _mcp_post -H 'accept: application/json, text/event-stream' \
+      -H 'mcp-protocol-version: 2025-11-25' "${auth[@]}" \
     | sed -n 's/^data: //p;/^{/p'
   return "${PIPESTATUS[1]}"
+}
+
+# _mcp_post [-H HEADER]...: POSTs the JSON body on stdin to the store's /mcp,
+# signed when UCP_SIGNING_KEY is set.
+_mcp_post() {
+  if [ -n "${UCP_SIGNING_KEY:-}" ]; then
+    go run ./cmd/ucp-sign post -key "$UCP_SIGNING_KEY" -profile "$UCP_PROFILE" \
+      -gateway "$GW" -host "$STORE" "$@"
+    return
+  fi
+  curl -sS -m 40 -X POST "$GW/mcp" -H "Host: $STORE" \
+    -H 'content-type: application/json' "$@" --data-binary @-
 }
 
 # tool NAME [ARGS_JSON]: calls an MCP tool, prints its result.

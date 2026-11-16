@@ -123,7 +123,7 @@ func (k *Keys) sealPlain(
 ) ([]byte, bool, error) {
 	scalar, err := base64.StdEncoding.DecodeString(plain)
 	if err == nil {
-		_, err = keyFromScalar(scalar)
+		_, err = SigningKeyFromScalar(scalar)
 	}
 	if err != nil {
 		return nil, false, errUnsealedNotAKey

@@ -24,7 +24,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -88,10 +87,13 @@ type seeded struct {
 type stack struct {
 	gatewayURL string
 	profileURL string
-	django     testcontainers.Container
-	gateway    testcontainers.Container
-	redis      testcontainers.Container
-	seeded     seeded
+	// signer is the platform every /mcp call is signed as, and other a
+	// second platform, for what one platform may not do to another's.
+	signer, other platform
+	django        testcontainers.Container
+	gateway       testcontainers.Container
+	redis         testcontainers.Container
+	seeded        seeded
 }
 
 // printLogs shows what the services said, for a failed run in CI. Everything
@@ -169,12 +171,16 @@ func oidcKey() (string, error) {
 func startStack(ctx context.Context) (*stack, func(), error) {
 	var containers []testcontainers.Container
 	var removeNetwork func()
+	var removeKeys []func()
 	cleanup := func() {
 		for _, c := range containers {
 			_ = testcontainers.TerminateContainer(c)
 		}
 		if removeNetwork != nil {
 			removeNetwork()
+		}
+		for _, remove := range removeKeys {
+			remove()
 		}
 	}
 
@@ -381,19 +387,26 @@ with schema_context("demostore"):
 		return nil, cleanup, err
 	}
 
-	profile, err := os.Open(filepath.Join(
-		"..", "..", "testdata", "fixtures", "ucp",
-		"runbook_platform_profile.json"))
+	signer, signerProfile, remove, err := newPlatform("profile.json")
+	removeKeys = append(removeKeys, remove)
 	if err != nil {
 		return nil, cleanup, err
 	}
-	defer func() { _ = profile.Close() }()
+	other, otherProfile, remove, err := newPlatform("other.json")
+	removeKeys = append(removeKeys, remove)
+	if err != nil {
+		return nil, cleanup, err
+	}
 	// It answers for the payment provider's hosts too, with nothing on 443.
 	if _, err := startAs(profileImage,
 		append([]string{"profile"}, paymentHosts...),
 		testcontainers.WithFiles(testcontainers.ContainerFile{
-			Reader:            profile,
+			Reader:            bytes.NewReader(signerProfile),
 			ContainerFilePath: "/srv/profile.json",
+			FileMode:          0o644,
+		}, testcontainers.ContainerFile{
+			Reader:            bytes.NewReader(otherProfile),
+			ContainerFilePath: "/srv/other.json",
 			FileMode:          0o644,
 		}),
 		testcontainers.WithCmd("httpd", "-f", "-p", "8090", "-h", "/srv"),
@@ -430,7 +443,9 @@ with schema_context("demostore"):
 	}
 	return &stack{
 		gatewayURL: endpoint,
-		profileURL: "http://profile:8090/profile.json",
+		profileURL: signer.profileURL,
+		signer:     signer,
+		other:      other,
 		django:     django,
 		gateway:    gateway,
 		redis:      redis,

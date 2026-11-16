@@ -41,7 +41,15 @@ func (h hostTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(r)
 }
 
+// connect opens a session whose every call the stack's platform signs.
 func connect(t *testing.T, token string) *mcp.ClientSession {
+	t.Helper()
+	return connectAs(t, signedTransport{
+		hostTransport{storeHost, token}, running.signer,
+	})
+}
+
+func connectAs(t *testing.T, transport http.RoundTripper) *mcp.ClientSession {
 	t.Helper()
 	client := mcp.NewClient(
 		&mcp.Implementation{Name: "real-stack", Version: "test"}, nil)
@@ -49,8 +57,7 @@ func connect(t *testing.T, token string) *mcp.ClientSession {
 		&mcp.StreamableClientTransport{
 			Endpoint: running.gatewayURL + "/mcp",
 			HTTPClient: &http.Client{
-				Timeout:   requestTimeout,
-				Transport: hostTransport{storeHost, token},
+				Timeout: requestTimeout, Transport: transport,
 			},
 			DisableStandaloneSSE: true,
 		}, nil)
@@ -203,9 +210,10 @@ with schema_context("demostore"):
 	require.Zero(t, code, tail(string(output)))
 }
 
-// Past that limit a guest's UUID opens nothing, so an agent holding one is told
-// the order does not exist, while the gateway still reads the order it placed.
-func TestAgedOrderStaysReadableOnlyToTheGateway(t *testing.T) {
+// Past that limit a guest's UUID opens nothing, so track_order tells its
+// holder the order does not exist, while the platform that placed the order
+// still reads it with get_order: the gateway reads it with its own secret.
+func TestAgedOrderStaysReadableToThePlatformThatPlacedIt(t *testing.T) {
 	s := connect(t, "")
 	checkoutID, orderID := placeUCPOrder(t, s, productID(t, s), "GR")
 	ageOrder(t, orderID)
@@ -214,23 +222,51 @@ func TestAgedOrderStaysReadableOnlyToTheGateway(t *testing.T) {
 		"meta": meta(""), "id": checkoutID,
 	}))
 	assert.Equal(t, "completed", placed["status"])
+	order := structured(t, call(t, s, "get_order", map[string]any{
+		"meta": meta(""), "id": orderID,
+	}))
+	assert.Equal(t, checkoutID, order["checkout_id"])
 
 	// A client learns nothing from it: an aged order and no order read the same.
 	const unknown = "00000000-0000-4000-8000-000000000000"
-	getOrder := func(id string) string {
-		return errorText(t, call(t, s, "get_order", map[string]any{
-			"meta": meta(""), "id": id,
-		}))
-	}
 	trackOrder := func(id string) string {
 		return errorText(t, call(t, s, "track_order", map[string]any{
 			"orderUuid": id,
 		}))
 	}
-	assert.Contains(t, getOrder(orderID), "no order can be opened")
-	assert.Equal(t, getOrder(unknown), getOrder(orderID))
 	assert.Contains(t, trackOrder(orderID), "no order can be opened")
 	assert.Equal(t, trackOrder(unknown), trackOrder(orderID))
+}
+
+// get_order serves no request that is not signed, and to another platform
+// an order it did not place reads as one that does not exist.
+func TestGetOrderServesOnlyThePlatformThatPlacedIt(t *testing.T) {
+	s := connect(t, "")
+	_, orderID := placeUCPOrder(t, s, productID(t, s), "GR")
+
+	other := connectAs(t, signedTransport{
+		hostTransport{storeHost, ""}, running.other,
+	})
+	otherMeta := map[string]any{
+		"ucp-agent": map[string]any{"profile": running.other.profileURL},
+	}
+	read := func(id string) map[string]any {
+		return structured(t, call(t, other, "get_order", map[string]any{
+			"meta": otherMeta, "id": id,
+		}))
+	}
+	notFound := read(orderID)
+	assert.Equal(t, read("00000000-0000-4000-8000-000000000000"), notFound)
+	assert.Equal(t, "not_found",
+		notFound["messages"].([]any)[0].(map[string]any)["code"])
+
+	unsigned := connectAs(t, hostTransport{storeHost, ""})
+	_, err := unsigned.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "get_order",
+		Arguments: map[string]any{"meta": meta(""), "id": orderID},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Unauthorized")
 }
 
 func totalOf(t *testing.T, payload map[string]any) float64 {

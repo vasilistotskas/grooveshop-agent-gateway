@@ -730,11 +730,13 @@ func startUCPGatewayBehind(
 		StorefrontDefaultLocale: "el",
 		MediaURLTemplate: "https://{assets_host}/media_stream-image/{path}" +
 			"/800/800/contain/entropy/transparent/5/80.webp",
-		TenantCacheTTL:   time.Minute,
-		NegativeCacheTTL: time.Minute,
-		UpstreamTimeout:  ucpUpstreamTimeout,
-		RateLimitPerMin:  6000,
-		RateLimitBurst:   1000,
+		TenantCacheTTL:        time.Minute,
+		NegativeCacheTTL:      time.Minute,
+		UpstreamTimeout:       ucpUpstreamTimeout,
+		RateLimitPerMin:       6000,
+		RateLimitBurst:        1000,
+		UCPSignatureMaxAge:    5 * time.Minute,
+		UCPSignatureClockSkew: time.Minute,
 	}
 	dj := django.New(cfg.DjangoBaseURL, cfg.DjangoPublicHost, internalSecret,
 		cfg.UpstreamTimeout, log, metrics)

@@ -121,6 +121,10 @@ func writeError(w http.ResponseWriter, status int, e Error) {
 // WriteRouteError (httpmw.WithErrorWriter) on every path under it.
 const PathPrefix = "/acp/"
 
+// acpCaller is who reads a session here: ACP authenticates the store's
+// own platform with its bearer, and binds no session to a signer.
+var acpCaller = checkout.Caller{Protocol: checkout.ProtocolACP}
+
 // WriteRouteError is the spec's Error for an answer written before the
 // handler: the rate limiter, the tenant middleware, Recover, the mux's
 // own 404 and 405. The status and message are the writer's, so the
@@ -1007,7 +1011,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s, err := h.store.Load(r.Context(), t.SchemaName, checkout.ProtocolACP,
+	s, err := h.store.Load(r.Context(), t.SchemaName, acpCaller,
 		r.PathValue("id"))
 	if err != nil {
 		h.sessionError(w, err)
@@ -1073,7 +1077,7 @@ func (h *Handler) finish(
 	}
 	// The body may be answering a caller that left; the read is short
 	// and its answer goes nowhere then.
-	now, err := h.store.Load(r.Context(), t.SchemaName, checkout.ProtocolACP,
+	now, err := h.store.Load(r.Context(), t.SchemaName, acpCaller,
 		s.ID)
 	switch {
 	case err != nil:
@@ -1440,7 +1444,7 @@ func (h *Handler) lockSession(
 	w http.ResponseWriter, r *http.Request, t *tenant.Tenant, id string,
 ) (*checkout.Session, func(), bool) {
 	s, release, err := h.store.LockSession(r.Context(), t.SchemaName,
-		checkout.ProtocolACP, id)
+		acpCaller, id)
 	switch {
 	case errors.Is(err, checkout.ErrLocked):
 		writeInFlight(w, idemRetryAfter, msgSessionBusy)

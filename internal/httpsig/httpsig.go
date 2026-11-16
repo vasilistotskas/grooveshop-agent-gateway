@@ -1,8 +1,11 @@
-// Package httpsig signs outgoing HTTP requests per RFC 9421 (HTTP Message
-// Signatures) and computes RFC 9530 Content-Digest values — the REST
-// binding UCP mandates for webhooks. It implements the subset the gateway
-// signs with: the @method, @authority, @path and @query derived
-// components, plain header fields, and the created and keyid parameters.
+// Package httpsig signs outgoing HTTP requests and verifies received
+// ones per RFC 9421 (HTTP Message Signatures), with RFC 9530
+// Content-Digest values: the binding UCP defines for its webhooks and
+// for platform requests. It implements the subset UCP uses: the @method,
+// @authority, @path and @query derived components, header fields (a
+// Dictionary member by its key, as the web-bot-auth shape covers
+// signature-agent), and ES256, ES384 and Ed25519. Structured fields are
+// read and written with httpsfv (RFC 8941 and its successor RFC 9651).
 package httpsig
 
 import (
@@ -128,13 +131,24 @@ func componentValue(req *http.Request, name string) (string, error) {
 
 // authority is the target's lowercased host, with the port only when it
 // is not the scheme's default (RFC 9421 section 2.2.3).
+//
+// The authority is the Host the request is sent with, or arrived with
+// (net/http keeps it in req.Host, and sends the URL's host when that is
+// empty). A received request's scheme is not the server's to see, since
+// TLS ends at the proxy in front of it: either scheme's default port is
+// dropped there, which differs from the rule only for a scheme served
+// on the other's port.
 func authority(req *http.Request) string {
-	host := strings.ToLower(req.URL.Host)
-	switch {
-	case req.URL.Scheme == "https" && strings.HasSuffix(host, ":443"):
+	host := req.Host
+	if host == "" {
+		host = req.URL.Host
+	}
+	host = strings.ToLower(host)
+	switch req.URL.Scheme {
+	case "https":
 		return strings.TrimSuffix(host, ":443")
-	case req.URL.Scheme == "http" && strings.HasSuffix(host, ":80"):
+	case "http":
 		return strings.TrimSuffix(host, ":80")
 	}
-	return host
+	return strings.TrimSuffix(strings.TrimSuffix(host, ":443"), ":80")
 }

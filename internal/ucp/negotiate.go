@@ -24,13 +24,18 @@ const (
 const CapabilityDiscount = "dev.ucp.shopping.discount"
 
 // PlatformProfile is the part of a platform's UCP profile negotiation
-// reads. The full document is validated against the spec's
-// platform_schema before it is decoded into this.
+// and signature verification read. The full document is validated
+// against the spec's platform_schema before it is decoded into this.
 type PlatformProfile struct {
 	UCP struct {
 		Version      string                          `json:"version"`
 		Capabilities map[string][]PlatformCapability `json:"capabilities"`
 	} `json:"ucp"`
+	// Keys are the platform's signing keys, which verify its requests,
+	// each decoded only when a signature names it (key): the key
+	// vocabulary is open, and a key this business cannot read must not
+	// fail the profile.
+	Keys []json.RawMessage `json:"keys"`
 }
 
 // PlatformCapability is one capability entry a platform declares.
