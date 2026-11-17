@@ -287,7 +287,7 @@ Loads when working on a checkout session on either surface, its completion, its 
   and rendered once more, and one whose state cannot be stored is
   answered `order_placed` (`unrenderedErr`). An expired payment link is never
   replaced: `ResumePayment` mints only the first link, and only while
-  the order's hold is ahead (it reads the order), and Django's
+  the order's hold, when Django names one, is ahead (it reads the order), and Django's
   `payment_window_expired` and `order_not_payable` are
   `ErrPaymentWindowClosed`, final for that order (UCP
   `checkout_closed`). A link it minted is stored over a read that

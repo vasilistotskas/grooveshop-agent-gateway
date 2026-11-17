@@ -1644,17 +1644,22 @@ func TestUCPEndToEnd(t *testing.T) {
 			// A read stores what it read from the order while the link is
 			// being minted: the order's decision has moved a second on.
 			var read atomic.Bool
+			var readAnswer atomic.Pointer[mcp.CallToolResult]
+			before := stack.storedSession(t, checkoutID).Revision
 			readMeanwhile := func(r *http.Request) {
 				if !strings.HasSuffix(r.URL.Path, "/create_checkout_session") ||
 					!read.CompareAndSwap(false, true) {
 					return
 				}
 				time.Sleep(1100 * time.Millisecond)
-				_, _ = session.CallTool(t.Context(),
+				res, err := session.CallTool(t.Context(),
 					&mcp.CallToolParams{Name: "get_checkout",
 						Arguments: map[string]any{
 							"meta": meta(""), "id": checkoutID,
 						}})
+				if err == nil {
+					readAnswer.Store(res)
+				}
 			}
 			stack.faults.before.Store(&readMeanwhile)
 			t.Cleanup(func() { stack.faults.before.Store(nil) })
@@ -1664,6 +1669,12 @@ func TestUCPEndToEnd(t *testing.T) {
 				"checkout": map[string]any{"payment": map[string]any{}},
 			})
 			require.True(t, read.Load(), "the read ran meanwhile")
+			meanwhile := readAnswer.Load()
+			require.NotNil(t, meanwhile, "the read was answered")
+			require.False(t, meanwhile.IsError, "%v", meanwhile.Content)
+			require.NotEqual(t, before,
+				stack.storedSession(t, checkoutID).Revision,
+				"the read stored the checkout")
 			require.False(t, res.IsError, "%v", res.Content)
 			assert.Equal(t, vivaCheckoutURL,
 				structured(t, res)["continue_url"])

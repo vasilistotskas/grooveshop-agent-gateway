@@ -261,6 +261,16 @@ func TestResumePaymentOpensAPageOnlyWhereOneIsMissing(t *testing.T) {
 		assert.Equal(t, calls, b.paymentLinks.Load())
 	})
 
+	// No hold is Django's to judge: a canceled payment can be retried.
+	t.Run("an order with no hold", func(t *testing.T) {
+		f.faults.orderOnline.Store(false)
+		defer f.faults.orderOnline.Store(true)
+		s := escalated()
+		require.NoError(t, f.flow.ResumePayment(ctx, f.tenant, s))
+		assert.Equal(t, vivaCheckoutURL, s.PaymentURL)
+		calls = b.paymentLinks.Load()
+	})
+
 	t.Run("an order that cannot be read", func(t *testing.T) {
 		f.faults.orderRead.Store(true)
 		defer f.faults.orderRead.Store(false)
