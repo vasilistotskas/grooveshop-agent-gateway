@@ -100,16 +100,19 @@ func TestACheckoutAwaitingItsPaymentFollowsItsOrder(t *testing.T) {
 				stack.storedSession(t, id).Status)
 		})
 
-	t.Run("a payment completes it however late", func(t *testing.T) {
-		id := awaitingPayment(t, ucpSurface)
-		// It is kept past an open checkout's half hour, until its order
-		// is decided, so a payment that lands late still finds it.
-		s := stack.storedSession(t, id)
-		require.Greater(t, s.ExpiresAt.Sub(s.UpdatedAt), 30*time.Minute)
+	// Before #108 the payment event of an order paid after its
+	// checkout's half hour found no session. Redis now keeps it past
+	// that, until its order is decided.
+	t.Run("a payment after the half hour still completes it",
+		func(t *testing.T) {
+			id := awaitingPayment(t, ucpSurface)
+			ttl, err := stack.rdb.PTTL(ctx, sessionRedisKey(id)).Result()
+			require.NoError(t, err)
+			require.Greater(t, ttl, 45*time.Minute)
 
-		event(t, "PROCESSING", django.PaymentStatusCompleted)
+			event(t, "PROCESSING", django.PaymentStatusCompleted)
 
-		assert.Equal(t, checkout.StatusCompleted,
-			stack.storedSession(t, id).Status)
-	})
+			assert.Equal(t, checkout.StatusCompleted,
+				stack.storedSession(t, id).Status)
+		})
 }

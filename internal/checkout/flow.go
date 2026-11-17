@@ -259,6 +259,8 @@ func (f *Flow) saveOverEvent(ctx context.Context, s *Session) error {
 	if err != nil {
 		return err
 	}
+	// The event's save published an expiry too: never an earlier one.
+	s.ExpiresAt = later(s.ExpiresAt, stored.ExpiresAt)
 	switch stored.Status {
 	case StatusCompleted:
 		s.Status = StatusCompleted

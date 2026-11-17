@@ -703,6 +703,42 @@ func TestCompleteStoresItsOutcomeOverAnOrderEvent(t *testing.T) {
 	assert.EqualValues(t, 1, f.faults.orderCreates.Load())
 }
 
+// An order event stored while the completion that placed its order was
+// still running published an expiry, a day from the order: the
+// completion's own save over it keeps that expiry, never an earlier one.
+func TestCompleteOverAnOrderEventKeepsTheExpiryItPublished(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	ctx := t.Context()
+	f.tenant.AgentCommerceEnabled = true
+	f.tenant.AgentHostedPaymentEnabled = true
+	s := f.readySession(t)
+	s.PayWayID = 2
+	require.NoError(t, f.store.Save(ctx, s))
+	placed := time.Now()
+	f.faults.orderCreatedAt.Store(&placed)
+	var published time.Time
+	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+		if !setsKey(cmd, ":orderlink:") || !published.IsZero() {
+			return nil
+		}
+		err := f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
+			fixtureOrderUUID, "PENDING", "PENDING")
+		if err == nil {
+			published = f.stored(t, s).ExpiresAt
+		}
+		return err
+	}))
+
+	_, err := f.flow.Complete(ctx, f.tenant, s)
+
+	require.NoError(t, err)
+	require.False(t, published.IsZero(), "the event was stored")
+	stored := f.stored(t, s)
+	assert.Equal(t, checkout.StatusRequiresEscalation, stored.Status)
+	assert.False(t, stored.ExpiresAt.Before(published),
+		"%v is earlier than %v", stored.ExpiresAt, published)
+}
+
 // A completion that placed its order and could not save leaves a session
 // in progress that does not name the order. An order event finds it
 // through the order link and records the order, read from Django by the

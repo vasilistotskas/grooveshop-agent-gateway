@@ -423,9 +423,10 @@ func awaitingPayment(
 			"ends. Do not pay again or start another checkout.")
 	case hold.IsZero() || !hold.After(now):
 		return review("payment_link_expired", "The time to pay for "+
-			"this order has run out. The store cancels it by expires_at "+
-			"and nothing is charged; the shopper can then check out the "+
-			"same cart again.")
+			"this order has run out. A payment made just before then may "+
+			"still be confirmed; otherwise the store cancels the order by "+
+			"expires_at and nothing is charged, and the shopper can then "+
+			"check out the same cart again.")
 	case s.PaymentURL == "":
 		return page, Message{
 			Type: "error", Code: "payment_link_unavailable",

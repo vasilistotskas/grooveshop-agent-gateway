@@ -241,16 +241,18 @@ func (s *Session) keptLong() bool {
 // only "no session". A placed one ends terminalTTL after it was placed,
 // however often a caller holding its id touches it: it reads its order
 // with the gateway's secret, past the limit on a guest's order uuid. It
-// is kept to its ExpiresAt if that is later: Django's decision on an
-// unpaid order can come later than that when its sweep is paused.
+// Every session is kept to its ExpiresAt if that is later: Django's
+// decision on an unpaid order can come later than its day when its sweep
+// is paused, and another pod's clock may have published a later one.
 func (s *Session) keptUntil(now time.Time) time.Time {
-	if !s.PlacedAt.IsZero() {
-		return later(s.PlacedAt.Add(terminalTTL), s.ExpiresAt)
+	end := now.Add(activeTTL)
+	switch {
+	case !s.PlacedAt.IsZero():
+		end = s.PlacedAt.Add(terminalTTL)
+	case s.keptLong():
+		end = now.Add(terminalTTL)
 	}
-	if s.keptLong() {
-		return now.Add(terminalTTL)
-	}
-	return now.Add(activeTTL)
+	return later(end, s.ExpiresAt)
 }
 
 // expire sets ExpiresAt for a save at now: the session's own end. A

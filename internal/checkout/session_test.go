@@ -197,6 +197,10 @@ func TestPlacedSessionLifeCountsFromPlacement(t *testing.T) {
 	late := placed(terminalTTL-time.Hour, StatusRequiresEscalation)
 	late.ExpiresAt = now.Add(2 * time.Hour)
 	assert.Equal(t, 2*time.Hour, life(late))
+	// So is an open one, whose expiry another pod's clock set later.
+	ahead := &Session{Status: StatusIncomplete,
+		ExpiresAt: now.Add(activeTTL + time.Minute)}
+	assert.Equal(t, activeTTL+time.Minute, life(ahead))
 }
 
 // A save publishes the session's own end as its expiry, in every state
