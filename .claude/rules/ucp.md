@@ -218,9 +218,9 @@ wins over this page.
   processing a payment; never pay again), `payment_in_review` (nothing
   will decide the order: a charge that did not match its total waits
   for the store, or the sweep is off, which Django does not tell apart,
-  so neither "pay" nor "nothing is charged" is said) and
+  so neither "pay" nor "owes nothing" is said) and
   `payment_link_expired` (its time to pay ran out: the store cancels
-  it, nothing is charged). And `payment_link_unavailable`
+  it, the shopper owes nothing). And `payment_link_unavailable`
   (`recoverable`, the order's page: the first link could not be
   created, and complete_checkout tries again).
   Its `expires_at` is when Django will have decided the order
@@ -230,7 +230,7 @@ wins over this page.
   order, so it is never "nothing was charged"; a payment after the
   cancel is refunded); a charged one
   `completed`. No link is minted after the first: an expired one means
-  the order is canceled by `expires_at` and nothing is charged, and the
+  the order is canceled by `expires_at` and the shopper owes nothing, and the
   cart can be checked out again; nor is the first one once the order's
   hold has passed (`Flow.ResumePayment` reads the order). The tag's `complete_in_progress` is
   rendered for a checkout whose order is being placed; its Actions are

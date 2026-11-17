@@ -387,8 +387,8 @@ func (b *Builder) BuildCheckout(
 //     is not being processed: Django does not say whether a charge that
 //     did not match the total waits for the store, or its sweep is off,
 //     so the buyer is neither sent to pay again (a charge may exist) nor
-//     told that nothing is charged;
-//   - its time to pay ran out: the store cancels it, nothing is charged;
+//     told that they owe nothing;
+//   - its time to pay ran out: the store cancels it, nothing is owed;
 //   - a failed attempt: the buyer may try again on the same page;
 //   - else the payment page, or, when it could not be created, the
 //     order's page while complete_checkout tries again.
@@ -425,8 +425,8 @@ func awaitingPayment(
 		return review("payment_link_expired", "The time to pay for "+
 			"this order has run out. A payment made just before then may "+
 			"still be confirmed; otherwise the store cancels the order by "+
-			"expires_at and nothing is charged, and the shopper can then "+
-			"check out the same cart again.")
+			"expires_at, the shopper owes nothing for it, and they can "+
+			"then check out the same cart again.")
 	case s.PaymentURL == "":
 		return page, Message{
 			Type: "error", Code: "payment_link_unavailable",
@@ -438,8 +438,8 @@ func awaitingPayment(
 		return pay("payment_failed", fmt.Sprintf("The last payment "+
 			"attempt failed. The buyer can try again at continue_url, "+
 			"the store's hosted payment page, before %s; unless it is "+
-			"paid, the store cancels the order by expires_at and nothing "+
-			"is charged.", until))
+			"paid, the store cancels the order by expires_at and the "+
+			"shopper owes nothing for it.", until))
 	}
 	return pay("payment_required", fmt.Sprintf("The buyer must pay at "+
 		"continue_url, the store's hosted payment page, before %s.", until))

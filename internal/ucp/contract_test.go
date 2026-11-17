@@ -315,7 +315,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 			assert.Equal(t, "error", m.Type)
 			assert.Equal(t, "payment_link_expired", m.Code)
 			assert.Equal(t, "requires_buyer_review", m.Severity)
-			assert.Contains(t, m.Text, "nothing is charged")
+			assert.Contains(t, m.Text, "owes nothing")
 			// Its recorded decision is long past: the expiry the
 			// checkout already published stands.
 			assert.Equal(t, s.PlacedAt.Add(30*time.Minute).Format(
@@ -355,7 +355,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 
 	// Nothing will decide an order whose charge did not match its total,
 	// or whose store's sweep is off, and Django does not say which: the
-	// buyer is neither sent to pay again nor told nothing is charged.
+	// buyer is neither sent to pay again nor told they owe nothing.
 	t.Run("an order nothing will decide is not paid again",
 		func(t *testing.T) {
 			// The recorded order: its payment pending, no decision.
@@ -367,7 +367,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 				"/checkout/success/"+s.OrderUUID)
 			assert.Equal(t, "payment_in_review", m.Code)
 			assert.Equal(t, "requires_buyer_review", m.Severity)
-			assert.NotContains(t, m.Text, "nothing is charged")
+			assert.NotContains(t, m.Text, "owes nothing")
 			assert.Equal(t, s.PlacedAt.Add(24*time.Hour).Format(
 				time.RFC3339), payload.ExpiresAt)
 		})

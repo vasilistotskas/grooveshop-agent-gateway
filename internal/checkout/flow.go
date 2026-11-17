@@ -434,7 +434,7 @@ func (f *Flow) place(
 // paid: its payment hold, when Django names one, is ahead
 // (paymentHoldExpiresAt), and the checkout does not tell the buyer to
 // wait for the store (ErrPaymentAwaitsStore). Once the hold has passed the checkout already says the store cancels the
-// order and nothing is charged, so no link is minted then, though Django
+// order and the shopper owes nothing, so no link is minted then, though Django
 // would still mint one until its longest hold: ErrPaymentWindowClosed. A
 // session that already has a link, or no order, is left as is.
 func (f *Flow) ResumePayment(
