@@ -239,6 +239,9 @@ type checkoutFaults struct {
 	// online: reading it then shows it awaiting its payment, its link
 	// payable for 30 minutes more and decided 20 after that.
 	orderOnline atomic.Bool
+	// holdPassed makes an online order read with its payment hold
+	// already over.
+	holdPassed atomic.Bool
 	// orderCreatedAt is when the placed order reads as created; unset,
 	// the fixture's time, which is long past.
 	orderCreatedAt atomic.Pointer[time.Time]
@@ -310,8 +313,11 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			if online {
 				order["status"], order["paymentStatus"] = "PENDING", "PENDING"
 				now := time.Now().UTC()
-				order["paymentHoldExpiresAt"] = now.Add(
-					30 * time.Minute).Format(time.RFC3339)
+				hold := now.Add(30 * time.Minute)
+				if faults.holdPassed.Load() {
+					hold = now.Add(-time.Minute)
+				}
+				order["paymentHoldExpiresAt"] = hold.Format(time.RFC3339)
 				order["paymentDecidedBy"] = now.Add(
 					50 * time.Minute).Format(time.RFC3339)
 			}
@@ -1635,12 +1641,37 @@ func TestUCPEndToEnd(t *testing.T) {
 				"never the cart: claiming it would order twice")
 
 			stack.faults.paymentLink.Store(false)
+			// A read stores what it read from the order while the link is
+			// being minted: the order's decision has moved a second on.
+			var read atomic.Bool
+			readMeanwhile := func(r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "/create_checkout_session") ||
+					!read.CompareAndSwap(false, true) {
+					return
+				}
+				time.Sleep(1100 * time.Millisecond)
+				_, _ = session.CallTool(t.Context(),
+					&mcp.CallToolParams{Name: "get_checkout",
+						Arguments: map[string]any{
+							"meta": meta(""), "id": checkoutID,
+						}})
+			}
+			stack.faults.before.Store(&readMeanwhile)
+			t.Cleanup(func() { stack.faults.before.Store(nil) })
 			res = callTool(t, session, "complete_checkout", map[string]any{
 				"meta":     meta(uuid.NewString()),
 				"id":       checkoutID,
 				"checkout": map[string]any{"payment": map[string]any{}},
 			})
-			require.False(t, res.IsError)
+			require.True(t, read.Load(), "the read ran meanwhile")
+			require.False(t, res.IsError, "%v", res.Content)
+			assert.Equal(t, vivaCheckoutURL,
+				structured(t, res)["continue_url"])
+			// The link is stored: the next read gives it, and no
+			// complete mints another.
+			res = callTool(t, session, "get_checkout", map[string]any{
+				"meta": meta(""), "id": checkoutID,
+			})
 			assert.Equal(t, vivaCheckoutURL,
 				structured(t, res)["continue_url"])
 

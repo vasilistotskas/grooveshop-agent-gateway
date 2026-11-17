@@ -286,10 +286,13 @@ Loads when working on a checkout session on either surface, its completion, its 
   checkout publishes only what is stored, one stored meanwhile is read
   and rendered once more, and one whose state cannot be stored is
   answered `order_placed` (`unrenderedErr`). An expired payment link is never
-  replaced: `ResumePayment` mints only the first link, and Django's
+  replaced: `ResumePayment` mints only the first link, and only while
+  the order's hold is ahead (it reads the order), and Django's
   `payment_window_expired` and `order_not_payable` are
   `ErrPaymentWindowClosed`, final for that order (UCP
-  `checkout_closed`). ACP has no checkout awaiting a payment.
+  `checkout_closed`). A link it minted is stored over a read that
+  stored the checkout meanwhile (`keepLink`), so the next complete mints no
+  other. ACP has no checkout awaiting a payment.
 - **One live checkout holds a cart** (#141). Two sessions on one cart
   could each place an order, because Django keeps the cart of an order
   that awaits its online payment. The store keeps it to one:

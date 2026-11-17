@@ -216,6 +216,8 @@ func escalated() *checkout.Session {
 func TestResumePaymentOpensAPageOnlyWhereOneIsMissing(t *testing.T) {
 	f, b := startBranchFlow(t, true)
 	ctx := t.Context()
+	// The order awaits its online payment, its hold ahead.
+	f.faults.orderOnline.Store(true)
 
 	t.Run("an escalated order without a page", func(t *testing.T) {
 		s := escalated()
@@ -246,6 +248,27 @@ func TestResumePaymentOpensAPageOnlyWhereOneIsMissing(t *testing.T) {
 			assert.Equal(t, calls, b.paymentLinks.Load())
 		})
 	}
+
+	// Once its hold has passed the checkout says the store cancels the
+	// order: no page is opened for it, though Django would open one.
+	t.Run("a hold that has passed", func(t *testing.T) {
+		f.faults.holdPassed.Store(true)
+		defer f.faults.holdPassed.Store(false)
+		s := escalated()
+		err := f.flow.ResumePayment(ctx, f.tenant, s)
+		require.ErrorIs(t, err, checkout.ErrPaymentWindowClosed)
+		assert.Empty(t, s.PaymentURL)
+		assert.Equal(t, calls, b.paymentLinks.Load())
+	})
+
+	t.Run("an order that cannot be read", func(t *testing.T) {
+		f.faults.orderRead.Store(true)
+		defer f.faults.orderRead.Store(false)
+		s := escalated()
+		err := f.flow.ResumePayment(ctx, f.tenant, s)
+		require.ErrorIs(t, err, checkout.ErrPaymentSessionFailed)
+		assert.Equal(t, calls, b.paymentLinks.Load())
+	})
 
 	t.Run("a page that cannot be opened", func(t *testing.T) {
 		f.faults.paymentLink.Store(true)

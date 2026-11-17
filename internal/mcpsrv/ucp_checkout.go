@@ -887,7 +887,11 @@ func (h *handlers) completeSession(
 		if err != nil {
 			return refusedBy(paymentLinkErr(s))
 		}
-		if err := h.deps.Checkout.Save(ctx, s); err != nil {
+		err = h.deps.Checkout.Save(ctx, s)
+		if errors.Is(err, checkout.ErrSessionChanged) {
+			err = h.keepLink(ctx, t, s)
+		}
+		if err != nil {
 			return refusedBy(saveFailed(err))
 		}
 		return afterSave(render)
@@ -1357,6 +1361,31 @@ func paymentLinkErr(s *checkout.Session) error {
 			"not be created; call complete_checkout again for checkout %s "+
 			"to retry the payment link — do not start a new checkout",
 			s.OrderUUID, s.ID)}
+}
+
+// keepLink stores the payment link a complete minted over its checkout
+// as stored since: a read stores what it read from the order (rendered),
+// and may have stored it while the link was being minted. The link is
+// kept only on that checkout still awaiting its payment with no link;
+// anything else is the other request's, and is ErrSessionChanged. A link
+// the checkout never stored would be minted again by the next complete.
+func (h *handlers) keepLink(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+) error {
+	now, err := h.deps.Checkout.Load(ctx, t.SchemaName, ucpCaller(ctx), s.ID)
+	if err != nil {
+		return err
+	}
+	if now.Status != checkout.StatusRequiresEscalation ||
+		now.PaymentURL != "" || now.OrderUUID != s.OrderUUID {
+		return checkout.ErrSessionChanged
+	}
+	now.PaymentURL = s.PaymentURL
+	if err := h.deps.Checkout.Save(ctx, now); err != nil {
+		return err
+	}
+	*s = *now
+	return nil
 }
 
 // paymentClosedErr answers a retry of the payment link of an order the

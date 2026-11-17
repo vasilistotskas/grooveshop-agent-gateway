@@ -422,15 +422,32 @@ func (f *Flow) place(
 	return OrderMayExist, f.startPayment(ctx, t, s)
 }
 
-// ResumePayment mints a fresh hosted payment link for an escalated order
-// whose first link could not be created. A session that already has a
-// link, or no order, is left as is.
+// ResumePayment mints the hosted payment link of an escalated order
+// whose first link could not be created, while the order can still be
+// paid: its payment hold is ahead (Django's paymentHoldExpiresAt). Once
+// the hold has passed the checkout already says the store cancels the
+// order and nothing is charged, so no link is minted then, though Django
+// would still mint one until its longest hold: ErrPaymentWindowClosed. A
+// session that already has a link, or no order, is left as is.
 func (f *Flow) ResumePayment(
 	ctx context.Context, t *tenant.Tenant, s *Session,
 ) error {
 	if s.Status != StatusRequiresEscalation || s.OrderID == 0 ||
 		s.PaymentURL != "" {
 		return nil
+	}
+	o, err := f.dj.PlacedOrder(ctx, t.Domain, t.DefaultLocale, s.OrderUUID)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrPaymentSessionFailed, err)
+	}
+	hold, err := o.HoldExpiresAt()
+	if err != nil {
+		return fmt.Errorf("%w: order %s hold expires at %q: %w",
+			ErrPaymentSessionFailed, o.UUID, o.PaymentHoldExpiresAt, err)
+	}
+	if !hold.After(time.Now()) {
+		return fmt.Errorf("%w: its payment hold ended at %q",
+			ErrPaymentWindowClosed, o.PaymentHoldExpiresAt)
 	}
 	return f.startPayment(ctx, t, s)
 }
