@@ -219,10 +219,11 @@ wins over this page.
     passed, the order's page, `requires_buyer_review`: the store cancels
     it (by `expires_at` when its sweep will decide it) and the shopper
     owes nothing;
+  - `payment_with_store`: Django holds no payment open for the order (no
+    hold), the order's page, `requires_buyer_review`, and no link
+    is minted for it;
   - `payment_link_unavailable`: no link yet, the order's page,
     `recoverable`: complete_checkout tries again;
-  - `payment_with_store`: Django holds no payment open for the order (no
-    hold), the order's page, `requires_buyer_review`;
   - `payment_failed` (a failed attempt, which Django lets the buyer
     retry) and `payment_required`: the PSP's page, `requires_buyer_input`,
     naming when the link stops being payable. A store whose sweep is off

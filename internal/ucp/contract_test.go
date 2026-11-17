@@ -401,8 +401,8 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 	// Django holds no payment open for the recorded collect-later order:
 	// its link is not offered, and the store handles it.
 	t.Run("an order Django holds no payment for", func(t *testing.T) {
+		// With no link either: no retry is offered.
 		s := placed("b9be45e5-6062-4976-ae7b-2c31eb2ad689")
-		s.PaymentURL = "https://www.vivapayments.com/web/checkout?ref=42"
 		payload, m := escalation(t, s)
 
 		assert.Contains(t, payload.ContinueURL,

@@ -280,6 +280,17 @@ func TestResumePaymentOpensAPageOnlyWhereOneIsMissing(t *testing.T) {
 		})
 	}
 
+	// Django holds no payment open for an order with no hold.
+	t.Run("an order with no hold", func(t *testing.T) {
+		f.faults.orderOnline.Store(false)
+		defer f.faults.orderOnline.Store(true)
+		s := escalated()
+		err := f.flow.ResumePayment(ctx, f.tenant, s)
+		require.ErrorIs(t, err, checkout.ErrPaymentAwaitsStore)
+		assert.Empty(t, s.PaymentURL)
+		assert.Equal(t, calls, b.paymentLinks.Load())
+	})
+
 	// A store whose sweep is off decides nothing, and nothing was paid:
 	// the link is minted.
 	t.Run("a store whose sweep is off", func(t *testing.T) {

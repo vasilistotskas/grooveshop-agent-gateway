@@ -387,8 +387,9 @@ func (b *Builder) BuildCheckout(
 //     buyer must not pay again;
 //   - its time to pay ran out: the store cancels it (by expires_at when
 //     its sweep will decide it), and the shopper owes nothing;
+//   - Django holds no payment open for it (no hold): the store handles
+//     it, and no link is minted for it;
 //   - no link yet: the order's page, while complete_checkout tries again;
-//   - Django holds no payment for it (no hold): the store handles it;
 //   - a failed attempt: the buyer may try again on the same page;
 //   - else the payment page.
 func awaitingPayment(
@@ -431,6 +432,11 @@ func awaitingPayment(
 			"still be confirmed; otherwise "+cancels+", the shopper owes "+
 			"nothing for it, and they can then check out the same cart "+
 			"again.")
+	case hold.IsZero():
+		return review("payment_with_store", "The store holds no "+
+			"payment open for this order and handles it itself; the "+
+			"checkout follows the order. Do not pay again or start "+
+			"another checkout.")
 	case s.PaymentURL == "":
 		return page, Message{
 			Type: "error", Code: "payment_link_unavailable",
@@ -438,11 +444,6 @@ func awaitingPayment(
 				"be created; call complete_checkout again to retry.",
 			Severity: "recoverable",
 		}, nil
-	case hold.IsZero():
-		return review("payment_with_store", "The store holds no "+
-			"payment open for this order and handles it itself; the "+
-			"checkout follows the order. Do not pay again or start "+
-			"another checkout.")
 	case o.PaymentStatus == django.PaymentStatusFailed:
 		return pay("payment_failed", fmt.Sprintf("The last payment "+
 			"attempt failed. The buyer can try again at continue_url, "+
