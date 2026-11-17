@@ -3,7 +3,8 @@
 # grooveshop-agent-gateway
 
 Go service that makes every GrooveShop store shoppable by AI agents: MCP commerce tools, UCP and
-ACP agentic checkout, product feeds and the storefront's shopping chatbot.
+ACP agentic checkout, product feeds and the storefront's shopping chatbot, plus a read-only MCP
+server for the store's own team.
 
 GrooveShop is a multi-tenant e-commerce platform: a Django API, a Nuxt storefront, a media stream,
 this agent gateway, Kubernetes infrastructure and a documentation site. The gateway is a protocol
@@ -19,6 +20,7 @@ behind basic auth).
 | Path | What it serves |
 |---|---|
 | `POST /mcp` | MCP server (stateless streamable HTTP): catalogue, cart, shipping, pickup-point, store-policy, order-tracking and restock/price-drop alert tools, the UCP checkout capability's canonical tools, and account tools for shoppers who linked their account over OAuth |
+| `POST /mcp/admin` | Store-admin MCP server: the store's own team reads orders, sales, profit, products and stock, customers, reviews and contact messages from their own AI app, by role and read only, with a staff token from Django's staff issuer |
 | `GET /mcp/server-card`, `GET /.well-known/ard.json`, `GET /.well-known/ai-catalog.json` | Agent discovery: the MCP Server Card, the ARD manifest and the AI Catalog, built from the tools the store actually serves |
 | `GET /.well-known/ucp` | UCP business profile, with the platform's own payment handler (`space.grooveshop.payments`) |
 | `/acp/*` | ACP agentic checkout REST, enabled per store |
@@ -30,17 +32,23 @@ behind basic auth).
 - **Tenant resolution.** The store comes from the real `Host` header only (an inbound
   `X-Forwarded-Host` is ignored), resolved through Django's `GET /api/v1/tenant/resolve` and cached
   in process memory and Redis. Every Django call then carries the store's domain.
-- **Store features apply everywhere.** A feature the store has switched off (catalogue, cart,
-  reviews, alerts, loyalty, favourites, promotions) is neither listed nor callable over MCP, not
-  advertised in discovery, and refused by checkout, feeds and chat.
+- **Store features apply everywhere.** A feature the store has switched off (customer accounts,
+  catalogue, cart, reviews, alerts, loyalty, favourites, promotions) is neither listed nor callable
+  over MCP, not advertised in discovery, and refused by checkout, feeds and chat. Staff AI access
+  is its own switch, off by default: without it the store has no `/mcp/admin`.
 - **Payments.** Agent checkouts complete through Viva Wallet's hosted authorization (the agent
   hands the buyer a `continue_url`) or a collect-later method such as cash on delivery. Delegated
   card payments are refused for now.
 - **Identity linking.** Django is the OAuth 2.1 authorization server; a bearer token on `/mcp` is
-  verified against Django and forwarded only to the account tools.
+  verified against Django and forwarded only to the account tools. A staff token on `/mcp/admin`
+  comes from Django's staff issuer and is checked for its scope, role and team on every call.
+- **Signed UCP requests.** A platform's RFC 9421 signature is verified against the keys its UCP
+  profile publishes; `get_order` takes only signed requests, and a checkout a platform signed the
+  creation of answers only that platform.
 - **Chat.** The model credential is per store (from `tenant/resolve`); the provider endpoint and
   default model are configuration (the Gemini API's OpenAI-compatible endpoint by default). Spend is
-  bounded by per-IP rate limits and per-store and per-visitor turn quotas in Redis.
+  bounded by per-IP and per-(store, client) rate limits and per-store and per-visitor turn quotas
+  in Redis.
 
 ## Tech stack
 
@@ -74,6 +82,7 @@ environment variables; they arrive from Django's `tenant/resolve`.
 go build ./...                                        # Compile
 go test ./internal/...                                # Unit tests
 go test -tags integration ./internal/integration/...  # Integration tests (Docker)
+go test -tags realstack ./internal/realstack/...      # Against a real Django (images, ~12 min)
 golangci-lint run                                     # Lint
 go tool govulncheck ./...                             # Known vulnerabilities the code reaches
 go mod tidy -diff                                     # go.mod and go.sum are tidy
@@ -85,26 +94,33 @@ CI also runs the tests with `-race`, which needs cgo; run it locally only if you
 ## Project layout
 
 ```
-cmd/gateway/        # Wiring: config, clients, mux, graceful shutdown
+cmd/
+├── gateway/        # Wiring: config, clients, mux, graceful shutdown
+└── ucp-sign/       # Signs requests to a running gateway as a UCP platform
 internal/
 ├── server/         # Route registration and the internal endpoints
 ├── tenant/         # Host-based tenant resolver and middleware
 ├── django/         # Typed Django API client
 ├── mcpsrv/         # MCP server, tools, Server Card and discovery documents
+├── adminmcp/       # Store-admin MCP server (/mcp/admin)
+├── mcptool/        # What the tools of every MCP server answer with
 ├── ucp/            # UCP profile, negotiation, payment handler, order webhooks
+├── httpsig/        # RFC 9421 HTTP message signatures
 ├── acp/            # ACP checkout REST
 ├── checkout/       # Checkout sessions shared by UCP and ACP
 ├── feeds/          # Product feeds
 ├── chat/           # Chatbot handler, model loop, quotas
-├── identity/       # Bearer verification for /mcp
+├── identity/       # Bearer verification for /mcp and /mcp/admin
 ├── storefront/     # Every link into the Nuxt storefront
-└── ...             # config, httphdr, httpmw, httpsig, media, money, obs, text
+├── integration/    # Docker-backed integration tests
+├── realstack/      # The gateway image against a real Django
+└── ...             # config, httphdr, httpmw, media, money, obs, text
 contract/           # The gateway's Django consumer contract (OpenAPI)
 testdata/           # Recorded Django responses for the decode tests
 ```
 
 [`CLAUDE.md`](CLAUDE.md) holds the architecture, the cross-repository contracts and the
-conventions; `.claude/rules/` holds the UCP, chat SSE and Django-contract rules.
+conventions; `.claude/rules/` holds each area's detail, loaded with that area's files.
 
 ## Deployment and release
 

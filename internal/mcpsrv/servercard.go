@@ -44,7 +44,7 @@ func IdentityFor(t *tenant.Tenant) Identity {
 	// Bounded here, not in the card, so initialize reports the same title.
 	return Identity{
 		Name:  strings.Join(labels, ".") + "/store",
-		Title: text.Runes(title, serverCardDescriptionMax),
+		Title: text.Runes(title, serverCardTitleMax),
 	}
 }
 
@@ -87,8 +87,12 @@ type remote struct {
 	SupportedProtocolVersions []string `json:"supportedProtocolVersions"`
 }
 
-// serverCardDescriptionMax is the format's description bound.
-const serverCardDescriptionMax = 100
+// serverCardTitleMax and serverCardDescriptionMax are the format's
+// title and description bounds.
+const (
+	serverCardTitleMax       = 100
+	serverCardDescriptionMax = 100
+)
 
 // ServerCardHandler serves GET <streamable-http-url>/server-card, the
 // location the Server Card extension reserves, for the tenant resolved

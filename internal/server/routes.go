@@ -88,8 +88,9 @@ func New(d Deps) http.Handler {
 		d.Cfg.PaymentHandlerEnv, site,
 	)
 
-	// The handler builds one server per tenant (they differ only in the
-	// store name advertised at initialize) and caches them by schema.
+	// The handler builds a server per store, with the tools its features
+	// serve and the identity it advertises at initialize, and caches it
+	// by schema, identity and features.
 	mcpDeps := mcpsrv.Deps{
 		Django:             d.Django,
 		Checkout:           checkoutStore,
@@ -107,8 +108,8 @@ func New(d Deps) http.Handler {
 		Log:     d.Log,
 		Metrics: d.Metrics,
 		// A store's tool list follows its features and identity, which
-		// the gateway caches per TTL tier (worst case: CLAUDE.md,
-		// internal/mcptool).
+		// the gateway caches per TTL tier (worst case:
+		// .claude/rules/mcp-tools.md, internal/mcptool).
 		ListTTL: d.Cfg.TenantCacheTTL,
 		Version: d.Version,
 	}
@@ -217,9 +218,9 @@ func New(d Deps) http.Handler {
 		d.Log,
 		d.ChatOpts...,
 	)
-	// The chat surface pays per token — it gets its own, stricter per-IP
-	// limiter on top of the global one. Whether chat is on is a
-	// per-tenant question (chatApiKey on tenant/resolve), so the route
+	// The chat surface pays per token — it gets its own, stricter
+	// per-(host, client) limiter on top of the global one. Whether chat is
+	// on is a per-tenant question (chatApiKey on tenant/resolve), so the route
 	// is always mounted and the handler rejects keyless tenants.
 	chatLimiter := httpmw.NewRateLimiter(
 		d.Cfg.ChatRatePerMin, d.Cfg.ChatRateBurst, d.Metrics,
@@ -317,7 +318,7 @@ func (a *muxAnswer) Write(b []byte) (int, error) { return len(b), nil }
 
 // exceptInternal applies mw to every route but /internal/*. Those are
 // Django's own workers pushing over the cluster Service (no ingress
-// routes them) and authenticated by the shared secret; a per-IP bucket
+// routes them) and authenticated by the shared secret; a per-client bucket
 // would throttle a status burst from one Celery pod, and Django treats
 // a 4xx as final and drops the event.
 func exceptInternal(

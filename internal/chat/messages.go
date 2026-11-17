@@ -19,8 +19,8 @@ const (
 )
 
 // messages maps language → key → text. Deliberately not an i18n library:
-// a handful of strings in two languages. New tenant languages add one
-// entry here.
+// a handful of strings in two languages. A language without an entry
+// gets the English text (messageFor); a new store language adds one.
 var messages = map[string]map[string]string{
 	"el": {
 		msgRefusal: "Λυπάμαι, δεν μπορώ να βοηθήσω με αυτό το αίτημα. " +

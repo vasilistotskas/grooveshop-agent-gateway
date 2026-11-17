@@ -151,3 +151,24 @@ cross-repo change. The code wins over this page.
   across the turn and capped per event. Ids only, never prices: the
   storefront loads each card with the shopper's session, which is the
   only place B2B pricing applies (see the B2B note in `CLAUDE.md`).
+
+## Spend
+
+Chat spend is bounded in three layers:
+
+- Traefik's `rate-limit-chat`, per IP.
+- The gateway's per-pod `(host, client)` limiter (`CHAT_RATE_LIMIT_*`).
+- The Redis turn quota in `internal/chat/quota.go`, shared by every pod and counted only for valid turns, before any model call:
+  - `CHAT_STORE_TURNS_PER_HOUR` per store per clock hour;
+  - `CHAT_VISITOR_TURNS_PER_DAY` per client per store per UTC day.
+
+The gateway's "client" is `httpmw.ClientBucket`, the one key both use: an IPv4 address (IPv4-mapped IPv6 included), or an IPv6 address's /64.
+
+A refused turn spends from neither budget and gets the store's localized `rate_limited` message with a 429 and a `Retry-After` until the full window resets.
+
+Inside a turn (`chat.runTurn`):
+
+- At most `CHAT_MAX_ITERATIONS` model calls. The last one is sent `tool_choice: none`, and tool calls a provider returns there anyway are not run.
+- The model client is built once (`chat.New`) with no SDK retries. A provider throttle, answered as a 429 or sent as an error inside the stream (`chat.providerErrorOf`), ends the turn after one call with SSE `error {code: rate_limited, retryAfter}`.
+- `CHAT_TURN_TIMEOUT`, counted from the turn's start, bounds the model calls and when a tool call may start. Once it has passed, no further tool call of the batch starts, and the turn ends with the generic, retryable `error {message}`; a stalled provider ends the same way. A tool call already running is never cut, so a cart call is not cut midway. A turn that fails after a cart change Django accepted says so: its `error` event carries `done`'s cart members (`cartMutated`, `cartId` for a visitor, `cartTokenRefused`), and a visitor's cart the turn filled is kept in the stored conversation, which `error.conversationId` names (`Service.endFailed`; above). Those members are what the turn's tools had recorded when it ended: a cart call still running when the shopper leaves or the shutdown cuts the turn is not in them, though the store may accept it, so `cartMutated: false` does not prove the cart is unchanged. A retry with the same `turnId` does not add a product twice: `add_to_cart` sends an `Idempotency-Key` derived from the turn (`mcpsrv.Turn`), which Django's `core/middleware/idempotency.py` answers with the first outcome.
+- A shutdown cancels the deadline's context too, and `handle` checks for it (`httpmw.ErrShuttingDown`) before anything else, so a turn cut by shutdown is reported as one.

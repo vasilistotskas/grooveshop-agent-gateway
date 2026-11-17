@@ -413,7 +413,7 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | ACP same key, different body (`null` where the first had no member counts as different) | 422 `idempotency_conflict`, on every operation |
 | ACP create replayed after its session expired, same key and body | 201 with the original body and `Idempotent-Replayed: true` |
 | ACP POST refused (400, 404, 405) | The message ends "This Idempotency-Key keeps this answer for 24 hours: send a new attempt with a new key." The key keeps the refusal and replays it, `Allow` included, even after what caused it is gone (`TestAnACPRefusalIsReplayedAfterItsCauseIsGone`). A new attempt needs a new key |
-| ACP POST answered 409 `idempotency_in_flight`, 429, or a 5xx | The key is free: the same key runs again as a new request. Except a complete answered 502 `order_outcome_unknown`, or 500 `order_placed` for an order whose session was not saved: that key keeps the answer and replays it (departs from the spec's §6.5, see `CLAUDE.md`) |
+| ACP POST answered 409 `idempotency_in_flight`, 429, or a 5xx | The key is free: the same key runs again as a new request. Except a complete answered 502 `order_outcome_unknown`, or 500 `order_placed` for an order whose session was not saved: that key keeps the answer and replays it (departs from the spec's §6.5, see `.claude/rules/acp.md`) |
 | ACP update or cancel that was saved and then answered a 5xx (its session could not be rendered), retried with the same key | 200 with the session, and the session is not saved again: the retry finds its own mark in it (`Session.AppliedBy`). A cancel is not answered 405 for its own cancel, also when its save was stored and Redis lost the reply: that request is answered 200 at once |
 | ACP key settled by the release before #128 | Not read (the keys moved to `….v3`): the request runs as new, as after expiry. Those records end within 24 hours |
 | ACP call while another holds the session (lock busy) | 409 `idempotency_in_flight` with `Retry-After` |
@@ -607,30 +607,31 @@ The new pods do not read sessions the old pods stored, and the reverse, on purpo
 | `completed`, `canceled` | As above; only the session's own read is lost | As above |
 | A payment event for a session a **new** pod stored, delivered to an **old** pod | The old pod finds the order link, looks under the old key, finds no session and answers 204, which is final for Django. The order webhook still goes out. That session stays `requires_escalation` until it ends, 24 hours after its order was placed: `get_checkout` keeps showing the payment page of a paid order, `get_order` shows the truth | Cannot happen |
 
-So before the deploy, list the sessions whose order exists or may. The gateway's Redis database is **4** (`REDIS_URL` ends `/4` in the infrastructure repo's `agent-gateway.yaml`; database 0 is Django's). Run this where `redis-cli` reaches that Redis, with `REDISCLI_AUTH` set. It runs in a subshell, so a failure ends the check and not your shell. It prints how many sessions it read (a session's lock and its placed-order record are not sessions and are not counted; the carts' records are under `ag:*:checkoutcart:*`, outside the scan), then the ones that matter:
+So before the deploy, list the sessions whose order exists or may. Since v1.44.0 the gateway's Redis is its own instance, `redis-gateway`, database **0** (`REDIS_URL` in the infrastructure repo's `base/agent-gateway.yaml`), and its container already has `REDISCLI_AUTH` set. Run this from your machine: it runs the check in that container's shell (`sh -s`), so a failure ends the check and not your shell. It prints how many sessions it read (a session's lock and its placed-order record are not sessions and are not counted; the carts' records are under `ag:*:checkoutcart:*`, outside the scan), then the ones that matter:
 
 ```bash
-(
-  R="redis-cli -e -n 4"
-  $R ping | grep -qx PONG || { echo "Redis did not answer PONG: nothing was checked"; exit 1; }
-  all=$($R --scan --pattern 'ag:*:cs:*') || { echo "the scan failed: nothing was checked"; exit 1; }
-  keys=$(printf '%s\n' "$all" | grep -Ev ':(lock|order)$')
-  echo "sessions scanned: $(printf '%s\n' "$keys" | grep -c .)"
-  found=0
-  while read -r key; do
-    [ -n "$key" ] || continue
-    value=$($R GET "$key") || { echo "GET $key failed: the list is incomplete, do not deploy on it"; exit 1; }
-    [ -n "$value" ] || continue # it ended between the scan and the read
-    status=$(printf '%s' "$value" | grep -o '"status":"[a-z_]*"' | head -1 | cut -d'"' -f4)
-    [ -n "$status" ] || { echo "$key holds no status: the list is incomplete, do not deploy on it"; exit 1; }
-    case $status in
-      complete_in_progress | requires_escalation) echo "$status $key"; found=1 ;;
-    esac
-  done <<EOF
+NS=grooveshop # grooveshop-staging for staging
+kubectl --context grooveshop -n "$NS" exec -i redis-gateway-0 -c redis-gateway -- sh -s <<'CHECK'
+R="redis-cli -e -n 0"
+$R ping | grep -qx PONG || { echo "Redis did not answer PONG: nothing was checked"; exit 1; }
+all=$($R --scan --pattern 'ag:*:cs:*') || { echo "the scan failed: nothing was checked"; exit 1; }
+keys=$(printf '%s\n' "$all" | grep -Ev ':(lock|order)$')
+echo "sessions scanned: $(printf '%s\n' "$keys" | grep -c .)"
+found=0
+while read -r key; do
+  [ -n "$key" ] || continue
+  value=$($R GET "$key") || { echo "GET $key failed: the list is incomplete, do not deploy on it"; exit 1; }
+  [ -n "$value" ] || continue # it ended between the scan and the read
+  status=$(printf '%s' "$value" | grep -o '"status":"[a-z_]*"' | head -1 | cut -d'"' -f4)
+  [ -n "$status" ] || { echo "$key holds no status: the list is incomplete, do not deploy on it"; exit 1; }
+  case $status in
+    complete_in_progress | requires_escalation) echo "$status $key"; found=1 ;;
+  esac
+done <<EOF
 $keys
 EOF
-  [ "$found" = 1 ] || echo "none being placed or awaiting payment"
-)
+[ "$found" = 1 ] || echo "none being placed or awaiting payment"
+CHECK
 ```
 
 `-e` makes `redis-cli` exit non-zero when Redis refuses a command, which is how the check tells a failed read from an empty answer. "none being placed or awaiting payment" is printed only when every read succeeded. "sessions scanned: 0" with agent checkouts in use means the wrong Redis or database, not an empty one.
@@ -663,7 +664,7 @@ Callers are told "in progress" for three upstream timeouts after the mark, and a
 
 **Nothing needs doing** unless a buyer or a platform is waiting on one. Then:
 
-1. Find it. In the check of section 10, the lines that start `complete_in_progress` are these sessions. For one of them, with `R="redis-cli -e -n 4"`:
+1. Find it. In the check of section 10, the lines that start `complete_in_progress` are these sessions. For one of them, in a shell in the same container (`kubectl --context grooveshop -n <namespace> exec -it redis-gateway-0 -c redis-gateway -- sh`), with `R="redis-cli -e -n 0"`:
 
    ```bash
    $R GET "$key"            # status, updatedAt, cartId, the buyer's email, "unconfirmed", orderUuid
@@ -713,12 +714,14 @@ The release after every environment has run step 3 deletes the sealing on first 
 
 **Eviction does not happen.** The signing keys carry no TTL, and the gateway's Redis is its own instance with `maxmemory-policy noeviction` and AOF persistence, so nothing evicts them; a full Redis refuses writes instead.
 
-**Giving a store a new key on purpose** (its key leaked). Only once step 3 has run in that environment and no pod of the earlier release is left: while the store's unsealed record holds its key, a pod that finds no sealed record seals that same key again, so deleting the sealed record alone changes nothing. Delete both records, then restart the pods. Run `redis-cli` where it reaches the gateway's Redis, with `REDISCLI_AUTH` set to the password in the gateway's `REDIS_URL` and `-n` its database number, as in section 10:
+**Giving a store a new key on purpose** (its key leaked). Only once step 3 has run in that environment and no pod of the earlier release is left: while the store's unsealed record holds its key, a pod that finds no sealed record seals that same key again, so deleting the sealed record alone changes nothing. Delete both records, then restart the pods. `redis-cli` runs in the gateway's Redis container, as in section 10 (database 0, `REDISCLI_AUTH` already set):
 
 ```bash
-R="redis-cli -e -n <database in the gateway's REDIS_URL>"
-$R DEL ag:<schema>:ucp:signing_key:es256:aes256gcm ag:<schema>:ucp:signing_key:es256
-kubectl --context grooveshop -n <namespace> rollout restart deploy/agent-gateway
+NS=grooveshop # grooveshop-staging for staging
+SCHEMA='<schema>'
+kubectl --context grooveshop -n "$NS" exec redis-gateway-0 -c redis-gateway -- \
+  redis-cli -e -n 0 DEL "ag:$SCHEMA:ucp:signing_key:es256:aes256gcm" "ag:$SCHEMA:ucp:signing_key:es256"
+kubectl --context grooveshop -n "$NS" rollout restart deploy/agent-gateway
 ```
 
 Each pod holds the key it read in memory until it restarts, and the first pod to need the key after the restart mints the new one. Platforms see a rotation: the profile publishes only the new key, so a webhook signed with the old one before the restart no longer verifies.

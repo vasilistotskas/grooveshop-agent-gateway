@@ -22,8 +22,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     -ldflags "-s -w -X main.version=${VERSION}" \
     -o /out/gateway ./cmd/gateway
 
-# distroless/static runs as nonroot (uid 65532) with a read-only rootfs —
-# matching the Deployment's securityContext.
+# distroless/static's nonroot image defaults to uid 65532. The
+# Deployment's securityContext runs it as uid 1000 instead, with a
+# read-only root filesystem.
 FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=build /out/gateway /gateway
 EXPOSE 8080

@@ -1,9 +1,9 @@
 ---
 name: gateway-test
-description: Run the agent-gateway Go checks — unit tests, Docker-backed integration tests, lint, and build. Use when asked to test, lint, or verify grooveshop-agent-gateway, or after changing anything under internal/ or cmd/.
-argument-hint: "[unit|integration|lint|build|all]"
+description: Run the agent-gateway Go checks — unit tests, Docker-backed integration tests, lint, build, and the real-stack test. Use when asked to test, lint, or verify grooveshop-agent-gateway, or after changing anything under internal/ or cmd/.
+argument-hint: "[unit|integration|lint|build|realstack|all]"
 arguments: [target]
-allowed-tools: Read Grep Glob Bash(go test *) Bash(go build *) Bash(golangci-lint run*) Bash(docker info*)
+allowed-tools: Read Grep Glob Bash(go test *) Bash(go build *) Bash(golangci-lint run*) Bash(docker info*) Bash(docker build *)
 ---
 
 Run the checks for `grooveshop-agent-gateway`. Target: `$target`
@@ -17,10 +17,31 @@ Run the checks for `grooveshop-agent-gateway`. Target: `$target`
 | `integration` | `go test -tags integration ./internal/integration/...` |
 | `lint` | `golangci-lint run`, then `go mod tidy -diff` and `go tool govulncheck ./...` |
 | `build` | `go build ./...` |
+| `realstack` | `go test -tags realstack -count=1 -timeout 40m -v ./internal/realstack/...` (see below) |
 | `all` | lint → unit → integration → build, in that order, stopping at the first failure |
 
-CI runs the same sequence: lint (with the tidy and vulnerability checks) →
-unit + integration → build.
+CI (`ci.yml`) runs lint (with the tidy and vulnerability checks), the unit
+and integration tests, and the build as three parallel jobs; `all` runs
+them one after another so the first failure stops the run. `all` leaves
+out `realstack`.
+
+## The real-stack test
+
+`internal/realstack` runs the gateway image against a real Django, its
+database and its search, including a real sign-in. It takes about 12
+minutes and a lot of memory; `.github/workflows/real-stack.yml` runs it
+before a release, nightly and on a pull request that changes the test or
+the runbook. Locally it needs both images named in the environment:
+
+```bash
+docker build -t agent-gateway:real-stack .
+REALSTACK_DJANGO_IMAGE=gro0ve/grooveshop-django-api:<release tag> \
+REALSTACK_GATEWAY_IMAGE=agent-gateway:real-stack \
+  go test -tags realstack -count=1 -timeout 40m -v ./internal/realstack/...
+```
+
+Without them the package exits at once (`REALSTACK_DJANGO_IMAGE is
+required`): report that, not a failure.
 
 ## Do not add `-race` locally
 

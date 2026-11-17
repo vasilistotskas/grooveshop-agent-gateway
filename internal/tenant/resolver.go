@@ -586,9 +586,8 @@ func (r *Resolver) countAnswer(result string, t *Tenant, err error) {
 // redisKeyVersion versions the cached TenantConfig shape: a gateway
 // that decodes a field an older one never wrote must not read that
 // one's entries, or the field reads as its zero value until they
-// expire (v2: TenantConfig.Features, which would read as every
-// feature off; v3: its cart, catalogue and product alerts; v4:
-// AvailableLocales, which would read as the default language alone).
+// expire: a new feature would read as off, AvailableLocales as the
+// default language alone.
 // Bump it with every change to the shape. TestCachedShapeMatchesKeyVersion
 // fails on a changed shape until the golden is updated, which prompts the
 // bump; a reviewer sees the golden's diff.
