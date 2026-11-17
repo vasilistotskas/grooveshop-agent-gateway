@@ -1398,13 +1398,12 @@ func (h *handlers) keepLink(
 // is paid or no longer open. That is final: no link is minted for it.
 func paymentClosedErr(s *checkout.Session) error {
 	return &mcptool.ToolError{Code: mcptool.CodeCheckoutClosed,
-		Hint: fmt.Sprintf("order %s can no longer be paid: its time to "+
-			"pay ran out, or it is paid or no longer open for payment. "+
-			"Do not complete checkout %s again or start another checkout "+
-			"before reading it with get_checkout: an unpaid order is "+
-			"canceled by the store by the checkout's expires_at and "+
-			"nothing is charged, and the shopper can then check out the "+
-			"same cart again", s.OrderUUID, s.ID)}
+		Hint: fmt.Sprintf("order %s can no longer be paid here: its time "+
+			"to pay ran out, or it is already paid, or its payment awaits "+
+			"the store. Do not complete checkout %s again or start another "+
+			"checkout: read it with get_checkout, which says whether the "+
+			"order is paid, awaits the store, or will be canceled unpaid "+
+			"by the checkout's expires_at", s.OrderUUID, s.ID)}
 }
 
 func stockShortfallErr(err error) error {

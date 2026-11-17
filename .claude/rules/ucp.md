@@ -225,8 +225,10 @@ wins over this page.
   created, and complete_checkout tries again).
   Its `expires_at` is when Django will have decided the order
   (`.claude/rules/checkout.md`). A canceled order makes the checkout
-  `canceled` with an `info` message `order_canceled` (nothing was
-  charged, or a payment after the cancel is refunded); a charged one
+  `canceled` with an `info` message `order_canceled` (the shopper owes
+  nothing: Django settles any unconfirmed payment as canceled with its
+  order, so it is never "nothing was charged"; a payment after the
+  cancel is refunded); a charged one
   `completed`. No link is minted after the first: an expired one means
   the order is canceled by `expires_at` and nothing is charged, and the
   cart can be checked out again; nor is the first one once the order's
