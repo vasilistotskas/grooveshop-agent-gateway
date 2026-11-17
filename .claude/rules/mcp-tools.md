@@ -54,7 +54,9 @@ Loads when working on a tool of any of the three MCP servers. The code wins over
   `upstreamErr`, which renders an `mcptool.ToolError` as JSON text:
   Django's `code` and its `detail` (or its validation `fields`) for a
   refusal, `retryAfterSeconds` for a throttle, and a `hint`. A 403 is
-  reported as `not_found`, and a 5xx or network failure only as
+  reported as `not_found` on /mcp and the chat, and as `not_allowed` on
+  /mcp/admin, where the person needs to know it is their role
+  (`.claude/rules/adminmcp.md`). A 5xx or network failure is only
   `unavailable`: no upstream text beyond what Django wrote for a client.
   The other failures an agent acts on by their kind are `ToolError`s
   too: no linked account (`unauthorized`), a token without the tool's
