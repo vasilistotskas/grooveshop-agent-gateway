@@ -100,7 +100,15 @@ func (h *handlers) negotiated(
 	if !neg.Has(ucp.CapabilityCheckout) {
 		return nil, incompatibleCheckout(links), nil
 	}
-	return body(t, neg)
+	res, out, err := body(t, neg)
+	if errors.Is(err, errCheckoutGone) {
+		// No checkout is kept for the id: the spec's error response,
+		// whichever step found it gone.
+		return nil, CheckoutResult{failure: ucp.CheckoutNotFound(
+			neg.Declaration(ucp.CapabilityCheckout), errCheckoutGone.Hint),
+		}, nil
+	}
+	return res, out, err
 }
 
 // onSession runs body on the checkout id names, under its lock, and
@@ -868,11 +876,15 @@ func (h *handlers) completeSession(
 	render := func() (*mcp.CallToolResult, CheckoutResult, error) {
 		return h.checkoutResult(ctx, t, s, neg)
 	}
-	// The escalation resolves through the order event, never through a
-	// second complete, except to retry a payment link that could not be
-	// created, for an order that already exists.
+	// The escalation resolves through the order, never through a second
+	// complete, except to retry a payment link that could not be
+	// created, for an order that already exists and can still be paid.
 	if s.Status == checkout.StatusRequiresEscalation && s.PaymentURL == "" {
-		if err := h.deps.Flow.ResumePayment(ctx, t, s); err != nil {
+		err := h.deps.Flow.ResumePayment(ctx, t, s)
+		if errors.Is(err, checkout.ErrPaymentWindowClosed) {
+			return refusedBy(paymentClosedErr(s))
+		}
+		if err != nil {
 			return refusedBy(paymentLinkErr(s))
 		}
 		if err := h.deps.Checkout.Save(ctx, s); err != nil {
@@ -1075,6 +1087,9 @@ func completeErr(s *checkout.Session, err error) error {
 		return errOutcomeUnknown
 	case errors.Is(err, checkout.ErrPaymentSessionFailed):
 		return paymentLinkErr(s)
+	case errors.Is(err, checkout.ErrPaymentWindowClosed):
+		// The order is placed: never "placement failed".
+		return paymentClosedErr(s)
 	case errors.Is(err, checkout.ErrSessionNotSaved):
 		return placedUnsavedErr(s.OrderUUID)
 	case errors.Is(err, checkout.ErrUnavailable):
@@ -1344,6 +1359,20 @@ func paymentLinkErr(s *checkout.Session) error {
 			s.OrderUUID, s.ID)}
 }
 
+// paymentClosedErr answers a retry of the payment link of an order the
+// store no longer takes a payment for: its time to pay ran out, or it
+// is paid or no longer open. That is final: no link is minted for it.
+func paymentClosedErr(s *checkout.Session) error {
+	return &mcptool.ToolError{Code: mcptool.CodeCheckoutClosed,
+		Hint: fmt.Sprintf("order %s can no longer be paid: its time to "+
+			"pay ran out, or it is paid or no longer open for payment. "+
+			"Do not complete checkout %s again or start another checkout "+
+			"before reading it with get_checkout: an unpaid order is "+
+			"canceled by the store by the checkout's expires_at and "+
+			"nothing is charged, and the shopper can then check out the "+
+			"same cart again", s.OrderUUID, s.ID)}
+}
+
 func stockShortfallErr(err error) error {
 	shortfall, _ := errors.AsType[*django.StockShortfall](err)
 	lines := make([]string, 0, len(shortfall.FailedItems))
@@ -1386,8 +1415,12 @@ func (h *handlers) checkoutResult(
 	neg ucp.Negotiated,
 ) (*mcp.CallToolResult, CheckoutResult, error) {
 	var zero CheckoutResult
+	status, expires := s.Status, s.ExpiresAt
 	payload, err := h.deps.UCP.BuildCheckout(ctx, t, s,
 		neg.Declaration(ucp.CapabilityCheckout))
+	if err == nil && (s.Status != status || !s.ExpiresAt.Equal(expires)) {
+		h.storeFollowed(ctx, s)
+	}
 	if err != nil {
 		switch {
 		case s.OrderUUID != "":
@@ -1419,10 +1452,12 @@ func (h *handlers) checkoutResult(
 				"order.", s.ID)
 	case checkout.StatusRequiresEscalation:
 		text = fmt.Sprintf(
-			"Order placed. The buyer must now authorize payment at %s "+
-				"(the store's hosted card checkout). The session "+
-				"completes automatically once payment lands.",
-			payload.ContinueURL)
+			"Order %s is placed and awaits its payment: %s "+
+				"(continue_url: %s). The checkout completes when the "+
+				"payment lands, or is canceled with the order; read it "+
+				"again by %s, when the store will have decided.",
+			s.OrderUUID, firstError(payload), payload.ContinueURL,
+			payload.ExpiresAt)
 	case checkout.StatusCompleted:
 		text = fmt.Sprintf(
 			"Order %s is placed and confirmed. Track it with track_order.",
@@ -1435,6 +1470,31 @@ func (h *handlers) checkoutResult(
 		text = fmt.Sprintf("Checkout %s status: %s.", s.ID, s.Status)
 	}
 	return textResult("%s", text), CheckoutResult{checkout: payload}, nil
+}
+
+// storeFollowed stores what a render read from the checkout's order: a
+// status the order decided, or its expiry. It is a compare-and-set like
+// every save, and a best effort: what it says is Django's, read again
+// on every render, and a checkout another request stored since is
+// left as that request stored it.
+func (h *handlers) storeFollowed(ctx context.Context, s *checkout.Session) {
+	err := h.deps.Checkout.Save(ctx, s)
+	if err != nil && !errors.Is(err, checkout.ErrSessionChanged) {
+		h.deps.Log.WarnContext(ctx, "checkout: order state not stored",
+			slog.String("session", s.ID),
+			slog.String("error", err.Error()))
+	}
+}
+
+// firstError is the text of a checkout's first error message: what a
+// checkout awaiting its payment says the buyer has to do.
+func firstError(c *ucp.Checkout) string {
+	for _, m := range c.Messages {
+		if m.Type == "error" {
+			return m.Text
+		}
+	}
+	return ""
 }
 
 // discountAnnotated appends the outcome of a discount submission to the

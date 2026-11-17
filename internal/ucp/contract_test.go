@@ -132,6 +132,19 @@ func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
 	mux.HandleFunc("GET /api/v1/pay_way", fixture("pay_way.json"))
 	mux.HandleFunc("GET /api/v1/agent/internal/order/b9be45e5-6062-4976-ae7b-2c31eb2ad689",
 		fixture("order_by_uuid.json"))
+	for uuid, o := range placedOrders {
+		mux.HandleFunc("GET /api/v1/agent/internal/order/"+uuid,
+			func(w http.ResponseWriter, _ *http.Request) {
+				b, err := os.ReadFile(filepath.Join("..", "..", "testdata",
+					"fixtures", "django", "order_awaiting_payment.json"))
+				if !assert.NoError(t, err) {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(o.Replace(string(b))))
+			})
+	}
 	mux.HandleFunc("GET /api/v1/pay_way/1", fixture("pay_way_1.json"))
 	mux.HandleFunc("GET /api/v1/pay_way/2", fixture("pay_way_2.json"))
 	mux.HandleFunc("GET /api/v1/shipping/options",
@@ -142,6 +155,52 @@ func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
 	log := slog.New(slog.DiscardHandler)
 	return django.New(srv.URL+"/api/v1", "api.example.test", "secret",
 		5*time.Second, log, obs.NewMetrics())
+}
+
+// The orders fixtureDjango serves besides the recorded ones: the
+// recorded online order awaiting its payment, as it reads at another
+// moment. Their uuids name the moment.
+const (
+	// Its link can still be paid: its hold and its decision are ahead.
+	orderPayable = "0d6f4c2e-7a51-4b8e-9c3d-2f1e5a6b7c80"
+	// As recorded: its hold ran out long ago.
+	orderHoldPassed = "1e7a5d3f-8b62-4c9f-8d4e-3a2f6b7c8d91"
+	// Its last payment attempt failed: its link can still be paid.
+	orderPaymentFailed = "2f8b6e4a-9c73-4daf-9e5f-4b3a7c8d9ea2"
+	// The provider is processing its payment: nothing will decide it.
+	orderProcessing = "4bad8a6c-be95-4fc1-b07b-6d5c9eb0f0c4"
+	// Canceled, and paid after that.
+	orderCanceledPaid = "3a9c7f5b-ad84-4eb0-af6a-5c4b8d9eafb3"
+)
+
+// The instants the payable order reads: its hold and the decision.
+var (
+	payableHold    = time.Now().Add(20 * time.Minute).UTC().Truncate(time.Second)
+	payableDecided = time.Now().Add(40 * time.Minute).UTC().Truncate(time.Second)
+)
+
+var placedOrders = map[string]*strings.Replacer{
+	orderPayable: strings.NewReplacer(
+		"2026-05-21T21:44:59.047689+03:00", payableHold.Format(time.RFC3339),
+		"2026-05-21T22:05:00+03:00", payableDecided.Format(time.RFC3339)),
+	orderHoldPassed: strings.NewReplacer(),
+	orderPaymentFailed: strings.NewReplacer(
+		`"paymentStatus":"PENDING"`, `"paymentStatus":"FAILED"`,
+		"2026-05-21T21:44:59.047689+03:00", payableHold.Format(time.RFC3339),
+		"2026-05-21T22:05:00+03:00", payableDecided.Format(time.RFC3339)),
+	orderProcessing: strings.NewReplacer(
+		`"paymentStatus":"PENDING"`, `"paymentStatus":"PROCESSING"`,
+		"2026-05-21T21:44:59.047689+03:00", payableHold.Format(time.RFC3339),
+		`"paymentDecidedBy":"2026-05-21T22:05:00+03:00"`,
+		`"paymentDecidedBy":null`),
+	orderCanceledPaid: strings.NewReplacer(
+		`"status":"PENDING","statusDisplay"`,
+		`"status":"CANCELED","statusDisplay"`,
+		`"paymentStatus":"PENDING"`, `"paymentStatus":"COMPLETED"`,
+		`"paymentHoldExpiresAt":"2026-05-21T21:44:59.047689+03:00"`,
+		`"paymentHoldExpiresAt":null`,
+		`"paymentDecidedBy":"2026-05-21T22:05:00+03:00"`,
+		`"paymentDecidedBy":null`),
 }
 
 func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
@@ -186,32 +245,162 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 			links["privacy_policy"])
 	})
 
-	t.Run("escalated session carries continue_url", func(t *testing.T) {
+	placed := func(orderUUID string) *checkout.Session {
 		s := newSession(checkout.StatusRequiresEscalation)
-		s.PaymentURL = "https://www.vivapayments.com/web/checkout?ref=42"
+		s.OrderID, s.OrderUUID = 684, orderUUID
+		s.PlacedAt = time.Now().UTC().Add(-time.Minute)
+		s.ExpiresAt = s.PlacedAt.Add(30 * time.Minute)
+		return s
+	}
+	// What a checkout awaiting its payment tells the platform: one
+	// error message whose severity asks for the buyer, as the spec
+	// requires of requires_escalation, and where to send them.
+	escalation := func(t *testing.T, s *checkout.Session) (*Checkout, Message) {
+		t.Helper()
 		payload, err := b.BuildCheckout(t.Context(), tn, s, checkoutCaps)
 		require.NoError(t, err)
 		require.NoError(t, schema.Validate(roundTrip(t, payload)))
+		assert.Equal(t, "requires_escalation", payload.Status)
+		require.NotEmpty(t, payload.ContinueURL)
+		require.Len(t, payload.Messages, 1)
+		return payload, payload.Messages[0]
+	}
+
+	t.Run("a payable order sends the buyer to its payment page",
+		func(t *testing.T) {
+			s := placed(orderPayable)
+			s.PaymentURL = "https://www.vivapayments.com/web/checkout?ref=42"
+			payload, m := escalation(t, s)
+
+			assert.Equal(t, s.PaymentURL, payload.ContinueURL)
+			assert.Equal(t, "error", m.Type)
+			assert.Equal(t, "payment_required", m.Code)
+			assert.Equal(t, "requires_buyer_input", m.Severity)
+			assert.Contains(t, m.Text, payableHold.Format(time.RFC3339))
+			// It expires when Django will have decided the order.
+			assert.Equal(t, payableDecided.Format(time.RFC3339),
+				payload.ExpiresAt)
+			assert.Equal(t, payableDecided, s.ExpiresAt)
+		})
+
+	t.Run("a payable order without a link hands off to the order",
+		func(t *testing.T) {
+			s := placed(orderPayable)
+			payload, m := escalation(t, s)
+
+			assert.Contains(t, payload.ContinueURL,
+				"/checkout/success/"+s.OrderUUID)
+			assert.Equal(t, "payment_link_unavailable", m.Code)
+			assert.Equal(t, "recoverable", m.Severity)
+		})
+
+	t.Run("an order whose time to pay ran out mints no link",
+		func(t *testing.T) {
+			s := placed(orderHoldPassed)
+			s.PaymentURL = "https://www.vivapayments.com/web/checkout?ref=42"
+			payload, m := escalation(t, s)
+
+			assert.Contains(t, payload.ContinueURL,
+				"/checkout/success/"+s.OrderUUID)
+			assert.Equal(t, "error", m.Type)
+			assert.Equal(t, "payment_link_expired", m.Code)
+			assert.Equal(t, "requires_buyer_review", m.Severity)
+			assert.Contains(t, m.Text, "nothing is charged")
+			// Its recorded decision is long past: the expiry the
+			// checkout already published stands.
+			assert.Equal(t, s.PlacedAt.Add(30*time.Minute).Format(
+				time.RFC3339), payload.ExpiresAt)
+		})
+
+	// Django keeps a failed attempt's link payable: the buyer may try
+	// again on the same page until its hold ends.
+	t.Run("a failed attempt can be tried again", func(t *testing.T) {
+		s := placed(orderPaymentFailed)
+		s.PaymentURL = "https://www.vivapayments.com/web/checkout?ref=42"
+		payload, m := escalation(t, s)
+
 		assert.Equal(t, s.PaymentURL, payload.ContinueURL)
+		assert.Equal(t, "payment_failed", m.Code)
+		assert.Equal(t, "requires_buyer_input", m.Severity)
+		assert.Contains(t, m.Text, payableHold.Format(time.RFC3339))
+		assert.Equal(t, payableDecided.Format(time.RFC3339),
+			payload.ExpiresAt)
 	})
 
-	t.Run("placed order without a payment link hands off to the order",
+	// A payment being processed keeps its hold, and nothing decides it:
+	// the buyer is not sent to pay a second time.
+	t.Run("a payment being processed is not paid again",
 		func(t *testing.T) {
-			s := newSession(checkout.StatusRequiresEscalation)
-			s.OrderID, s.OrderUUID = 684, "b9be45e5-6062-4976-ae7b-2c31eb2ad689"
+			s := placed(orderProcessing)
+			s.PaymentURL = "https://www.vivapayments.com/web/checkout?ref=42"
+			payload, m := escalation(t, s)
+
+			assert.Contains(t, payload.ContinueURL,
+				"/checkout/success/"+s.OrderUUID)
+			assert.Equal(t, "payment_processing", m.Code)
+			assert.Equal(t, "requires_buyer_review", m.Severity)
+			assert.Equal(t, s.PlacedAt.Add(24*time.Hour).Format(
+				time.RFC3339), payload.ExpiresAt)
+		})
+
+	// Nothing will decide an order whose charge did not match its total,
+	// or whose store's sweep is off, and Django does not say which: the
+	// buyer is neither sent to pay again nor told nothing is charged.
+	t.Run("an order nothing will decide is not paid again",
+		func(t *testing.T) {
+			// The recorded order: its payment pending, no decision.
+			s := placed("b9be45e5-6062-4976-ae7b-2c31eb2ad689")
+			s.PaymentURL = "https://www.vivapayments.com/web/checkout?ref=42"
+			payload, m := escalation(t, s)
+
+			assert.Contains(t, payload.ContinueURL,
+				"/checkout/success/"+s.OrderUUID)
+			assert.Equal(t, "payment_in_review", m.Code)
+			assert.Equal(t, "requires_buyer_review", m.Severity)
+			assert.NotContains(t, m.Text, "nothing is charged")
+			assert.Equal(t, s.PlacedAt.Add(24*time.Hour).Format(
+				time.RFC3339), payload.ExpiresAt)
+		})
+
+	t.Run("a payment after the cancel leaves the checkout canceled",
+		func(t *testing.T) {
+			s := placed(orderCanceledPaid)
 			payload, err := b.BuildCheckout(t.Context(), tn, s,
 				checkoutCaps)
 			require.NoError(t, err)
 			require.NoError(t, schema.Validate(roundTrip(t, payload)))
-			assert.Contains(t, payload.ContinueURL,
-				"/checkout/success/"+s.OrderUUID)
+
+			assert.Equal(t, "canceled", payload.Status)
+			assert.Equal(t, checkout.StatusCanceled, s.Status)
+			assert.Empty(t, payload.ContinueURL)
+			require.Len(t, payload.Messages, 1)
+			assert.Equal(t, "info", payload.Messages[0].Type)
+			assert.Contains(t, payload.Messages[0].Text, "refunds")
+			assert.Equal(t, s.PlacedAt.Add(24*time.Hour).Format(
+				time.RFC3339), payload.ExpiresAt)
 		})
+
+	t.Run("an open checkout expires with its session", func(t *testing.T) {
+		s := newSession(checkout.StatusIncomplete)
+		payload, err := b.BuildCheckout(t.Context(), tn, s, checkoutCaps)
+		require.NoError(t, err)
+		assert.Equal(t, s.ExpiresAt.Format(time.RFC3339), payload.ExpiresAt)
+		assert.WithinDuration(t, time.Now().Add(30*time.Minute),
+			s.ExpiresAt, time.Minute)
+	})
 
 	t.Run("capabilities_incompatible is a valid error_response",
 		func(t *testing.T) {
 			errSchema := compileUCP(t, "common/types/error_response.json")
 			require.NoError(t, errSchema.Validate(roundTrip(t,
 				CapabilitiesIncompatible("https://shop.example.test/cart"))))
+		})
+
+	t.Run("a checkout not found is a valid error_response",
+		func(t *testing.T) {
+			errSchema := compileUCP(t, "common/types/error_response.json")
+			require.NoError(t, errSchema.Validate(roundTrip(t,
+				CheckoutNotFound(checkoutCaps, "no checkout"))))
 		})
 
 	t.Run("coupon cart emits a negative discount totals line",
@@ -307,6 +496,10 @@ func TestBuildCheckoutPaymentParity(t *testing.T) {
 			"29eb4495-e018-45e7-b59c-6646302bd4ef")
 		s.Status = st
 		s.PaymentURL = paymentURL
+		if st == checkout.StatusRequiresEscalation {
+			s.OrderID, s.OrderUUID = 684, orderPayable
+			s.PlacedAt = time.Now().UTC()
+		}
 		payload, err := b.BuildCheckout(t.Context(), tn, s, checkoutCaps)
 		require.NoError(t, err)
 		require.NoError(t, schema.Validate(roundTrip(t, payload)))

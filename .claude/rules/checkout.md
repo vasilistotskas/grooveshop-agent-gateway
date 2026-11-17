@@ -20,7 +20,11 @@ Loads when working on a checkout session on either surface, its completion, its 
   (UCP, `not_found`) or `acp.msgSessionGone` (ACP's 404): an order may exist, check
   before starting another checkout, with the order id if the caller
   holds one and the store's order confirmation if not. Never answer a
-  missing session with only "start a new one".
+  missing session with only "start a new one". On UCP that text is the
+  spec's error response, not a tool error (`ucp.CheckoutNotFound`,
+  `ucp.status: error`, `not_found`, `unrecoverable`, no `id`: the
+  schema is closed), whichever step found the session gone: `negotiated`
+  turns `errCheckoutGone` into it.
 - **A checkout session answers only on the surface that created it, and
   one a platform signed the creation of only to that platform.**
   `Session.Serves(checkout.Caller)` decides, on `Session.Protocol` and
@@ -120,8 +124,9 @@ Loads when working on a checkout session on either surface, its completion, its 
     and no order was sent. It does not mean nothing happened: an
     update has written its cart lines and coupon to Django by then, so
     UCP adds `checkoutNotUpdated` to that answer. A completion's last
-    save can lose only to an order event, the one other writer of a
-    session in progress: the completion then stores its outcome over
+    save can lose only to an order event, or to a read that stored what
+    the order said (`storeFollowed`), the other writers of a session in
+    progress, which move it only to `completed`: the completion then stores its outcome over
     the event's (`Flow.saveOverEvent`), keeping `completed` if the
     event said the order is paid. A last save that still cannot be
     stored, after its order was placed, is `ErrSessionNotSaved` with
@@ -163,8 +168,8 @@ Loads when working on a checkout session on either surface, its completion, its 
     either surface (`acp.refuseChange`, `mcpsrv.closedTo`): neither
     would touch the order.
   - It is kept `terminalTTL` once the stored session says an order
-    exists or may (`Session.keptLong`, `Session.ttl`): placed, a day
-    after `PlacedAt`; its order call unanswered (`Session.Unconfirmed`,
+    exists or may (`Session.keptLong`, `Session.keptUntil`): placed, a
+    day after `PlacedAt`, or until its `ExpiresAt` if that is later; its order call unanswered (`Session.Unconfirmed`,
     set by `Flow.place`), a day after that save. While it is held a
     caller is told what became of the checkout and a payment event
     finds it; afterwards its id is only "no session" (above). A
@@ -241,11 +246,18 @@ Loads when working on a checkout session on either surface, its completion, its 
       warn and answered 204, and the session is left as it is: a
       session is never completed without its order. The record
       `Flow.place` writes beside the session (`Store.IndexOrder`:
-      `ag:{schema}:cs:v4:{id}:order`, the order's uuid) is for calls on
+      `ag:{schema}:cs:v5:{id}:order`, the order's uuid) is for calls on
       the session, not events: it can be lost (a flush or a
       restore);
-    - a payment-completed event also sets `completed`. No other event
-      changes a status.
+    - the event's order status and payment status set the status
+      (`Session.FollowOrder`), as a read does: a checkout awaiting its
+      payment is `canceled` with its order (paid after the cancel
+      included: the store refunds it), else `completed` once its
+      payment is charged; one in progress whose order is paid is
+      `completed`. A terminal checkout never moves: one completed at
+      placement stays so when staff cancel the order. An event is a
+      snapshot Django took, and the states it moves a session to are
+      final, so one delivered late or out of order is still true.
 
     It takes no session lock. Its save is the compare-and-set, and a
     lost one is a 503 that Django sends again. Django retries five
@@ -257,6 +269,25 @@ Loads when working on a checkout session on either surface, its completion, its 
     so a call on one whose completion placed the order and could not
     save it is answered with the order (`placedUnsavedErr`,
     `writePlacedUnsaved`).
+- **A checkout publishes when it ends, and is readable until then**
+  (#108). `Session.ExpiresAt` is every UCP and ACP response's
+  `expires_at`. It never moves earlier than a value already published
+  (a platform stops polling at it), and the session is kept at least
+  until it (`keptUntil`). Each save sets it to the session's own end
+  (`Session.expire`): an open one's half hour, a placed one's day. A
+  checkout awaiting its payment is the exception: its expiry is its
+  order's `paymentDecidedBy` (`Session.AwaitDecision`), when Django's
+  sweep will have decided the order, or the session's end when nothing
+  will. The gateway holds no payment window, grace or sweep number.
+  The UCP render of a placed checkout reads its order
+  (`checkout.Pricing.Order`), and takes its status and expiry from it
+  (`FollowOrder`, `AwaitDecision`); `checkoutResult` stores what
+  changed (`storeFollowed`, a compare-and-set, best effort: the next
+  read reads the order again). An expired payment link is never
+  replaced: `ResumePayment` mints only the first link, and Django's
+  `payment_window_expired` and `order_not_payable` are
+  `ErrPaymentWindowClosed`, final for that order (UCP
+  `checkout_closed`). ACP has no checkout awaiting a payment.
 - **One live checkout holds a cart** (#141). Two sessions on one cart
   could each place an order, because Django keeps the cart of an order
   that awaits its online payment. The store keeps it to one:
@@ -315,9 +346,11 @@ Loads when working on a checkout session on either surface, its completion, its 
     out again, whatever protocol that checkout was (nothing is left
     of it to finish). An order Django no longer has keeps the cart;
     one that cannot be read answers `unavailable`. Two states fail
-    closed for the session's day: a checkout still in progress that
-    names a canceled order, and a paid order whose payment event never
-    arrived (#108 makes a placed checkout read its order).
+    closed: a checkout still in progress that names a canceled order,
+    for the session's day (`FollowOrder` moves one in progress only to
+    `completed`), and a paid order whose payment event never arrived,
+    until a read or an event of the checkout completes it. The holder
+    check reads the order only for "canceled", and stores nothing.
   - **No answer to a create gives another checkout, or names one or
     its order.** A checkout created unsigned is bound to no platform,
     so the UCP cart capability's "return the existing checkout" is not

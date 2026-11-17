@@ -1543,6 +1543,15 @@ func (h *Handler) completeError(
 				"payment page could not be opened. Do not complete " +
 				"again or start a new checkout.",
 		})
+	case errors.Is(err, checkout.ErrPaymentWindowClosed):
+		// No ACP order awaits an online payment (Flow.admit), so no
+		// completion here opens a link; answered for what it says.
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: "order_not_payable",
+			Message: "Order " + s.OrderUUID + " is placed and can no " +
+				"longer be paid. Do not complete again or start a new " +
+				"checkout before checking the order.",
+		})
 	case errors.Is(err, checkout.ErrSessionNotSaved):
 		writePlacedUnsaved(w, s.OrderUUID)
 	// ErrCartHeld is a create's, and is answered as create answers it:

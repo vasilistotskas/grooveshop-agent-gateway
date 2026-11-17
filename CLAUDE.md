@@ -166,13 +166,14 @@ is read; read the one for an area before changing it from elsewhere.
   gateway's authenticated call, and none of those is written to the shared
   Redis entry: `publicConfig` clears each, and
   `TestPublicConfigClearsEveryUndocumentedField` finds them by reflection.
-  A checkout session is `ag:{schema}:cs:v4:{id}`, its lock that plus
+  A checkout session is `ag:{schema}:cs:v5:{id}`, its lock that plus
   `:lock`, the order it placed that plus `:order`. The version is of how sessions are written, not only of their
   shape: bump it whenever an older pod writing the key its own way could
   undo what a newer one relies on (v1 pods wrote sessions unconditionally;
   v2 pods saved one without keeping its cart's record alive; v3 pods
   know nothing of the platform that signed a session's creation, and
-  their save drops it),
+  their save drops it; v4 pods know nothing of the expiry a session
+  published, and their save drops it),
   so the two never share a session; a session under an older key is not
   found. `TestSessionKeyIsVersioned` pins it. The session that holds a
   cart is named in `ag:{schema}:checkoutcart:{cartId}` (`cartKey`), a

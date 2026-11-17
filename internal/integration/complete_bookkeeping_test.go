@@ -80,7 +80,7 @@ type surfaceAnswer struct {
 	// status is the checkout status it rendered, "" when it refused.
 	status string
 	// refusal is why it refused: ACP's "<http status> <code>", UCP's
-	// error text.
+	// error text, or its error response as sent.
 	refusal string
 	// retryAfter is ACP's Retry-After header.
 	retryAfter string
@@ -167,6 +167,9 @@ func mcpAnswer(
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return surfaceAnswer{refusal: err.Error()}
+	}
+	if envelope, _ := out["ucp"].(map[string]any); envelope["status"] == "error" {
+		return surfaceAnswer{refusal: string(raw)}
 	}
 	a := rendered(out)
 	if len(res.Content) > 0 {

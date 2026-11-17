@@ -494,6 +494,8 @@ Two limits. The record can be lost while its session lives (a flush or a restore
 
 A session that may have an order is kept 24 hours: one that awaits its payment or is completed ends 24 hours after its order was placed; one whose order call went unanswered (`unconfirmed` in the stored session) has no placement time and ends 24 hours after that was stored. A session only marked in progress, like an open one, lives 30 minutes after its last save: that is every session whose completion is running, and one whose outcome Redis could not store afterwards (entry 11).
 
+Every UCP and ACP checkout response carries `expires_at`, the session's `expiresAt`: until then the checkout can be read, and it never moves earlier than a value already sent. For an open or completed checkout it is when its session ends (above). For one awaiting its payment it is the order's `paymentDecidedBy`, when Django's unpaid-order sweep will have decided it (a platform polls until then and reads the decision at it), or, when nothing will decide it (a payment being processed, a charge that did not match, the sweep switched off), when the session ends. A session is kept until its `expiresAt` if that comes after its 24 hours. Each read of a checkout awaiting its payment reads its order: canceled, the checkout is `canceled` (nothing was charged; a payment that landed after the cancel is refunded by the store); paid, it is `completed`. The order events do the same from the status and payment status they carry. A link whose time to pay ran out is not replaced: the checkout says so and points at the order, which Django cancels by `expires_at`. A checkout id no session is stored for is the spec's error response on UCP (`ucp.status: error`, `not_found`, `unrecoverable`), with the same text as before.
+
 ## 7. Store-admin connector (`/mcp/admin`)
 
 A store's owner and staff connect their own AI app to `https://<store>/mcp/admin` and read the store by their role. Every tool only reads. **A store switches it on** (`STAFF_AI_ACCESS_ENABLED`, off by default, served as `features.staffAiAccess`). While it is off, `/mcp/admin` and its metadata answer 404. Turning it off cuts connected apps at once: Django answers 404, and a tool call answers `access_off` (the gateway asks Django again before calling it missing data). Turning it on reaches the gateway within its 5-minute tenant cache. Their tokens come from Django's staff issuer on the platform's connect host (`connect.grooveshop.space`, staging `connect-staging.grooveshop.space`), never from the store's own issuer, which signs in customers. Design and the proposed write tools: `grooveshop-docs/src/dev/flows/staff-mcp.md`.
@@ -588,13 +590,14 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 
 ## 10. Before deploying a release that moves the checkout session key
 
-**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Three have so far:
+**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Four have so far:
 
 | Release | Key | Why an older pod must not share a session |
 |---|---|---|
 | The one that fixed gateway #84 | `ag:{schema}:cs:{id}` to `ag:{schema}:cs:v2:{id}` | It writes a session without checking what the key holds |
 | The one with gateway #141's cart record | `cs:v2` to `cs:v3` | It saves a session without keeping its cart's record alive, so the record would expire under a session that still holds the cart |
 | The one that binds a checkout to the platform that signed its creation | `cs:v3` to `cs:v4` | It knows nothing of that platform: it would answer any caller for the session, and its save would drop the platform |
+| The one that publishes `expires_at` (gateway #108) | `cs:v4` to `cs:v5` | It knows nothing of the expiry a session published: its save would drop it, and a later answer could give an earlier one |
 
 **The pods it replaces must already answer a missing session truthfully.** Since the release with gateway #138, a checkout no session is stored for is answered "an order may exist, check before starting another", never only "start a new one". While a key-moving release rolls out, a pod of either kind then answers truthfully for a session it cannot see. Do not deploy one onto pods older than that.
 
@@ -637,7 +640,7 @@ CHECK
 `-e` makes `redis-cli` exit non-zero when Redis refuses a command, which is how the check tells a failed read from an empty answer. "none being placed or awaiting payment" is printed only when every read succeeded. "sessions scanned: 0" with agent checkouts in use means the wrong Redis or database, not an empty one.
 
 - **None:** deploy.
-- **Some:** wait, or deploy and accept that those platforms are told an order may exist and to check for it. A session awaiting payment leaves the list when its payment lands (it becomes `completed`) or 24 hours after its order was placed, one whose order call went unanswered 24 hours after that was stored, and one only marked in progress 30 minutes after the mark. (On pods older than the #84 release, each left 30 minutes after its last save.)
+- **Some:** wait, or deploy and accept that those platforms are told an order may exist and to check for it. A session awaiting payment leaves the list when its payment lands (it becomes `completed`), when its order is canceled and an event or a read says so (from the `cs:v5` release on), or 24 hours after its order was placed, one whose order call went unanswered 24 hours after that was stored, and one only marked in progress 30 minutes after the mark. (On pods older than the #84 release, each left 30 minutes after its last save.)
 
 **A rollback** to the release before a key move (never further back than the one with gateway #138) is the same split with the roles swapped:
 

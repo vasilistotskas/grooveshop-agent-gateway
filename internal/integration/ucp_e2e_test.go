@@ -235,6 +235,10 @@ type checkoutFaults struct {
 	orderGone atomic.Bool
 	// orderCanceled makes a placed order read as canceled.
 	orderCanceled atomic.Bool
+	// orderOnline is set by an order created with a pay way settled
+	// online: reading it then shows it awaiting its payment, its link
+	// payable for 30 minutes more and decided 20 after that.
+	orderOnline atomic.Bool
 	// orderCreatedAt is when the placed order reads as created; unset,
 	// the fixture's time, which is long past.
 	orderCreatedAt atomic.Pointer[time.Time]
@@ -288,7 +292,8 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			}
 			createdAt := faults.orderCreatedAt.Load()
 			canceled := faults.orderCanceled.Load()
-			if createdAt == nil && !canceled {
+			online := faults.orderOnline.Load()
+			if createdAt == nil && !canceled && !online {
 				inner.ServeHTTP(w, r)
 				return
 			}
@@ -301,6 +306,14 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			}
 			if createdAt != nil {
 				order["createdAt"] = createdAt.Format(time.RFC3339Nano)
+			}
+			if online {
+				order["status"], order["paymentStatus"] = "PENDING", "PENDING"
+				now := time.Now().UTC()
+				order["paymentHoldExpiresAt"] = now.Add(
+					30 * time.Minute).Format(time.RFC3339)
+				order["paymentDecidedBy"] = now.Add(
+					50 * time.Minute).Format(time.RFC3339)
 			}
 			if canceled {
 				order["status"] = "CANCELED"
@@ -575,6 +588,8 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				faults.agentProtocol.Store(attribution["agentProtocol"])
 			}
 			faults.lastOrder.Store(&body)
+			faults.orderOnline.Store(body["payWayId"] != float64(1) ||
+				faults.codOnlineFrom.Load() > 0)
 			if hold := faults.orderHold.Load(); hold != nil {
 				(*hold)(r)
 			}
@@ -1802,9 +1817,8 @@ func TestUCPEndToEnd(t *testing.T) {
 				"meta": meta(uuid.NewString()), "id": bogus,
 			}},
 		} {
-			res := callTool(t, session, call.tool, call.args)
-			require.True(t, res.IsError, call.tool)
-			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
+			assert.Contains(t,
+				checkoutGone(t, callTool(t, session, call.tool, call.args)),
 				"no longer exists here", call.tool)
 		}
 		keys, err := stack.rdb.Keys(t.Context(),

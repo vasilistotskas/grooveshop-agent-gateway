@@ -690,7 +690,7 @@ func TestCompleteStoresItsOutcomeOverAnOrderEvent(t *testing.T) {
 		// The order exists and its link is being written: its payment
 		// event lands before the completion's last save.
 		return f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
-			fixtureOrderUUID, django.PaymentStatusCompleted)
+			fixtureOrderUUID, "PROCESSING", django.PaymentStatusCompleted)
 	}))
 
 	placement, err := f.flow.Complete(ctx, f.tenant, s)
@@ -738,7 +738,7 @@ func TestOrderEventRecordsTheOrderItsSessionNeverSaved(t *testing.T) {
 	placed := time.Now().Add(-time.Hour)
 	f.faults.orderCreatedAt.Store(&placed)
 	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
-		fixtureOrderUUID, "PENDING"))
+		fixtureOrderUUID, "PENDING", "PENDING"))
 
 	named := f.stored(t, s)
 	assert.Equal(t, checkout.StatusCompleteInProgress, named.Status)
@@ -751,27 +751,33 @@ func TestOrderEventRecordsTheOrderItsSessionNeverSaved(t *testing.T) {
 	assert.InDelta(t, (23 * time.Hour).Seconds(), ttl.Seconds(), 5)
 
 	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
-		fixtureOrderUUID, django.PaymentStatusCompleted))
+		fixtureOrderUUID, "PROCESSING", django.PaymentStatusCompleted))
 	assert.Equal(t, checkout.StatusCompleted, f.stored(t, s).Status)
 	assert.EqualValues(t, 1, f.faults.orderCreates.Load())
 }
 
 // An event can come long after its order: a payment made days later, or
 // Django pushing again. The session's day counts from the order, so one
-// recorded by such an event has already ended.
+// recorded by such an event is not kept a day after the event: it ends
+// when the expiry it already published does.
 func TestOrderEventForAnOldOrderDoesNotKeepItsSession(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
 	ctx := t.Context()
 	s := f.readySession(t)
 	s.Status = checkout.StatusCompleteInProgress
 	require.NoError(t, f.store.Save(ctx, s))
+	published := s.ExpiresAt
 
 	// The fixture order was created months ago.
 	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
-		fixtureOrderUUID, django.PaymentStatusCompleted))
+		fixtureOrderUUID, "PROCESSING", django.PaymentStatusCompleted))
 
-	_, err := f.store.LoadAnyProtocol(ctx, s.Schema, s.ID)
-	assert.ErrorIs(t, err, checkout.ErrNotFound)
+	stored := f.stored(t, s)
+	assert.Equal(t, checkout.StatusCompleted, stored.Status)
+	assert.True(t, stored.ExpiresAt.Equal(published), "%v", stored.ExpiresAt)
+	ttl, err := f.rdb.PTTL(ctx, sessionRedisKey(s.ID)).Result()
+	require.NoError(t, err)
+	assert.LessOrEqual(t, ttl, time.Until(published)+time.Second)
 }
 
 // A session that is gone before its completion's last save cannot be

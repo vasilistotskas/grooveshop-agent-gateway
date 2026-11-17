@@ -140,6 +140,9 @@ type Session struct {
 	Links                      []Link                      `json:"links"`
 	ContinueURL                string                      `json:"continue_url,omitempty"`
 	Order                      *Order                      `json:"order,omitempty"`
+	// ExpiresAt is when the session ends, RFC 3339
+	// (checkout.Session.ExpiresAt).
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // Discount-extension response types (schema.discount.json 2026-01-27; the

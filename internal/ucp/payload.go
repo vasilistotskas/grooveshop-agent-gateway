@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
@@ -54,6 +55,24 @@ func OrderNotFound(
 		Messages: []Message{{
 			Type: "error", Code: "not_found",
 			Text: "Order not found.", Severity: "unrecoverable",
+		}},
+	}
+}
+
+// CheckoutNotFound is the answer for a checkout id no checkout is kept
+// for, an error response (it carries no id: that schema is closed).
+// content says why the id alone cannot tell what became of it, and what
+// to do.
+func CheckoutNotFound(
+	capabilities map[string][]CapabilityRef, content string,
+) *ErrorResponse {
+	return &ErrorResponse{
+		UCP: ErrorEnvelope{
+			Version: Version, Status: "error", Capabilities: capabilities,
+		},
+		Messages: []Message{{
+			Type: "error", Code: "not_found", Text: content,
+			Severity: "unrecoverable",
 		}},
 	}
 }
@@ -173,6 +192,9 @@ type Checkout struct {
 	ContinueURL string             `json:"continue_url,omitempty"`
 	Order       *OrderConfirmation `json:"order,omitempty"`
 	Messages    []Message          `json:"messages,omitempty"`
+	// ExpiresAt is when the checkout ends for the platform, RFC 3339
+	// (checkout.Session.ExpiresAt): a platform polls it until then.
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // Builder renders sessions into wire payloads with fresh cart data.
@@ -199,6 +221,10 @@ func NewBuilder(
 // BuildCheckout renders the current session state, fetching the cart for
 // fresh line items and computing totals server-side (items + delivery +
 // payment fee).
+//
+// A placed checkout reads its order: its status and its expiry are the
+// order's (checkout.Session.FollowOrder, AwaitDecision), so s may come
+// back changed, and the caller stores it.
 func (b *Builder) BuildCheckout(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
 	capabilities map[string][]CapabilityRef,
@@ -208,6 +234,16 @@ func (b *Builder) BuildCheckout(
 		return nil, fmt.Errorf("ucp: pricing: %w", err)
 	}
 	links := b.site.Links(t.Domain, django.Language(ctx, t.TenantConfig))
+	order := pricing.Order
+	if order != nil {
+		s.FollowOrder(order.Status, order.PaymentStatus)
+		decidedBy, err := order.DecidedBy()
+		if err != nil {
+			return nil, fmt.Errorf("ucp: order %s decided by %q: %w",
+				order.UUID, order.PaymentDecidedBy, err)
+		}
+		s.AwaitDecision(decidedBy)
+	}
 
 	// The response declaration is authoritative for this checkout: it
 	// lists what the agent may still select.
@@ -239,6 +275,9 @@ func (b *Builder) BuildCheckout(
 			{Type: "terms_of_service", URL: links.Terms()},
 			{Type: "privacy_policy", URL: links.Privacy()},
 		},
+	}
+	if !s.ExpiresAt.IsZero() {
+		out.ExpiresAt = s.ExpiresAt.UTC().Format(time.RFC3339)
 	}
 
 	if s.Buyer != (checkout.Buyer{}) {
@@ -296,28 +335,21 @@ func (b *Builder) BuildCheckout(
 	switch s.Status {
 	case checkout.StatusRequiresEscalation:
 		// continue_url is REQUIRED whenever the status is
-		// requires_escalation. With a hosted PSP page it is that page.
-		// With an order but no page (the link could not be created) it is
-		// the order, never the cart: the cart is kept until payment, and
-		// claiming it would let the buyer check out a second order. The
-		// status is set only once the order exists, so one of the two is
-		// always there.
-		switch {
-		case s.PaymentURL != "":
-			out.ContinueURL = s.PaymentURL
-			out.Messages = append(out.Messages, Message{
-				Type: "info", Code: "requires_buyer_review",
-				Text: "The buyer must open continue_url to authorize " +
-					"payment on the store's hosted checkout.",
-			})
-		case s.OrderUUID != "":
-			out.ContinueURL = links.OrderSuccess(s.OrderUUID)
-			out.Messages = append(out.Messages, Message{
-				Type: "error", Code: "payment_link_unavailable",
-				Text: "The order is placed but its payment link could not " +
-					"be created; call complete_checkout again to retry.",
-				Severity: "recoverable",
-			})
+		// requires_escalation. The status is set only once the order
+		// exists, and the render read it.
+		if order == nil {
+			return nil, fmt.Errorf(
+				"ucp: checkout %s awaits the payment of no order", s.ID)
+		}
+		url, msg, err := awaitingPayment(s, order, links, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		out.ContinueURL = url
+		out.Messages = append(out.Messages, msg)
+	case checkout.StatusCanceled:
+		if order != nil {
+			out.Messages = append(out.Messages, orderCanceled(order))
 		}
 	case checkout.StatusIncomplete:
 		// No continue_url while the checkout is open, though the spec
@@ -340,6 +372,90 @@ func (b *Builder) BuildCheckout(
 		}
 	}
 	return out, nil
+}
+
+// awaitingPayment is what a checkout awaiting its payment tells the
+// platform, by its order: where the buyer goes (continue_url) and why.
+// That is the hosted payment page only while the buyer can still pay
+// there; otherwise it is the order's page, never the cart's: the cart is
+// kept until payment, and claiming it would let the buyer order it a
+// second time. No new link is minted once the first one's time to pay
+// has run out: Django cancels the order soon after, and every link more
+// is one more that could be paid. In order:
+//   - a payment the provider is processing: nothing for the buyer to do;
+//   - an order nothing will decide (paymentDecidedBy null) whose payment
+//     is not being processed: Django does not say whether a charge that
+//     did not match the total waits for the store, or its sweep is off,
+//     so the buyer is neither sent to pay again (a charge may exist) nor
+//     told that nothing is charged;
+//   - its time to pay ran out: the store cancels it, nothing is charged;
+//   - a failed attempt: the buyer may try again on the same page;
+//   - else the payment page, or, when it could not be created, the
+//     order's page while complete_checkout tries again.
+func awaitingPayment(
+	s *checkout.Session, o *django.Order, links storefront.Links,
+	now time.Time,
+) (string, Message, error) {
+	page := links.OrderSuccess(s.OrderUUID)
+	hold, err := o.HoldExpiresAt()
+	if err != nil {
+		return "", Message{}, fmt.Errorf(
+			"ucp: order %s hold expires at %q: %w",
+			o.UUID, o.PaymentHoldExpiresAt, err)
+	}
+	review := func(code, text string) (string, Message, error) {
+		return page, Message{Type: "error", Code: code, Text: text,
+			Severity: "requires_buyer_review"}, nil
+	}
+	pay := func(code, text string) (string, Message, error) {
+		return s.PaymentURL, Message{Type: "error", Code: code,
+			Text: text, Severity: "requires_buyer_input"}, nil
+	}
+	until := hold.UTC().Format(time.RFC3339)
+	switch {
+	case o.PaymentStatus == django.PaymentStatusProcessing:
+		return review("payment_processing", "The payment provider is "+
+			"processing the buyer's payment; the checkout completes or "+
+			"is canceled when it settles. Do not pay again.")
+	case o.PaymentDecidedBy == "":
+		return review("payment_in_review", "The store is settling this "+
+			"order's payment; the checkout follows the order when that "+
+			"ends. Do not pay again or start another checkout.")
+	case hold.IsZero() || !hold.After(now):
+		return review("payment_link_expired", "The time to pay for "+
+			"this order has run out. The store cancels it by expires_at "+
+			"and nothing is charged; the shopper can then check out the "+
+			"same cart again.")
+	case s.PaymentURL == "":
+		return page, Message{
+			Type: "error", Code: "payment_link_unavailable",
+			Text: "The order is placed but its payment link could not " +
+				"be created; call complete_checkout again to retry.",
+			Severity: "recoverable",
+		}, nil
+	case o.PaymentStatus == django.PaymentStatusFailed:
+		return pay("payment_failed", fmt.Sprintf("The last payment "+
+			"attempt failed. The buyer can try again at continue_url, "+
+			"the store's hosted payment page, before %s; unless it is "+
+			"paid, the store cancels the order by expires_at and nothing "+
+			"is charged.", until))
+	}
+	return pay("payment_required", fmt.Sprintf("The buyer must pay at "+
+		"continue_url, the store's hosted payment page, before %s.", until))
+}
+
+// orderCanceled is what a checkout whose order was canceled says of the
+// money: nothing was charged, or a payment that landed after the cancel
+// is refunded.
+func orderCanceled(o *django.Order) Message {
+	if slices.Contains(django.ChargedPaymentStatuses, o.PaymentStatus) {
+		return Message{Type: "info", Code: "order_canceled",
+			Text: "The order was canceled after a payment was " +
+				"received; the store refunds that payment."}
+	}
+	return Message{Type: "info", Code: "order_canceled",
+		Text: "The order was canceled before it was paid, and nothing " +
+			"was charged; the shopper can check out the same cart again."}
 }
 
 // renderDiscounts fills the discount extension's member: the codes the

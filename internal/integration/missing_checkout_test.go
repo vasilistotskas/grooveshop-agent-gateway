@@ -8,9 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // A checkout the gateway stores no session for may never have been
@@ -75,9 +73,7 @@ func TestAMissingCheckoutMayHavePlacedAnOrder(t *testing.T) {
 			"cancel_checkout": {"meta": meta(uuid.NewString()), "id": id},
 		}
 		for tool, args := range calls {
-			res := callTool(t, session, tool, args)
-			require.True(t, res.IsError, tool)
-			text := res.Content[0].(*mcp.TextContent).Text
+			text := checkoutGone(t, callTool(t, session, tool, args))
 			assert.Contains(t, text, "an order may exist", tool)
 			assert.Contains(t, text,
 				"do not start another checkout before checking", tool)

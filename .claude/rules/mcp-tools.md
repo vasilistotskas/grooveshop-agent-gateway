@@ -68,7 +68,8 @@ Loads when working on a tool of any of the three MCP servers. The code wins over
   - arguments the input schema cannot refuse: `invalid`
     (`invalidInput`);
   - a checkout no session is stored for: `not_found`
-    (`errCheckoutGone`);
+    (`errCheckoutGone`), answered as the spec's error response, not a
+    tool error (`negotiated`, `ucp.CheckoutNotFound`);
   - a checkout another request holds the lock of (`errCheckoutBusy`,
     send again shortly) and one whose completion may still be running
     (`errCompletionInFlight`, read it, never complete again):

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
 // toolError decodes a UCP tool's refusal as the gateway's ToolError, the
@@ -41,10 +42,17 @@ func TestUCPCheckoutAnswersCarryACode(t *testing.T) {
 			"complete": surface.answer(ctx, id, uuid.NewString(), nil),
 			"cancel":   surface.abandon(ctx, id),
 		} {
-			te := toolError(t, answer.refusal)
-			assert.Equal(t, mcptool.CodeNotFound, te.Code, what)
-			assert.Contains(t, te.Hint, "an order may exist", what)
-			assert.Contains(t, te.Hint,
+			// The spec's error response, not a tool error.
+			var gone ucp.ErrorResponse
+			require.NoError(t, json.Unmarshal([]byte(answer.refusal), &gone),
+				"not an error response: %s", answer.refusal)
+			assert.Equal(t, "error", gone.UCP.Status, what)
+			require.Len(t, gone.Messages, 1, what)
+			m := gone.Messages[0]
+			assert.Equal(t, mcptool.CodeNotFound, m.Code, what)
+			assert.Equal(t, "unrecoverable", m.Severity, what)
+			assert.Contains(t, m.Text, "an order may exist", what)
+			assert.Contains(t, m.Text,
 				"do not start another checkout before checking", what)
 		}
 	})

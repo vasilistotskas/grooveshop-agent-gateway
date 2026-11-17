@@ -88,7 +88,10 @@ func TestPlacedSessionCannotBeKeptAlive(t *testing.T) {
 
 	s := newSession()
 	s.Status = checkout.StatusRequiresEscalation
+	// Placed a day ago, less five minutes: the expiry it published
+	// then has passed with it.
 	s.PlacedAt = time.Now().Add(-24*time.Hour + 5*time.Minute)
+	s.ExpiresAt = s.PlacedAt
 	require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 	ttl, err := rdb.TTL(ctx, sessionRedisKey(s.ID)).Result()
 	require.NoError(t, err)
@@ -96,6 +99,7 @@ func TestPlacedSessionCannotBeKeptAlive(t *testing.T) {
 	assert.LessOrEqual(t, ttl, 5*time.Minute)
 
 	s.PlacedAt = time.Now().Add(-24 * time.Hour)
+	s.ExpiresAt = s.PlacedAt
 	require.NoError(t, store.Save(ctx, s))
 	_, err = store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 	assert.ErrorIs(t, err, checkout.ErrNotFound)
@@ -129,6 +133,7 @@ func TestAnEndedSessionIsDeletedOnlyOverTheSessionItsCallerRead(
 	assert.Equal(t, current.Revision, kept.Revision)
 
 	current.PlacedAt = time.Now().Add(-25 * time.Hour)
+	current.ExpiresAt = current.PlacedAt
 	require.NoError(t, store.Save(ctx, current))
 	_, err = store.LoadAnyProtocol(ctx, s.Schema, s.ID)
 	assert.ErrorIs(t, err, checkout.ErrNotFound)
@@ -371,6 +376,7 @@ func TestACommandSentTwiceIsAnsweredAsDone(t *testing.T) {
 		s.PlacedAt = time.Now().Add(-time.Hour)
 		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 		s.PlacedAt = time.Now().Add(-25 * time.Hour)
+		s.ExpiresAt = s.PlacedAt
 		var err error
 		twice.during(t, func() { err = store.Save(ctx, s) })
 		require.NoError(t, err)

@@ -63,6 +63,10 @@ type Pricing struct {
 	// store's advertised set: the selection is the authoritative fact
 	// for THIS checkout.
 	PayWay *django.PayWay
+	// Order is the placed order the totals were read from, nil before
+	// one exists: a placed checkout's status and expiry are its order's
+	// (Session.FollowOrder, Session.AwaitDecision).
+	Order *django.Order
 }
 
 // ComputePricing fetches the cart fresh and derives the totals breakdown
@@ -156,6 +160,7 @@ func orderPricing(
 	}
 	p := &Pricing{
 		Lines: make([]PricedLine, 0, len(o.Items)), HasDelivery: true,
+		Order: o,
 	}
 	for _, it := range o.Items {
 		unit, err := money.MinorUnits(it.Price.String())

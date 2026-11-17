@@ -136,6 +136,11 @@ Loads when working on the ACP handler, or the routes that answer before it. The 
     may name it. A retry of the key replays the session if it was
     recorded and creates anew if not. A 201 without its record would
     let that retry create a second session.
+  - Every session carries `expires_at` (`Session.ExpiresAt`, the
+    rule in `.claude/rules/checkout.md`): its own end, since no ACP
+    session awaits a payment. The status `expired` is never sent: a
+    session past its `expires_at` is no longer stored, and is the
+    404 `msgSessionGone` that says an order may exist.
   - `completeError` answers every `checkout` and `django` sentinel
     deliberately (`TestCompleteErrorMapsEverySentinel` walks them): a
     refusal is a 4xx, and an order that exists or may is never

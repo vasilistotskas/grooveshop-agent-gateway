@@ -167,6 +167,20 @@ func TestDecodeOrderPricingBreakdown(t *testing.T) {
 	assert.Equal(t, "0", pb.GiftCardAmount.String())
 	assert.Equal(t, "64.17", pb.GrandTotal.String())
 	assert.Equal(t, "EUR", pb.Currency)
+	// A collect-later order awaits no online payment.
+	assert.Empty(t, o.PaymentHoldExpiresAt)
+	assert.Empty(t, o.PaymentDecidedBy)
+}
+
+// An online order awaiting its payment names when its link stops being
+// payable and when Django will have decided it.
+func TestDecodeOrderAwaitingPayment(t *testing.T) {
+	o := decodeFixture[Order](t, "order_awaiting_payment.json")
+
+	assert.Equal(t, "PENDING", o.Status)
+	assert.Equal(t, "PENDING", o.PaymentStatus)
+	assert.Equal(t, "2026-05-21T21:44:59.047689+03:00", o.PaymentHoldExpiresAt)
+	assert.Equal(t, "2026-05-21T22:05:00+03:00", o.PaymentDecidedBy)
 }
 
 // PayWayByID reads the detail serializer, a superset of the list's.

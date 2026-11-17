@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
@@ -87,6 +88,9 @@ func Render(
 		// Handoff and session recovery: the buyer claims this cart in the
 		// browser and finishes checkout there (card payment included).
 		ContinueURL: links.CartClaim(s.CartID),
+	}
+	if !s.ExpiresAt.IsZero() {
+		out.ExpiresAt = s.ExpiresAt.UTC().Format(time.RFC3339)
 	}
 	switch {
 	// A placed order has no cart left to claim: the buyer goes to the order.
