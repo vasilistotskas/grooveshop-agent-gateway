@@ -11,9 +11,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/redis/go-redis/v9"
-
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
@@ -28,17 +25,15 @@ var errSealConflicts = errors.New(
 // seals every store's key still unsealed, deletes every unsealed record
 // whose key is sealed and every sentinel, logs what it did, and exits.
 // It exits non-zero when it left a store's records alone.
-func sealSigningKeys() error {
-	cfg, err := config.Load()
+func sealSigningKeys(boot *slog.Logger, level *slog.LevelVar) error {
+	cfg, log, err := configure(boot, level)
 	if err != nil {
 		return err
 	}
-	log := obs.NewLogger(cfg.LogLevel, cfg.Env, version)
-	redisOpts, err := config.RedisOptions(cfg.RedisURL)
+	rdb, err := newRedis(cfg.RedisURL, log)
 	if err != nil {
 		return err
 	}
-	rdb := redis.NewClient(redisOpts)
 	defer func() { _ = rdb.Close() }()
 	keys, err := ucp.NewKeys(rdb, cfg.SigningKeyKEK)
 	if err != nil {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -24,29 +25,63 @@ import (
 var version = "dev"
 
 func main() {
-	cmd := run
-	if len(os.Args) > 1 && os.Args[1] == ucp.SealCommand {
-		cmd = sealSigningKeys
-	}
-	if err := cmd(); err != nil {
-		slog.Error("fatal", slog.String("error", err.Error()))
-		os.Exit(1)
-	}
+	os.Exit(start(os.Stdout, os.Args[1:]))
 }
 
-func run() error {
+// start runs the command args name and returns the process's exit code.
+// The logger is built first, at info until the configuration names the
+// level, so every line, a boot failure's included, is JSON through the
+// one handler.
+func start(stdout io.Writer, args []string) int {
+	level := new(slog.LevelVar)
+	log := obs.NewLogger(stdout, level, version)
+	cmd := run
+	if len(args) > 0 && args[0] == ucp.SealCommand {
+		cmd = sealSigningKeys
+	}
+	if err := cmd(log, level); err != nil {
+		log.Error("fatal", slog.String("error", err.Error()))
+		return 1
+	}
+	return 0
+}
+
+// configure loads the configuration and sets the logger's level and
+// environment from it.
+func configure(
+	boot *slog.Logger, level *slog.LevelVar,
+) (config.Config, *slog.Logger, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return err
+		return config.Config{}, nil, err
 	}
-	log := obs.NewLogger(cfg.LogLevel, cfg.Env, version)
-	metrics := obs.NewMetrics()
+	level.Set(cfg.LogLevel)
+	return cfg, boot.With(slog.String(obs.KeyEnv, cfg.Env)), nil
+}
 
-	redisOpts, err := config.RedisOptions(cfg.RedisURL)
+// newRedis is the gateway's one Redis client, built from REDIS_URL. It
+// routes go-redis's own log lines through log: go-redis has one logger
+// for the process (redis.SetLogger), set here with the client.
+func newRedis(rawURL string, log *slog.Logger) (*redis.Client, error) {
+	opts, err := config.RedisOptions(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	redis.SetLogger(obs.RedisLogger{Log: log})
+	return redis.NewClient(opts), nil
+}
+
+func run(boot *slog.Logger, level *slog.LevelVar) error {
+	cfg, log, err := configure(boot, level)
 	if err != nil {
 		return err
 	}
-	rdb := redis.NewClient(redisOpts)
+	metrics := obs.NewMetrics()
+
+	rdb, err := newRedis(cfg.RedisURL, log)
+	if err != nil {
+		return err
+	}
 	defer func() { _ = rdb.Close() }()
 
 	dj := django.New(

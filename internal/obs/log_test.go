@@ -95,3 +95,42 @@ func TestContextHandlerKeepsTheLevel(t *testing.T) {
 	log.InfoContext(WithRequestID(t.Context(), "req-1"), "dropped")
 	assert.Empty(t, buf.String())
 }
+
+// go-redis's lines are the gateway's JSON at warn, and one go-redis logs
+// with a request's context names the request and store.
+func TestRedisLoggerWritesTheGatewaysLines(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(NewContextHandler(slog.NewJSONHandler(&buf, nil)))
+	ctx := WithTenantSlot(WithRequestID(t.Context(), "req-1"))
+	SetTenant(ctx, "demostore")
+
+	RedisLogger{Log: log}.Printf(ctx, "redis: %s after %d attempts",
+		"failed to dial", 3)
+
+	got := lines(t, &buf)
+	require.Len(t, got, 1)
+	assert.Equal(t, "WARN", got[0]["level"])
+	assert.Equal(t, "redis client", got[0]["msg"])
+	assert.Equal(t, "redis: failed to dial after 3 attempts",
+		got[0]["detail"])
+	assert.Equal(t, "req-1", got[0][KeyRequestID])
+	assert.Equal(t, "demostore", got[0][KeyTenant])
+}
+
+// The logger is JSON from its first line, at the level a LevelVar names
+// once it is set.
+func TestNewLoggerFollowsItsLevel(t *testing.T) {
+	var buf bytes.Buffer
+	level := new(slog.LevelVar)
+	log := NewLogger(&buf, level, "v1")
+
+	log.DebugContext(t.Context(), "dropped at info")
+	level.Set(slog.LevelDebug)
+	log.DebugContext(t.Context(), "kept at debug")
+
+	got := lines(t, &buf)
+	require.Len(t, got, 1)
+	assert.Equal(t, "kept at debug", got[0]["msg"])
+	assert.Equal(t, "agent-gateway", got[0]["service"])
+	assert.Equal(t, "v1", got[0]["version"])
+}

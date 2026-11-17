@@ -40,6 +40,27 @@ Loads when working on the global middleware chain, logging, metrics or health. T
   with the context whenever one is in scope (sloglint enforces it); a
   line naming a store uses the key `tenant` (`obs.KeyTenant`), never
   `schema`, and only where no request context carries it.
+  - **Every line is JSON, through one handler.** `cmd/gateway` builds
+    the logger (`obs.NewLogger`) before the configuration loads, at
+    info until `LOG_LEVEL` sets its `slog.LevelVar`; `env` is added
+    once the configuration names it. So a boot failure is one JSON
+    `fatal` line at error, and the process exits 1. go-redis's own
+    lines (one logger per process, `redis.SetLogger`, set by
+    `newRedis` with the client) go through it too
+    (`obs.RedisLogger`): `redis client` at warn, its text in
+    `detail`. One go-redis logs with a request's context names the
+    request; most (a dial, the pool's upkeep) run on its own.
+  - **A shared flight logs under its leader; each waiter's outcome
+    under its own request.** Work that singleflight shares (the tenant
+    resolve, the bearer probe, the feed sweep, the UCP profile fetch)
+    runs on the context of the request that started it, detached
+    (`context.WithoutCancel`): its own lines, the Django client's and
+    Redis's among them, carry that request's id and store, once. What
+    each request then answers is its own, and so is any line it logs
+    about it (`store resolution failed`, `token verification failed`,
+    its access line): logged with its own context, never inside the
+    flight. `TestASharedResolveLogsEachOutcomeUnderItsOwnRequest` and
+    `TestASharedProbeLogsEachOutcomeUnderItsOwnRequest` hold it.
   `/healthz` is process-only; `/readyz` gates on Redis and on the
   startup checks (`started`: the signing keys, `ucp.Keys.Checked`) —
   Django-down must never flip readiness (agents get actionable errors,

@@ -51,7 +51,9 @@ Loads when working on the feeds or the header parsing they share with the Server
   and an error answer none of the three. The sweep is
   detached from the request (`context.WithoutCancel`) and names no
   caller to Django (`django.WithoutCaller`): it is the store's work, not
-  the crawler's. Field limits are the strictest of Google, Meta and
+  the crawler's. It keeps the request's id and store, so every line it
+  logs, the Django client's included, names both
+  (`TestASweepsDjangoLinesNameTheStoreAndRequest`). Field limits are the strictest of Google, Meta and
   TikTok, named at the top of `rss.go`. A description drops what the
   storefront does not show: raw-text elements and any element carrying
   `hidden` (`plainText`). `internal/httphdr` parses

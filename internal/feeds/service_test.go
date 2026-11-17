@@ -214,6 +214,46 @@ func TestRefreshFailureIsLoggedAndCounted(t *testing.T) {
 		"gateway_feed_generation_failures_total"), 0)
 }
 
+// Every line a sweep logs names the store and the request that started
+// it, the Django client's own included, though that request has gone:
+// the sweep runs on the request's context, detached from its end.
+func TestASweepsDjangoLinesNameTheStoreAndRequest(t *testing.T) {
+	var logs syncBuffer
+	log := slog.New(obs.NewContextHandler(slog.NewJSONHandler(&logs, nil)))
+	// Django drops every connection: an outage, logged by the client.
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			conn, _, err := http.NewResponseController(w).Hijack()
+			if err == nil {
+				_ = conn.Close()
+			}
+		}))
+	t.Cleanup(srv.Close)
+	dj := django.New(srv.URL+"/api/v1", "api.example.test", "secret",
+		time.Second, log, obs.NewMetrics())
+	_, rdb := newMemRedis(map[string]string{})
+	s := feedService(dj, rdb, &logs)
+
+	ctx := obs.WithRequestID(
+		obs.WithTenantSlot(t.Context()), "req-184")
+	obs.SetTenant(ctx, "demostore")
+	ctx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	require.Error(t, (<-s.refresh(ctx, demoTenant())).Err)
+
+	for _, msg := range []string{
+		"django request failed", "feed generation failed",
+	} {
+		lines := logLines(t, &logs, msg)
+		require.NotEmpty(t, lines, logs.String())
+		for _, line := range lines {
+			assert.Equal(t, "req-184", line[obs.KeyRequestID], msg)
+			assert.Equal(t, "demostore", line[obs.KeyTenant], msg)
+		}
+	}
+}
+
 // A generation stores each document as one gzip member written as the
 // catalogue arrived, whose header and ISIZE the read path accepts and
 // whose metadata are the document's: its length, and the weak tag of
