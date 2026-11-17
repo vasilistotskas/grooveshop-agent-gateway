@@ -12,7 +12,9 @@ Loads when working on the resolver, its caches or the tenant middleware. The cod
   (tenant from the **real Host header only** — inbound X-Forwarded-Host is
   deliberately ignored; spoofing it must never switch tenants). A store
   it cannot resolve is a 503 with an error line, unless the caller hung
-  up (`context.Canceled`), which logs nothing.
+  up (`context.Canceled`), which logs nothing. That line is each
+  request's own, under its own id; the shared resolve's lines carry the
+  id of the request that started it (`.claude/rules/httpmw-obs.md`).
   Credentials (`chatApiKey`, `acpBearerToken`) live in process memory
   only: Redis holds the public config, so `/chat` and `/acp/*`
   (`MiddlewareWithSecrets`) top a Redis-tier tenant up with

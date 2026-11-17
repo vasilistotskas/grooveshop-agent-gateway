@@ -213,7 +213,7 @@ func payWayDjango(t *testing.T) *django.Client {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return django.New(srv.URL+"/api/v1", "api.test", "secret",
-		5_000_000_000, obs.NewLogger(slog.LevelError, "test", "test"),
+		5_000_000_000, slog.New(slog.DiscardHandler),
 		obs.NewMetrics())
 }
 
@@ -286,7 +286,7 @@ func TestResolvePayWayWithholdsUnreadableSettlements(t *testing.T) {
 			srv := httptest.NewServer(mux)
 			t.Cleanup(srv.Close)
 			dj := django.New(srv.URL+"/api/v1", "api.test", "secret",
-				5_000_000_000, obs.NewLogger(slog.LevelError, "test", "test"),
+				5_000_000_000, slog.New(slog.DiscardHandler),
 				obs.NewMetrics())
 
 			_, err := resolvePayWay(t.Context(), dj,
@@ -363,7 +363,7 @@ func carrierPayWays(t *testing.T) *django.Client {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return django.New(srv.URL+"/api/v1", "api.test", "secret",
-		5_000_000_000, obs.NewLogger(slog.LevelError, "test", "test"),
+		5_000_000_000, slog.New(slog.DiscardHandler),
 		obs.NewMetrics())
 }
 

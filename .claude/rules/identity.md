@@ -42,7 +42,10 @@ Loads when working on how /mcp and /mcp/admin verify a bearer, or /mcp's account
       bearer is a 404 on /mcp, and a guest's 200 after;
     - Django's 429: a 429 with its `Retry-After`;
     - a caller that hung up: a 503 with no error line;
-    - anything else: a 503, logged with `server` (mcp or mcp_admin).
+    - anything else: a 503, logged with `server` (mcp or mcp_admin),
+      under the refused request's own id, though it waited on a probe
+      another request started (whose lines carry that one's,
+      `.claude/rules/httpmw-obs.md`).
   - On /mcp a present `Authorization: Bearer` is verified against Django
     `/agent/me` (`NewShopperVerifier`; a 403 there is a valid token
     without the `profile` scope). On a store with `customerAccounts` off

@@ -2,8 +2,10 @@ package obs
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
-	"os"
+	"strings"
 	"sync"
 )
 
@@ -12,17 +14,49 @@ import (
 const (
 	KeyRequestID = "request_id"
 	KeyTenant    = "tenant"
+	// KeyEnv names the deployment environment, added once the
+	// configuration that holds it has loaded.
+	KeyEnv = "env"
 )
 
-// NewLogger returns a JSON slog logger writing to stdout. Vector tails pod
-// stdout in the cluster, so structured JSON is the only output format.
-func NewLogger(level slog.Level, env, version string) *slog.Logger {
-	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+// NewLogger returns the gateway's JSON slog logger, writing to w (the
+// process's stdout: Vector tails pod stdout in the cluster, so structured
+// JSON is the only output format). It is built before the configuration
+// loads, so a boot failure is JSON too: level is set once the
+// configuration names it (a *slog.LevelVar), and the caller adds KeyEnv.
+func NewLogger(
+	w io.Writer, level slog.Leveler, version string,
+) *slog.Logger {
+	h := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level})
 	return slog.New(NewContextHandler(h)).With(
 		slog.String("service", "agent-gateway"),
-		slog.String("env", env),
 		slog.String("version", version),
 	)
+}
+
+// RedisLogger hands go-redis's own log lines (redis.SetLogger) to the
+// gateway's logger, which would otherwise be plain text on stderr. Its
+// lines are free text of no stated level; most name a failure that also
+// reaches the command's caller as an error, so they are warnings. The
+// exception is a panic go-redis recovered on a goroutine of its own
+// (its pool, its pipelines, its workers), which reaches no caller: every
+// such line says "panic", and is logged at error, so it is kept at any
+// LOG_LEVEL. A line go-redis logs with a request's context names the
+// request and store; most (a dial, the pool's upkeep) run on a context
+// of its own.
+type RedisLogger struct {
+	Log *slog.Logger
+}
+
+// Printf implements go-redis's internal.Logging.
+func (l RedisLogger) Printf(ctx context.Context, format string, v ...any) {
+	detail := fmt.Sprintf(format, v...)
+	level := slog.LevelWarn
+	if strings.Contains(detail, "panic") {
+		level = slog.LevelError
+	}
+	l.Log.LogAttrs(ctx, level, "redis client",
+		slog.String("detail", detail))
 }
 
 type ctxKeyRequestID struct{}
