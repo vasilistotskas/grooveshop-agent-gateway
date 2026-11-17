@@ -1482,19 +1482,14 @@ func (h *handlers) checkoutResult(
 			"Checkout %s is ready — call complete_checkout to place the "+
 				"order.", s.ID)
 	case checkout.StatusRequiresEscalation:
-		m := firstError(payload)
-		until := fmt.Sprintf("read it again by %s, when the store will "+
-			"have decided the order", payload.ExpiresAt)
-		if m.Code == "payment_processing" || m.Code == "payment_in_review" {
-			until = fmt.Sprintf("nothing is sure to decide the order by "+
-				"%s, when this checkout ends: then read the order with "+
-				"get_order", payload.ExpiresAt)
-		}
+		// The message says whether, and by when, the store decides it.
 		text = fmt.Sprintf(
 			"Order %s is placed and awaits its payment: %s "+
 				"(continue_url: %s). The checkout completes when the "+
-				"payment lands, or is canceled with the order; %s.",
-			s.OrderUUID, m.Text, payload.ContinueURL, until)
+				"payment lands, or is canceled with the order; it can be "+
+				"read until %s.",
+			s.OrderUUID, firstError(payload).Text, payload.ContinueURL,
+			payload.ExpiresAt)
 	case checkout.StatusCompleted:
 		text = fmt.Sprintf(
 			"Order %s is placed and confirmed. Track it with track_order.",

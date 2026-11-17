@@ -216,9 +216,10 @@ wins over this page.
     match the total waits for the store): the order's page,
     `requires_buyer_review`, never pay again, and never "owes nothing";
   - `payment_link_expired`: its hold (`paymentHoldExpiresAt`) has
-    passed, the order's page, `requires_buyer_review`: the store cancels
-    it (by `expires_at` when its sweep will decide it) and the shopper
-    owes nothing;
+    passed, the order's page, `requires_buyer_review`: the shopper owes
+    nothing, and the store cancels it by `expires_at` when its sweep will
+    decide it (a store whose sweep is off is promised no cancel, here or
+    in `payment_failed`);
   - `payment_with_store`: Django holds no payment open for the order (no
     hold), the order's page, `requires_buyer_review`, and no link
     is minted for it;

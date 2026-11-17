@@ -171,6 +171,8 @@ const (
 	orderProcessing = "4bad8a6c-be95-4fc1-b07b-6d5c9eb0f0c4"
 	// Payable, but the store's sweep is off: nothing will decide it.
 	orderSweepOff = "6dcfac8e-d0b7-4e13-92c8-8f6eaf1d2ae6"
+	// Its hold has passed, and the store's sweep is off.
+	orderSweepOffExpired = "8fbbce0a-f2ea-4f35-b4ea-ab8fc13f4c08"
 	// A charge that did not match its total waits for the store.
 	orderAwaitsReview = "7edabd9f-e1c8-4f24-a3d9-9a7fb02e3bf7"
 	// Canceled, and paid after that.
@@ -204,6 +206,9 @@ var placedOrders = map[string]*strings.Replacer{
 		`"paymentDecidedBy":null`),
 	orderSweepOff: strings.NewReplacer(
 		"2026-05-21T21:44:59.047689+03:00", payableHold.Format(time.RFC3339),
+		`"paymentDecidedBy":"2026-05-21T22:05:00+03:00"`,
+		`"paymentDecidedBy":null`),
+	orderSweepOffExpired: strings.NewReplacer(
 		`"paymentDecidedBy":"2026-05-21T22:05:00+03:00"`,
 		`"paymentDecidedBy":null`),
 	orderAwaitsReview: strings.NewReplacer(
@@ -397,6 +402,19 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 		assert.Equal(t, s.PlacedAt.Add(24*time.Hour).Format(
 			time.RFC3339), payload.ExpiresAt)
 	})
+
+	// With the sweep off nothing cancels an order whose time ran out: no
+	// cancel is promised, and the cart stays its.
+	t.Run("an expired order whose sweep is off is promised no cancel",
+		func(t *testing.T) {
+			s := placed(orderSweepOffExpired)
+			s.PaymentURL = "https://www.vivapayments.com/web/checkout?ref=42"
+			_, m := escalation(t, s)
+
+			assert.Equal(t, "payment_link_expired", m.Code)
+			assert.NotContains(t, m.Text, "cancels it by")
+			assert.Contains(t, m.Text, "has not canceled it yet")
+		})
 
 	// Django holds no payment open for the recorded collect-later order:
 	// its link is not offered, and the store handles it.

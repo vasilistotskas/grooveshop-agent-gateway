@@ -385,8 +385,9 @@ func (b *Builder) BuildCheckout(
 //   - a payment the provider is processing, or a charge that did not
 //     match the total and waits for the store (paymentAwaitsReview): the
 //     buyer must not pay again;
-//   - its time to pay ran out: the store cancels it (by expires_at when
-//     its sweep will decide it), and the shopper owes nothing;
+//   - its time to pay ran out: the shopper owes nothing, and the store
+//     cancels it by expires_at when its sweep will decide it (a store
+//     whose sweep is off is promised no cancel);
 //   - Django holds no payment open for it (no hold): the store handles
 //     it, and no link is minted for it;
 //   - no link yet: the order's page, while complete_checkout tries again;
@@ -412,6 +413,8 @@ func awaitingPayment(
 			Text: text, Severity: "requires_buyer_input"}, nil
 	}
 	until := hold.UTC().Format(time.RFC3339)
+	// Only an order Django's sweep will decide is promised a cancel.
+	decided := o.PaymentDecidedBy != ""
 	switch {
 	case o.PaymentStatus == django.PaymentStatusProcessing:
 		return review("payment_processing", "The payment provider is "+
@@ -423,15 +426,16 @@ func awaitingPayment(
 			"it; the checkout follows the order then. Do not pay again "+
 			"or start another checkout.")
 	case !hold.IsZero() && !hold.After(now):
-		cancels := "the store cancels the order"
-		if o.PaymentDecidedBy != "" {
-			cancels += " by expires_at"
+		then := "The store has not canceled it yet: until it does, its " +
+			"cart cannot be checked out again."
+		if decided {
+			then = "The store cancels it by expires_at, and the shopper " +
+				"can then check out the same cart again."
 		}
 		return review("payment_link_expired", "The time to pay for "+
 			"this order has run out. A payment made just before then may "+
-			"still be confirmed; otherwise "+cancels+", the shopper owes "+
-			"nothing for it, and they can then check out the same cart "+
-			"again.")
+			"still be confirmed; otherwise the shopper owes nothing for "+
+			"it. "+then)
 	case hold.IsZero():
 		return review("payment_with_store", "The store holds no "+
 			"payment open for this order and handles it itself; the "+
@@ -445,11 +449,14 @@ func awaitingPayment(
 			Severity: "recoverable",
 		}, nil
 	case o.PaymentStatus == django.PaymentStatusFailed:
+		cancels := ""
+		if decided {
+			cancels = " the store cancels the order by expires_at, and"
+		}
 		return pay("payment_failed", fmt.Sprintf("The last payment "+
 			"attempt failed. The buyer can try again at continue_url, "+
 			"the store's hosted payment page, before %s; unless it is "+
-			"paid, the store cancels the order and the shopper owes "+
-			"nothing for it.", until))
+			"paid,%s the shopper owes nothing for it.", until, cancels))
 	}
 	return pay("payment_required", fmt.Sprintf("The buyer must pay at "+
 		"continue_url, the store's hosted payment page, before %s.", until))
