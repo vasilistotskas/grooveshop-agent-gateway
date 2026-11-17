@@ -3,7 +3,6 @@
 package realstack
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -38,7 +37,7 @@ var staffScopes = []string{
 // managePy runs a Django shell script in the running backend.
 func managePy(t *testing.T, script string) {
 	t.Helper()
-	code, out, err := running.django.Exec(context.Background(), []string{
+	code, out, err := running.django.Exec(t.Context(), []string{
 		".venv/bin/python", "manage.py", "shell", "-c", script,
 	})
 	require.NoError(t, err)
@@ -152,7 +151,7 @@ func connectAdmin(t *testing.T, token string) *mcp.ClientSession {
 	t.Helper()
 	session, err := mcp.NewClient(
 		&mcp.Implementation{Name: "real-stack-staff", Version: "test"}, nil,
-	).Connect(context.Background(), &mcp.StreamableClientTransport{
+	).Connect(t.Context(), &mcp.StreamableClientTransport{
 		Endpoint: running.gatewayURL + "/mcp/admin",
 		HTTPClient: &http.Client{
 			Timeout:   requestTimeout,

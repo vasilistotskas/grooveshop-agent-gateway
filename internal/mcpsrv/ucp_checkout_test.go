@@ -641,5 +641,5 @@ func TestACompletionWhoseOrderCanNoLongerBePaidIsNotAFailedOrder(t *testing.T) {
 	require.True(t, ok, "%v", err)
 	assert.Equal(t, mcptool.CodeCheckoutClosed, te.Code)
 	assert.Contains(t, te.Hint, "order o can no longer be paid")
-	assert.Contains(t, te.Hint, "start another checkout before reading it")
+	assert.Contains(t, te.Hint, "start another checkout: read it")
 }

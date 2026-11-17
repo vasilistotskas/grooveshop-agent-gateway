@@ -65,7 +65,7 @@ func TestRunbookCommandsRunAsWritten(t *testing.T) {
 			want, known := runbookExpects[flow]
 			require.True(t, known, "flow %s has no expected output", flow)
 
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "bash", "-c",
 				"set -eo pipefail\n. scripts/agent-lib.sh\n"+block)

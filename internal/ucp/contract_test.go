@@ -171,6 +171,8 @@ const (
 	orderProcessing = "4bad8a6c-be95-4fc1-b07b-6d5c9eb0f0c4"
 	// Canceled, and paid after that.
 	orderCanceledPaid = "3a9c7f5b-ad84-4eb0-af6a-5c4b8d9eafb3"
+	// Canceled unpaid: Django settles its payment as canceled.
+	orderCanceledUnpaid = "5cbe9b7d-cfa6-40d2-81b7-7e6daf0c1fd5"
 )
 
 // The instants the payable order reads: its hold and the decision.
@@ -188,6 +190,14 @@ var placedOrders = map[string]*strings.Replacer{
 		`"paymentStatus":"PENDING"`, `"paymentStatus":"FAILED"`,
 		"2026-05-21T21:44:59.047689+03:00", payableHold.Format(time.RFC3339),
 		"2026-05-21T22:05:00+03:00", payableDecided.Format(time.RFC3339)),
+	orderCanceledUnpaid: strings.NewReplacer(
+		`"status":"PENDING","statusDisplay"`,
+		`"status":"CANCELED","statusDisplay"`,
+		`"paymentStatus":"PENDING"`, `"paymentStatus":"CANCELED"`,
+		`"paymentHoldExpiresAt":"2026-05-21T21:44:59.047689+03:00"`,
+		`"paymentHoldExpiresAt":null`,
+		`"paymentDecidedBy":"2026-05-21T22:05:00+03:00"`,
+		`"paymentDecidedBy":null`),
 	orderProcessing: strings.NewReplacer(
 		`"paymentStatus":"PENDING"`, `"paymentStatus":"PROCESSING"`,
 		"2026-05-21T21:44:59.047689+03:00", payableHold.Format(time.RFC3339),
@@ -305,7 +315,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 			assert.Equal(t, "error", m.Type)
 			assert.Equal(t, "payment_link_expired", m.Code)
 			assert.Equal(t, "requires_buyer_review", m.Severity)
-			assert.Contains(t, m.Text, "nothing is charged")
+			assert.Contains(t, m.Text, "owes nothing")
 			// Its recorded decision is long past: the expiry the
 			// checkout already published stands.
 			assert.Equal(t, s.PlacedAt.Add(30*time.Minute).Format(
@@ -345,7 +355,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 
 	// Nothing will decide an order whose charge did not match its total,
 	// or whose store's sweep is off, and Django does not say which: the
-	// buyer is neither sent to pay again nor told nothing is charged.
+	// buyer is neither sent to pay again nor told they owe nothing.
 	t.Run("an order nothing will decide is not paid again",
 		func(t *testing.T) {
 			// The recorded order: its payment pending, no decision.
@@ -357,7 +367,7 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 				"/checkout/success/"+s.OrderUUID)
 			assert.Equal(t, "payment_in_review", m.Code)
 			assert.Equal(t, "requires_buyer_review", m.Severity)
-			assert.NotContains(t, m.Text, "nothing is charged")
+			assert.NotContains(t, m.Text, "owes nothing")
 			assert.Equal(t, s.PlacedAt.Add(24*time.Hour).Format(
 				time.RFC3339), payload.ExpiresAt)
 		})
@@ -379,6 +389,19 @@ func TestBuildCheckoutMatchesCheckoutSchema(t *testing.T) {
 			assert.Equal(t, s.PlacedAt.Add(24*time.Hour).Format(
 				time.RFC3339), payload.ExpiresAt)
 		})
+
+	// Django settles a payment as canceled with its order whatever it
+	// was, so the checkout never says nothing was charged.
+	t.Run("a canceled unpaid order owes nothing", func(t *testing.T) {
+		s := placed(orderCanceledUnpaid)
+		payload, err := b.BuildCheckout(t.Context(), tn, s, checkoutCaps)
+		require.NoError(t, err)
+		require.NoError(t, schema.Validate(roundTrip(t, payload)))
+		assert.Equal(t, "canceled", payload.Status)
+		require.Len(t, payload.Messages, 1)
+		assert.Contains(t, payload.Messages[0].Text, "owes nothing")
+		assert.NotContains(t, payload.Messages[0].Text, "nothing was charged")
+	})
 
 	t.Run("an open checkout expires with its session", func(t *testing.T) {
 		s := newSession(checkout.StatusIncomplete)

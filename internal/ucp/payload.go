@@ -387,8 +387,8 @@ func (b *Builder) BuildCheckout(
 //     is not being processed: Django does not say whether a charge that
 //     did not match the total waits for the store, or its sweep is off,
 //     so the buyer is neither sent to pay again (a charge may exist) nor
-//     told that nothing is charged;
-//   - its time to pay ran out: the store cancels it, nothing is charged;
+//     told that they owe nothing;
+//   - its time to pay ran out: the store cancels it, nothing is owed;
 //   - a failed attempt: the buyer may try again on the same page;
 //   - else the payment page, or, when it could not be created, the
 //     order's page while complete_checkout tries again.
@@ -425,8 +425,8 @@ func awaitingPayment(
 		return review("payment_link_expired", "The time to pay for "+
 			"this order has run out. A payment made just before then may "+
 			"still be confirmed; otherwise the store cancels the order by "+
-			"expires_at and nothing is charged, and the shopper can then "+
-			"check out the same cart again.")
+			"expires_at, the shopper owes nothing for it, and they can "+
+			"then check out the same cart again.")
 	case s.PaymentURL == "":
 		return page, Message{
 			Type: "error", Code: "payment_link_unavailable",
@@ -438,25 +438,30 @@ func awaitingPayment(
 		return pay("payment_failed", fmt.Sprintf("The last payment "+
 			"attempt failed. The buyer can try again at continue_url, "+
 			"the store's hosted payment page, before %s; unless it is "+
-			"paid, the store cancels the order by expires_at and nothing "+
-			"is charged.", until))
+			"paid, the store cancels the order by expires_at and the "+
+			"shopper owes nothing for it.", until))
 	}
 	return pay("payment_required", fmt.Sprintf("The buyer must pay at "+
 		"continue_url, the store's hosted payment page, before %s.", until))
 }
 
 // orderCanceled is what a checkout whose order was canceled says of the
-// money: nothing was charged, or a payment that landed after the cancel
-// is refunded.
+// money: nothing is owed, or a payment that landed after the cancel is
+// refunded.
 func orderCanceled(o *django.Order) Message {
 	if slices.Contains(django.ChargedPaymentStatuses, o.PaymentStatus) {
 		return Message{Type: "info", Code: "order_canceled",
 			Text: "The order was canceled after a payment was " +
 				"received; the store refunds that payment."}
 	}
+	// Django settles a pending, processing or failed payment as canceled
+	// with its order, and never marks a charge that did not match the
+	// total as paid: a canceled payment does not prove nothing was taken.
 	return Message{Type: "info", Code: "order_canceled",
-		Text: "The order was canceled before it was paid, and nothing " +
-			"was charged; the shopper can check out the same cart again."}
+		Text: "The order was canceled before a payment for it was " +
+			"confirmed, so the shopper owes nothing for it; a charge they " +
+			"see for it is the store's to refund. They can check out the " +
+			"same cart again."}
 }
 
 // renderDiscounts fills the discount extension's member: the codes the

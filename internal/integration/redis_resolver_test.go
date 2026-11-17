@@ -31,8 +31,14 @@ func startRedis(t *testing.T) *redis.Client {
 		testcontainers.GenericContainerRequest{
 			Image:        "redis:8-alpine",
 			ExposedPorts: []string{"6379/tcp"},
-			WaitingFor:   wait.ForListeningPort("6379/tcp"),
-			Started:      true,
+			// A published port can accept connections before Redis
+			// does (Docker Desktop's proxy listens at once), and a first
+			// command then times out: wait for Redis to say it is ready.
+			WaitingFor: wait.ForAll(
+				wait.ForListeningPort("6379/tcp"),
+				wait.ForLog("Ready to accept connections"),
+			),
+			Started: true,
 		})
 	require.NoError(t, err)
 	// t.Context() is cancelled before cleanups run.

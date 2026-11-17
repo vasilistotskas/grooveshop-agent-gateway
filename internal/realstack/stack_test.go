@@ -429,6 +429,12 @@ with schema_context("demostore"):
 			"ASSETS_HOST":                "assets.localhost",
 			"STAFF_CONNECT_HOST":         connectHost,
 			"STOREFRONT_DEFAULT_LOCALE":  "el",
+			// The suite sends every call from one client to one store,
+			// so the default per-(host, client) budget runs out late in
+			// the run and a test is refused 429 before it is served. The
+			// limiter is the integration suite's to test.
+			"RATE_LIMIT_PER_MIN": "6000",
+			"RATE_LIMIT_BURST":   "1000",
 		}),
 		testcontainers.WithExposedPorts("8080/tcp"),
 		testcontainers.WithWaitStrategyAndDeadline(startupDeadline,
@@ -478,11 +484,11 @@ func tail(s string) string {
 
 func parseSeeded(out string) (seeded, error) {
 	const marker = "REALSTACK "
-	i := strings.LastIndex(out, marker)
-	if i < 0 {
+	_, result, found := strings.CutLast(out, marker)
+	if !found {
 		return seeded{}, fmt.Errorf("seed printed no result:\n%s", tail(out))
 	}
-	line, _, _ := strings.Cut(out[i+len(marker):], "\n")
+	line, _, _ := strings.Cut(result, "\n")
 	var data seeded
 	if err := json.Unmarshal([]byte(line), &data); err != nil {
 		return seeded{}, fmt.Errorf("seed result: %w", err)
