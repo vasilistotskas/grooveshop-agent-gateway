@@ -1,8 +1,9 @@
 // Package mcpsrv exposes the commerce toolset over MCP (stateless
-// streamable HTTP). One Server per tenant carries every tool — they
-// differ only in the store name they advertise at initialize; the
-// tenant itself arrives per request via the tenant middleware's context
-// value, which the SDK propagates into tool handlers.
+// streamable HTTP). A store's Server carries the tools its features
+// serve and the identity it advertises at initialize, and is cached by
+// schema, identity and features (serverCache); the tenant itself arrives
+// per request via the tenant middleware's context value, which the SDK
+// propagates into tool handlers.
 package mcpsrv
 
 import (
@@ -87,7 +88,7 @@ func newServer(
 		},
 		// The list is the store's (its features and its identity), the
 		// same for every caller. A client may list a switched feature's
-		// tools for about three TTLs (CLAUDE.md, internal/mcptool).
+		// tools for about three TTLs (.claude/rules/mcp-tools.md).
 		SetCacheable: mcptool.Cacheable(d.ListTTL, mcptool.CachePublic),
 	})
 	rec := mcptool.Recorder{Server: s.label(), Log: d.Log,

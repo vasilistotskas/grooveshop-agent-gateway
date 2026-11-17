@@ -145,7 +145,10 @@ func NewFlow(
 // (a platform that hangs up, or the server cancelling its requests at
 // shutdown) no longer stops anything: stopping there would leave Django
 // with an order, its checkout never saved as placed and no order link
-// for get_order or the order webhooks to find it by.
+// for get_order or the order webhooks to find it by. The process can
+// still end it: a graceful shutdown waits for it (CompletionTail), but
+// a pod killed or lost mid-placement leaves the session in progress
+// (docs/agent-protocols-runbook.md, section 11).
 func (f *Flow) Complete(
 	ctx context.Context, t *tenant.Tenant, s *Session,
 ) (Placement, error) {

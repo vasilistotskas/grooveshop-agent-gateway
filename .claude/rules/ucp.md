@@ -28,7 +28,7 @@ wins over this page.
   `internal/mcpsrv/ucp_checkout.go`), and update, complete and cancel
   share taking the session's lock and answering through `finish`
   (`onSession`). Their refusals are `mcptool.ToolError`s whose codes
-  are listed in `CLAUDE.md` (MCP tool conventions); a checkout that is
+  are listed in `.claude/rules/mcp-tools.md`; a checkout that is
   canceled or placed its order is `checkout_closed`, which the spec's
   `error_code.json` does not define.
   The order webhook URL comes ONLY from the negotiated order
@@ -43,7 +43,7 @@ wins over this page.
   its platform in `UCP-Agent`, or calls `get_order`; another request's
   signature is not UCP's to judge, and it is served unsigned)
   (`mcpsrv.VerifyPlatformSignature`, `ucp.ProfileResolver.VerifyRequest`,
-  `httpsig.Verify`; `CLAUDE.md` names the rules), with the keys in the
+  `httpsig.Verify`; Signatures, below, names the rules), with the keys in the
   top-level `keys[]` of the profile its `UCP-Agent` header names
   (`PlatformProfile.Keys`; a key marked `use: enc`, or with `key_ops`
   that leave out `verify`, is skipped). The signer is that profile's URL,
@@ -76,7 +76,9 @@ wins over this page.
   sets no maximum; 255 is ACP's bound, while ACP's own key is any
   string of 1 to 255 characters, as its spec makes it opaque), `id`
   for the target session, and `checkout` for the domain object with
-  snake_case members. Extensions compose FLAT onto `checkout`
+  the spec's snake_case members (and `cart_id`, `pay_way_id`), except
+  the gateway's own flat `fulfillment`, camelCase until #109 step B
+  (below). Extensions compose FLAT onto `checkout`
   (`discounts`), never nested under capability names.
   Payment is selected by submitting an ADVERTISED instrument
   (`checkout.payment.instruments`), which the business resolves to a
@@ -108,7 +110,7 @@ wins over this page.
   another platform signed its creation. A checkout created unsigned is
   bound to no platform, so the spec's "return the existing checkout" is
   not offered (`createFromCart`; "One live checkout holds a cart" in
-  `CLAUDE.md`).
+  `.claude/rules/checkout.md`).
   These five tools and `get_order` are never
   registered on the chat server (`mcpOnly` in
   `internal/mcpsrv/server.go`) — their input requires `meta`, which a
@@ -226,8 +228,9 @@ wins over this page.
   credentials: orders originated by the platform"): the order link
   (`ag:{schema}:orderlink:{uuid}`: checkout id, storefront domain,
   webhook target, and the platform that signed the checkout's creation;
-  retained a year, as it must outlive the session, which expires in
-  24h) is read first, and an order whose link names another platform,
+  retained a year, as it must outlive the session: an open one lives
+  30 minutes after its last save, one whose order exists or may 24
+  hours, `.claude/rules/checkout.md`) is read first, and an order whose link names another platform,
   or none, is the spec's `not_found` error response
   (`ucp.OrderNotFound`), the same as an id that names no order and
   without asking the store. The order is then read with the gateway's
@@ -305,3 +308,51 @@ wins over this page.
   unsealed records and sentinels once no older pod is left. That code
   goes in the release after every environment has run the command
   (`docs/agent-protocols-runbook.md`, section 12).
+
+## Signatures
+
+- `internal/httpsig` — RFC 9421 HTTP message signatures with RFC 9530
+  `Content-Digest`: `Sign` for the order webhooks and `Verify` for a
+  platform's requests, structured fields read and written with
+  `github.com/dunglas/httpsfv`. `Verify` applies UCP's Identity
+  Resolution Algorithm: each signature on its own, one that verifies is
+  enough; a tag other than `web-bot-auth` is skipped; an `alg`
+  parameter is refused (the algorithm is the key's: ES256, ES384,
+  Ed25519, ECDSA as fixed-width r||s); a `web-bot-auth` signature's
+  keyid must be its key's RFC 7638 thumbprint; it must cover, each
+  whole (no parameter), `@method`, `@authority`, `@path`, `@query` when
+  there is one, the body (`content-digest`, `content-type`) and each of
+  `ucp-agent` and `idempotency-key` the request carries, and
+  `signature-agent` whole or by the member keyed by the signature's
+  label; a covered field takes only the `key` parameter (RFC 9421
+  section 2.1.2). A received request's `@authority` is its `Host`, either
+  scheme's default port dropped (TLS ends at Traefik). The refusals
+  carry UCP's codes (`signature_invalid`, `key_not_found`,
+  `digest_mismatch`, `algorithm_unsupported`).
+- **A platform's signature on `/mcp`** (`mcpsrv.VerifyPlatformSignature`,
+  after the identity middleware). A UCP request that carries
+  `Signature-Input` or `Signature`, one with a `UCP-Agent` header or one
+  that calls a tool marked `signed`, is verified, whatever it calls,
+  against the keys its `UCP-Agent` profile publishes
+  (`ucp.ProfileResolver.VerifyRequest`: the profile is fetched as
+  negotiation fetches it, and fetched again once a TTL floor per origin
+  for a keyid it does not publish, `Refresh`, which replaces the cached
+  profile only with one it fetched; a key that does not decode is
+  skipped, never the profile refused). A signature on any other request
+  (an agent that signs all its traffic, as Web Bot Auth has it) is not
+  verified, and the request is served as unsigned. At most
+  `httpsig.maxSignatures` signatures are tried. One that does not verify
+  is answered before the MCP handler with UCP's HTTP status and
+  JSON-RPC error: 401 and -32000 (`signature_invalid`,
+  `key_not_found`), 400 and -32600 (`digest_mismatch`,
+  `algorithm_unsupported`), or the discovery failure (-32001 with
+  400/424/422, or 503 when the budget is spent). A signed request whose
+  tool call names another platform in `meta.ucp-agent.profile` is
+  `signature_invalid` (Identity Binding; `negotiate` checks it again on
+  the meta the tool decoded). The verified platform, its profile URL
+  normalized (`ucp.NormalizeProfileURL`), rides the request context. A
+  tool marked `signed` (`get_order`) refuses an unsigned call with 401
+  and `signature_missing`, with no `WWW-Authenticate`: no OAuth link
+  answers it. A caller that left during the check gets a 503 and no log
+  line. The body is read once for this and the account challenge
+  (`readPost`), as the SDK reads it.
