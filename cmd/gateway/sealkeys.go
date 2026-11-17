@@ -25,11 +25,12 @@ var errSealConflicts = errors.New(
 // seals every store's key still unsealed, deletes every unsealed record
 // whose key is sealed and every sentinel, logs what it did, and exits.
 // It exits non-zero when it left a store's records alone.
-func sealSigningKeys(boot *slog.Logger, level *slog.LevelVar) error {
-	cfg, log, err := configure(boot, level)
+func sealSigningKeys(l *logging) error {
+	cfg, err := l.configure()
 	if err != nil {
 		return err
 	}
+	log := l.log
 	rdb, err := newRedis(cfg.RedisURL, log)
 	if err != nil {
 		return err

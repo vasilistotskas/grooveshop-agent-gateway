@@ -30,6 +30,13 @@ Loads when working on the environment configuration. The code wins over this pag
   (production | staging | development | test) is folded into
   `AllowLocalWebhooks`, `PaymentHandlerEnv` and the secret's minimum
   length there so no handler compares environment strings.
+  A refusal names the variable and never repeats a value that can
+  carry a credential: the base URLs, the hosts and the image URL
+  templates (user info), the internal secret, the key-encryption key,
+  and a `REDIS_URL` that does not parse (`config.RedisOptions` drops
+  go-redis's and net/url's reason too, which repeat the URL)
+  (`TestLoadRefusalsNeverRepeatACredential`). The refusal is the boot
+  failure's log line.
   The infra staging overlay sets `ENV=staging`: production network
   rules, sandbox handler label. `STOREFRONT_DEFAULT_LOCALE` (required, a
   bare language code) is the storefront build's `DEFAULT_LOCALE`

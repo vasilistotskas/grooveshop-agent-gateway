@@ -83,6 +83,32 @@ func TestLoadValidatesTheSigningKeyEncryptionKey(t *testing.T) {
 	assert.Equal(t, want, cfg.SigningKeyKEK)
 }
 
+// A refused value that can carry a credential (user info in a URL or a
+// host, the secret itself) is named in the refusal, never repeated: the
+// refusal is the boot failure's log line.
+func TestLoadRefusalsNeverRepeatACredential(t *testing.T) {
+	const password = "s3cr%zzet"
+	for name, value := range map[string]string{
+		"DJANGO_BASE_URL":          "http://user:" + password + "@backend/api",
+		"CHAT_BASE_URL":            "https://user:" + password + "@llm.test/v1",
+		"DJANGO_PUBLIC_HOST":       "user:" + password + "@api.example.test",
+		"ASSETS_HOST":              "user:" + password + "@assets.test",
+		"STAFF_CONNECT_HOST":       "user:" + password + "@connect.test",
+		"MEDIA_IMAGE_URL_TEMPLATE": "https://u:" + password + "@{assets_host}/{path}",
+		"FEED_IMAGE_URL_TEMPLATE":  "https://u:" + password + "@{assets_host}/{path}",
+		"INTERNAL_EVENTS_SECRET":   password + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv(name, value)
+			_, err := Load()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), name)
+			assert.NotContains(t, err.Error(), "s3cr")
+		})
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
 	setRequired(t)
 

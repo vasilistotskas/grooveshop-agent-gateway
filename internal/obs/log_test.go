@@ -117,6 +117,30 @@ func TestRedisLoggerWritesTheGatewaysLines(t *testing.T) {
 	assert.Equal(t, "demostore", got[0][KeyTenant])
 }
 
+// A panic go-redis recovered on a goroutine of its own reaches no caller,
+// so its line is an error, kept at LOG_LEVEL=error; its other lines are
+// warnings, dropped there.
+func TestRedisLoggerKeepsARecoveredPanicAtError(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(NewContextHandler(slog.NewJSONHandler(&buf,
+		&slog.HandlerOptions{Level: slog.LevelError})))
+	redisLog := RedisLogger{Log: log}
+
+	redisLog.Printf(t.Context(), "redis: connection pool: failed to "+
+		"dial after %d attempts: %v", 5, "refused")
+	redisLog.Printf(t.Context(), "autopipeline: recovered dispatch "+
+		"panic: %v\n%s", "boom", "goroutine 1 [running]:")
+	redisLog.Printf(t.Context(), "%s", "worker panic recovered: boom")
+
+	got := lines(t, &buf)
+	require.Len(t, got, 2, buf.String())
+	for _, line := range got {
+		assert.Equal(t, "ERROR", line["level"])
+		assert.Contains(t, line["detail"], "boom")
+	}
+	assert.Contains(t, got[0]["detail"], "goroutine 1 [running]:")
+}
+
 // The logger is JSON from its first line, at the level a LevelVar names
 // once it is set.
 func TestNewLoggerFollowsItsLevel(t *testing.T) {

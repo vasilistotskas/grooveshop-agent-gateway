@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	redislog "github.com/redis/go-redis/v9/logging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -46,6 +49,39 @@ func TestABootFailureIsOneJSONLine(t *testing.T) {
 	assert.Contains(t, lines[0]["error"], "LOG_LEVEL")
 }
 
+// A failure after the configuration loaded is logged with the
+// environment it names. A REDIS_URL that does not parse is that failure,
+// and its line never carries the URL's password.
+func TestAFailureAfterTheConfigurationNamesItsEnvironment(t *testing.T) {
+	kek := make([]byte, 32)
+	_, err := rand.Read(kek)
+	require.NoError(t, err)
+	for name, value := range map[string]string{
+		"ENV":                        "test",
+		"DJANGO_BASE_URL":            "http://backend.test/api/v1",
+		"DJANGO_PUBLIC_HOST":         "api.example.test",
+		"REDIS_URL":                  "redis://:s3cr%zzet@redis.test:6379/0",
+		"INTERNAL_EVENTS_SECRET":     "internal-secret",
+		"ASSETS_HOST":                "assets.test",
+		"STAFF_CONNECT_HOST":         "connect.test",
+		"STOREFRONT_DEFAULT_LOCALE":  "el",
+		"SIGNING_KEY_ENCRYPTION_KEY": base64.StdEncoding.EncodeToString(kek),
+	} {
+		t.Setenv(name, value)
+	}
+	var out bytes.Buffer
+
+	code := start(&out, nil)
+
+	assert.Equal(t, 1, code)
+	lines := jsonLines(t, out.String())
+	require.Len(t, lines, 1, out.String())
+	assert.Equal(t, "fatal", lines[0]["msg"])
+	assert.Equal(t, "test", lines[0][obs.KeyEnv])
+	assert.Contains(t, lines[0]["error"], "REDIS_URL")
+	assert.NotContains(t, out.String(), "s3cr")
+}
+
 // go-redis's own lines go through the gateway's logger as JSON, at warn,
 // instead of plain text on stderr. A dial's runs on a context of
 // go-redis's own, so it names no request.
@@ -60,7 +96,11 @@ func TestRedisClientLinesAreJSON(t *testing.T) {
 	log := slog.New(obs.NewContextHandler(slog.NewJSONHandler(&out, nil)))
 	rdb, err := newRedis("redis://"+addr, log)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = rdb.Close() })
+	t.Cleanup(func() {
+		_ = rdb.Close()
+		// go-redis's logger is the process's: give it back its default.
+		redislog.Enable()
+	})
 
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()

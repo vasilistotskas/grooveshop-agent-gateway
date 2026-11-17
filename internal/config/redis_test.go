@@ -19,8 +19,19 @@ func TestRedisOptionsEndCommandsAtTheirDeadline(t *testing.T) {
 	assert.Equal(t, "secret", opts.Password)
 }
 
-func TestRedisOptionsRefuseABadURL(t *testing.T) {
-	_, err := RedisOptions("http://redis-service:6379")
+// A REDIS_URL that does not parse is refused without its value: the URL
+// carries the password, and the error reaches the boot failure's line.
+func TestRedisOptionsRefuseABadURLWithoutItsValue(t *testing.T) {
+	for _, raw := range []string{
+		"http://:s3cret@redis-service:6379",
+		"redis://:s3cr%zzet@redis-service:6379/0",
+		"redis://:s3cret@redis-service:6379/zero",
+		"redis://:s3cret@redis-service:6379/0/1",
+	} {
+		_, err := RedisOptions(raw)
 
-	assert.Error(t, err)
+		require.ErrorIs(t, err, errRedisURL, raw)
+		assert.NotContains(t, err.Error(), "s3cr", raw)
+		assert.NotContains(t, err.Error(), "redis-service", raw)
+	}
 }

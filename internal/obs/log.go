@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 )
 
@@ -36,17 +37,26 @@ func NewLogger(
 // RedisLogger hands go-redis's own log lines (redis.SetLogger) to the
 // gateway's logger, which would otherwise be plain text on stderr. Its
 // lines are free text of no stated level; most name a failure that also
-// reaches the command's caller as an error, so they are warnings. A line
-// go-redis logs with a request's context names the request and store;
-// most (a dial, the pool's upkeep) run on a context of its own.
+// reaches the command's caller as an error, so they are warnings. The
+// exception is a panic go-redis recovered on a goroutine of its own
+// (its pool, its pipelines, its workers), which reaches no caller: every
+// such line says "panic", and is logged at error, so it is kept at any
+// LOG_LEVEL. A line go-redis logs with a request's context names the
+// request and store; most (a dial, the pool's upkeep) run on a context
+// of its own.
 type RedisLogger struct {
 	Log *slog.Logger
 }
 
 // Printf implements go-redis's internal.Logging.
 func (l RedisLogger) Printf(ctx context.Context, format string, v ...any) {
-	l.Log.WarnContext(ctx, "redis client",
-		slog.String("detail", fmt.Sprintf(format, v...)))
+	detail := fmt.Sprintf(format, v...)
+	level := slog.LevelWarn
+	if strings.Contains(detail, "panic") {
+		level = slog.LevelError
+	}
+	l.Log.LogAttrs(ctx, level, "redis client",
+		slog.String("detail", detail))
 }
 
 type ctxKeyRequestID struct{}

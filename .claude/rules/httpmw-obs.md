@@ -43,19 +43,26 @@ Loads when working on the global middleware chain, logging, metrics or health. T
   - **Every line is JSON, through one handler.** `cmd/gateway` builds
     the logger (`obs.NewLogger`) before the configuration loads, at
     info until `LOG_LEVEL` sets its `slog.LevelVar`; `env` is added
-    once the configuration names it. So a boot failure is one JSON
-    `fatal` line at error, and the process exits 1. go-redis's own
-    lines (one logger per process, `redis.SetLogger`, set by
-    `newRedis` with the client) go through it too
-    (`obs.RedisLogger`): `redis client` at warn, its text in
-    `detail`. One go-redis logs with a request's context names the
-    request; most (a dial, the pool's upkeep) run on its own.
+    once the configuration names it (`logging.configure`), so a
+    failure after that carries it. A boot failure is one JSON `fatal`
+    line at error, and the process exits 1. Its error never repeats a
+    configuration value that can carry a credential: a URL or host
+    with user info, a secret, an invalid `REDIS_URL`
+    (`.claude/rules/config.md`). go-redis's own lines (one logger per
+    process, `redis.SetLogger`, set by `newRedis` with the client) go
+    through it too (`obs.RedisLogger`): `redis client`, its text in
+    `detail`, at warn, except a panic go-redis recovered on a
+    goroutine of its own (its text says "panic"), at error, so it is
+    kept at any `LOG_LEVEL`. One go-redis logs with a request's
+    context names the request; most (a dial, the pool's upkeep) run on
+    its own.
   - **A shared flight logs under its leader; each waiter's outcome
     under its own request.** Work that singleflight shares (the tenant
     resolve, the bearer probe, the feed sweep, the UCP profile fetch)
     runs on the context of the request that started it, detached
-    (`context.WithoutCancel`): its own lines, the Django client's and
-    Redis's among them, carry that request's id and store, once. What
+    (`context.WithoutCancel`): its own lines carry that request's id
+    and store, once. That includes the Django client's, and go-redis's
+    where go-redis logs with the caller's context. What
     each request then answers is its own, and so is any line it logs
     about it (`store resolution failed`, `token verification failed`,
     its access line): logged with its own context, never inside the
