@@ -427,7 +427,7 @@ func awaitingPayment(
 			"or start another checkout.")
 	case !hold.IsZero() && !hold.After(now):
 		then := "The store has not canceled it yet: until it does, its " +
-			"cart cannot be checked out again."
+			"cart cannot be checked out again through an agent."
 		if decided {
 			then = "The store cancels it by expires_at, and the shopper " +
 				"can then check out the same cart again."
