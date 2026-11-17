@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -53,7 +54,7 @@ func connectAs(t *testing.T, transport http.RoundTripper) *mcp.ClientSession {
 	t.Helper()
 	client := mcp.NewClient(
 		&mcp.Implementation{Name: "real-stack", Version: "test"}, nil)
-	session, err := client.Connect(context.Background(),
+	session, err := client.Connect(t.Context(),
 		&mcp.StreamableClientTransport{
 			Endpoint: running.gatewayURL + "/mcp",
 			HTTPClient: &http.Client{
@@ -70,7 +71,7 @@ func call(
 	t *testing.T, s *mcp.ClientSession, name string, args map[string]any,
 ) *mcp.CallToolResult {
 	t.Helper()
-	res, err := s.CallTool(context.Background(), &mcp.CallToolParams{
+	res, err := s.CallTool(t.Context(), &mcp.CallToolParams{
 		Name: name, Arguments: args,
 	})
 	require.NoError(t, err)
@@ -201,7 +202,7 @@ with schema_context("demostore"):
     aged = timezone.now() - timedelta(days=settings.GUEST_ORDER_ACCESS_DAYS + 1)
     assert Order.objects.filter(uuid=%q).update(created_at=aged) == 1
 `, orderID)
-	code, out, err := running.django.Exec(context.Background(), []string{
+	code, out, err := running.django.Exec(t.Context(), []string{
 		".venv/bin/python", "manage.py", "shell", "-c", script,
 	})
 	require.NoError(t, err)
@@ -261,7 +262,7 @@ func TestGetOrderServesOnlyThePlatformThatPlacedIt(t *testing.T) {
 		notFound["messages"].([]any)[0].(map[string]any)["code"])
 
 	unsigned := connectAs(t, hostTransport{storeHost, ""})
-	_, err := unsigned.CallTool(context.Background(), &mcp.CallToolParams{
+	_, err := unsigned.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      "get_order",
 		Arguments: map[string]any{"meta": meta(""), "id": orderID},
 	})
@@ -269,12 +270,17 @@ func TestGetOrderServesOnlyThePlatformThatPlacedIt(t *testing.T) {
 	assert.Contains(t, err.Error(), "Unauthorized")
 }
 
-func totalOf(t *testing.T, payload map[string]any) float64 {
+// totalOf is a UCP payload's total, in minor units.
+func totalOf(t *testing.T, payload map[string]any) int64 {
 	t.Helper()
 	for _, row := range payload["totals"].([]any) {
 		total := row.(map[string]any)
 		if total["type"] == "total" {
-			return total["amount"].(float64)
+			amount := total["amount"].(float64)
+			_, fraction := math.Modf(amount)
+			require.Zero(t, fraction,
+				"%v is not a whole number of minor units", amount)
+			return int64(amount)
 		}
 	}
 	require.Fail(t, "no total row")
@@ -290,13 +296,17 @@ func TestUCPOrderTakesALowerCaseCountry(t *testing.T) {
 // A placed order that cannot be read back must not read as a failure, or the
 // agent would order again. Django is stopped for real, and restarted after.
 func TestUCPReadFailureNamesThePlacedOrder(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := connect(t, "")
 	checkoutID, orderID := placeUCPOrder(t, s, productID(t, s), "GR")
 
 	timeout := time.Minute
 	require.NoError(t, running.django.Stop(ctx, &timeout))
-	t.Cleanup(func() { require.NoError(t, running.django.Start(ctx)) })
+	// t.Context() is cancelled before cleanups run.
+	t.Cleanup(func() {
+		require.NoError(t, running.django.Start(
+			context.WithoutCancel(t.Context())))
+	})
 
 	text := errorText(t, call(t, s, "get_checkout", map[string]any{
 		"meta": meta(""), "id": checkoutID,
@@ -408,7 +418,7 @@ func TestAccountToolsChallengeOrAnswer(t *testing.T) {
 	t.Run("a token bound to this store answers", func(t *testing.T) {
 		s := connect(t, running.seeded.LinkedToken)
 		// The store's plan decides which it serves, so ask it.
-		tools, err := s.ListTools(context.Background(), nil)
+		tools, err := s.ListTools(t.Context(), nil)
 		require.NoError(t, err)
 		answered := 0
 		for _, tool := range tools.Tools {

@@ -4,6 +4,7 @@ run:
   timeout: 5m
   build-tags:
     - integration
+    - realstack
     # The feed memory measurement (internal/feeds/memory_measure_test.go)
     # runs by hand; linting it keeps it compiling against the code.
     - feedmem

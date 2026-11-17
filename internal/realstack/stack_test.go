@@ -484,11 +484,11 @@ func tail(s string) string {
 
 func parseSeeded(out string) (seeded, error) {
 	const marker = "REALSTACK "
-	i := strings.LastIndex(out, marker)
-	if i < 0 {
+	_, result, found := strings.CutLast(out, marker)
+	if !found {
 		return seeded{}, fmt.Errorf("seed printed no result:\n%s", tail(out))
 	}
-	line, _, _ := strings.Cut(out[i+len(marker):], "\n")
+	line, _, _ := strings.Cut(result, "\n")
 	var data seeded
 	if err := json.Unmarshal([]byte(line), &data); err != nil {
 		return seeded{}, fmt.Errorf("seed result: %w", err)

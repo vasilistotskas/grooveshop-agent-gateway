@@ -3,7 +3,6 @@
 package realstack
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"regexp"
@@ -245,7 +244,7 @@ func TestACartWithAnUnpaidOrderKeepsItsCheckoutUntilTheOrderIsCanceled(
 // cart, as a flush or a restore of the gateway's Redis can lose it.
 func loseCartRecord(t *testing.T, cart string) {
 	t.Helper()
-	code, out, err := running.redis.Exec(context.Background(), []string{
+	code, out, err := running.redis.Exec(t.Context(), []string{
 		"redis-cli", "-n", gatewayRedisDB, "--raw",
 		"DEL", "ag:demostore:checkoutcart:" + cart,
 	}, tcexec.Multiplexed())

@@ -3,7 +3,6 @@
 package realstack
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -48,7 +47,7 @@ func (d djangoTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 func browser(t *testing.T) *http.Client {
 	t.Helper()
 	endpoint, err := running.django.PortEndpoint(
-		context.Background(), "8000/tcp", "http")
+		t.Context(), "8000/tcp", "http")
 	require.NoError(t, err)
 	target, err := url.Parse(endpoint)
 	require.NoError(t, err)
