@@ -429,6 +429,12 @@ with schema_context("demostore"):
 			"ASSETS_HOST":                "assets.localhost",
 			"STAFF_CONNECT_HOST":         connectHost,
 			"STOREFRONT_DEFAULT_LOCALE":  "el",
+			// The suite sends every call from one client to one store,
+			// so the default per-(host, client) budget runs out late in
+			// the run and a test is refused 429 before it is served. The
+			// limiter is the integration suite's to test.
+			"RATE_LIMIT_PER_MIN": "6000",
+			"RATE_LIMIT_BURST":   "1000",
 		}),
 		testcontainers.WithExposedPorts("8080/tcp"),
 		testcontainers.WithWaitStrategyAndDeadline(startupDeadline,
