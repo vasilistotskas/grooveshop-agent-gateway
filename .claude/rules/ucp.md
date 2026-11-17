@@ -229,7 +229,8 @@ wins over this page.
   charged, or a payment after the cancel is refunded); a charged one
   `completed`. No link is minted after the first: an expired one means
   the order is canceled by `expires_at` and nothing is charged, and the
-  cart can be checked out again. The tag's `complete_in_progress` is
+  cart can be checked out again; nor is the first one once the order's
+  hold has passed (`Flow.ResumePayment` reads the order). The tag's `complete_in_progress` is
   rendered for a checkout whose order is being placed; its Actions are
   not used: the one step a buyer takes is the PSP's page, which
   `continue_url` carries.

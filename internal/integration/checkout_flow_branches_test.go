@@ -216,6 +216,8 @@ func escalated() *checkout.Session {
 func TestResumePaymentOpensAPageOnlyWhereOneIsMissing(t *testing.T) {
 	f, b := startBranchFlow(t, true)
 	ctx := t.Context()
+	// The order awaits its online payment, its hold ahead.
+	f.faults.orderOnline.Store(true)
 
 	t.Run("an escalated order without a page", func(t *testing.T) {
 		s := escalated()
@@ -241,11 +243,51 @@ func TestResumePaymentOpensAPageOnlyWhereOneIsMissing(t *testing.T) {
 			s := escalated()
 			edit(s)
 			want := *s
+			reads := b.orderReads.Load()
 			require.NoError(t, f.flow.ResumePayment(ctx, f.tenant, s))
 			assert.Equal(t, want, *s)
 			assert.Equal(t, calls, b.paymentLinks.Load())
+			assert.Equal(t, reads, b.orderReads.Load(), "asked Django")
 		})
 	}
+
+	// Once its hold has passed the checkout says the store cancels the
+	// order: no page is opened for it, though Django would open one.
+	t.Run("a hold that has passed", func(t *testing.T) {
+		f.faults.holdPassed.Store(true)
+		defer f.faults.holdPassed.Store(false)
+		s := escalated()
+		err := f.flow.ResumePayment(ctx, f.tenant, s)
+		require.ErrorIs(t, err, checkout.ErrPaymentWindowClosed)
+		assert.Empty(t, s.PaymentURL)
+		assert.Equal(t, calls, b.paymentLinks.Load())
+	})
+
+	// Where the checkout tells the buyer not to pay, no link is minted:
+	// a payment the provider is processing, an order nothing decides.
+	for name, fault := range map[string]*atomic.Bool{
+		"a payment being processed":    &f.faults.paymentProcessing,
+		"an order nothing will decide": &f.faults.orderUndecided,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fault.Store(true)
+			defer fault.Store(false)
+			s := escalated()
+			err := f.flow.ResumePayment(ctx, f.tenant, s)
+			require.ErrorIs(t, err, checkout.ErrPaymentAwaitsStore)
+			assert.Empty(t, s.PaymentURL)
+			assert.Equal(t, calls, b.paymentLinks.Load())
+		})
+	}
+
+	t.Run("an order that cannot be read", func(t *testing.T) {
+		f.faults.orderRead.Store(true)
+		defer f.faults.orderRead.Store(false)
+		s := escalated()
+		err := f.flow.ResumePayment(ctx, f.tenant, s)
+		require.ErrorIs(t, err, checkout.ErrPaymentSessionFailed)
+		assert.Equal(t, calls, b.paymentLinks.Load())
+	})
 
 	t.Run("a page that cannot be opened", func(t *testing.T) {
 		f.faults.paymentLink.Store(true)

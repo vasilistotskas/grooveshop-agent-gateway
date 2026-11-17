@@ -150,9 +150,12 @@ func TestALostSaveIsNeverAnsweredAsDone(t *testing.T) {
 	}
 
 	// The order exists and its payment page could not be opened. The
-	// next complete opens one, and must not answer with a link it could
-	// not store.
-	t.Run("a payment link opened again", func(t *testing.T) {
+	// next complete opens one. Another request (a read storing what the
+	// order said) may store the checkout meanwhile: the link is stored
+	// over it, or the answer is the stored checkout, never a link that
+	// was not stored.
+	placedWithoutLink := func(t *testing.T) string {
+		t.Helper()
 		ucpSurface := surfaces["ucp"]
 		stack.faults.paymentLink.Store(true)
 		t.Cleanup(func() { stack.faults.paymentLink.Store(false) })
@@ -161,19 +164,59 @@ func TestALostSaveIsNeverAnsweredAsDone(t *testing.T) {
 		require.Contains(t, first.refusal, "is placed")
 		stack.faults.paymentLink.Store(false)
 		require.Empty(t, stack.storedSession(t, id).PaymentURL)
+		return id
+	}
+	t.Run("a payment link opened again", func(t *testing.T) {
+		id := placedWithoutLink(t)
 		stack.storedMeanwhile(t, id)
 
-		// The stored checkout still has no link, and that is what the
-		// call is answered with: the order, without a payment page.
-		lost := ucpSurface.answer(ctx, id, uuid.NewString(), nil)
-		assert.Equal(t, "requires_escalation", lost.status, lost.refusal)
-		assert.NotEqual(t, vivaCheckoutURL, lost.continueURL,
-			"answered with a payment link that was not stored")
-		assert.Empty(t, stack.storedSession(t, id).PaymentURL)
-		assert.Equal(t, "requires_escalation",
-			ucpSurface.complete(ctx, id, uuid.NewString(), nil))
+		kept := surfaces["ucp"].answer(ctx, id, uuid.NewString(), nil)
+
+		assert.Equal(t, "requires_escalation", kept.status, kept.refusal)
+		assert.Equal(t, vivaCheckoutURL, kept.continueURL)
 		assert.Equal(t, vivaCheckoutURL,
 			stack.storedSession(t, id).PaymentURL)
+	})
+	// A payment the provider is processing: the complete mints no link
+	// and answers the checkout, which says what it awaits.
+	t.Run("a payment being processed mints no link", func(t *testing.T) {
+		id := placedWithoutLink(t)
+		stack.faults.paymentProcessing.Store(true)
+		t.Cleanup(func() { stack.faults.paymentProcessing.Store(false) })
+
+		waiting := surfaces["ucp"].answer(ctx, id, uuid.NewString(), nil)
+
+		assert.Equal(t, "requires_escalation", waiting.status,
+			waiting.refusal)
+		assert.Contains(t, waiting.continueURL, "/checkout/success/")
+		assert.Contains(t, waiting.text, "processing")
+		assert.Empty(t, stack.storedSession(t, id).PaymentURL)
+	})
+	t.Run("a payment link opened as the order completes", func(t *testing.T) {
+		id := placedWithoutLink(t)
+		store := checkout.NewStore(stack.rdb, ucpUpstreamTimeout)
+		var armed atomic.Bool
+		armed.Store(true)
+		stack.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+			if !savesKey(cmd, sessionRedisKey(id)) ||
+				!armed.CompareAndSwap(true, false) {
+				return nil
+			}
+			paid, err := store.LoadAnyProtocol(t.Context(), "demostore", id)
+			if err != nil {
+				return err
+			}
+			paid.Status = checkout.StatusCompleted
+			return store.Save(t.Context(), paid)
+		}))
+		t.Cleanup(func() { armed.Store(false) })
+
+		done := surfaces["ucp"].answer(ctx, id, uuid.NewString(), nil)
+
+		assert.Equal(t, "completed", done.status, done.refusal)
+		assert.NotEqual(t, vivaCheckoutURL, done.continueURL,
+			"answered with a payment link that was not stored")
+		assert.Empty(t, stack.storedSession(t, id).PaymentURL)
 	})
 
 	// 204 is final for Django. A payment event whose save lost must be
