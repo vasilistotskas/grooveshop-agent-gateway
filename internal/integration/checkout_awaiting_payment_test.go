@@ -3,10 +3,13 @@
 package integration
 
 import (
+	"errors"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -40,6 +43,31 @@ func TestACheckoutAwaitingItsPaymentFollowsItsOrder(t *testing.T) {
 			require.NoError(t, err)
 			assert.GreaterOrEqual(t, ttl, time.Until(stored.ExpiresAt),
 				"readable until its expiry")
+		})
+
+	// A read publishes only what it stored: an expiry it could not
+	// store is not given, or a later read could give an earlier one.
+	t.Run("an expiry that cannot be stored is not published",
+		func(t *testing.T) {
+			id := awaitingPayment(t, ucpSurface)
+			before := stack.storedSession(t, id).ExpiresAt
+			// The fake's decision moves with the clock, by the second.
+			time.Sleep(1100 * time.Millisecond)
+			var down atomic.Bool
+			down.Store(true)
+			stack.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+				if down.Load() && savesKey(cmd, sessionRedisKey(id)) {
+					return errors.New("redis is down")
+				}
+				return nil
+			}))
+			t.Cleanup(func() { down.Store(false) })
+
+			a := ucpSurface.read(ctx, id)
+
+			assert.Empty(t, a.status)
+			assert.Contains(t, a.refusal, "order_placed")
+			assert.True(t, stack.storedSession(t, id).ExpiresAt.Equal(before))
 		})
 
 	t.Run("a read finds its order canceled", func(t *testing.T) {

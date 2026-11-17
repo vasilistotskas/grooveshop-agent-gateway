@@ -125,7 +125,7 @@ Loads when working on a checkout session on either surface, its completion, its 
     update has written its cart lines and coupon to Django by then, so
     UCP adds `checkoutNotUpdated` to that answer. A completion's last
     save can lose only to an order event, or to a read that stored what
-    the order said (`storeFollowed`), the other writers of a session in
+    the order said (`rendered`), the other writers of a session in
     progress, which move it only to `completed`: the completion then stores its outcome over
     the event's (`Flow.saveOverEvent`), keeping `completed` if the
     event said the order is paid. A last save that still cannot be
@@ -282,8 +282,10 @@ Loads when working on a checkout session on either surface, its completion, its 
   The UCP render of a placed checkout reads its order
   (`checkout.Pricing.Order`), and takes its status and expiry from it
   (`FollowOrder`, `AwaitDecision`); `checkoutResult` stores what
-  changed (`storeFollowed`, a compare-and-set, best effort: the next
-  read reads the order again). An expired payment link is never
+  changed before it answers (`rendered`, a compare-and-set): a
+  checkout publishes only what is stored, one stored meanwhile is read
+  and rendered once more, and one whose state cannot be stored is
+  answered `order_placed` (`unrenderedErr`). An expired payment link is never
   replaced: `ResumePayment` mints only the first link, and Django's
   `payment_window_expired` and `order_not_payable` are
   `ErrPaymentWindowClosed`, final for that order (UCP

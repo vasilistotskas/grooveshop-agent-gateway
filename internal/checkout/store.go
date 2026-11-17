@@ -416,7 +416,7 @@ func (st *Store) wasStored(
 	if err != nil || now.Revision != w.revision {
 		return failed
 	}
-	s.Revision, s.UpdatedAt = w.revision, w.at
+	s.Revision, s.UpdatedAt, s.ExpiresAt = w.revision, w.at, now.ExpiresAt
 	return nil
 }
 

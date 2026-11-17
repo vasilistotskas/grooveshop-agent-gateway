@@ -1415,11 +1415,9 @@ func (h *handlers) checkoutResult(
 	neg ucp.Negotiated,
 ) (*mcp.CallToolResult, CheckoutResult, error) {
 	var zero CheckoutResult
-	status, expires := s.Status, s.ExpiresAt
-	payload, err := h.deps.UCP.BuildCheckout(ctx, t, s,
-		neg.Declaration(ucp.CapabilityCheckout))
-	if err == nil && (s.Status != status || !s.ExpiresAt.Equal(expires)) {
-		h.storeFollowed(ctx, s)
+	payload, err := h.rendered(ctx, t, s, neg)
+	if _, ok := errors.AsType[*mcptool.ToolError](err); ok {
+		return nil, zero, err
 	}
 	if err != nil {
 		switch {
@@ -1451,13 +1449,19 @@ func (h *handlers) checkoutResult(
 			"Checkout %s is ready — call complete_checkout to place the "+
 				"order.", s.ID)
 	case checkout.StatusRequiresEscalation:
+		m := firstError(payload)
+		until := fmt.Sprintf("read it again by %s, when the store will "+
+			"have decided the order", payload.ExpiresAt)
+		if m.Code == "payment_processing" || m.Code == "payment_in_review" {
+			until = fmt.Sprintf("nothing is sure to decide the order by "+
+				"%s, when this checkout ends: then read the order with "+
+				"get_order", payload.ExpiresAt)
+		}
 		text = fmt.Sprintf(
 			"Order %s is placed and awaits its payment: %s "+
 				"(continue_url: %s). The checkout completes when the "+
-				"payment lands, or is canceled with the order; read it "+
-				"again by %s, when the store will have decided.",
-			s.OrderUUID, firstError(payload), payload.ContinueURL,
-			payload.ExpiresAt)
+				"payment lands, or is canceled with the order; %s.",
+			s.OrderUUID, m.Text, payload.ContinueURL, until)
 	case checkout.StatusCompleted:
 		text = fmt.Sprintf(
 			"Order %s is placed and confirmed. Track it with track_order.",
@@ -1472,29 +1476,56 @@ func (h *handlers) checkoutResult(
 	return textResult("%s", text), CheckoutResult{checkout: payload}, nil
 }
 
-// storeFollowed stores what a render read from the checkout's order: a
-// status the order decided, or its expiry. It is a compare-and-set like
-// every save, and a best effort: what it says is Django's, read again
-// on every render, and a checkout another request stored since is
-// left as that request stored it.
-func (h *handlers) storeFollowed(ctx context.Context, s *checkout.Session) {
-	err := h.deps.Checkout.Save(ctx, s)
-	if err != nil && !errors.Is(err, checkout.ErrSessionChanged) {
-		h.deps.Log.WarnContext(ctx, "checkout: order state not stored",
-			slog.String("session", s.ID),
-			slog.String("error", err.Error()))
+// rendered builds the checkout and stores what the render read from its
+// order (a status the order decided, its expiry) before giving it: a
+// checkout publishes only what is stored, so no later read gives an
+// earlier expires_at. The save is a compare-and-set: a checkout another
+// request stored meanwhile is read again and rendered once more. A placed
+// checkout whose state cannot be stored is answered as one placed and
+// not rendered.
+func (h *handlers) rendered(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	neg ucp.Negotiated,
+) (*ucp.Checkout, error) {
+	for again := true; ; again = false {
+		status, expires := s.Status, s.ExpiresAt
+		payload, err := h.deps.UCP.BuildCheckout(ctx, t, s,
+			neg.Declaration(ucp.CapabilityCheckout))
+		if err != nil ||
+			(s.Status == status && s.ExpiresAt.Equal(expires)) {
+			return payload, err
+		}
+		err = h.deps.Checkout.Save(ctx, s)
+		if err == nil {
+			return payload, nil
+		}
+		if !again || !errors.Is(err, checkout.ErrSessionChanged) {
+			h.deps.Log.WarnContext(ctx, "checkout: order state not stored",
+				slog.String("session", s.ID),
+				slog.String("error", err.Error()))
+			return nil, unrenderedErr(s)
+		}
+		now, err := h.deps.Checkout.Load(
+			ctx, t.SchemaName, ucpCaller(ctx), s.ID)
+		switch {
+		case errors.Is(err, checkout.ErrNotFound):
+			return nil, errCheckoutGone
+		case err != nil:
+			return nil, unrenderedErr(s)
+		}
+		*s = *now
 	}
 }
 
-// firstError is the text of a checkout's first error message: what a
-// checkout awaiting its payment says the buyer has to do.
-func firstError(c *ucp.Checkout) string {
+// firstError is a checkout's first error message: what a checkout
+// awaiting its payment says the buyer has to do.
+func firstError(c *ucp.Checkout) ucp.Message {
 	for _, m := range c.Messages {
 		if m.Type == "error" {
-			return m.Text
+			return m
 		}
 	}
-	return ""
+	return ucp.Message{}
 }
 
 // discountAnnotated appends the outcome of a discount submission to the
