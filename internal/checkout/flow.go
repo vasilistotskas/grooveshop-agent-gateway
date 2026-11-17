@@ -45,6 +45,13 @@ var ErrPaymentSessionFailed = errors.New(
 var ErrPaymentWindowClosed = errors.New(
 	"checkout: the order can no longer be paid")
 
+// ErrPaymentAwaitsStore marks an order whose payment no new link can
+// help: the provider is processing one, or nothing will decide the order
+// (a charge that did not match its total waits for the store, or the
+// store's sweep is off). The checkout says which, and no link is minted.
+var ErrPaymentAwaitsStore = errors.New(
+	"checkout: the order's payment awaits the store or its provider")
+
 // ErrSessionNotSaved marks an order that is placed while its session
 // could not be stored: the stored session still reads
 // complete_in_progress.
@@ -425,7 +432,8 @@ func (f *Flow) place(
 // ResumePayment mints the hosted payment link of an escalated order
 // whose first link could not be created, while the order can still be
 // paid: its payment hold, when Django names one, is ahead
-// (paymentHoldExpiresAt). Once the hold has passed the checkout already says the store cancels the
+// (paymentHoldExpiresAt), and the checkout does not tell the buyer to
+// wait for the store (ErrPaymentAwaitsStore). Once the hold has passed the checkout already says the store cancels the
 // order and nothing is charged, so no link is minted then, though Django
 // would still mint one until its longest hold: ErrPaymentWindowClosed. A
 // session that already has a link, or no order, is left as is.
@@ -440,14 +448,20 @@ func (f *Flow) ResumePayment(
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrPaymentSessionFailed, err)
 	}
+	// The rule the checkout is rendered by (ucp.awaitingPayment): no
+	// link where it tells the buyer not to pay.
+	if o.PaymentStatus == django.PaymentStatusProcessing ||
+		o.PaymentDecidedBy == "" {
+		return fmt.Errorf("%w: payment %s, decided by %q",
+			ErrPaymentAwaitsStore, o.PaymentStatus, o.PaymentDecidedBy)
+	}
 	hold, err := o.HoldExpiresAt()
 	if err != nil {
 		return fmt.Errorf("%w: order %s hold expires at %q: %w",
 			ErrPaymentSessionFailed, o.UUID, o.PaymentHoldExpiresAt, err)
 	}
-	// No hold is not an order past its time: Django keeps none for one
-	// whose payment it settled, and a canceled payment can still be
-	// retried. Django decides those (order_not_payable).
+	// No hold is not an order past its time: Django decides one it
+	// names none for (order_not_payable).
 	if !hold.IsZero() && !hold.After(time.Now()) {
 		return fmt.Errorf("%w: its payment hold ended at %q",
 			ErrPaymentWindowClosed, o.PaymentHoldExpiresAt)

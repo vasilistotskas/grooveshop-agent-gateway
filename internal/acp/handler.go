@@ -1543,7 +1543,8 @@ func (h *Handler) completeError(
 				"payment page could not be opened. Do not complete " +
 				"again or start a new checkout.",
 		})
-	case errors.Is(err, checkout.ErrPaymentWindowClosed):
+	case errors.Is(err, checkout.ErrPaymentWindowClosed),
+		errors.Is(err, checkout.ErrPaymentAwaitsStore):
 		// No ACP order awaits an online payment (Flow.admit), so no
 		// completion here opens a link; answered for what it says.
 		writeError(w, http.StatusBadRequest, Error{

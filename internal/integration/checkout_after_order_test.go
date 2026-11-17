@@ -177,6 +177,21 @@ func TestALostSaveIsNeverAnsweredAsDone(t *testing.T) {
 		assert.Equal(t, vivaCheckoutURL,
 			stack.storedSession(t, id).PaymentURL)
 	})
+	// A payment the provider is processing: the complete mints no link
+	// and answers the checkout, which says what it awaits.
+	t.Run("a payment being processed mints no link", func(t *testing.T) {
+		id := placedWithoutLink(t)
+		stack.faults.paymentProcessing.Store(true)
+		t.Cleanup(func() { stack.faults.paymentProcessing.Store(false) })
+
+		waiting := surfaces["ucp"].answer(ctx, id, uuid.NewString(), nil)
+
+		assert.Equal(t, "requires_escalation", waiting.status,
+			waiting.refusal)
+		assert.Contains(t, waiting.continueURL, "/checkout/success/")
+		assert.Contains(t, waiting.text, "processing")
+		assert.Empty(t, stack.storedSession(t, id).PaymentURL)
+	})
 	t.Run("a payment link opened as the order completes", func(t *testing.T) {
 		id := placedWithoutLink(t)
 		store := checkout.NewStore(stack.rdb, ucpUpstreamTimeout)

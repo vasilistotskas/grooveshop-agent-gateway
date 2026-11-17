@@ -371,6 +371,9 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 		"checkout.ErrPaymentWindowClosed": {
 			checkout.ErrPaymentWindowClosed, http.StatusBadRequest,
 			"order_not_payable"},
+		"checkout.ErrPaymentAwaitsStore": {
+			checkout.ErrPaymentAwaitsStore, http.StatusBadRequest,
+			"order_not_payable"},
 		"checkout.ErrInvalidQuantity": {
 			checkout.ErrInvalidQuantity, http.StatusBadRequest, "invalid"},
 		"checkout.ErrSessionNotSaved": {

@@ -884,6 +884,10 @@ func (h *handlers) completeSession(
 		if errors.Is(err, checkout.ErrPaymentWindowClosed) {
 			return refusedBy(paymentClosedErr(s))
 		}
+		if errors.Is(err, checkout.ErrPaymentAwaitsStore) {
+			// The checkout says what the payment awaits.
+			return fromSnapshot(render)
+		}
 		if err != nil {
 			return refusedBy(paymentLinkErr(s))
 		}
@@ -1091,7 +1095,8 @@ func completeErr(s *checkout.Session, err error) error {
 		return errOutcomeUnknown
 	case errors.Is(err, checkout.ErrPaymentSessionFailed):
 		return paymentLinkErr(s)
-	case errors.Is(err, checkout.ErrPaymentWindowClosed):
+	case errors.Is(err, checkout.ErrPaymentWindowClosed),
+		errors.Is(err, checkout.ErrPaymentAwaitsStore):
 		// The order is placed: never "placement failed".
 		return paymentClosedErr(s)
 	case errors.Is(err, checkout.ErrSessionNotSaved):

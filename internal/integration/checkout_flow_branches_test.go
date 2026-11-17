@@ -243,9 +243,11 @@ func TestResumePaymentOpensAPageOnlyWhereOneIsMissing(t *testing.T) {
 			s := escalated()
 			edit(s)
 			want := *s
+			reads := b.orderReads.Load()
 			require.NoError(t, f.flow.ResumePayment(ctx, f.tenant, s))
 			assert.Equal(t, want, *s)
 			assert.Equal(t, calls, b.paymentLinks.Load())
+			assert.Equal(t, reads, b.orderReads.Load(), "asked Django")
 		})
 	}
 
@@ -261,15 +263,22 @@ func TestResumePaymentOpensAPageOnlyWhereOneIsMissing(t *testing.T) {
 		assert.Equal(t, calls, b.paymentLinks.Load())
 	})
 
-	// No hold is Django's to judge: a canceled payment can be retried.
-	t.Run("an order with no hold", func(t *testing.T) {
-		f.faults.orderOnline.Store(false)
-		defer f.faults.orderOnline.Store(true)
-		s := escalated()
-		require.NoError(t, f.flow.ResumePayment(ctx, f.tenant, s))
-		assert.Equal(t, vivaCheckoutURL, s.PaymentURL)
-		calls = b.paymentLinks.Load()
-	})
+	// Where the checkout tells the buyer not to pay, no link is minted:
+	// a payment the provider is processing, an order nothing decides.
+	for name, fault := range map[string]*atomic.Bool{
+		"a payment being processed":    &f.faults.paymentProcessing,
+		"an order nothing will decide": &f.faults.orderUndecided,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fault.Store(true)
+			defer fault.Store(false)
+			s := escalated()
+			err := f.flow.ResumePayment(ctx, f.tenant, s)
+			require.ErrorIs(t, err, checkout.ErrPaymentAwaitsStore)
+			assert.Empty(t, s.PaymentURL)
+			assert.Equal(t, calls, b.paymentLinks.Load())
+		})
+	}
 
 	t.Run("an order that cannot be read", func(t *testing.T) {
 		f.faults.orderRead.Store(true)

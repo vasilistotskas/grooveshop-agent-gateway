@@ -242,6 +242,11 @@ type checkoutFaults struct {
 	// holdPassed makes an online order read with its payment hold
 	// already over.
 	holdPassed atomic.Bool
+	// paymentProcessing makes an online order read as its payment being
+	// processed, which nothing decides; orderUndecided as one nothing
+	// decides with its payment pending.
+	paymentProcessing atomic.Bool
+	orderUndecided    atomic.Bool
 	// orderCreatedAt is when the placed order reads as created; unset,
 	// the fixture's time, which is long past.
 	orderCreatedAt atomic.Pointer[time.Time]
@@ -320,6 +325,13 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				order["paymentHoldExpiresAt"] = hold.Format(time.RFC3339)
 				order["paymentDecidedBy"] = now.Add(
 					50 * time.Minute).Format(time.RFC3339)
+				if faults.paymentProcessing.Load() {
+					order["paymentStatus"] = "PROCESSING"
+				}
+				if faults.paymentProcessing.Load() ||
+					faults.orderUndecided.Load() {
+					order["paymentDecidedBy"] = nil
+				}
 			}
 			if canceled {
 				order["status"] = "CANCELED"
@@ -1645,6 +1657,7 @@ func TestUCPEndToEnd(t *testing.T) {
 			// being minted: the order's decision has moved a second on.
 			var read atomic.Bool
 			var readAnswer atomic.Pointer[mcp.CallToolResult]
+			var readStored atomic.Pointer[string]
 			before := stack.storedSession(t, checkoutID).Revision
 			readMeanwhile := func(r *http.Request) {
 				if !strings.HasSuffix(r.URL.Path, "/create_checkout_session") ||
@@ -1660,6 +1673,13 @@ func TestUCPEndToEnd(t *testing.T) {
 				if err == nil {
 					readAnswer.Store(res)
 				}
+				// What Redis holds once the read answered, before the
+				// complete's own save.
+				raw, err := stack.rdb.Get(t.Context(),
+					sessionRedisKey(checkoutID)).Result()
+				if err == nil {
+					readStored.Store(&raw)
+				}
 			}
 			stack.faults.before.Store(&readMeanwhile)
 			t.Cleanup(func() { stack.faults.before.Store(nil) })
@@ -1672,14 +1692,14 @@ func TestUCPEndToEnd(t *testing.T) {
 			meanwhile := readAnswer.Load()
 			require.NotNil(t, meanwhile, "the read was answered")
 			require.False(t, meanwhile.IsError, "%v", meanwhile.Content)
-			require.NotEqual(t, before,
-				stack.storedSession(t, checkoutID).Revision,
-				"the read stored the checkout")
+			stored := readStored.Load()
+			require.NotNil(t, stored)
+			require.NotContains(t, *stored, before,
+				"the read stored the checkout before the complete's save")
 			require.False(t, res.IsError, "%v", res.Content)
 			assert.Equal(t, vivaCheckoutURL,
 				structured(t, res)["continue_url"])
-			// The link is stored: the next read gives it, and no
-			// complete mints another.
+			// The link is stored: the next read gives it.
 			res = callTool(t, session, "get_checkout", map[string]any{
 				"meta": meta(""), "id": checkoutID,
 			})
