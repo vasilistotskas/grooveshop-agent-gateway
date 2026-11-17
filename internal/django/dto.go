@@ -419,12 +419,16 @@ type Order struct {
 	// decided it: canceled it if it is still unpaid. Empty when nothing
 	// will (no online payment awaited, a payment being processed, a
 	// charge that did not match, the sweep off). RFC 3339, null as "".
-	PaymentHoldExpiresAt string           `json:"paymentHoldExpiresAt" contract:"nullable"`
-	PaymentDecidedBy     string           `json:"paymentDecidedBy" contract:"nullable"`
-	Items                []OrderItem      `json:"items"`
-	TrackingDetails      *TrackingDetails `json:"trackingDetails"`
-	PricingBreakdown     PricingBreakdown `json:"pricingBreakdown"`
-	CreatedAt            string           `json:"createdAt"`
+	PaymentHoldExpiresAt string `json:"paymentHoldExpiresAt" contract:"nullable"`
+	PaymentDecidedBy     string `json:"paymentDecidedBy" contract:"nullable"`
+	// PaymentAwaitsReview is a confirmed charge that did not match the
+	// order's total, on an order still undecided: the money left the
+	// customer and the store reconciles it by hand. Never offer it a link.
+	PaymentAwaitsReview bool             `json:"paymentAwaitsReview"`
+	Items               []OrderItem      `json:"items"`
+	TrackingDetails     *TrackingDetails `json:"trackingDetails"`
+	PricingBreakdown    PricingBreakdown `json:"pricingBreakdown"`
+	CreatedAt           string           `json:"createdAt"`
 }
 
 // HoldExpiresAt is PaymentHoldExpiresAt as a time, zero for none.

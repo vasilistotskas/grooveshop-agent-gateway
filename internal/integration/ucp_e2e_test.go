@@ -247,6 +247,9 @@ type checkoutFaults struct {
 	// decides with its payment pending.
 	paymentProcessing atomic.Bool
 	orderUndecided    atomic.Bool
+	// orderAwaitsReview makes an online order read as a charge that did
+	// not match its total, waiting for the store.
+	orderAwaitsReview atomic.Bool
 	// orderCreatedAt is when the placed order reads as created; unset,
 	// the fixture's time, which is long past.
 	orderCreatedAt atomic.Pointer[time.Time]
@@ -329,9 +332,11 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 					order["paymentStatus"] = "PROCESSING"
 				}
 				if faults.paymentProcessing.Load() ||
-					faults.orderUndecided.Load() {
+					faults.orderUndecided.Load() ||
+					faults.orderAwaitsReview.Load() {
 					order["paymentDecidedBy"] = nil
 				}
+				order["paymentAwaitsReview"] = faults.orderAwaitsReview.Load()
 			}
 			if canceled {
 				order["status"] = "CANCELED"

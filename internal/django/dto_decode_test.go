@@ -181,6 +181,7 @@ func TestDecodeOrderAwaitingPayment(t *testing.T) {
 	assert.Equal(t, "PENDING", o.PaymentStatus)
 	assert.Equal(t, "2026-05-21T21:44:59.047689+03:00", o.PaymentHoldExpiresAt)
 	assert.Equal(t, "2026-05-21T22:05:00+03:00", o.PaymentDecidedBy)
+	assert.False(t, o.PaymentAwaitsReview)
 }
 
 // PayWayByID reads the detail serializer, a superset of the list's.
