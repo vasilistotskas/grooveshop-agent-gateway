@@ -46,9 +46,9 @@ var ErrPaymentWindowClosed = errors.New(
 	"checkout: the order can no longer be paid")
 
 // ErrPaymentAwaitsStore marks an order whose payment no new link can
-// help: the provider is processing one, or nothing will decide the order
-// (a charge that did not match its total waits for the store, or the
-// store's sweep is off). The checkout says which, and no link is minted.
+// help: the provider is processing one, or a charge that did not match
+// its total waits for the store (paymentAwaitsReview). The checkout says
+// which, and no link is minted.
 var ErrPaymentAwaitsStore = errors.New(
 	"checkout: the order's payment awaits the store or its provider")
 
@@ -451,9 +451,9 @@ func (f *Flow) ResumePayment(
 	// The rule the checkout is rendered by (ucp.awaitingPayment): no
 	// link where it tells the buyer not to pay.
 	if o.PaymentStatus == django.PaymentStatusProcessing ||
-		o.PaymentDecidedBy == "" {
-		return fmt.Errorf("%w: payment %s, decided by %q",
-			ErrPaymentAwaitsStore, o.PaymentStatus, o.PaymentDecidedBy)
+		o.PaymentAwaitsReview {
+		return fmt.Errorf("%w: payment %s, awaits review %t",
+			ErrPaymentAwaitsStore, o.PaymentStatus, o.PaymentAwaitsReview)
 	}
 	hold, err := o.HoldExpiresAt()
 	if err != nil {

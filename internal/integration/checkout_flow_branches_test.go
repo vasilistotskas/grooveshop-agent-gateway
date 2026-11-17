@@ -264,10 +264,10 @@ func TestResumePaymentOpensAPageOnlyWhereOneIsMissing(t *testing.T) {
 	})
 
 	// Where the checkout tells the buyer not to pay, no link is minted:
-	// a payment the provider is processing, an order nothing decides.
+	// a payment the provider is processing, a charge awaiting the store.
 	for name, fault := range map[string]*atomic.Bool{
-		"a payment being processed":    &f.faults.paymentProcessing,
-		"an order nothing will decide": &f.faults.orderUndecided,
+		"a payment being processed":   &f.faults.paymentProcessing,
+		"a charge awaiting the store": &f.faults.orderAwaitsReview,
 	} {
 		t.Run(name, func(t *testing.T) {
 			fault.Store(true)
@@ -279,6 +279,17 @@ func TestResumePaymentOpensAPageOnlyWhereOneIsMissing(t *testing.T) {
 			assert.Equal(t, calls, b.paymentLinks.Load())
 		})
 	}
+
+	// A store whose sweep is off decides nothing, and nothing was paid:
+	// the link is minted.
+	t.Run("a store whose sweep is off", func(t *testing.T) {
+		f.faults.orderUndecided.Store(true)
+		defer f.faults.orderUndecided.Store(false)
+		s := escalated()
+		require.NoError(t, f.flow.ResumePayment(ctx, f.tenant, s))
+		assert.Equal(t, vivaCheckoutURL, s.PaymentURL)
+		calls = b.paymentLinks.Load()
+	})
 
 	t.Run("an order that cannot be read", func(t *testing.T) {
 		f.faults.orderRead.Store(true)

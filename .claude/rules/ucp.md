@@ -210,32 +210,36 @@ wins over this page.
 - **A checkout awaiting its payment** (`requires_escalation`) is
   rendered from its order (`ucp.awaitingPayment`), with one `error`
   message whose severity is a `requires_*` one, as the spec requires of
-  that status. On the PSP's page, which can be paid until the order's
-  `paymentHoldExpiresAt` (named in it): `payment_required`, and
-  `payment_failed` for a failed attempt, which Django lets the buyer
-  retry there (`requires_buyer_input`). On the order's page
-  (`requires_buyer_review`): `payment_processing` (the provider is
-  processing a payment; never pay again), `payment_in_review` (nothing
-  will decide the order: a charge that did not match its total waits
-  for the store, or the sweep is off, which Django does not tell apart,
-  so neither "pay" nor "owes nothing" is said) and
-  `payment_link_expired` (its time to pay ran out: the store cancels
-  it, the shopper owes nothing). And `payment_link_unavailable`
-  (`recoverable`, the order's page: the first link could not be
-  created, and complete_checkout tries again).
+  that status, checked in this order:
+  - `payment_processing` (the provider is processing a payment) and
+    `payment_in_review` (`paymentAwaitsReview`: a charge that did not
+    match the total waits for the store): the order's page,
+    `requires_buyer_review`, never pay again, and never "owes nothing";
+  - `payment_link_expired`: its hold (`paymentHoldExpiresAt`) has
+    passed, the order's page, `requires_buyer_review`: the store cancels
+    it (by `expires_at` when its sweep will decide it) and the shopper
+    owes nothing;
+  - `payment_link_unavailable`: no link yet, the order's page,
+    `recoverable`: complete_checkout tries again;
+  - `payment_with_store`: Django holds no payment open for the order (no
+    hold), the order's page, `requires_buyer_review`;
+  - `payment_failed` (a failed attempt, which Django lets the buyer
+    retry) and `payment_required`: the PSP's page, `requires_buyer_input`,
+    naming when the link stops being payable. A store whose sweep is off
+    (`paymentDecidedBy` null, nothing charged) is paid here too.
+
   Its `expires_at` is when Django will have decided the order
   (`.claude/rules/checkout.md`). A canceled order makes the checkout
   `canceled` with an `info` message `order_canceled` (the shopper owes
   nothing: Django settles any unconfirmed payment as canceled with its
   order, so it is never "nothing was charged"; a payment after the
-  cancel is refunded); a charged one
-  `completed`. No link is minted after the first: an expired one means
-  the order is canceled by `expires_at` and the shopper owes nothing, and the
-  cart can be checked out again; nor is the first one once the order's
-  hold has passed (`Flow.ResumePayment` reads the order). The tag's `complete_in_progress` is
-  rendered for a checkout whose order is being placed; its Actions are
-  not used: the one step a buyer takes is the PSP's page, which
-  `continue_url` carries.
+  cancel is refunded); a charged one `completed`. No link is minted
+  after the first, nor the first once the order's hold has passed or
+  where the checkout tells the buyer not to pay
+  (`Flow.ResumePayment` reads the order; `ErrPaymentAwaitsStore`).
+  The tag's `complete_in_progress` is rendered for a checkout whose
+  order is being placed; its Actions are not used: the one step a buyer
+  takes is the PSP's page, which `continue_url` carries.
 - **`discounts` in the response** (extension negotiated): `codes` are
   the cart's: the coupon the cart holds (applied or refused now),
   whoever attached it, then the codes the store refused when they were

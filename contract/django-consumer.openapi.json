@@ -1113,6 +1113,9 @@
             },
             "type": "array"
           },
+          "paymentAwaitsReview": {
+            "type": "boolean"
+          },
           "paymentDecidedBy": {
             "nullable": true,
             "type": "string"
@@ -1190,6 +1193,7 @@
           "id",
           "isPaid",
           "items",
+          "paymentAwaitsReview",
           "paymentDecidedBy",
           "paymentHoldExpiresAt",
           "paymentStatusDisplay",

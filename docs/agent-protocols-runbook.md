@@ -281,9 +281,9 @@ ID=$(j 't.id' <<<"$R")
 tool complete_checkout "{\"meta\":$(ucp_meta "$(uuid)"),\"id\":\"$ID\",\"checkout\":{\"payment\":{}}}" | j 'JSON.stringify({status:t.status,continue_url:t.continue_url,messages:(t.messages||[]).map(m=>m.code)})'
 ```
 
-**Expected:** `requires_escalation`, with a `continue_url` on Viva's **demo** host and the code `requires_buyer_review`. The spec requires `payment` on a complete; `{}` names no instrument, so the method the checkout holds is used.
+**Expected:** `requires_escalation`, with a `continue_url` on Viva's **demo** host, the error `payment_required` with severity `requires_buyer_input` naming when the link stops being payable, and `expires_at` when the store will have decided the order (`paymentDecidedBy`). The spec requires `payment` on a complete; `{}` names no instrument, so the method the checkout holds is used.
 
-**Observed on staging:** PASS, 2026-11-06. `requires_escalation`, `continue_url` on `demo.vivapayments.com`, code `requires_buyer_review`. The link was not opened.
+**Observed on staging:** PASS, 2026-11-17 (v1.46.0). `requires_escalation`, `continue_url` on `demo.vivapayments.com`, `payment_required` / `requires_buyer_input`, the link payable until 14:31:26Z and `expires_at` 15:15:00Z, the same on a second read. The link was not opened.
 
 ### U3. Signed order webhook
 
