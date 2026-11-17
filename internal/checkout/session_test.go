@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 )
 
 func completeBuyer() Buyer {
@@ -151,6 +153,9 @@ func TestRecompute(t *testing.T) {
 
 func TestPlacedSessionLifeCountsFromPlacement(t *testing.T) {
 	now := time.Now()
+	life := func(s *Session) time.Duration {
+		return s.keptUntil(now).Sub(now)
+	}
 	placed := func(age time.Duration, status Status) *Session {
 		return &Session{Status: status, PlacedAt: now.Add(-age)}
 	}
@@ -168,26 +173,149 @@ func TestPlacedSessionLifeCountsFromPlacement(t *testing.T) {
 		StatusCompleted:          terminalTTL,
 		StatusCanceled:           terminalTTL,
 	} {
-		assert.Equal(t, want, (&Session{Status: status}).ttl(now), status)
+		assert.Equal(t, want, life(&Session{Status: status}), status)
 	}
 	inProgress := Session{Status: StatusCompleteInProgress}
 	// Its order was sent and never answered: an order may exist.
 	unconfirmed := inProgress
 	unconfirmed.Unconfirmed = true
-	assert.Equal(t, terminalTTL, unconfirmed.ttl(now))
+	assert.Equal(t, terminalTTL, life(&unconfirmed))
 	// Its order was placed and the session could not be completed.
 	named := inProgress
 	named.OrderUUID = "b9be45e5-6062-4976-ae7b-2c31eb2ad689"
-	assert.Equal(t, terminalTTL, named.ttl(now))
+	assert.Equal(t, terminalTTL, life(&named))
 	// A placed session ends terminalTTL after it was placed.
 	assert.Equal(t, terminalTTL-time.Hour,
-		placed(time.Hour, StatusRequiresEscalation).ttl(now))
+		life(placed(time.Hour, StatusRequiresEscalation)))
 	assert.Equal(t, 10*time.Minute,
-		placed(terminalTTL-10*time.Minute, StatusRequiresEscalation).ttl(now))
+		life(placed(terminalTTL-10*time.Minute, StatusRequiresEscalation)))
 	assert.Equal(t, time.Hour,
-		placed(terminalTTL-time.Hour, StatusCompleted).ttl(now))
+		life(placed(terminalTTL-time.Hour, StatusCompleted)))
 	assert.LessOrEqual(t,
-		placed(terminalTTL, StatusRequiresEscalation).ttl(now), time.Duration(0))
+		life(placed(terminalTTL, StatusRequiresEscalation)), time.Duration(0))
+	// Unless the expiry it published is later: it is readable until then.
+	late := placed(terminalTTL-time.Hour, StatusRequiresEscalation)
+	late.ExpiresAt = now.Add(2 * time.Hour)
+	assert.Equal(t, 2*time.Hour, life(late))
+	// So is an open one, whose expiry another pod's clock set later.
+	ahead := &Session{Status: StatusIncomplete,
+		ExpiresAt: now.Add(activeTTL + time.Minute)}
+	assert.Equal(t, activeTTL+time.Minute, life(ahead))
+}
+
+// A save publishes the session's own end as its expiry, in every state
+// but one awaiting its payment, whose expiry is its order's; and the
+// session is kept at least until the expiry it published.
+func TestASaveExpiresTheSessionWhenItEnds(t *testing.T) {
+	now := time.Now()
+	for _, status := range []Status{
+		StatusIncomplete, StatusReadyForComplete, StatusCompleteInProgress,
+		StatusCompleted, StatusCanceled,
+	} {
+		s := &Session{Status: status}
+		s.expire(now)
+		assert.Equal(t, s.keptUntil(now), s.ExpiresAt, status)
+	}
+
+	placed := &Session{Status: StatusCompleted, PlacedAt: now.Add(-time.Hour)}
+	placed.expire(now)
+	assert.Equal(t, placed.PlacedAt.Add(terminalTTL), placed.ExpiresAt)
+
+	decided := now.Add(40 * time.Minute)
+	awaiting := &Session{Status: StatusRequiresEscalation,
+		PlacedAt: now, ExpiresAt: decided}
+	awaiting.expire(now.Add(time.Minute))
+	assert.Equal(t, decided, awaiting.ExpiresAt, "the order's, not the store's")
+	assert.False(t, awaiting.keptUntil(now).Before(awaiting.ExpiresAt))
+}
+
+// No save moves a published expiry earlier: a platform stops polling at
+// the value it was given.
+func TestTheExpiryNeverMovesEarlier(t *testing.T) {
+	now := time.Now()
+	s := &Session{Status: StatusIncomplete,
+		ExpiresAt: now.Add(2 * activeTTL)}
+	s.expire(now)
+	assert.Equal(t, now.Add(2*activeTTL), s.ExpiresAt)
+
+	awaiting := &Session{Status: StatusRequiresEscalation, PlacedAt: now,
+		ExpiresAt: now.Add(time.Hour)}
+	assert.False(t, awaiting.AwaitDecision(now.Add(30*time.Minute)))
+	assert.Equal(t, now.Add(time.Hour), awaiting.ExpiresAt)
+	assert.True(t, awaiting.AwaitDecision(now.Add(90*time.Minute)))
+	assert.Equal(t, now.Add(90*time.Minute).UTC(), awaiting.ExpiresAt)
+}
+
+// A checkout awaiting its payment expires when Django will have decided
+// its order; one whose order nothing will decide, when its session ends.
+func TestAwaitDecision(t *testing.T) {
+	now := time.Now().UTC()
+	placed := now.Add(-time.Minute)
+	s := &Session{Status: StatusRequiresEscalation, PlacedAt: placed,
+		ExpiresAt: placed.Add(activeTTL)}
+	decided := now.Add(45 * time.Minute)
+	assert.True(t, s.AwaitDecision(decided))
+	assert.Equal(t, decided, s.ExpiresAt)
+
+	nothing := &Session{Status: StatusRequiresEscalation, PlacedAt: placed,
+		ExpiresAt: placed.Add(activeTTL)}
+	assert.True(t, nothing.AwaitDecision(time.Time{}))
+	assert.Equal(t, placed.Add(terminalTTL), nothing.ExpiresAt)
+
+	// Only a checkout awaiting its payment takes its order's decision.
+	open := &Session{Status: StatusIncomplete, ExpiresAt: now}
+	assert.False(t, open.AwaitDecision(decided))
+	assert.Equal(t, now, open.ExpiresAt)
+}
+
+// The status a placed checkout takes from its order: the order's status
+// is read before its payment's, a completed checkout stays completed,
+// and a payment that lands after the order was canceled leaves the
+// checkout canceled.
+func TestFollowOrder(t *testing.T) {
+	const (
+		pending    = "PENDING"
+		processing = "PROCESSING"
+		canceled   = django.OrderStatusCanceled
+		paid       = django.PaymentStatusCompleted
+		refunded   = django.PaymentStatusRefunded
+		failed     = django.PaymentStatusFailed
+	)
+	for _, tc := range []struct {
+		from          Status
+		order, paying string
+		want          Status
+	}{
+		{StatusRequiresEscalation, pending, pending, StatusRequiresEscalation},
+		{StatusRequiresEscalation, pending, failed, StatusRequiresEscalation},
+		{StatusRequiresEscalation, pending, processing, StatusRequiresEscalation},
+		{StatusRequiresEscalation, processing, paid, StatusCompleted},
+		{StatusRequiresEscalation, "SHIPPED", paid, StatusCompleted},
+		{StatusRequiresEscalation, "DELIVERED", refunded, StatusCompleted},
+		{StatusRequiresEscalation, "COMPLETED",
+			django.PaymentStatusPartRefund, StatusCompleted},
+		{StatusRequiresEscalation, canceled, "CANCELED", StatusCanceled},
+		{StatusRequiresEscalation, canceled, paid, StatusCanceled},
+		{StatusRequiresEscalation, canceled, refunded, StatusCanceled},
+		{StatusCompleteInProgress, processing, paid, StatusCompleted},
+		{StatusCompleteInProgress, canceled, paid, StatusCompleteInProgress},
+		{StatusCompleteInProgress, pending, pending, StatusCompleteInProgress},
+		{StatusCompleted, canceled, "CANCELED", StatusCompleted},
+		{StatusCanceled, processing, paid, StatusCanceled},
+		{StatusReadyForComplete, processing, paid, StatusReadyForComplete},
+	} {
+		now := time.Now()
+		s := &Session{Status: tc.from, PlacedAt: now,
+			ExpiresAt: now.Add(time.Hour)}
+		changed := s.FollowOrder(tc.order, tc.paying)
+		name := string(tc.from) + " " + tc.order + "/" + tc.paying
+		assert.Equal(t, tc.want, s.Status, name)
+		assert.Equal(t, tc.want != tc.from, changed, name)
+		if changed {
+			// A decided checkout is readable until its session ends.
+			assert.Equal(t, s.PlacedAt.Add(terminalTTL), s.ExpiresAt, name)
+		}
+	}
 }
 
 // Only an open session may be written by a call that is not placing it:

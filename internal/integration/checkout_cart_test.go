@@ -369,6 +369,7 @@ func TestAnEndingSessionFreesOnlyItsOwnCart(t *testing.T) {
 		require.Equal(t, s.ID, heldBy(t, rdb, s.CartID))
 
 		s.PlacedAt = time.Now().Add(-25 * time.Hour)
+		s.ExpiresAt = s.PlacedAt
 		require.NoError(t, store.Save(ctx, s))
 
 		_, err := store.LoadAnyProtocol(ctx, s.Schema, s.ID)
@@ -380,6 +381,7 @@ func TestAnEndingSessionFreesOnlyItsOwnCart(t *testing.T) {
 		func(t *testing.T) {
 			old, next := over(t)
 			old.PlacedAt = time.Now().Add(-25 * time.Hour)
+			old.ExpiresAt = old.PlacedAt
 			require.NoError(t, store.Save(ctx, old))
 
 			_, err := store.LoadAnyProtocol(ctx, old.Schema, old.ID)

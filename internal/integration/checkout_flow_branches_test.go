@@ -267,7 +267,7 @@ func TestOrderEventLeavesAGoneOrEndedCheckoutAlone(t *testing.T) {
 	t.Run("no session", func(t *testing.T) {
 		id := "4d3c2b1a-0000-4000-8000-000000000001"
 		require.NoError(t, f.flow.ApplyOrderEvent(ctx, "demostore", id,
-			fixtureOrderUUID, django.PaymentStatusCompleted))
+			fixtureOrderUUID, "PROCESSING", django.PaymentStatusCompleted))
 		_, err := f.rdb.Get(ctx, sessionRedisKey(id)).Result()
 		require.ErrorIs(t, err, redis.Nil, "the event stored a session")
 		assert.Zero(t, b.orderReads.Load())
@@ -283,7 +283,7 @@ func TestOrderEventLeavesAGoneOrEndedCheckoutAlone(t *testing.T) {
 			before := f.storedBytes(t, s.ID)
 
 			require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
-				fixtureOrderUUID, django.PaymentStatusCompleted))
+				fixtureOrderUUID, "PROCESSING", django.PaymentStatusCompleted))
 
 			assert.Equal(t, before, f.storedBytes(t, s.ID))
 			assert.Zero(t, b.orderReads.Load())
@@ -311,7 +311,7 @@ func TestOrderEventWithNothingNewWritesNothing(t *testing.T) {
 	}))
 
 	require.NoError(t, f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
-		fixtureOrderUUID, "PROCESSING"))
+		fixtureOrderUUID, "PENDING", "PROCESSING"))
 
 	assert.Zero(t, writes)
 	assert.Equal(t, before, f.storedBytes(t, s.ID))
@@ -345,7 +345,7 @@ func TestOrderEventThatLostItsSaveSaysSo(t *testing.T) {
 	}))
 
 	err := f.flow.ApplyOrderEvent(ctx, s.Schema, s.ID,
-		fixtureOrderUUID, django.PaymentStatusCompleted)
+		fixtureOrderUUID, "PROCESSING", django.PaymentStatusCompleted)
 
 	require.ErrorIs(t, err, checkout.ErrSessionChanged)
 	stored := f.stored(t, s)

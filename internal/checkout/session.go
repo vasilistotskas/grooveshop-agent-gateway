@@ -6,6 +6,7 @@
 package checkout
 
 import (
+	"slices"
 	"time"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
@@ -138,8 +139,16 @@ type Session struct {
 	OrderID    int64  `json:"orderId,omitempty"`
 	OrderUUID  string `json:"orderUuid,omitempty"`
 	PaymentURL string `json:"paymentUrl,omitempty"`
-	// PlacedAt ends the session terminalTTL later, whatever happens to it.
+	// PlacedAt ends the session terminalTTL later, whatever happens to it,
+	// unless its ExpiresAt is later still.
 	PlacedAt time.Time `json:"placedAt,omitzero"`
+	// ExpiresAt is published as the checkout's expires_at: until then a
+	// platform may read it, and the session is kept at least that long
+	// (keptUntil). It never moves earlier than a value already published:
+	// a platform stops polling at it. A checkout awaiting its payment
+	// takes it from its order (AwaitDecision); every other state from
+	// its own lifetime, set at each save (expire).
+	ExpiresAt time.Time `json:"expiresAt"`
 	// Unconfirmed marks a session in progress whose order was sent and
 	// never answered: the order may exist. One in progress without it,
 	// and without an order, is a completion that is still running, or
@@ -223,24 +232,103 @@ func (s *Session) keptLong() bool {
 		s.OrderUUID != "" || s.Unconfirmed
 }
 
-// ttl is how long the session may still live. Calls keep an open session
-// alive for activeTTL at a time, and a session just marked in progress
-// has that long too. One an order exists for, or may (keptLong), is
-// kept terminalTTL: while it is held, a caller is told what became of
-// the checkout (do not order again, the order, its payment page), and a
-// payment event finds it; once it is gone the id is only "no session".
-// A placed one still ends terminalTTL after it was placed, however often
-// a caller holding its id touches it: it reads its order with the
-// gateway's secret, past the limit on a guest's order uuid.
-func (s *Session) ttl(now time.Time) time.Duration {
-	ttl := activeTTL
-	if s.keptLong() {
-		ttl = terminalTTL
+// keptUntil is when the session, saved at now, ends. Calls keep an open
+// session alive for activeTTL at a time, and a session just marked in
+// progress has that long too. One an order exists for, or may
+// (keptLong), is kept terminalTTL: while it is held, a caller is told
+// what became of the checkout (do not order again, the order, its
+// payment page), and a payment event finds it; once it is gone the id is
+// only "no session". A placed one ends terminalTTL after it was placed,
+// however often a caller holding its id touches it: it reads its order
+// with the gateway's secret, past the limit on a guest's order uuid. It
+// Every session is kept to its ExpiresAt if that is later: Django's
+// decision on an unpaid order can come later than its day when its sweep
+// is paused, and another pod's clock may have published a later one.
+func (s *Session) keptUntil(now time.Time) time.Time {
+	end := now.Add(activeTTL)
+	switch {
+	case !s.PlacedAt.IsZero():
+		end = s.PlacedAt.Add(terminalTTL)
+	case s.keptLong():
+		end = now.Add(terminalTTL)
 	}
-	if s.PlacedAt.IsZero() {
-		return ttl
+	return later(end, s.ExpiresAt)
+}
+
+// expire sets ExpiresAt for a save at now: the session's own end. A
+// checkout awaiting its payment is the exception: its expiry is when
+// Django will have decided its order (AwaitDecision), which the store
+// does not know.
+func (s *Session) expire(now time.Time) {
+	if s.Status == StatusRequiresEscalation {
+		return
 	}
-	return min(ttl, s.PlacedAt.Add(terminalTTL).Sub(now))
+	s.ExpiresAt = later(s.ExpiresAt, s.keptUntil(now))
+}
+
+// AwaitDecision publishes, for a checkout awaiting its payment, when
+// Django will have decided its order (the order's paymentDecidedBy): a
+// platform polls it until then, and reads the decision at it. A zero
+// decidedBy is an order nothing will decide (its payment is being
+// processed, a charge that did not match waits for the store, the sweep
+// is off): the checkout is then readable until its session ends. The
+// expiry never moves earlier. It reports whether it moved.
+func (s *Session) AwaitDecision(decidedBy time.Time) bool {
+	if s.Status != StatusRequiresEscalation {
+		return false
+	}
+	if decidedBy.IsZero() {
+		decidedBy = s.keptUntil(time.Now())
+	}
+	next := later(s.ExpiresAt, decidedBy.UTC())
+	moved := !next.Equal(s.ExpiresAt)
+	s.ExpiresAt = next
+	return moved
+}
+
+// FollowOrder sets the status a placed checkout takes from its order's
+// status and payment status, as Django reports them, and reports whether
+// it changed. The order's status is read first:
+//   - awaiting its payment (requires_escalation): canceled by the store,
+//     paid or not, it is canceled; else paid (charged, refunds
+//     included), it is completed; else it still awaits its payment;
+//   - being placed (complete_in_progress, whose order an event already
+//     names): paid and not canceled, it is completed; its completion
+//     stores its own outcome over that (Flow.saveOverEvent);
+//   - every other status, completed and canceled included, is not the
+//     order's to change: a checkout completed at placement (a
+//     collect-later method) stays completed when the order is later
+//     canceled.
+func (s *Session) FollowOrder(orderStatus, paymentStatus string) bool {
+	canceled := orderStatus == django.OrderStatusCanceled
+	charged := slices.Contains(django.ChargedPaymentStatuses, paymentStatus)
+	next := s.Status
+	switch s.Status {
+	case StatusRequiresEscalation:
+		switch {
+		case canceled:
+			next = StatusCanceled
+		case charged:
+			next = StatusCompleted
+		}
+	case StatusCompleteInProgress:
+		if charged && !canceled {
+			next = StatusCompleted
+		}
+	}
+	if next == s.Status {
+		return false
+	}
+	s.Status = next
+	s.expire(time.Now())
+	return true
+}
+
+func later(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 // payWaySelectionRequired reports whether readiness includes an explicit

@@ -41,9 +41,17 @@ func (stack ucpStack) pushOrderEvent(t *testing.T, paymentStatus string) int {
 
 // orderEvent is pushOrderEvent for any goroutine: it asserts nothing.
 func (stack ucpStack) orderEvent(paymentStatus string) (int, error) {
+	return stack.orderStatusEvent("PROCESSING", paymentStatus)
+}
+
+// orderStatusEvent is Django's push of an order's status and payment
+// status. It asserts nothing.
+func (stack ucpStack) orderStatusEvent(
+	orderStatus, paymentStatus string,
+) (int, error) {
 	event, err := json.Marshal(map[string]any{
 		"schemaName": "demostore", "orderUuid": fixtureOrderUUID,
-		"status": "PROCESSING", "paymentStatus": paymentStatus,
+		"status": orderStatus, "paymentStatus": paymentStatus,
 	})
 	if err != nil {
 		return 0, err

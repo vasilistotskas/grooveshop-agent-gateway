@@ -105,8 +105,11 @@ func NewStore(rdb *redis.Client, upstreamTimeout time.Duration) *Store {
 //   - v4: a session keeps the platform that signed its creation, and
 //     only that platform reaches it (a v3 pod knows nothing of that
 //     platform, and its save drops it).
+//   - v5: a session keeps the expires_at it published, which never
+//     moves earlier (a v4 pod knows nothing of it, and its save drops
+//     it).
 func sessionKey(schema, id string) string {
-	return "ag:" + schema + ":cs:v4:" + id
+	return "ag:" + schema + ":cs:v5:" + id
 }
 
 func lockKey(schema, id string) string {
@@ -173,6 +176,7 @@ func NewSession(schema, domain, protocol, cartID string) *Session {
 		CartID:    cartID,
 		CreatedAt: now,
 		UpdatedAt: now,
+		ExpiresAt: now.Add(activeTTL),
 	}
 }
 
@@ -412,7 +416,7 @@ func (st *Store) wasStored(
 	if err != nil || now.Revision != w.revision {
 		return failed
 	}
-	s.Revision, s.UpdatedAt = w.revision, w.at
+	s.Revision, s.UpdatedAt, s.ExpiresAt = w.revision, w.at, now.ExpiresAt
 	return nil
 }
 
@@ -424,12 +428,13 @@ func (st *Store) store(
 	next := *s
 	next.Revision = w.revision
 	next.UpdatedAt = w.at
+	next.expire(next.UpdatedAt)
 	keys := []string{
 		sessionKey(s.Schema, s.ID), cartKey(s.Schema, s.CartID),
 	}
 	// Zero or less ends a placed session whose day has passed: the
 	// script deletes it, under the same check as a write.
-	ttl := next.ttl(next.UpdatedAt).Milliseconds()
+	ttl := next.keptUntil(next.UpdatedAt).Sub(next.UpdatedAt).Milliseconds()
 	raw, err := json.Marshal(&next)
 	if err != nil {
 		return fmt.Errorf("checkout: encode: %w", err)
@@ -447,6 +452,7 @@ func (st *Store) store(
 		return ErrSessionChanged
 	}
 	s.Revision, s.UpdatedAt = next.Revision, next.UpdatedAt
+	s.ExpiresAt = next.ExpiresAt
 	return nil
 }
 

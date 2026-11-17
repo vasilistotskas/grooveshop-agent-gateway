@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -266,37 +267,45 @@ func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
 		// Another spelling of a UUID: sessions are stored under one.
 		"6F1C2A52-3D8E-4C55-9A0F-0C6A2B9E1D11",
 	} {
-		for name, call := range map[string]func() error{
-			"get_checkout": func() error {
-				_, _, err := h.getCheckout(ctx, nil,
+		type answer = func() (CheckoutResult, error)
+		for name, call := range map[string]answer{
+			"get_checkout": func() (CheckoutResult, error) {
+				_, out, err := h.getCheckout(ctx, nil,
 					GetCheckoutIn{Meta: ucpMeta(t, ""), ID: id})
-				return err
+				return out, err
 			},
-			"update_checkout": func() error {
-				_, _, err := h.updateCheckout(ctx, nil,
+			"update_checkout": func() (CheckoutResult, error) {
+				_, out, err := h.updateCheckout(ctx, nil,
 					UpdateCheckoutIn{Meta: ucpMeta(t, ""), ID: id})
-				return err
+				return out, err
 			},
-			"complete_checkout": func() error {
-				_, _, err := h.completeCheckout(ctx, nil, CompleteCheckoutIn{
+			"complete_checkout": func() (CheckoutResult, error) {
+				_, out, err := h.completeCheckout(ctx, nil,
+					CompleteCheckoutIn{
+						Meta: ucpMeta(t, uuid.NewString()), ID: id,
+					})
+				return out, err
+			},
+			"cancel_checkout": func() (CheckoutResult, error) {
+				_, out, err := h.cancelCheckout(ctx, nil, CancelCheckoutIn{
 					Meta: ucpMeta(t, uuid.NewString()), ID: id,
 				})
-				return err
-			},
-			"cancel_checkout": func() error {
-				_, _, err := h.cancelCheckout(ctx, nil, CancelCheckoutIn{
-					Meta: ucpMeta(t, uuid.NewString()), ID: id,
-				})
-				return err
+				return out, err
 			},
 		} {
 			t.Run(name+" "+id, func(t *testing.T) {
-				err := call()
+				out, err := call()
 
-				require.ErrorIs(t, err, errCheckoutGone)
-				te, ok := errors.AsType[*mcptool.ToolError](err)
-				require.True(t, ok, "%v", err)
-				assert.Equal(t, mcptool.CodeNotFound, te.Code)
+				// The spec's error response, not a tool error.
+				require.NoError(t, err)
+				require.NotNil(t, out.failure)
+				assert.Nil(t, out.checkout)
+				assert.Equal(t, "error", out.failure.UCP.Status)
+				require.Len(t, out.failure.Messages, 1)
+				m := out.failure.Messages[0]
+				assert.Equal(t, "error", m.Type)
+				assert.Equal(t, "not_found", m.Code)
+				assert.Equal(t, "unrecoverable", m.Severity)
 				for _, part := range []string{
 					"an order may exist",
 					"do not start another checkout before checking",
@@ -304,7 +313,7 @@ func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
 					"ask the shopper for the store's order confirmation",
 					"Only if it was never completed, start a new one",
 				} {
-					assert.Contains(t, err.Error(), part)
+					assert.Contains(t, m.Text, part)
 				}
 			})
 		}
@@ -617,4 +626,20 @@ func downDjango(t *testing.T) (*django.Client, func() []string) {
 			defer mu.Unlock()
 			return append([]string(nil), calls...)
 		}
+}
+
+// A first completion whose payment link Django refuses for good placed
+// its order: it is answered closed, naming the order, never as an order
+// placement that failed.
+func TestACompletionWhoseOrderCanNoLongerBePaidIsNotAFailedOrder(t *testing.T) {
+	s := &checkout.Session{ID: "c", OrderUUID: "o",
+		Status: checkout.StatusRequiresEscalation}
+	err := completeErr(s, fmt.Errorf("%w: %w",
+		checkout.ErrPaymentWindowClosed, errors.New("django: 400")))
+
+	te, ok := errors.AsType[*mcptool.ToolError](err)
+	require.True(t, ok, "%v", err)
+	assert.Equal(t, mcptool.CodeCheckoutClosed, te.Code)
+	assert.Contains(t, te.Hint, "order o can no longer be paid")
+	assert.Contains(t, te.Hint, "start another checkout before reading it")
 }

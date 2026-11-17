@@ -260,6 +260,24 @@ func structured(t *testing.T, res *mcp.CallToolResult) map[string]any {
 	return out
 }
 
+// checkoutGone asserts that res is the spec's error response for a
+// checkout no session is stored for, and returns what it says.
+func checkoutGone(t *testing.T, res *mcp.CallToolResult) string {
+	t.Helper()
+	require.False(t, res.IsError, "%v", res.Content)
+	out := structured(t, res)
+	assert.Equal(t, "error", out["ucp"].(map[string]any)["status"])
+	assert.NotContains(t, out, "id", "the error response is closed")
+	messages, _ := out["messages"].([]any)
+	require.Len(t, messages, 1)
+	m := messages[0].(map[string]any)
+	assert.Equal(t, "error", m["type"])
+	assert.Equal(t, "not_found", m["code"])
+	assert.Equal(t, "unrecoverable", m["severity"])
+	content, _ := m["content"].(string)
+	return content
+}
+
 func TestMCPEndToEnd(t *testing.T) {
 	gw := startGateway(t)
 	session := connectMCP(t, gw.URL)

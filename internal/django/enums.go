@@ -11,12 +11,32 @@ import (
 // contract change that lands here, in one place.
 const (
 	OrderStatusCanceled     = "CANCELED"
+	PaymentStatusFailed     = "FAILED"
+	PaymentStatusProcessing = "PROCESSING"
+	PaymentStatusRefunded   = "REFUNDED"
+	PaymentStatusPartRefund = "PARTIALLY_REFUNDED"
 	ProviderVivaWallet      = "viva_wallet"
 	ProviderCashOnDelivery  = "cash_on_delivery"
 	ShippingProviderACS     = "acs"
 	ShippingProviderBoxNow  = "boxnow"
 	ShippingKindPickupPoint = "pickup_point"
 	PaymentStatusCompleted  = "COMPLETED"
+)
+
+// ChargedPaymentStatuses are the payment states in which the buyer's
+// money was taken, kept or refunded since (Django's
+// CHARGED_PAYMENT_STATUSES).
+var ChargedPaymentStatuses = []string{
+	PaymentStatusCompleted, PaymentStatusRefunded, PaymentStatusPartRefund,
+}
+
+// The codes of Django's 400 refusing a payment link for an order
+// (order/views/order.py, _payment_start_refusal): its payment window has
+// run out, or it is paid or no longer open for payment. Both are final
+// for that order.
+const (
+	CodePaymentWindowExpired = "payment_window_expired"
+	CodeOrderNotPayable      = "order_not_payable"
 )
 
 // CodeCartNotFound is the `code` of Django's 404 for a cart it does not

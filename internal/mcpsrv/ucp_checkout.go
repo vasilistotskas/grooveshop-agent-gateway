@@ -100,7 +100,15 @@ func (h *handlers) negotiated(
 	if !neg.Has(ucp.CapabilityCheckout) {
 		return nil, incompatibleCheckout(links), nil
 	}
-	return body(t, neg)
+	res, out, err := body(t, neg)
+	if errors.Is(err, errCheckoutGone) {
+		// No checkout is kept for the id: the spec's error response,
+		// whichever step found it gone.
+		return nil, CheckoutResult{failure: ucp.CheckoutNotFound(
+			neg.Declaration(ucp.CapabilityCheckout), errCheckoutGone.Hint),
+		}, nil
+	}
+	return res, out, err
 }
 
 // onSession runs body on the checkout id names, under its lock, and
@@ -868,11 +876,15 @@ func (h *handlers) completeSession(
 	render := func() (*mcp.CallToolResult, CheckoutResult, error) {
 		return h.checkoutResult(ctx, t, s, neg)
 	}
-	// The escalation resolves through the order event, never through a
-	// second complete, except to retry a payment link that could not be
-	// created, for an order that already exists.
+	// The escalation resolves through the order, never through a second
+	// complete, except to retry a payment link that could not be
+	// created, for an order that already exists and can still be paid.
 	if s.Status == checkout.StatusRequiresEscalation && s.PaymentURL == "" {
-		if err := h.deps.Flow.ResumePayment(ctx, t, s); err != nil {
+		err := h.deps.Flow.ResumePayment(ctx, t, s)
+		if errors.Is(err, checkout.ErrPaymentWindowClosed) {
+			return refusedBy(paymentClosedErr(s))
+		}
+		if err != nil {
 			return refusedBy(paymentLinkErr(s))
 		}
 		if err := h.deps.Checkout.Save(ctx, s); err != nil {
@@ -1075,6 +1087,9 @@ func completeErr(s *checkout.Session, err error) error {
 		return errOutcomeUnknown
 	case errors.Is(err, checkout.ErrPaymentSessionFailed):
 		return paymentLinkErr(s)
+	case errors.Is(err, checkout.ErrPaymentWindowClosed):
+		// The order is placed: never "placement failed".
+		return paymentClosedErr(s)
 	case errors.Is(err, checkout.ErrSessionNotSaved):
 		return placedUnsavedErr(s.OrderUUID)
 	case errors.Is(err, checkout.ErrUnavailable):
@@ -1344,6 +1359,20 @@ func paymentLinkErr(s *checkout.Session) error {
 			s.OrderUUID, s.ID)}
 }
 
+// paymentClosedErr answers a retry of the payment link of an order the
+// store no longer takes a payment for: its time to pay ran out, or it
+// is paid or no longer open. That is final: no link is minted for it.
+func paymentClosedErr(s *checkout.Session) error {
+	return &mcptool.ToolError{Code: mcptool.CodeCheckoutClosed,
+		Hint: fmt.Sprintf("order %s can no longer be paid: its time to "+
+			"pay ran out, or it is paid or no longer open for payment. "+
+			"Do not complete checkout %s again or start another checkout "+
+			"before reading it with get_checkout: an unpaid order is "+
+			"canceled by the store by the checkout's expires_at and "+
+			"nothing is charged, and the shopper can then check out the "+
+			"same cart again", s.OrderUUID, s.ID)}
+}
+
 func stockShortfallErr(err error) error {
 	shortfall, _ := errors.AsType[*django.StockShortfall](err)
 	lines := make([]string, 0, len(shortfall.FailedItems))
@@ -1386,8 +1415,10 @@ func (h *handlers) checkoutResult(
 	neg ucp.Negotiated,
 ) (*mcp.CallToolResult, CheckoutResult, error) {
 	var zero CheckoutResult
-	payload, err := h.deps.UCP.BuildCheckout(ctx, t, s,
-		neg.Declaration(ucp.CapabilityCheckout))
+	payload, err := h.rendered(ctx, t, s, neg)
+	if _, ok := errors.AsType[*mcptool.ToolError](err); ok {
+		return nil, zero, err
+	}
 	if err != nil {
 		switch {
 		case s.OrderUUID != "":
@@ -1418,11 +1449,19 @@ func (h *handlers) checkoutResult(
 			"Checkout %s is ready — call complete_checkout to place the "+
 				"order.", s.ID)
 	case checkout.StatusRequiresEscalation:
+		m := firstError(payload)
+		until := fmt.Sprintf("read it again by %s, when the store will "+
+			"have decided the order", payload.ExpiresAt)
+		if m.Code == "payment_processing" || m.Code == "payment_in_review" {
+			until = fmt.Sprintf("nothing is sure to decide the order by "+
+				"%s, when this checkout ends: then read the order with "+
+				"get_order", payload.ExpiresAt)
+		}
 		text = fmt.Sprintf(
-			"Order placed. The buyer must now authorize payment at %s "+
-				"(the store's hosted card checkout). The session "+
-				"completes automatically once payment lands.",
-			payload.ContinueURL)
+			"Order %s is placed and awaits its payment: %s "+
+				"(continue_url: %s). The checkout completes when the "+
+				"payment lands, or is canceled with the order; %s.",
+			s.OrderUUID, m.Text, payload.ContinueURL, until)
 	case checkout.StatusCompleted:
 		text = fmt.Sprintf(
 			"Order %s is placed and confirmed. Track it with track_order.",
@@ -1435,6 +1474,58 @@ func (h *handlers) checkoutResult(
 		text = fmt.Sprintf("Checkout %s status: %s.", s.ID, s.Status)
 	}
 	return textResult("%s", text), CheckoutResult{checkout: payload}, nil
+}
+
+// rendered builds the checkout and stores what the render read from its
+// order (a status the order decided, its expiry) before giving it: a
+// checkout publishes only what is stored, so no later read gives an
+// earlier expires_at. The save is a compare-and-set: a checkout another
+// request stored meanwhile is read again and rendered once more. A placed
+// checkout whose state cannot be stored is answered as one placed and
+// not rendered.
+func (h *handlers) rendered(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+	neg ucp.Negotiated,
+) (*ucp.Checkout, error) {
+	for again := true; ; again = false {
+		status, expires := s.Status, s.ExpiresAt
+		payload, err := h.deps.UCP.BuildCheckout(ctx, t, s,
+			neg.Declaration(ucp.CapabilityCheckout))
+		if err != nil ||
+			(s.Status == status && s.ExpiresAt.Equal(expires)) {
+			return payload, err
+		}
+		err = h.deps.Checkout.Save(ctx, s)
+		if err == nil {
+			return payload, nil
+		}
+		if !again || !errors.Is(err, checkout.ErrSessionChanged) {
+			h.deps.Log.WarnContext(ctx, "checkout: order state not stored",
+				slog.String("session", s.ID),
+				slog.String("error", err.Error()))
+			return nil, unrenderedErr(s)
+		}
+		now, err := h.deps.Checkout.Load(
+			ctx, t.SchemaName, ucpCaller(ctx), s.ID)
+		switch {
+		case errors.Is(err, checkout.ErrNotFound):
+			return nil, errCheckoutGone
+		case err != nil:
+			return nil, unrenderedErr(s)
+		}
+		*s = *now
+	}
+}
+
+// firstError is a checkout's first error message: what a checkout
+// awaiting its payment says the buyer has to do.
+func firstError(c *ucp.Checkout) ucp.Message {
+	for _, m := range c.Messages {
+		if m.Type == "error" {
+			return m
+		}
+	}
+	return ucp.Message{}
 }
 
 // discountAnnotated appends the outcome of a discount submission to the

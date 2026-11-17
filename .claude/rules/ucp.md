@@ -198,8 +198,8 @@ wins over this page.
   its status. The platform selects the method with update_checkout,
   which shows the new fee and total.
 - **continue_url** is only where the spec requires it,
-  `requires_escalation`: the PSP's page, else the order's, else the cart
-  claim. Not in an open checkout (`incomplete`, `ready_for_complete`),
+  `requires_escalation`: the PSP's page while its link can be paid,
+  else the order's (never the cart's). Not in an open checkout (`incomplete`, `ready_for_complete`),
   though the spec SHOULDs one there: the only page is the cart's claim
   link, and a link handed out outlives the status. Once the checkout
   places an order that awaits its online payment, Django keeps the cart
@@ -207,6 +207,32 @@ wins over this page.
   #693), so a buyer who opened that link could order the cart again on
   the web. Not in `complete_in_progress` (its order may exist) or a
   terminal status.
+- **A checkout awaiting its payment** (`requires_escalation`) is
+  rendered from its order (`ucp.awaitingPayment`), with one `error`
+  message whose severity is a `requires_*` one, as the spec requires of
+  that status. On the PSP's page, which can be paid until the order's
+  `paymentHoldExpiresAt` (named in it): `payment_required`, and
+  `payment_failed` for a failed attempt, which Django lets the buyer
+  retry there (`requires_buyer_input`). On the order's page
+  (`requires_buyer_review`): `payment_processing` (the provider is
+  processing a payment; never pay again), `payment_in_review` (nothing
+  will decide the order: a charge that did not match its total waits
+  for the store, or the sweep is off, which Django does not tell apart,
+  so neither "pay" nor "nothing is charged" is said) and
+  `payment_link_expired` (its time to pay ran out: the store cancels
+  it, nothing is charged). And `payment_link_unavailable`
+  (`recoverable`, the order's page: the first link could not be
+  created, and complete_checkout tries again).
+  Its `expires_at` is when Django will have decided the order
+  (`.claude/rules/checkout.md`). A canceled order makes the checkout
+  `canceled` with an `info` message `order_canceled` (nothing was
+  charged, or a payment after the cancel is refunded); a charged one
+  `completed`. No link is minted after the first: an expired one means
+  the order is canceled by `expires_at` and nothing is charged, and the
+  cart can be checked out again. The tag's `complete_in_progress` is
+  rendered for a checkout whose order is being placed; its Actions are
+  not used: the one step a buyer takes is the PSP's page, which
+  `continue_url` carries.
 - **`discounts` in the response** (extension negotiated): `codes` are
   the cart's: the coupon the cart holds (applied or refused now),
   whoever attached it, then the codes the store refused when they were

@@ -38,6 +38,13 @@ var ErrPaymentSessionFailed = errors.New(
 	"checkout: the order is placed but its payment link could not be " +
 		"created")
 
+// ErrPaymentWindowClosed marks an order that can no longer be paid: its
+// payment window has run out, or it is paid or no longer open for
+// payment (Django's payment_window_expired, order_not_payable). It is
+// final for that order: no link is minted for it again.
+var ErrPaymentWindowClosed = errors.New(
+	"checkout: the order can no longer be paid")
+
 // ErrSessionNotSaved marks an order that is placed while its session
 // could not be stored: the stored session still reads
 // complete_in_progress.
@@ -243,7 +250,8 @@ func (f *Flow) Complete(
 // stored since the completion marked it in progress. Every handler
 // refuses a session in progress, so that other writer is an order event
 // (ApplyOrderEvent), which records the order this completion placed and
-// may complete the session when the payment has landed. The completion
+// may complete the session when the payment has landed, or a read that
+// stored what that order said (Session.FollowOrder), which may too. The completion
 // knows more (the payment page it opened), so its outcome is stored over
 // the event's, keeping "completed" if the event said the order is paid.
 func (f *Flow) saveOverEvent(ctx context.Context, s *Session) error {
@@ -251,6 +259,8 @@ func (f *Flow) saveOverEvent(ctx context.Context, s *Session) error {
 	if err != nil {
 		return err
 	}
+	// The event's save published an expiry too: never an earlier one.
+	s.ExpiresAt = later(s.ExpiresAt, stored.ExpiresAt)
 	switch stored.Status {
 	case StatusCompleted:
 		s.Status = StatusCompleted
@@ -439,6 +449,12 @@ func (f *Flow) startPayment(
 	cs, err := f.dj.CreateOrderCheckoutSession(ctx, t.Domain, lang,
 		s.OrderID, s.OrderUUID,
 		links.OrderSuccess(s.OrderUUID), links.Cart())
+	if apiErr, ok := errors.AsType[*django.APIError](err); ok &&
+		(apiErr.Code == django.CodePaymentWindowExpired ||
+			apiErr.Code == django.CodeOrderNotPayable) {
+		s.PaymentURL = ""
+		return fmt.Errorf("%w: %w", ErrPaymentWindowClosed, err)
+	}
 	if err != nil {
 		s.PaymentURL = ""
 		return fmt.Errorf("%w: %w", ErrPaymentSessionFailed, err)
@@ -485,10 +501,15 @@ func (f *Flow) PlacedOrder(ctx context.Context, s *Session) string {
 //     to this checkout vouches for): its id, and its creation time, from
 //     which the session's day counts. An order Django no longer has is
 //     left unrecorded and not asked for again;
-//   - a payment-completed event also completes a session that names its
-//     order. No other event changes a status.
+//   - the event's order status and payment status set the session's
+//     (Session.FollowOrder): a checkout awaiting its payment is canceled
+//     with its order, or completed with its payment. An event is a
+//     snapshot Django took, and the states it can move a session to are
+//     final, so one delivered late or out of order moves it to a state
+//     the order did reach.
 func (f *Flow) ApplyOrderEvent(
-	ctx context.Context, schema, checkoutID, orderUUID, paymentStatus string,
+	ctx context.Context,
+	schema, checkoutID, orderUUID, orderStatus, paymentStatus string,
 ) error {
 	// The order's link names the checkout, of either protocol.
 	s, err := f.st.LoadAnyProtocol(ctx, schema, checkoutID)
@@ -527,8 +548,7 @@ func (f *Flow) ApplyOrderEvent(
 		s.PlacedAt = placed.UTC()
 		changed = true
 	}
-	if paymentStatus == django.PaymentStatusCompleted {
-		s.Status = StatusCompleted
+	if s.FollowOrder(orderStatus, paymentStatus) {
 		changed = true
 	}
 	if !changed {

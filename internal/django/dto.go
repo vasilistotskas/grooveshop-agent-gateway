@@ -2,6 +2,7 @@ package django
 
 import (
 	"encoding/json"
+	"time"
 )
 
 // DTOs are hand-written and hold only the fields the gateway consumes —
@@ -405,17 +406,43 @@ type PricingBreakdown struct {
 // address fields are deliberately not decoded: possession of the UUID
 // authorizes status tracking, not PII retrieval.
 type Order struct {
-	ID                   int64            `json:"id"`
-	UUID                 string           `json:"uuid"`
-	Status               string           `json:"status" contract:"optional"`
-	StatusDisplay        string           `json:"statusDisplay"`
-	PaymentStatus        string           `json:"paymentStatus" contract:"optional,untyped"`
-	PaymentStatusDisplay string           `json:"paymentStatusDisplay"`
-	IsPaid               bool             `json:"isPaid"`
+	ID                   int64  `json:"id"`
+	UUID                 string `json:"uuid"`
+	Status               string `json:"status" contract:"optional"`
+	StatusDisplay        string `json:"statusDisplay"`
+	PaymentStatus        string `json:"paymentStatus" contract:"optional,untyped"`
+	PaymentStatusDisplay string `json:"paymentStatusDisplay"`
+	IsPaid               bool   `json:"isPaid"`
+	// PaymentHoldExpiresAt is when the order's payment link stops being
+	// payable, set only while it waits for an online payment.
+	// PaymentDecidedBy is when Django's unpaid-order sweep will have
+	// decided it: canceled it if it is still unpaid. Empty when nothing
+	// will (no online payment awaited, a payment being processed, a
+	// charge that did not match, the sweep off). RFC 3339, null as "".
+	PaymentHoldExpiresAt string           `json:"paymentHoldExpiresAt" contract:"nullable"`
+	PaymentDecidedBy     string           `json:"paymentDecidedBy" contract:"nullable"`
 	Items                []OrderItem      `json:"items"`
 	TrackingDetails      *TrackingDetails `json:"trackingDetails"`
 	PricingBreakdown     PricingBreakdown `json:"pricingBreakdown"`
 	CreatedAt            string           `json:"createdAt"`
+}
+
+// HoldExpiresAt is PaymentHoldExpiresAt as a time, zero for none.
+func (o *Order) HoldExpiresAt() (time.Time, error) {
+	return instant(o.PaymentHoldExpiresAt)
+}
+
+// DecidedBy is PaymentDecidedBy as a time, zero for none.
+func (o *Order) DecidedBy() (time.Time, error) {
+	return instant(o.PaymentDecidedBy)
+}
+
+// instant reads a nullable date-time Django sends as RFC 3339.
+func instant(v string) (time.Time, error) {
+	if v == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse(time.RFC3339Nano, v)
 }
 
 type ProductAlert struct {

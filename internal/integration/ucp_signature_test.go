@@ -185,13 +185,11 @@ func TestGetOrderServesOnlyThePlatformThatPlacedIt(t *testing.T) {
 	assert.Equal(t, "unrecoverable", msg["severity"])
 
 	// The checkout the order came from is the owner's alone, too.
-	got := callTool(t, otherSession, "get_checkout", map[string]any{
-		"meta": other.meta(""), "id": checkoutID,
-	})
-	require.True(t, got.IsError)
-	assert.Contains(t, got.Content[0].(*mcp.TextContent).Text,
-		"an order may exist")
-	got = callTool(t, ownerSession, "get_checkout", map[string]any{
+	assert.Contains(t, checkoutGone(t, callTool(t, otherSession,
+		"get_checkout", map[string]any{
+			"meta": other.meta(""), "id": checkoutID,
+		})), "an order may exist")
+	got := callTool(t, ownerSession, "get_checkout", map[string]any{
 		"meta": owner.meta(""), "id": checkoutID,
 	})
 	require.False(t, got.IsError, "%v", got.Content)
@@ -283,8 +281,7 @@ func TestACheckoutServesThePlatformThatSignedItsCreation(t *testing.T) {
 				"id": id},
 		} {
 			got := callTool(t, caller.session, tool, args)
-			require.True(t, got.IsError, "%s: %s", caller.name, tool)
-			assert.Contains(t, got.Content[0].(*mcp.TextContent).Text,
+			assert.Contains(t, checkoutGone(t, got),
 				"an order may exist", "%s: %s", caller.name, tool)
 		}
 	}

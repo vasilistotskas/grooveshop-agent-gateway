@@ -1113,6 +1113,14 @@
             },
             "type": "array"
           },
+          "paymentDecidedBy": {
+            "nullable": true,
+            "type": "string"
+          },
+          "paymentHoldExpiresAt": {
+            "nullable": true,
+            "type": "string"
+          },
           "paymentStatus": {},
           "paymentStatusDisplay": {
             "type": "string"
@@ -1182,6 +1190,8 @@
           "id",
           "isPaid",
           "items",
+          "paymentDecidedBy",
+          "paymentHoldExpiresAt",
           "paymentStatusDisplay",
           "pricingBreakdown",
           "statusDisplay",
