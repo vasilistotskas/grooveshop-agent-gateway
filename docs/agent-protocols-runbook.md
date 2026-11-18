@@ -730,9 +730,10 @@ Each pod holds the key it read in memory until it restarts, and the first pod to
 
 ## 13. The release that removed the webhook stream (#111)
 
-Gateway releases up to v1.47.0 answered an order event once it was queued in the Redis stream `ag:webhooks:orders`, and Django's outbox then marked the event `delivered`. The release after them delivers within the call and reads no stream: whatever the old pods leave queued is never sent, and the outbox cannot send it again (*Send again now* skips a delivered row). In each environment (`NS=grooveshop-staging`, then `NS=grooveshop`):
+Gateway releases up to v1.47.0 answered an order event once it was queued in the Redis stream `ag:webhooks:orders`, and Django's outbox then marked the event `delivered`. The release after them delivers within the call and reads no stream: whatever the old pods leave queued is never sent, and the outbox cannot send it again (*Send again now* skips a delivered row). In each environment:
 
 ```bash
+NS=grooveshop-staging   # then, for production: NS=grooveshop
 r() { kubectl --context grooveshop -n "$NS" exec redis-gateway-0 -c redis-gateway -- redis-cli "$@"; }
 ```
 
