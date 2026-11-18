@@ -298,13 +298,14 @@ wins over this page.
   - 204: delivered, or nothing to deliver (the checkout named no
     webhook);
   - 503: try again later. Redis, Django or the store's key failed, the
-    post got no answer, or the platform answered 408, 429 or 5xx (its
-    `Retry-After` is passed on). A key that cannot be read is never
-    final;
+    store does not resolve (suspended: the outbox runs only while the
+    store exists), the post got no answer, or the platform answered
+    408, 429 or 5xx (its `Retry-After` is passed on). A checkout another
+    request stored meanwhile (`ErrSessionChanged`) asks for the
+    outbox's shortest wait. A key that cannot be read is never final;
   - 422: failed for good. The platform answered anything else (a
-    redirect included), the target is not a public address, the store
-    no longer resolves or its domain is another store's, or Django no
-    longer serves the order;
+    redirect included), the target is not a public address, the store's
+    domain is another store's, or Django no longer serves the order;
   - 400: a body without its store, order, event id (a UUID) or time
     (RFC 3339).
 
@@ -312,10 +313,14 @@ wins over this page.
   `checkout.CompletionBudget` has passed since the event: Django sends
   an order's first event as it commits, before the completion that
   placed it writes the link (`Flow.place`). After that, 204 and a warn
-  line: the link is lost. `gateway_order_webhooks_total{outcome}`
-  counts `delivered` and `failed`. Retries, their backoff, ordering
-  and fairness are the outbox's: an order's events go out in the order
-  they happened, and each store is swept on its own.
+  line: the link is lost (or, for an order whose creation Django never
+  answered, was never written). `gateway_order_webhooks_total{outcome}`
+  counts `delivered` and `failed`. Retries, their backoff and their
+  order are the outbox's: an order's events go out in the order they
+  happened, and each store is swept on its own, one event at a time.
+  So a platform that does not answer holds up only its own store's
+  retries, each by up to `postTimeout`; nothing caps one platform's
+  share within a store.
 - **The signing key is sealed at rest** (`internal/ucp/keys.go`):
   Redis, its AOF files and their backups sit outside the process, and
   the scalar signs a store's order webhooks.

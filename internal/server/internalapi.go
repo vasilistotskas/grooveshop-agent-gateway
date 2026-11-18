@@ -148,7 +148,8 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 				return
 			}
 			// The link is lost (a flush or a restore, or a write that
-			// failed): nothing is left to route the event through.
+			// failed), or was never written (the completion never got
+			// Django's answer): nothing is left to route the event through.
 			d.Log.WarnContext(ctx, "order event without an order link",
 				event...)
 			w.WriteHeader(http.StatusNoContent)
@@ -158,9 +159,17 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 			retry("order link read failed", err)
 			return
 		}
-		if err := d.Flow.ApplyOrderEvent(ctx, body.SchemaName,
-			link.CheckoutID, body.OrderUUID, body.Status,
-			body.PaymentStatus); err != nil {
+		err = d.Flow.ApplyOrderEvent(ctx, body.SchemaName,
+			link.CheckoutID, body.OrderUUID, body.Status, body.PaymentStatus)
+		if errors.Is(err, checkout.ErrSessionChanged) {
+			// Another request stored the session meanwhile, most often the
+			// completion that placed the order finishing: ask again soon
+			// (the outbox waits its minimum), not after its backoff.
+			w.Header().Set("Retry-After", retryAfterSeconds(time.Second))
+			retry("the checkout changed meanwhile", err)
+			return
+		}
+		if err != nil {
 			retry("order event apply failed", err)
 			return
 		}
@@ -169,11 +178,9 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 			return
 		}
 
+		// A store that does not resolve (suspended, say) is retried: the
+		// outbox runs only while the store exists, so it may resolve again.
 		t, err := d.Resolver.Resolve(ctx, link.Domain)
-		if errors.Is(err, tenant.ErrUnknownTenant) {
-			fail("the store no longer resolves", err)
-			return
-		}
 		if err != nil {
 			retry("order event tenant resolve failed", err)
 			return
