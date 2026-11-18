@@ -33,11 +33,8 @@ func pricingTenant() *tenant.Tenant {
 // pricingCart renders a one-line cart (2 × 100.00 EUR) with the given
 // promotion state, in the upstream wire shape. Its freeThresholdValue is
 // Django's: the items after the promotion discount, never below zero.
-func pricingCart(promo string, freeShipping bool, codes []string) string {
-	rawCodes, _ := json.Marshal(codes)
-	if codes == nil {
-		rawCodes = []byte("[]")
-	}
+func pricingCart(promo string, freeShipping bool) string {
+	rawCodes := []byte("[]")
 	discount, err := money.MinorUnits(promo)
 	if err != nil {
 		panic(err)
@@ -59,194 +56,36 @@ func pricingCart(promo string, freeShipping bool, codes []string) string {
 // pricingSessionCart is the cart every pricing test session names.
 const pricingSessionCart = "29eb4495-e018-45e7-b59c-6646302bd4ef"
 
-// pricingDjango serves the given cart and one acs home_delivery option at
-// the given price, flagged over its weight cap when overWeight is set and
-// too large for its parcels when tooLarge is. The options handler fails
-// the test unless the cart weight and the session's cart are forwarded.
-func pricingDjango(
-	t *testing.T, cart string, shippingPrice string,
-	overWeight, tooLarge bool,
-) *django.Client {
+// quoteDjango serves the pricing cart, answers each quote with quote(r)
+// (the status and body Django would), and records every quote request.
+func quoteDjango(
+	t *testing.T, cart string, quote func(django.QuoteRequest) (int, string),
+) (*django.Client, *[]django.QuoteRequest) {
 	t.Helper()
+	var asked []django.QuoteRequest
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/cart",
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(cart))
 		})
-	mux.HandleFunc("GET /api/v1/shipping/options",
+	mux.HandleFunc("POST /api/v1/cart/quote",
 		func(w http.ResponseWriter, r *http.Request) {
-			assert.Equal(t, "107", r.URL.Query().Get("weightGrams"),
-				"cart weight forwarded to the rate's weight cap")
-			assert.Equal(t, pricingSessionCart, r.Header.Get("X-Cart-Id"),
-				"cart named so Django checks it against the parcels")
+			assert.Equal(t, pricingSessionCart, r.Header.Get("X-Cart-Id"))
+			var req django.QuoteRequest
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			asked = append(asked, req)
+			status, body := quote(req)
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[{"providerCode":"acs",` +
-				`"providerName":"ACS Courier","kind":"home_delivery",` +
-				`"price":` + shippingPrice + `,"currency":"EUR",` +
-				`"priority":10,"countryCode":"GR","maxWeightGrams":100,` +
-				`"exceedsMaxWeight":` + strconv.FormatBool(overWeight) + `,` +
-				`"exceedsParcelSize":` + strconv.FormatBool(tooLarge) + `,` +
-				`"metadata":{}}]`))
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
 		})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	log := slog.New(slog.DiscardHandler)
-	return django.New(srv.URL+"/api/v1", "api.example.test", "secret",
-		5*time.Second, log, obs.NewMetrics())
-}
-
-func TestComputePricingDiscounts(t *testing.T) {
-	tn := pricingTenant()
-
-	cases := []struct {
-		name          string
-		cart          string
-		shippingPrice string
-		withDelivery  bool
-		overWeight    bool
-		tooLarge      bool
-
-		wantSubtotal int64
-		wantDiscount int64
-		wantFreeShip bool
-		wantFee      int64
-		wantHasDel   bool
-		wantTotal    int64
-	}{
-		{
-			name:         "no promotion",
-			cart:         pricingCart("0.0", false, nil),
-			wantSubtotal: 20000,
-			wantTotal:    20000,
-		},
-		{
-			name:         "promotion discount reduces total",
-			cart:         pricingCart("20.00", false, []string{"SAVE20"}),
-			wantSubtotal: 20000,
-			wantDiscount: 2000,
-			wantTotal:    18000,
-		},
-		{
-			name:          "delivery fee applies on top of the discount",
-			cart:          pricingCart("20.00", false, []string{"SAVE20"}),
-			shippingPrice: "3.50",
-			withDelivery:  true,
-			wantSubtotal:  20000,
-			wantDiscount:  2000,
-			wantHasDel:    true,
-			wantFee:       350,
-			wantTotal:     18350,
-		},
-		{
-			name:          "promotional free shipping zeroes the delivery fee",
-			cart:          pricingCart("20.00", true, []string{"SHIPFREE"}),
-			shippingPrice: "3.50",
-			withDelivery:  true,
-			wantSubtotal:  20000,
-			wantDiscount:  2000,
-			wantFreeShip:  true,
-			wantHasDel:    true,
-			wantFee:       0,
-			wantTotal:     18000,
-		},
-		{
-			name:          "an option over its weight cap prices no delivery",
-			cart:          pricingCart("20.00", false, []string{"SAVE20"}),
-			shippingPrice: "3.50",
-			withDelivery:  true,
-			overWeight:    true,
-			wantSubtotal:  20000,
-			wantDiscount:  2000,
-			wantTotal:     18000,
-		},
-		{
-			name:          "an option too large for the cart prices no delivery",
-			cart:          pricingCart("20.00", false, []string{"SAVE20"}),
-			shippingPrice: "3.50",
-			withDelivery:  true,
-			tooLarge:      true,
-			wantSubtotal:  20000,
-			wantDiscount:  2000,
-			wantTotal:     18000,
-		},
-		{
-			name:         "discount above subtotal clamps total at zero",
-			cart:         pricingCart("250.00", false, []string{"MEGA"}),
-			wantSubtotal: 20000,
-			wantDiscount: 25000,
-			wantTotal:    0,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			shipping := tc.shippingPrice
-			if shipping == "" {
-				shipping = "0.0"
-			}
-			dj := pricingDjango(t, tc.cart, shipping,
-				tc.overWeight, tc.tooLarge)
-
-			s := NewSession("public", tn.Domain, "acp", pricingSessionCart)
-			if tc.withDelivery {
-				s.Fulfillment = Fulfillment{
-					Kind:         FulfillmentHomeDelivery,
-					ProviderCode: "acs",
-					CountryCode:  "GR",
-				}
-			}
-
-			p, cart, err := ComputePricing(t.Context(), dj, tn, s)
-			require.NoError(t, err)
-			require.NotNil(t, cart)
-
-			assert.Equal(t, tc.wantSubtotal, p.ItemsSubtotal, "subtotal")
-			assert.Equal(t, tc.wantDiscount, p.DiscountTotal, "discount")
-			assert.Equal(t, tc.wantFreeShip, p.FreeShipping, "free shipping")
-			assert.Equal(t, tc.wantHasDel, p.HasDelivery, "has delivery")
-			assert.Equal(t, tc.wantFee, p.DeliveryFee, "delivery fee")
-			assert.Equal(t, tc.wantTotal, p.Total, "total")
-		})
-	}
-}
-
-// thresholdDjango prices delivery as Django does with a 190.00 free-
-// shipping threshold, on the orderValueAmount it is sent, and serves pay
-// way 7: a 2.00 fee waived from 190.00.
-func thresholdDjango(t *testing.T, cart string) *django.Client {
-	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/cart",
-		func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(cart))
-		})
-	mux.HandleFunc("GET /api/v1/shipping/options",
-		func(w http.ResponseWriter, r *http.Request) {
-			value, err := money.MinorUnits(
-				r.URL.Query().Get("orderValueAmount"))
-			assert.NoError(t, err)
-			price := "3.50"
-			if value >= 19000 {
-				price = "0.0"
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[{"providerCode":"acs",` +
-				`"providerName":"ACS Courier","kind":"home_delivery",` +
-				`"price":` + price + `,"currency":"EUR","priority":10,` +
-				`"countryCode":"GR","maxWeightGrams":null,` +
-				`"exceedsMaxWeight":false,"exceedsParcelSize":false,` +
-				`"metadata":{}}]`))
-		})
-	mux.HandleFunc("GET /api/v1/pay_way/7",
+	mux.HandleFunc("GET /api/v1/pay_way/{id}",
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":7,"key":"PAY_ON_DELIVERY",` +
 				`"translations":{},"active":true,"cost":2.00,` +
-				`"freeThreshold":190.00,"sortOrder":1,` +
-				`"providerCode":"cash_on_delivery",` +
+				`"freeThreshold":0,"providerCode":"cash_on_delivery",` +
 				`"settlement":"courier_cash"}`))
 		})
 	srv := httptest.NewServer(mux)
@@ -254,56 +93,164 @@ func thresholdDjango(t *testing.T, cart string) *django.Client {
 
 	log := slog.New(slog.DiscardHandler)
 	return django.New(srv.URL+"/api/v1", "api.example.test", "secret",
-		5*time.Second, log, obs.NewMetrics())
+		5*time.Second, log, obs.NewMetrics()), &asked
 }
 
-// Django judges free shipping and the pay way's free threshold on the
-// items after discounts (freeThresholdValue), so a discount that takes a
-// 200.00 cart below 190.00 is charged both, as the order will be.
-func TestComputePricingJudgesFreeThresholdsAfterDiscounts(t *testing.T) {
-	cases := []struct {
-		name        string
-		cart        string
-		wantFee     int64
-		wantPayment int64
-		wantHasPay  bool
-		wantTotal   int64
-	}{
-		{
-			name:      "items above both thresholds pay neither",
-			cart:      pricingCart("0.0", false, nil),
-			wantTotal: 20000,
-		},
-		{
-			name:        "a discount below both thresholds pays both",
-			cart:        pricingCart("20.00", false, []string{"SAVE20"}),
-			wantFee:     350,
-			wantPayment: 200,
-			wantHasPay:  true,
-			wantTotal:   18000 + 350 + 200,
-		},
+// quoteBody is a quote of the pricing cart (200.00 of items) with a
+// promotion of 20.00, and the rows given; "null" leaves one out.
+func quoteBody(shipping, fee, expected string) string {
+	return `{"itemsSubtotal":200.00,"discountTotal":20.00,` +
+		`"appliedPromotions":[{"promotionId":3,"name":"-20","code":"SAVE20",` +
+		`"amount":20.00}],"blockingCoupon":null,"freeThresholdValue":180.00,` +
+		`"shipping":` + shipping + `,"paymentMethodFee":` + fee + `,` +
+		`"loyaltyDiscount":0,"giftCardAmount":null,"grandTotal":null,` +
+		`"amountDue":null,"currency":"EUR","expectedTotal":` + expected + `,` +
+		`"shippingOptions":[{"providerCode":"acs","providerName":"ACS",` +
+		`"kind":"home_delivery","price":3.50,"waivedBy":null,` +
+		`"exceedsMaxWeight":false,"exceedsParcelSize":false}],"payWays":[]}`
+}
+
+// readySession has chosen a delivery, a pay way and its buyer.
+func readySession() *Session {
+	s := NewSession("public", "shop.example.test", ProtocolUCP,
+		pricingSessionCart)
+	s.Fulfillment = Fulfillment{
+		Kind: FulfillmentHomeDelivery, ProviderCode: "acs",
+		CountryCode: "GR", RegionID: "ATT",
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			tn := pricingTenant()
-			s := NewSession("public", tn.Domain, "ucp", pricingSessionCart)
-			s.Fulfillment = Fulfillment{
-				Kind:         FulfillmentHomeDelivery,
-				ProviderCode: "acs",
-				CountryCode:  "GR",
-			}
-			s.PayWayID = 7
+	s.PayWayID = 7
+	s.Buyer.Email = "buyer@example.test"
+	return s
+}
 
-			p, _, err := ComputePricing(t.Context(),
-				thresholdDjango(t, tc.cart), tn, s)
-			require.NoError(t, err)
-
-			assert.True(t, p.HasDelivery, "has delivery")
-			assert.Equal(t, tc.wantFee, p.DeliveryFee, "delivery fee")
-			assert.Equal(t, tc.wantHasPay, p.HasPaymentFee,
-				"has payment fee")
-			assert.Equal(t, tc.wantPayment, p.PaymentFee, "payment fee")
-			assert.Equal(t, tc.wantTotal, p.Total, "total")
+// Every amount is Django's quote of the checkout's own choices, the
+// email included: the gateway adds nothing up, and the total is the one
+// an order is placed at.
+func TestComputePricingIsTheQuote(t *testing.T) {
+	dj, asked := quoteDjango(t, pricingCart("20.00", false),
+		func(django.QuoteRequest) (int, string) {
+			return http.StatusOK, quoteBody(
+				`{"price":3.50,"waivedBy":null}`,
+				`{"amount":2.00,"waived":false}`,
+				`{"amount":18550,"currency":"EUR"}`)
 		})
+
+	p, cart, err := ComputePricing(t.Context(), dj, pricingTenant(),
+		readySession())
+	require.NoError(t, err)
+	require.NotNil(t, cart)
+
+	assert.Equal(t, []django.QuoteRequest{{
+		PayWayID: 7, ShippingKind: FulfillmentHomeDelivery,
+		ShippingProviderCode: "acs", CountryID: "GR", RegionID: "ATT",
+		Email: "buyer@example.test",
+	}}, *asked)
+	assert.Len(t, p.Lines, 1)
+	assert.EqualValues(t, 20000, p.ItemsSubtotal)
+	assert.EqualValues(t, 2000, p.DiscountTotal)
+	assert.Equal(t, []PricedDiscount{
+		{PromotionID: 3, Name: "-20", Code: "SAVE20", Amount: 2000},
+	}, p.Discounts)
+	assert.True(t, p.HasDelivery)
+	assert.EqualValues(t, 350, p.DeliveryFee)
+	assert.True(t, p.HasPaymentFee)
+	assert.EqualValues(t, 200, p.PaymentFee)
+	assert.EqualValues(t, 18550, p.Total, "the quote's expected total")
+	assert.True(t, p.Final)
+	assert.Equal(t, "EUR", p.Currency)
+	assert.Len(t, p.ShippingOptions, 1)
+	require.NotNil(t, p.PayWay, "the pay way's settlement is read")
+	assert.Nil(t, p.DeliveryRefused)
+	assert.Nil(t, p.PayWayRefused)
+}
+
+// A delivery a promotion waived is a free row; a pay way's waived fee is
+// no row.
+func TestComputePricingWaivers(t *testing.T) {
+	dj, _ := quoteDjango(t, pricingCart("20.00", true),
+		func(django.QuoteRequest) (int, string) {
+			return http.StatusOK, quoteBody(
+				`{"price":0,"waivedBy":"promotion"}`,
+				`{"amount":0,"waived":true}`,
+				`{"amount":18000,"currency":"EUR"}`)
+		})
+
+	p, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+		readySession())
+	require.NoError(t, err)
+	assert.True(t, p.FreeShipping)
+	assert.True(t, p.HasDelivery)
+	assert.Zero(t, p.DeliveryFee)
+	assert.False(t, p.HasPaymentFee)
+	assert.EqualValues(t, 18000, p.Total)
+}
+
+// A checkout that has not chosen everything has no total an order is
+// placed at: its total is the rows the quote priced, and it is not final.
+func TestComputePricingWithoutEveryChoice(t *testing.T) {
+	dj, asked := quoteDjango(t, pricingCart("20.00", false),
+		func(django.QuoteRequest) (int, string) {
+			return http.StatusOK, quoteBody(
+				`{"price":3.50,"waivedBy":null}`, "null", "null")
+		})
+	s := readySession()
+	s.PayWayID = 0
+
+	p, _, err := ComputePricing(t.Context(), dj, pricingTenant(), s)
+	require.NoError(t, err)
+	assert.Zero(t, (*asked)[0].PayWayID)
+	assert.False(t, p.Final)
+	assert.False(t, p.HasPaymentFee)
+	assert.EqualValues(t, 20000-2000+350, p.Total)
+	assert.Nil(t, p.PayWay)
+}
+
+// A choice the store refuses is named and left out, and the rest is
+// priced: the pay way, judged against the delivery, then the delivery.
+func TestComputePricingDropsARefusedChoice(t *testing.T) {
+	dj, asked := quoteDjango(t, pricingCart("0.0", false),
+		func(r django.QuoteRequest) (int, string) {
+			switch {
+			case r.PayWayID != 0:
+				return http.StatusBadRequest, `{"detail":"Not offered.",` +
+					`"reason":"pay_way_unavailable","code":"pay_way_unavailable"}`
+			case r.ShippingKind != "":
+				return http.StatusBadRequest, `{"detail":"Too heavy.",` +
+					`"reason":"shipping_weight_exceeded",` +
+					`"code":"shipping_weight_exceeded"}`
+			}
+			return http.StatusOK, quoteBody("null", "null", "null")
+		})
+
+	p, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+		readySession())
+	require.NoError(t, err)
+	require.Len(t, *asked, 3)
+	assert.Equal(t, "GR", (*asked)[2].CountryID,
+		"the options are still listed for the country")
+	assert.Equal(t, &Refusal{Code: django.CodePayWayUnavailable,
+		Detail: "Not offered."}, p.PayWayRefused)
+	assert.Equal(t, &Refusal{Code: django.CodeShippingWeightExceeded,
+		Detail: "Too heavy."}, p.DeliveryRefused)
+	assert.False(t, p.HasDelivery)
+	assert.False(t, p.Final)
+	assert.Nil(t, p.PayWay, "a refused pay way is not the checkout's")
+}
+
+// A quote that cannot be read is an error, never a total without the
+// row it could not price; another refusal is the caller's to answer.
+func TestComputePricingQuoteFailures(t *testing.T) {
+	for status, want := range map[int]error{
+		http.StatusServiceUnavailable: django.ErrUpstreamDown,
+		http.StatusBadRequest:         django.ErrValidation,
+		http.StatusNotFound:           django.ErrNotFound,
+	} {
+		dj, _ := quoteDjango(t, pricingCart("0.0", false),
+			func(django.QuoteRequest) (int, string) {
+				return status, `{"detail":"no","code":"invalid_order_data"}`
+			})
+		_, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+			readySession())
+		require.ErrorIs(t, err, want, status)
 	}
 }

@@ -639,6 +639,128 @@
         ],
         "type": "object"
       },
+      "CartQuote": {
+        "properties": {
+          "appliedPromotions": {
+            "items": {
+              "$ref": "#/components/schemas/QuoteAppliedPromotion"
+            },
+            "type": "array"
+          },
+          "blockingCoupon": {
+            "nullable": true,
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "discountTotal": {
+            "type": "number"
+          },
+          "expectedTotal": {
+            "nullable": true,
+            "properties": {
+              "amount": {
+                "type": "integer"
+              },
+              "currency": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "amount",
+              "currency"
+            ],
+            "type": "object"
+          },
+          "itemsSubtotal": {
+            "type": "number"
+          },
+          "paymentMethodFee": {
+            "nullable": true,
+            "properties": {
+              "amount": {
+                "type": "number"
+              },
+              "waived": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "amount",
+              "waived"
+            ],
+            "type": "object"
+          },
+          "shipping": {
+            "nullable": true,
+            "properties": {
+              "price": {
+                "type": "number"
+              },
+              "waivedBy": {
+                "nullable": true
+              }
+            },
+            "required": [
+              "price",
+              "waivedBy"
+            ],
+            "type": "object"
+          },
+          "shippingOptions": {
+            "items": {
+              "$ref": "#/components/schemas/QuoteShippingOption"
+            },
+            "nullable": true,
+            "type": "array"
+          }
+        },
+        "required": [
+          "appliedPromotions",
+          "currency",
+          "discountTotal",
+          "itemsSubtotal",
+          "shippingOptions"
+        ],
+        "type": "object"
+      },
+      "CartQuoteRequestRequest": {
+        "properties": {
+          "countryId": {
+            "type": "string"
+          },
+          "email": {
+            "format": "email",
+            "type": "string"
+          },
+          "payWayId": {
+            "type": "integer"
+          },
+          "regionId": {
+            "type": "string"
+          },
+          "shippingKind": {
+            "type": "string"
+          },
+          "shippingProviderCode": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ContentPageDetail": {
         "properties": {
           "slug": {
@@ -698,6 +820,21 @@
           "checkoutUrl",
           "currency",
           "status"
+        ],
+        "type": "object"
+      },
+      "ExpectedTotalRequest": {
+        "properties": {
+          "amount": {
+            "type": "integer"
+          },
+          "currency": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount",
+          "currency"
         ],
         "type": "object"
       },
@@ -893,6 +1030,9 @@
             "format": "email",
             "type": "string"
           },
+          "expectedTotal": {
+            "$ref": "#/components/schemas/ExpectedTotalRequest"
+          },
           "firstName": {
             "type": "string"
           },
@@ -931,6 +1071,7 @@
           "city",
           "countryId",
           "email",
+          "expectedTotal",
           "firstName",
           "lastName",
           "payWayId",
@@ -1913,6 +2054,55 @@
         },
         "required": [
           "settings"
+        ],
+        "type": "object"
+      },
+      "QuoteAppliedPromotion": {
+        "properties": {
+          "amount": {
+            "type": "number"
+          },
+          "code": {
+            "nullable": true,
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "promotionId": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "QuoteShippingOption": {
+        "properties": {
+          "exceedsMaxWeight": {
+            "type": "boolean"
+          },
+          "exceedsParcelSize": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "price": {
+            "type": "number"
+          },
+          "providerCode": {
+            "type": "string"
+          },
+          "providerName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "exceedsMaxWeight",
+          "exceedsParcelSize",
+          "kind",
+          "price",
+          "providerCode",
+          "providerName"
         ],
         "type": "object"
       },
@@ -3308,6 +3498,33 @@
           }
         },
         "summary": "django.Client.UpdateCartItem"
+      }
+    },
+    "/api/v1/cart/quote": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CartQuoteRequestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CartQuote"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.Quote"
       }
     },
     "/api/v1/cart/reserve-stock": {

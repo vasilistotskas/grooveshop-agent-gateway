@@ -108,8 +108,10 @@ func NewStore(rdb *redis.Client, upstreamTimeout time.Duration) *Store {
 //   - v5: a session keeps the expires_at it published, which never
 //     moves earlier (a v4 pod knows nothing of it, and its save drops
 //     it).
+//   - v6: a session keeps the total it showed, which its order is
+//     placed at (a v5 pod knows nothing of it, and its save drops it).
 func sessionKey(schema, id string) string {
-	return "ag:" + schema + ":cs:v5:" + id
+	return "ag:" + schema + ":cs:v6:" + id
 }
 
 func lockKey(schema, id string) string {

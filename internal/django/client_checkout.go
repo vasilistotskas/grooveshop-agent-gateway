@@ -95,6 +95,10 @@ type OrderCreate struct {
 	TermsAccepted bool `json:"termsAccepted"`
 
 	Attribution *Attribution `json:"attribution,omitempty"`
+
+	// ExpectedTotal is the total the buyer was shown: Django creates the
+	// order only at exactly it, else answers 409 total_changed.
+	ExpectedTotal ExpectedTotal `json:"expectedTotal"`
 }
 
 // Attribution is the acquisition signal Django classifies into an
@@ -118,7 +122,8 @@ type Attribution struct {
 // CreateOrder places a guest order from the cart. Never retried: the
 // caller owns idempotency (checkout sessions guard completion). Django's
 // refusal of a cart whose earlier order awaits its payment is
-// ErrCartHasUnpaidOrder.
+// ErrCartHasUnpaidOrder, and of a total that is no longer the amount due
+// a *TotalChangedError (ErrTotalChanged).
 func (c *Client) CreateOrder(
 	ctx context.Context, host, lang, cartID string, body OrderCreate,
 ) (*Order, error) {
@@ -134,6 +139,9 @@ func (c *Client) CreateOrder(
 	if apiErr, ok := errors.AsType[*APIError](err); ok &&
 		apiErr.Code == CodeCartHasUnpaidOrder {
 		return nil, fmt.Errorf("%w: %w", ErrCartHasUnpaidOrder, err)
+	}
+	if changed, ok := totalChanged(err); ok {
+		return nil, changed
 	}
 	if err != nil {
 		return nil, err

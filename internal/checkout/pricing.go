@@ -2,7 +2,7 @@ package checkout
 
 import (
 	"context"
-	"strconv"
+	"errors"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
@@ -33,13 +33,16 @@ type PricedDiscount struct {
 }
 
 // Pricing is the protocol-neutral totals breakdown both the UCP and ACP
-// renderers serialize. Amounts are minor units; fees are present only when
-// the session has selected the option they derive from.
+// renderers serialize. Amounts are minor units. Before an order exists
+// every amount is Django's checkout quote (django.Client.Quote), the one
+// computation order creation runs; the gateway adds nothing up of its
+// own except the total of a checkout that has not chosen everything yet,
+// which no order can be placed at (Final).
 //
-// DiscountTotal is the promotion/coupon discount Django evaluated on the
-// cart — it reduces Total. The product-markdown saving is already in the
-// line prices and is no row here: one would count it twice. FreeShipping
-// zeroes the delivery fee.
+// DiscountTotal is what promotions and the applied coupon take off; the
+// product-markdown saving is already in the line prices and is no row
+// here: one would count it twice. FreeShipping says a promotion waived
+// the delivery.
 //
 // Discounts says which offer earned what, so no coupon is credited with
 // an automatic promotion's money; RefusedCoupons are the attached codes
@@ -57,11 +60,28 @@ type Pricing struct {
 	PaymentFee     int64
 	HasPaymentFee  bool
 	Total          int64
+	// Currency is the ISO 4217 code of every amount.
+	Currency string
+	// Final reports whether Total is the total an order would be placed
+	// at: a delivery and a pay way are both chosen and priced. Without
+	// it Total leaves out what is not chosen yet, and the checkout cannot
+	// be completed.
+	Final bool
+	// DeliveryRefused and PayWayRefused are the checkout's choices the
+	// store no longer takes for this cart (it does not ship that way, the
+	// cart outgrew the carrier, the pay way is not offered for the
+	// delivery), left out of the price. The checkout must choose again.
+	DeliveryRefused *Refusal
+	PayWayRefused   *Refusal
+	// ShippingOptions is every delivery the store offers to the
+	// checkout's country, at the price this cart would be charged for
+	// it; nil without a country, and once an order exists.
+	ShippingOptions []django.QuoteShippingOption
 	// PayWay is the pay-way the buyer selected, or nil when none is
-	// selected yet or the lookup failed. Callers deciding whether an
-	// agent can settle a checkout unaided MUST read this rather than the
-	// store's advertised set: the selection is the authoritative fact
-	// for THIS checkout.
+	// selected yet, the store refused it, or the lookup failed. Callers
+	// deciding whether an agent can settle a checkout unaided MUST read
+	// this rather than the store's advertised set: the selection is the
+	// authoritative fact for THIS checkout.
 	PayWay *django.PayWay
 	// Order is the placed order the totals were read from, nil before
 	// one exists: a placed checkout's status and expiry are its order's
@@ -69,9 +89,21 @@ type Pricing struct {
 	Order *django.Order
 }
 
-// ComputePricing fetches the cart fresh and derives the totals breakdown
-// (items + selected delivery + selected pay-way fee). Money totals are
-// never stored on the session — Django stays authoritative.
+// Refusal is a choice the store refused, by Django's code and its own
+// sentence in the request's language.
+type Refusal struct {
+	Code   string
+	Detail string
+}
+
+// ComputePricing fetches the cart fresh for its lines and Django's quote
+// for every amount. Money totals are never computed by the gateway: what
+// the checkout shows is what Django charges.
+//
+// A choice the store refuses (Pricing.DeliveryRefused, PayWayRefused) is
+// left out and the rest is priced. A quote that cannot be read is an
+// error: a checkout never shows a total that leaves out a row it could
+// not price.
 //
 // Once an order exists it is what the buyer bought, and Django deletes the
 // cart with it (on payment, for an online method), so the totals come from
@@ -99,7 +131,6 @@ func ComputePricing(
 		if err != nil {
 			return nil, nil, err
 		}
-		p.ItemsSubtotal += lineTotal
 		p.Lines = append(p.Lines, PricedLine{
 			LineID:     it.ID,
 			ProductID:  it.Product.ID,
@@ -110,41 +141,120 @@ func ComputePricing(
 			TotalMinor: lineTotal,
 		})
 	}
-	p.DiscountTotal, err = money.MinorUnits(cart.PromotionDiscount.String())
+
+	q, err := p.quote(ctx, dj, t, s)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := p.addDiscounts(cart); err != nil {
+	if err := p.addQuote(q, cart); err != nil {
 		return nil, nil, err
 	}
-	p.FreeShipping = cart.PromotionFreeShipping
-	p.Total = p.ItemsSubtotal - p.DiscountTotal
-
-	if fee, ok := deliveryFee(ctx, dj, t, s, cart); ok {
-		// A promotion-granted free shipping keeps the fulfillment row
-		// (the option stays selected) but zeroes its cost.
-		if p.FreeShipping {
-			fee = 0
-		}
-		p.DeliveryFee, p.HasDelivery = fee, true
-		p.Total += fee
-	}
-	if s.PayWayID > 0 {
-		// One lookup serves both the fee and the settlement question.
+	if s.PayWayID > 0 && p.PayWayRefused == nil {
+		// Whether the agent can settle the checkout is the pay way's
+		// settlement, which the quote does not carry.
 		if pw, err := dj.PayWayByID(
 			ctx, t.Domain, t.DefaultLocale, s.PayWayID,
 		); err == nil {
 			p.PayWay = pw
 		}
 	}
-	if fee, ok := paymentFee(p.PayWay, cart); ok {
-		p.PaymentFee, p.HasPaymentFee = fee, true
-		p.Total += fee
-	}
-	if p.Total < 0 {
-		p.Total = 0
-	}
 	return p, cart, nil
+}
+
+// QuoteRequest is the quote of what the session has chosen: the very
+// choices its order is placed with (Flow.place), the email included,
+// since a promotion may depend on the buyer.
+func QuoteRequest(s *Session) django.QuoteRequest {
+	f := s.Fulfillment
+	r := django.QuoteRequest{
+		PayWayID:  s.PayWayID,
+		CountryID: f.CountryCode,
+		Email:     s.Buyer.Email,
+	}
+	if f.Kind != "" && f.CountryCode != "" {
+		r.ShippingKind = f.Kind
+		r.ShippingProviderCode = f.ProviderCode
+		r.RegionID = f.RegionID
+	}
+	return r
+}
+
+// quote asks Django what the session's choices cost. A choice the store
+// refuses is recorded on p and dropped, and the rest quoted again: the
+// pay way is judged first, against the delivery, so at most both are.
+func (p *Pricing) quote(
+	ctx context.Context, dj *django.Client, t *tenant.Tenant, s *Session,
+) (*django.Quote, error) {
+	req := QuoteRequest(s)
+	for {
+		q, err := dj.Quote(ctx, t.Domain, t.DefaultLocale, s.CartID, req)
+		apiErr, ok := errors.AsType[*django.APIError](err)
+		switch {
+		case err == nil:
+			return q, nil
+		case !ok || !errors.Is(err, django.ErrValidation):
+		case apiErr.Code == django.CodePayWayUnavailable && req.PayWayID > 0:
+			p.PayWayRefused = &Refusal{Code: apiErr.Code, Detail: apiErr.Detail}
+			req.PayWayID = 0
+			continue
+		case shippingRefusal(apiErr.Code) && req.ShippingKind != "":
+			p.DeliveryRefused = &Refusal{
+				Code: apiErr.Code, Detail: apiErr.Detail}
+			req.ShippingKind, req.ShippingProviderCode = "", ""
+			req.RegionID = ""
+			continue
+		}
+		return nil, err
+	}
+}
+
+// shippingRefusal reports whether code is one of Django's refusals of a
+// delivery for a cart.
+func shippingRefusal(code string) bool {
+	switch code {
+	case django.CodeShippingUnavailable, django.CodeShippingParcelTooLarge,
+		django.CodeShippingWeightExceeded:
+		return true
+	}
+	return false
+}
+
+// addQuote copies the quote's amounts. The total is the quote's expected
+// total when it has one (both a delivery and a pay way chosen); without,
+// the rows it has, which no order is placed at.
+func (p *Pricing) addQuote(q *django.Quote, cart *django.Cart) error {
+	var err error
+	if p.ItemsSubtotal, err = money.MinorUnits(q.ItemsSubtotal.String()); err != nil {
+		return err
+	}
+	if p.DiscountTotal, err = money.MinorUnits(q.DiscountTotal.String()); err != nil {
+		return err
+	}
+	if err := p.addDiscounts(q, cart); err != nil {
+		return err
+	}
+	p.Currency = q.Currency
+	p.ShippingOptions = q.ShippingOptions
+	if q.Shipping != nil {
+		if p.DeliveryFee, err = money.MinorUnits(q.Shipping.Price.String()); err != nil {
+			return err
+		}
+		p.HasDelivery = true
+		p.FreeShipping = q.Shipping.WaivedBy == django.FreeShippingByPromotion
+	}
+	if q.PaymentMethodFee != nil && !q.PaymentMethodFee.Waived {
+		if p.PaymentFee, err = money.MinorUnits(
+			q.PaymentMethodFee.Amount.String()); err != nil {
+			return err
+		}
+		p.HasPaymentFee = p.PaymentFee > 0
+	}
+	if q.ExpectedTotal != nil {
+		p.Total, p.Final = q.ExpectedTotal.Amount, true
+		return nil
+	}
+	p.Total = max(p.ItemsSubtotal-p.DiscountTotal+p.DeliveryFee+p.PaymentFee, 0)
+	return nil
 }
 
 // orderPricing reads the totals of a placed order. Its discounts arrive as
@@ -205,15 +315,18 @@ func orderPricing(
 		p.DiscountTotal += amount
 	}
 	p.HasPaymentFee = p.PaymentFee > 0
+	p.Currency, p.Final = b.Currency, true
 	return p, nil
 }
 
-// addDiscounts copies Django's per-offer breakdown and its verdict on each
-// attached coupon. A coupon that applies with no money of its own (free
-// shipping, a gift) is listed at 0; one Django refuses is a rejection.
-func (p *Pricing) addDiscounts(cart *django.Cart) error {
+// addDiscounts copies the quote's per-offer breakdown and its verdict on
+// the attached coupon. A coupon that applies with no money of its own
+// (free shipping, a gift) takes nothing off, so the quote does not list
+// it: the cart names it, and it is listed at 0. The coupon the quote
+// says order creation refuses is a rejection.
+func (p *Pricing) addDiscounts(q *django.Quote, cart *django.Cart) error {
 	monetary := map[string]bool{}
-	for _, ap := range cart.AppliedPromotions {
+	for _, ap := range q.AppliedPromotions {
 		amount, err := money.MinorUnits(ap.Amount.String())
 		if err != nil {
 			return err
@@ -228,14 +341,15 @@ func (p *Pricing) addDiscounts(cart *django.Cart) error {
 			monetary[ap.Code] = true
 		}
 	}
+	if b := q.BlockingCoupon; b != nil {
+		p.RefusedCoupons = append(p.RefusedCoupons, DiscountRejection{
+			Code:   b.Code,
+			Reason: mapDiscountReason(b.Reason),
+		})
+	}
 	for _, c := range cart.AppliedCoupons {
-		switch {
-		case c.Rejection != "":
-			p.RefusedCoupons = append(p.RefusedCoupons, DiscountRejection{
-				Code:   c.Code,
-				Reason: mapDiscountReason(c.Rejection),
-			})
-		case !monetary[c.Code]:
+		blocked := q.BlockingCoupon != nil && q.BlockingCoupon.Code == c.Code
+		if c.Rejection == "" && !blocked && !monetary[c.Code] {
 			p.Discounts = append(p.Discounts, PricedDiscount{
 				Name: c.Code,
 				Code: c.Code,
@@ -243,63 +357,4 @@ func (p *Pricing) addDiscounts(cart *django.Cart) error {
 		}
 	}
 	return nil
-}
-
-// deliveryFee resolves the chosen shipping option's price. Fee lookups are
-// advisory (totals render without them on upstream failure); order creation
-// recomputes authoritatively in Django.
-func deliveryFee(
-	ctx context.Context, dj *django.Client, t *tenant.Tenant,
-	s *Session, cart *django.Cart,
-) (int64, bool) {
-	f := s.Fulfillment
-	if f.ProviderCode == "" || f.Kind == "" || f.CountryCode == "" {
-		return 0, false
-	}
-	opts, err := dj.ShippingOptions(ctx, t.Domain, t.DefaultLocale, s.CartID,
-		django.ShippingQuery{
-			CountryCode:      f.CountryCode,
-			OrderValueAmount: cart.FreeThresholdValue.String(),
-			Currency:         t.DefaultCurrency,
-			WeightGrams:      strconv.Itoa(cart.TotalWeightGrams),
-		})
-	if err != nil {
-		return 0, false
-	}
-	for _, o := range opts {
-		if o.ProviderCode == f.ProviderCode && o.Kind == f.Kind {
-			if !o.FitsCart() {
-				return 0, false
-			}
-			fee, err := money.MinorUnits(o.Price.String())
-			return fee, err == nil
-		}
-	}
-	return 0, false
-}
-
-// paymentFee resolves the chosen pay way's fee, waived once the cart's
-// FreeThresholdValue reaches its free threshold.
-func paymentFee(
-	pw *django.PayWay, cart *django.Cart,
-) (int64, bool) {
-	if pw == nil {
-		return 0, false
-	}
-	cost, err := money.MinorUnits(pw.Cost.String())
-	if err != nil {
-		return 0, false
-	}
-	threshold, err := money.MinorUnits(pw.FreeThreshold.String())
-	if err != nil {
-		return 0, false
-	}
-	value, err := money.MinorUnits(cart.FreeThresholdValue.String())
-	if err != nil {
-		return 0, false
-	}
-	if cost == 0 || (threshold > 0 && value >= threshold) {
-		return 0, false
-	}
-	return cost, true
 }

@@ -14,7 +14,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
-func shippingFeeMinor(o django.ShippingOption) (int64, bool) {
+func shippingFeeMinor(o django.QuoteShippingOption) (int64, bool) {
 	fee, err := money.MinorUnits(o.Price.String())
 	return fee, err == nil
 }
@@ -65,10 +65,13 @@ func Render(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant,
 	links storefront.Links, s *checkout.Session,
 ) (*Session, error) {
-	pricing, cart, err := checkout.ComputePricing(ctx, dj, t, s)
+	pricing, _, err := checkout.ComputePricing(ctx, dj, t, s)
 	if err != nil {
 		return nil, fmt.Errorf("acp: pricing: %w", err)
 	}
+	// The total this render publishes is the one the order is placed
+	// at; the handler stores it (Handler.renderBody).
+	s.Show(pricing)
 
 	out := &Session{
 		ID:       s.ID,
@@ -133,7 +136,7 @@ func Render(
 		})
 	}
 
-	renderFulfillment(ctx, dj, t, s, cart, out, lineIDs)
+	renderFulfillment(s, pricing, out, lineIDs)
 
 	out.Totals = append(out.Totals, Total{
 		Type: "subtotal", DisplayText: "Subtotal",
@@ -171,6 +174,12 @@ func Render(
 	out.Status = statusOf(s, s.PayWayID > 0)
 
 	appendStateMessages(s, out)
+	if refusals := refusedChoices(pricing); len(refusals) > 0 && s.Open() {
+		// A choice the store no longer takes is left out of the price,
+		// so the session cannot be paid until it is chosen again.
+		out.Status = "not_ready_for_payment"
+		out.Messages = append(out.Messages, refusals...)
+	}
 
 	if s.Status == checkout.StatusCompleted && s.OrderUUID != "" {
 		out.Order = &Order{
@@ -184,12 +193,12 @@ func Render(
 }
 
 // renderFulfillment fills details, available options and the selection.
-// Options list home-delivery methods for the buyer's country — pickup
-// points need station-level choices ACP cannot express; those buyers
-// hand off via continue_url.
+// Options list home-delivery methods for the buyer's country, priced by
+// the quote as an order would be — pickup points need station-level
+// choices ACP cannot express; those buyers hand off via continue_url.
 func renderFulfillment(
-	ctx context.Context, dj *django.Client, t *tenant.Tenant,
-	s *checkout.Session, cart *django.Cart, out *Session, lineIDs []string,
+	s *checkout.Session, pricing *checkout.Pricing, out *Session,
+	lineIDs []string,
 ) {
 	f := s.Fulfillment
 	if f.Street != "" || f.City != "" || f.Zipcode != "" ||
@@ -214,22 +223,9 @@ func renderFulfillment(
 		}
 	}
 
-	// Options are for a buyer still choosing: a placed order has no cart.
-	if f.CountryCode == "" || cart == nil {
-		return
-	}
-	opts, err := dj.ShippingOptions(ctx, t.Domain, t.DefaultLocale, s.CartID,
-		django.ShippingQuery{
-			CountryCode:      f.CountryCode,
-			OrderValueAmount: cart.FreeThresholdValue.String(),
-			Currency:         t.DefaultCurrency,
-			WeightGrams:      strconv.Itoa(cart.TotalWeightGrams),
-		})
-	if err != nil {
-		return // advisory: options re-render on the next call
-	}
+	// Options are for a buyer still choosing: a placed order has none.
 	offered := map[string]bool{}
-	for _, o := range opts {
+	for _, o := range pricing.ShippingOptions {
 		// Over the rate's weight cap, or too large for the carrier's
 		// parcels, Django refuses the order, so the agent must never be
 		// offered it.
@@ -316,6 +312,32 @@ func renderDiscounts(
 
 // appendStateMessages surfaces what still blocks payment, in the spec's
 // error vocabulary so agents know what buyer input to collect.
+// refusedChoices are the errors of the session's choices the store
+// refused for this cart, in the store's words: ACP's invalid, at the
+// member the buyer chooses again.
+func refusedChoices(p *checkout.Pricing) []Message {
+	var out []Message
+	if r := p.DeliveryRefused; r != nil {
+		out = append(out, Message{
+			Type: "error", Code: "invalid",
+			Param:      "$.selected_fulfillment_options",
+			Resolution: "requires_buyer_input", ContentType: "plain",
+			Content: strings.TrimSpace(r.Detail + " Select another " +
+				"fulfillment option from fulfillment_options."),
+		})
+	}
+	if r := p.PayWayRefused; r != nil {
+		out = append(out, Message{
+			Type: "error", Code: "invalid", Param: "$.payment_provider",
+			Resolution: "requires_buyer_input", ContentType: "plain",
+			Content: strings.TrimSpace(r.Detail + " The store offers no " +
+				"collect-later payment for this delivery; select another " +
+				"fulfillment option."),
+		})
+	}
+	return out
+}
+
 func appendStateMessages(s *checkout.Session, out *Session) {
 	if s.Status != checkout.StatusIncomplete {
 		if out.Status == "requires_escalation" {

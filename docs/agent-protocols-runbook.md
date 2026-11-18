@@ -589,7 +589,7 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 
 ## 10. Before deploying a release that moves the checkout session key
 
-**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Four have so far:
+**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Five have so far:
 
 | Release | Key | Why an older pod must not share a session |
 |---|---|---|
@@ -597,6 +597,7 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 | The one with gateway #141's cart record | `cs:v2` to `cs:v3` | It saves a session without keeping its cart's record alive, so the record would expire under a session that still holds the cart |
 | The one that binds a checkout to the platform that signed its creation | `cs:v3` to `cs:v4` | It knows nothing of that platform: it would answer any caller for the session, and its save would drop the platform |
 | The one that publishes `expires_at` (gateway #108) | `cs:v4` to `cs:v5` | It knows nothing of the expiry a session published: its save would drop it, and a later answer could give an earlier one |
+| The one that prices from Django's quote (gateway #107) | `cs:v5` to `cs:v6` | It knows nothing of the total a session showed: its save would drop it, and the session would then place no order until it is read again |
 
 **The pods it replaces must already answer a missing session truthfully.** Since the release with gateway #138, a checkout no session is stored for is answered "an order may exist, check before starting another", never only "start a new one". While a key-moving release rolls out, a pod of either kind then answers truthfully for a session it cannot see. Do not deploy one onto pods older than that.
 

@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django/djangotest"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -60,6 +61,13 @@ func shippingDjango(
 			switch r.URL.Path {
 			case cartPath:
 				_, _ = w.Write(cart)
+			case quotePath:
+				// A quote names its cart: Django judges the parcels.
+				djangotest.Store{Cart: cart, ShippingOptions: []byte(`[` +
+					shippingRow("acs", "home_delivery", false, false) + `,` +
+					shippingRow("boxnow", "pickup_point", false, true) +
+					`,` + shippingRow("acs", "pickup_point", true, false) +
+					`]`)}.Quote(w, r)
 			case optionsPath:
 				orderValues = append(orderValues,
 					r.URL.Query().Get("orderValueAmount"))
@@ -97,6 +105,7 @@ func shippingRow(provider, kind string, overWeight, tooLarge bool) string {
 const (
 	cartPath    = "/api/v1/cart"
 	optionsPath = "/api/v1/shipping/options"
+	quotePath   = "/api/v1/cart/quote"
 	nearestPath = "/api/v1/shipping/boxnow/lockers/nearest"
 )
 
@@ -120,10 +129,10 @@ func signedInWith(t *testing.T) (context.Context, *django.CartToken) {
 	return django.WithCartToken(storeContext(), tok), tok
 }
 
-// With the agent's cart named, the options it does not fit are left out:
-// the cart goes to Django as X-Cart-Id, which flags the parcel fit. Free
-// shipping is judged on the cart's freeThresholdValue (its items after
-// the coupon), whatever value the model passed.
+// With the agent's cart named, the options are its checkout quote's:
+// priced as its order would be charged, whatever value the model passed,
+// and the ones it does not fit are left out. The cart goes to Django as
+// X-Cart-Id, which judges its weight and parcels.
 func TestShippingOptionsForACartOfferOnlyWhatItFits(t *testing.T) {
 	h, seen, orderValues := shippingDjango(t, http.StatusOK)
 
@@ -134,10 +143,12 @@ func TestShippingOptionsForACartOfferOnlyWhatItFits(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"acs:home_delivery"}, offered(out))
-	require.Len(t, seen[optionsPath], 1)
-	assert.Equal(t, shippingCart, seen[optionsPath][0].Get("X-Cart-Id"))
-	assert.Empty(t, seen[optionsPath][0].Get("X-Cart-Token"))
-	assert.Equal(t, []string{"836.42"}, *orderValues)
+	require.Len(t, seen[quotePath], 1)
+	assert.Equal(t, shippingCart, seen[quotePath][0].Get("X-Cart-Id"))
+	assert.Empty(t, seen[quotePath][0].Get("X-Cart-Token"))
+	assert.Empty(t, seen[optionsPath], "the quote prices the options")
+	assert.Empty(t, *orderValues)
+	assert.Equal(t, "EUR", out.Options[0].Currency)
 }
 
 // Without a cart nothing is judged for size, only for the weight given,
@@ -168,12 +179,11 @@ func TestShippingOptionsForASignedInShopperUseTheirCartToken(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"acs:home_delivery"}, offered(out))
-	for _, path := range []string{cartPath, optionsPath} {
-		require.Len(t, seen[path], 1, path)
-		assert.NotEmpty(t, seen[path][0].Get("X-Cart-Token"), path)
-		assert.Empty(t, seen[path][0].Get("X-Cart-Id"), path)
-	}
-	assert.Equal(t, []string{"836.42"}, *orderValues)
+	require.Len(t, seen[quotePath], 1)
+	assert.NotEmpty(t, seen[quotePath][0].Get("X-Cart-Token"))
+	assert.Empty(t, seen[quotePath][0].Get("X-Cart-Id"))
+	assert.Empty(t, seen[optionsPath])
+	assert.Empty(t, *orderValues)
 }
 
 // A refused token is reported like the cart tools report it and marked
@@ -193,6 +203,6 @@ func TestShippingOptionsReportARefusedCartToken(t *testing.T) {
 	_, _, err = h.getShippingOptions(ctx, nil,
 		ShippingOptionsIn{CountryCode: "GR"})
 	require.Error(t, err)
-	assert.Len(t, seen[cartPath], 1, "a refused token is not resent")
+	assert.Len(t, seen[quotePath], 1, "a refused token is not resent")
 	assert.Empty(t, seen[optionsPath])
 }

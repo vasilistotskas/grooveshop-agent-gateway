@@ -50,6 +50,25 @@ const CodeCartNotFound = "cart_not_found"
 // as ErrCartHasUnpaidOrder.
 const CodeCartHasUnpaidOrder = "cart_has_unpaid_order"
 
+// CodeTotalChanged is the `code` of Django's 409 refusing an order whose
+// expectedTotal is not the amount due it computes now
+// (order/enum/create_error.py). CreateOrder reports it as a
+// *TotalChangedError.
+const CodeTotalChanged = "total_changed"
+
+// CodePayWayUnavailable is the `code` of Django's 400 refusing a pay way
+// the store does not offer for the chosen delivery (cart/views/cart.py).
+const CodePayWayUnavailable = "pay_way_unavailable"
+
+// The codes of Django's 400 refusing a delivery that cannot be priced for
+// a cart (shipping/enum/refusal.py, ShippingRefusal): the store does not
+// ship that way to the country, or the cart does not fit it.
+const (
+	CodeShippingUnavailable    = "shipping_unavailable"
+	CodeShippingParcelTooLarge = "shipping_parcel_too_large"
+	CodeShippingWeightExceeded = "shipping_weight_exceeded"
+)
+
 // AgentProtocolMCP is the attribution agentProtocol (Django's
 // AGENT_PROTOCOLS) of a cart an agent fills through the /mcp commerce
 // tools. A UCP or ACP checkout sends its own protocol

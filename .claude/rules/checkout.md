@@ -246,7 +246,7 @@ Loads when working on a checkout session on either surface, its completion, its 
       warn and answered 204, and the session is left as it is: a
       session is never completed without its order. The record
       `Flow.place` writes beside the session (`Store.IndexOrder`:
-      `ag:{schema}:cs:v5:{id}:order`, the order's uuid) is for calls on
+      `ag:{schema}:cs:v6:{id}:order`, the order's uuid) is for calls on
       the session, not events: it can be lost (a flush or a
       restore);
     - the event's order status and payment status set the status
@@ -293,6 +293,43 @@ Loads when working on a checkout session on either surface, its completion, its 
   `checkout_closed`). A link it minted is stored over a read that
   stored the checkout meanwhile (`keepLink`), so the next complete mints no
   other. ACP has no checkout awaiting a payment.
+- **A checkout's totals are Django's quote, and its order is placed at
+  the total it showed** (#107). `checkout.ComputePricing` reads the cart
+  for its lines and `POST /cart/quote` (`django.Client.Quote`) for every
+  amount, with the very choices the order is placed with
+  (`checkout.QuoteRequest`: delivery, pay way, region, email). The
+  gateway adds nothing up of its own: the free thresholds, the promotion
+  waiver, the carrier's weight and parcels are Django's. A checkout that
+  has not chosen both a delivery and a pay way shows the rows the quote
+  priced, which no order is placed at (`Pricing.Final`).
+  - **A choice the store refuses is named, not priced.** A delivery the
+    store does not ship that way or the cart outgrew
+    (`shipping_unavailable`, `shipping_weight_exceeded`,
+    `shipping_parcel_too_large`), or a pay way not offered for the
+    delivery (`pay_way_unavailable`), is left out and the rest quoted
+    again (`Pricing.DeliveryRefused`, `PayWayRefused`). An open checkout
+    is then rendered not ready, with an error at the member to choose
+    again (UCP `incomplete`, ACP `not_ready_for_payment`).
+  - **A quote that cannot be read is an error**, never a total without
+    a row: the render fails, and each surface answers unavailable (UCP
+    `unavailable` with `retryAfterSeconds`, ACP 503).
+  - **The total shown is stored.** Every render of an open checkout sets
+    `Session.ShownTotal` (`Session.Show`), and the surfaces store it:
+    UCP's `rendered` with the status and expiry, ACP's `storeShown`, a
+    create with its session. A store that fails is answered all the same:
+    the order would be sent at the total stored before, which Django
+    refuses.
+  - **The order is placed only at it.** `Flow.admit` refuses a checkout
+    that has shown no total (`ErrNotReady`), and `Flow.place` sends it as
+    `expectedTotal`. Django creates the order only at exactly that
+    amount due, and answers another with 409 `total_changed`
+    (`django.ErrTotalChanged`, a `*django.TotalChangedError`): nothing
+    was created, the checkout is stored ready again, and the surface
+    answers with the total now (UCP: the checkout, `incomplete` for that
+    answer, with a `recoverable` error `total_changed`, its claim
+    released; ACP: 400 `total_changed`, the next read showing the
+    total). So no order is ever placed at a total its checkout did not
+    show.
 - **One live checkout holds a cart** (#141). Two sessions on one cart
   could each place an order, because Django keeps the cart of an order
   that awaits its online payment. The store keeps it to one:

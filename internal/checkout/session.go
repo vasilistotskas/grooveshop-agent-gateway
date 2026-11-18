@@ -100,8 +100,9 @@ func (f Fulfillment) Complete() bool {
 	return false
 }
 
-// Session is the durable checkout state. Money totals are derived fresh
-// from the cart at render time, never stored.
+// Session is the durable checkout state. Money totals are Django's quote
+// at render time (ComputePricing); the one amount stored is the total the
+// checkout last showed (ShownTotal), which its order is placed at.
 type Session struct {
 	ID       string `json:"id"`
 	Protocol string `json:"protocol"` // ProtocolUCP | ProtocolACP
@@ -149,6 +150,13 @@ type Session struct {
 	// takes it from its order (AwaitDecision); every other state from
 	// its own lifetime, set at each save (expire).
 	ExpiresAt time.Time `json:"expiresAt"`
+	// ShownTotal is the total the checkout last published while open:
+	// what the buyer was shown, the one total its order is placed at
+	// (django.OrderCreate.ExpectedTotal), since Django creates the order
+	// only at it. Every render of an open checkout sets it (Show), and the
+	// surfaces store it: a checkout publishes only what is stored. Nil
+	// until a render of the checkout was stored.
+	ShownTotal *django.ExpectedTotal `json:"shownTotal,omitempty"`
 	// Unconfirmed marks a session in progress whose order was sent and
 	// never answered: the order may exist. One in progress without it,
 	// and without an order, is a completion that is still running, or
@@ -196,6 +204,21 @@ func (s *Session) Serves(c Caller) bool {
 // holds it reads it again as such.
 func (s *Session) creator() Caller {
 	return Caller{Protocol: s.Protocol, Platform: s.Platform}
+}
+
+// Show records the total a render of the session publishes, and reports
+// whether it is another than the one stored. Only an open checkout's: a
+// placed one shows its order's, which nothing is placed at.
+func (s *Session) Show(p *Pricing) bool {
+	if !s.Open() || p.Order != nil {
+		return false
+	}
+	shown := &django.ExpectedTotal{Amount: p.Total, Currency: p.Currency}
+	if s.ShownTotal != nil && *s.ShownTotal == *shown {
+		return false
+	}
+	s.ShownTotal = shown
+	return true
 }
 
 // Terminal reports whether the session can no longer change.

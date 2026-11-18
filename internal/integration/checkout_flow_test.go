@@ -73,10 +73,17 @@ func (f flowStack) readySession(t *testing.T) *checkout.Session {
 	s.PayWayID = 1
 	s.Recompute()
 	require.Equal(t, checkout.StatusReadyForComplete, s.Status)
+	// What its last render showed: the fixture cart, delivered free and
+	// paid in cash without a fee.
+	s.ShownTotal = &fixtureShownTotal
 	require.NoError(t, f.store.Create(t.Context(), s,
 		checkout.CartHolder{}))
 	return s
 }
+
+// fixtureShownTotal is the total a checkout of the fixture cart shows with
+// ACS home delivery and cash on delivery: its items, as Django quotes them.
+var fixtureShownTotal = django.ExpectedTotal{Amount: 92936, Currency: "EUR"}
 
 func (f flowStack) stored(t *testing.T, s *checkout.Session) *checkout.Session {
 	t.Helper()

@@ -37,6 +37,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django/djangotest"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/server"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
@@ -280,6 +281,13 @@ type checkoutFaults struct {
 	// numbered namedCartReadsFailFrom on (when set), they answer 502.
 	namedCartReads         atomic.Int32
 	namedCartReadsFailFrom atomic.Int32
+	// quoteDown makes the checkout quote answer 502; quotes counts the
+	// quotes asked.
+	quoteDown atomic.Bool
+	quotes    atomic.Int32
+	// totalChanged makes order creation answer Django's 409
+	// total_changed: the amount due is no longer the expected total.
+	totalChanged atomic.Bool
 	// agentProtocol is the attribution the last order create carried.
 	agentProtocol atomic.Value
 	// carts are the carts the fake made.
@@ -374,6 +382,52 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				return
 			}
 			inner.ServeHTTP(w, r)
+		})
+	outer.HandleFunc("POST /api/v1/cart/quote",
+		func(w http.ResponseWriter, r *http.Request) {
+			faults.quotes.Add(1)
+			if faults.quoteDown.Load() {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			if faults.cartDeletedOnOrder.Load() &&
+				faults.ordersPlaced.Load() > 0 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"detail": "Cart not found", ` +
+					`"code": "cart_not_found"}`))
+				return
+			}
+			read := func(name string) []byte {
+				raw, err := os.ReadFile(fixturePath(name))
+				assert.NoError(t, err)
+				return raw
+			}
+			body, err := io.ReadAll(r.Body)
+			assert.NoError(t, err)
+			var req django.QuoteRequest
+			assert.NoError(t, json.Unmarshal(body, &req))
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			cart := "cart_with_items.json"
+			if faults.couponHeld.Load() {
+				cart = "cart_with_coupon.json"
+			}
+			cod := read("pay_way_1.json")
+			if faults.codFee.Load() {
+				cod = bytes.Replace(cod, []byte(`"freeThreshold": 100.0`),
+					[]byte(`"freeThreshold": 0.0`), 1)
+			}
+			ways := map[int64][]byte{2: read("pay_way_2.json")}
+			// As the pay-way list: cash on delivery is offered for no
+			// delivery that names a carrier.
+			if !faults.codNotDelivered.Load() ||
+				req.ShippingProviderCode == "" {
+				ways[1] = cod
+			}
+			djangotest.Store{
+				Cart: read(cart), PayWays: ways,
+				ShippingOptions: read("shipping_options.json"),
+			}.Quote(w, r)
 		})
 	outer.HandleFunc("GET /api/v1/region/GR/get_regions_by_country_alpha_2",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -579,6 +633,18 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				_, _ = w.Write(raw)
 				return
 			}
+			if faults.totalChanged.Load() {
+				raw, err := os.ReadFile(
+					fixturePath("order_total_changed.json"))
+				if !assert.NoError(t, err) {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write(raw)
+				return
+			}
 			if faults.orderConflict.Load() {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusConflict)
@@ -613,6 +679,8 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			// Every agent checkout linked the terms and privacy policy,
 			// so every order it places accepts them.
 			assert.Equal(t, true, body["termsAccepted"])
+			// It is placed only at the total the checkout showed.
+			assert.NotEmpty(t, body["expectedTotal"])
 			if attribution, ok := body["attribution"].(map[string]any); ok {
 				faults.agentProtocol.Store(attribution["agentProtocol"])
 			}

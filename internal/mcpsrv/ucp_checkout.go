@@ -980,6 +980,16 @@ func (h *handlers) completeSession(
 	placement, err := h.deps.Flow.Complete(ctx, t, s)
 	h.settleCompletion(ctx, s, claim, placement)
 	if placement == checkout.NothingPlaced {
+		if errors.Is(err, django.ErrTotalChanged) {
+			// The order was refused at the total the checkout showed:
+			// the answer shows, and stores, the total now, and the same
+			// key completes at it.
+			return fromSnapshot(func() (*mcp.CallToolResult, CheckoutResult,
+				error) {
+				res, out, err2 := h.checkoutResult(ctx, t, s, neg)
+				return incompleteBy(res, out, err2, totalChanged(err))
+			})
+		}
 		// Refused before the order was sent, or by Django for the order
 		// itself: either way nothing of this call exists.
 		return refusedBy(completeErr(s, err))
@@ -1004,6 +1014,23 @@ func (h *handlers) completeSession(
 		}
 		return render()
 	})
+}
+
+// totalChanged is the recoverable error of a complete Django refused
+// because the checkout's total is no longer the amount due: no order was
+// placed, and the checkout answering it shows the total now.
+func totalChanged(err error) ucp.Message {
+	now := "another"
+	if changed, ok := errors.AsType[*django.TotalChangedError](err); ok &&
+		changed.Now != nil {
+		now = money.Format(changed.Now.Amount) + " " + changed.Now.Currency
+	}
+	return ucp.Message{Type: "error", Code: django.CodeTotalChanged,
+		Severity: "recoverable",
+		Text: fmt.Sprintf("The store's total for this checkout is now %s, "+
+			"not the one it showed, so no order was placed. Confirm the "+
+			"total shown here with the buyer, then call complete_checkout "+
+			"again (the same idempotency key may be used).", now)}
 }
 
 // errNoPaymentMethod refuses a complete of a checkout that holds no
@@ -1054,6 +1081,12 @@ func (h *handlers) firstMethodFee(
 	case err != nil:
 		return nil, upstreamErr(err,
 			"the checkout's totals could not be read; retry")
+	case pricing.PayWayRefused != nil:
+		return nil, &mcptool.ToolError{Code: mcptool.CodeUnsupported,
+			Detail: pricing.PayWayRefused.Detail,
+			Hint: "the payment method this call names is not offered for " +
+				"this checkout's delivery; name another advertised " +
+				"instrument, or select one with update_checkout"}
 	case pricing.PayWay == nil:
 		// A render goes on without a fee it could not read. A placement
 		// does not: the fee decides whether the order is placed.
@@ -1107,6 +1140,11 @@ func completeErr(s *checkout.Session, err error) error {
 		return stockShortfallErr(err)
 	case errors.Is(err, django.ErrCartHasUnpaidOrder):
 		return cartOrderUnpaidErr(err)
+	case errors.Is(err, django.ErrTotalChanged):
+		return &mcptool.ToolError{Code: django.CodeTotalChanged,
+			Hint: "the store's total for this checkout changed, so no " +
+				"order was placed; read it with get_checkout, confirm the " +
+				"total with the buyer, then complete again"}
 	case errors.Is(err, checkout.ErrSessionChanged):
 		return saveFailed(err)
 	case errors.Is(err, checkout.ErrCompletionInProgress):
@@ -1505,26 +1543,37 @@ func (h *handlers) checkoutResult(
 }
 
 // rendered builds the checkout and stores what the render read from its
-// order (a status the order decided, its expiry) before giving it: a
-// checkout publishes only what is stored, so no later read gives an
-// earlier expires_at. The save is a compare-and-set: a checkout another
-// request stored meanwhile is read again and rendered once more. A placed
-// checkout whose state cannot be stored is answered as one placed and
-// not rendered.
+// order (a status the order decided, its expiry) and the total it shows
+// (Session.ShownTotal) before giving it: a checkout publishes only what is
+// stored, so no later read gives an earlier expires_at, and its order is
+// placed at the total it showed. The save is a compare-and-set: a
+// checkout another request stored meanwhile is read again and rendered
+// once more. A placed checkout whose state cannot be stored is answered
+// as one placed and not rendered. An open one is answered all the same:
+// its order would be placed at the total stored before, which Django
+// refuses with the new one (django.ErrTotalChanged), so nothing is
+// placed at a total the checkout did not show.
 func (h *handlers) rendered(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
 	neg ucp.Negotiated,
 ) (*ucp.Checkout, error) {
 	for again := true; ; again = false {
-		status, expires := s.Status, s.ExpiresAt
+		status, expires, shown := s.Status, s.ExpiresAt, s.ShownTotal
 		payload, err := h.deps.UCP.BuildCheckout(ctx, t, s,
 			neg.Declaration(ucp.CapabilityCheckout))
 		if err != nil ||
-			(s.Status == status && s.ExpiresAt.Equal(expires)) {
+			(s.Status == status && s.ExpiresAt.Equal(expires) &&
+				s.ShownTotal == shown) {
 			return payload, err
 		}
 		err = h.deps.Checkout.Save(ctx, s)
 		if err == nil {
+			return payload, nil
+		}
+		if s.Open() && !errors.Is(err, checkout.ErrSessionChanged) {
+			h.deps.Log.WarnContext(ctx, "checkout: shown total not stored",
+				slog.String("session", s.ID),
+				slog.String("error", err.Error()))
 			return payload, nil
 		}
 		if !again || !errors.Is(err, checkout.ErrSessionChanged) {

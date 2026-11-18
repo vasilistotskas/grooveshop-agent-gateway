@@ -1571,6 +1571,15 @@ func (h *Handler) completeError(
 			Message: "No agent-completable payment method serves this " +
 				"delivery; send the buyer to continue_url.",
 		})
+	// The session stays ready, and its next read shows, and stores, the
+	// total now, which a complete under a new key places the order at.
+	case errors.Is(err, django.ErrTotalChanged):
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: django.CodeTotalChanged,
+			Message: "The store's total for this session changed since it " +
+				"was shown, so no order was placed. Read the session, " +
+				"confirm the new total with the buyer, then complete again.",
+		})
 	// Django names no order, and neither does the answer. The session
 	// stays ready: once that order is canceled unpaid it can be completed.
 	case errors.Is(err, django.ErrCartHasUnpaidOrder):
@@ -1598,6 +1607,21 @@ func (h *Handler) render(
 	}
 }
 
+// storeShown stores the total a render of a stored session showed, which
+// its order is placed at: a session publishes only what is stored. A
+// session not created yet is stored by its create, with the total. One
+// that cannot be stored (another request stored it meanwhile, Redis
+// failed) is answered all the same: its order would be placed at the
+// total stored before, which Django refuses with the new one
+// (django.ErrTotalChanged), so nothing is placed at a total it did not
+// show.
+func (h *Handler) storeShown(r *http.Request, s *checkout.Session) {
+	if err := h.store.Save(r.Context(), s); err != nil {
+		h.log.WarnContext(r.Context(), "acp: shown total not stored",
+			slog.String("session", s.ID), slog.String("error", err.Error()))
+	}
+}
+
 // renderBody encodes the session, or answers why it cannot and reports
 // false.
 func (h *Handler) renderBody(
@@ -1605,8 +1629,12 @@ func (h *Handler) renderBody(
 	s *checkout.Session,
 ) ([]byte, bool) {
 	// ACP names no language: the store's default.
+	shown := s.ShownTotal
 	payload, err := Render(r.Context(), h.dj, t,
 		h.site.Links(t.Domain, t.DefaultLocale), s)
+	if err == nil && s.ShownTotal != shown && s.Revision != "" {
+		h.storeShown(r, s)
+	}
 	if err == nil {
 		var body []byte
 		if body, err = json.Marshal(payload); err == nil {

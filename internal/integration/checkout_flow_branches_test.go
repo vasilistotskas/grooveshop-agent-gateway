@@ -194,6 +194,7 @@ func (f flowStack) sessionOf(t *testing.T, protocol string) *checkout.Session {
 		f.faults.carts.mint())
 	s.Buyer, s.Fulfillment, s.PayWayID = ready.Buyer, ready.Fulfillment,
 		ready.PayWayID
+	s.ShownTotal = ready.ShownTotal
 	s.Recompute()
 	require.Equal(t, checkout.StatusReadyForComplete, s.Status)
 	require.NoError(t, f.store.Create(t.Context(), s,

@@ -233,6 +233,9 @@ func (b *Builder) BuildCheckout(
 	if err != nil {
 		return nil, fmt.Errorf("ucp: pricing: %w", err)
 	}
+	// The total this render publishes is the one the order is placed
+	// at; the caller stores it.
+	s.Show(pricing)
 	links := b.site.Links(t.Domain, django.Language(ctx, t.TenantConfig))
 	order := pricing.Order
 	if order != nil {
@@ -332,6 +335,13 @@ func (b *Builder) BuildCheckout(
 		renderDiscounts(s, pricing, out)
 	}
 
+	if refusals := refusedChoices(pricing); len(refusals) > 0 && s.Open() {
+		// A choice the store no longer takes is left out of the price,
+		// so the checkout cannot be completed until it is chosen again.
+		out.Status = string(checkout.StatusIncomplete)
+		out.Messages = append(out.Messages, refusals...)
+	}
+
 	switch s.Status {
 	case checkout.StatusRequiresEscalation:
 		// continue_url is REQUIRED whenever the status is
@@ -372,6 +382,27 @@ func (b *Builder) BuildCheckout(
 		}
 	}
 	return out, nil
+}
+
+// refusedChoices are the recoverable errors of the checkout's choices the
+// store refused for this cart, each at its member, in the store's words.
+func refusedChoices(p *checkout.Pricing) []Message {
+	var out []Message
+	if r := p.DeliveryRefused; r != nil {
+		out = append(out, Message{Type: "error", Code: r.Code,
+			Severity: "recoverable", Path: "$.fulfillment",
+			Text: strings.TrimSpace(r.Detail + " The delivery is left out " +
+				"of the total: choose another with update_checkout (see " +
+				"get_shipping_options).")})
+	}
+	if r := p.PayWayRefused; r != nil {
+		out = append(out, Message{Type: "error", Code: r.Code,
+			Severity: "recoverable", Path: "$.payment",
+			Text: strings.TrimSpace(r.Detail + " The payment method is " +
+				"left out of the total: choose another one this delivery " +
+				"is offered with update_checkout.")})
+	}
+	return out
 }
 
 // awaitingPayment is what a checkout awaiting its payment tells the

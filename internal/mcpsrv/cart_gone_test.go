@@ -24,7 +24,8 @@ const goneCartID = "6f1c1f3e-2d6a-4b0f-9a3e-2f6d6c1b9a10"
 
 // goneCartDjango answers every cart call as Django answers one naming a
 // guest cart it deleted: on a new guest cart (the fixture's), and with a
-// 404 for a line, which the new cart does not hold.
+// 404 for a line, which the new cart does not hold. A quote, which never
+// creates a cart, is its 404 cart_not_found.
 func goneCartDjango(t *testing.T, s surface) *handlers {
 	t.Helper()
 	read := func(name string) []byte {
@@ -38,6 +39,10 @@ func goneCartDjango(t *testing.T, s surface) *handlers {
 			w.Header().Set("Content-Type", "application/json")
 			line := strings.Contains(r.URL.Path, "/cart/item/")
 			switch {
+			case strings.HasSuffix(r.URL.Path, "/cart/quote"):
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"detail": "Cart not found", ` +
+					`"code": "cart_not_found"}`))
 			case line && r.Method == http.MethodDelete:
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"detail": "Not found."}`))

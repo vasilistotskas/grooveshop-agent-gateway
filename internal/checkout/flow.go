@@ -316,6 +316,12 @@ func (f *Flow) admit(
 	default:
 		return nil, fmt.Errorf("%w: missing %v", ErrNotReady, s.Missing())
 	}
+	// The order is placed at the total the checkout showed, and a
+	// checkout whose render was never stored has shown none.
+	if s.ShownTotal == nil {
+		return nil, fmt.Errorf("%w: no total has been shown; read the "+
+			"checkout", ErrNotReady)
+	}
 
 	// Checked against the FINAL delivery: a method selected before the
 	// carrier was chosen may be one that carrier cannot settle.
@@ -402,6 +408,9 @@ func (f *Flow) place(
 			// proven by the internal secret.
 			TermsAccepted: true,
 			Attribution:   agentAttribution(s.Protocol),
+			// Django creates the order only at the total the buyer was
+			// shown, and answers another with django.ErrTotalChanged.
+			ExpectedTotal: *s.ShownTotal,
 		})
 	if err != nil {
 		if !refused(err) {
