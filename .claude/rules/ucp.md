@@ -203,9 +203,10 @@ wins over this page.
   (`Session.ShownTotal`, `.claude/rules/checkout.md`). One Django
   refuses because the total changed since is the tool error
   `total_changed`, its completion claim released, and shows no total:
-  the platform reads the checkout, which shows and stores the total now,
-  so the same key keeps that answer until it has, and completes at the
-  total the read showed.
+  the platform reads the checkout, which shows and stores the total now.
+  A retry under the same key runs again and sends the total stored
+  before, so it places nothing at a total no answer showed, and a
+  complete after the read places the order at the total the read showed.
 - **continue_url** is only where the spec requires it,
   `requires_escalation`: the PSP's page while its link can be paid,
   else the order's (never the cart's). Not in an open checkout (`incomplete`, `ready_for_complete`),

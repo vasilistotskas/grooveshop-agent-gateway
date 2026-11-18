@@ -308,9 +308,10 @@ Loads when working on a checkout session on either surface, its completion, its 
     `shipping_parcel_too_large`), or a pay way not offered for the
     delivery or gone (`pay_way_unavailable`, `pay_way_not_found`), is
     left out and the rest quoted again (`Pricing.DeliveryRefused`,
-    `PayWayRefused`), and so is an attached coupon the order would be
-    refused for (`Quote.BlockingCoupon`, `Pricing.CouponRefused`: remove
-    it). Any other refusal of the checkout's data (an email
+    `PayWayRefused`). An attached coupon the order would be refused for
+    (`Quote.BlockingCoupon`) is named too (`Pricing.CouponRefused`:
+    remove it); the quote already leaves its discount out. Any other
+    refusal of the checkout's data (an email
     the store does not take) leaves only the cart to price
     (`Pricing.InputRefused`), and an empty cart prices nothing. An open
     checkout is then rendered not ready, with an error naming what to

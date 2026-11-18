@@ -69,15 +69,19 @@ func TestAChangedPriceIsChargedOnlyOnceShown(t *testing.T) {
 
 			stack.faults.codFee.Store(true)
 			defer stack.faults.codFee.Store(false)
-			refused := surface.answer(ctx, id, uuid.NewString(), nil)
+			key := uuid.NewString()
+			refused := surface.answer(ctx, id, key, nil)
 			assert.Equal(t, placed, stack.faults.ordersPlaced.Load(),
 				"nothing is charged at a total the buyer was not shown")
 			if surface.name == "acp" {
 				assert.Equal(t, "400 total_changed", refused.refusal)
 			}
-			// The same key until the platform reads the checkout: the
-			// order is never placed at a total it has not shown.
-			assert.Empty(t, refused.status)
+			assert.Empty(t, refused.status, "the answer shows no total")
+			// A retry under the same key, its answer lost, sends the
+			// total stored before: still refused, nothing placed.
+			again := surface.answer(ctx, id, key, nil)
+			assert.Empty(t, again.status)
+			assert.Equal(t, placed, stack.faults.ordersPlaced.Load())
 			surface.read(ctx, id)
 
 			assert.Equal(t, "completed",

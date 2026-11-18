@@ -406,7 +406,10 @@ func refusedChoices(p *checkout.Pricing) []Message {
 		out = append(out, Message{Type: "error", Code: r.Code,
 			Severity: "recoverable", Path: "$.discounts.codes",
 			Text: strings.TrimSpace(r.Detail + " Remove it with " +
-				"update_checkout before completing.")})
+				"update_checkout's discounts before completing (the " +
+				"discount extension); without that extension the order " +
+				"cannot be placed here: hand the buyer the store's own " +
+				"checkout.")})
 	}
 	if r := p.InputRefused; r != nil {
 		out = append(out, Message{Type: "error", Code: r.Code,
