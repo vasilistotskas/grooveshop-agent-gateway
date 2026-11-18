@@ -47,6 +47,11 @@ var (
 	// carries Django's *APIError, so it is ErrValidation too.
 	ErrCartHasUnpaidOrder = errors.New(
 		"django: an order from this cart awaits its payment")
+	// ErrTotalChanged: Django refused an order because the total the
+	// caller expected is not the amount due it computes now
+	// (CodeTotalChanged, 409). Nothing was created. The error also
+	// carries Django's *APIError, so it is ErrConflict too.
+	ErrTotalChanged = errors.New("django: the order total has changed")
 )
 
 // APIError is a Django error response (docs/error-contract.md in the

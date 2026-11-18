@@ -18,6 +18,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django/djangotest"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
@@ -107,6 +108,15 @@ func TestProfileMatchesBusinessSchema(t *testing.T) {
 	assert.Equal(t, "ES256", profile.Keys[0]["alg"])
 }
 
+// readFixture is a recorded Django body.
+func readFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "testdata", "fixtures",
+		"django", name))
+	require.NoError(t, err)
+	return b
+}
+
 // fixtureDjango serves the recorded fixtures BuildCheckout consumes; an
 // optional cartFixture overrides the default cart payload.
 func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
@@ -149,6 +159,14 @@ func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
 	mux.HandleFunc("GET /api/v1/pay_way/2", fixture("pay_way_2.json"))
 	mux.HandleFunc("GET /api/v1/shipping/options",
 		fixture("shipping_options.json"))
+	mux.HandleFunc("POST /api/v1/cart/quote", djangotest.Store{
+		Cart:            readFixture(t, cart),
+		ShippingOptions: readFixture(t, "shipping_options.json"),
+		PayWays: map[int64][]byte{
+			1: readFixture(t, "pay_way_1.json"),
+			2: readFixture(t, "pay_way_2.json"),
+		},
+	}.Quote)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 

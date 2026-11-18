@@ -15,6 +15,17 @@ import (
 // ErrNotReady marks a complete call on a session that still misses data.
 var ErrNotReady = errors.New("checkout: session is not ready to complete")
 
+// ErrChoiceRefused marks a complete call on a session the store refuses
+// a choice or the data of now (Pricing.Refused): it is ErrNotReady too.
+var ErrChoiceRefused = fmt.Errorf(
+	"%w: the store refuses one of its choices", ErrNotReady)
+
+// ErrTotalNotShown marks a complete call on a session no stored render
+// showed a total for: its order would have no total to be placed at. It
+// is ErrNotReady too; reading the checkout stores one.
+var ErrTotalNotShown = fmt.Errorf(
+	"%w: it has shown no total yet", ErrNotReady)
+
 // ErrPaymentMethodUnsupported marks a pay way the agentic surface cannot
 // finish: any online pay way other than Viva hosted authorization (Stripe
 // included), or one whose settlement is unknown.
@@ -316,6 +327,22 @@ func (f *Flow) admit(
 	default:
 		return nil, fmt.Errorf("%w: missing %v", ErrNotReady, s.Missing())
 	}
+	// The order is placed at the total the checkout showed, and a
+	// checkout whose render was never stored has shown none.
+	if s.ShownTotal == nil {
+		return nil, ErrTotalNotShown
+	}
+	// A choice the store refuses now (the cart outgrew the carrier, the
+	// pay way is no longer offered) leaves the shown total without its
+	// row: the checkout is not ready, whatever its stored status says.
+	pricing, _, err := ComputePricing(ctx, f.dj, t, s)
+	if err != nil {
+		return nil, err
+	}
+	if r := pricing.Refused(); r != nil {
+		return nil, fmt.Errorf("%w: %s (%s)", ErrChoiceRefused, r.Detail,
+			r.Code)
+	}
 
 	// Checked against the FINAL delivery: a method selected before the
 	// carrier was chosen may be one that carrier cannot settle.
@@ -402,6 +429,9 @@ func (f *Flow) place(
 			// proven by the internal secret.
 			TermsAccepted: true,
 			Attribution:   agentAttribution(s.Protocol),
+			// Django creates the order only at the total the buyer was
+			// shown, and answers another with django.ErrTotalChanged.
+			ExpectedTotal: *s.ShownTotal,
 		})
 	if err != nil {
 		if !refused(err) {

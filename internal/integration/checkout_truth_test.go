@@ -60,6 +60,25 @@ func (stack ucpStack) lost(id string) func() error {
 
 var errRedisDown = errors.New("redis is down")
 
+// readOnly is a stored session without what a read of it may store: its
+// revision, when it was stored and the expiry its order sets, which may
+// only move later.
+func readOnly(t *testing.T, stored string) checkout.Session {
+	t.Helper()
+	var s checkout.Session
+	require.NoError(t, json.Unmarshal([]byte(stored), &s))
+	s.Revision, s.UpdatedAt, s.ExpiresAt = "", time.Time{}, time.Time{}
+	return s
+}
+
+// expiresAt is a stored session's published expiry.
+func expiresAt(t *testing.T, stored string) time.Time {
+	t.Helper()
+	var s checkout.Session
+	require.NoError(t, json.Unmarshal([]byte(stored), &s))
+	return s.ExpiresAt
+}
+
 // What each surface answers for a session that is no longer stored, and
 // for one that cannot be read.
 var (
@@ -102,7 +121,13 @@ func TestACompleteRefusedForAnotherCompletesOrderReadsAgain(t *testing.T) {
 
 			held.open()
 			assertStored(t, <-first, status)
-			assert.Equal(t, placed, stack.storedBytes(t, id))
+			// What a read stores of a checkout awaiting its payment (the
+			// expiry its order's deadline sets, which the fake moves with
+			// the clock) is a read's; nothing else of the session moved.
+			now := stack.storedBytes(t, id)
+			assert.Equal(t, readOnly(t, placed), readOnly(t, now))
+			assert.False(t, expiresAt(t, now).Before(expiresAt(t, placed)),
+				"a published expiry never moves earlier")
 			assert.EqualValues(t, 1, stack.faults.orderCreates.Load())
 		})
 	}

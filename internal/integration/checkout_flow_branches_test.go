@@ -83,6 +83,7 @@ func startBranchFlow(t *testing.T, hosted bool) (flowStack, *branchDjango) {
 		store: store, rdb: rdb, faults: faults,
 		tenant: &tenant.Tenant{
 			SchemaName: "demostore", DefaultLocale: "el",
+			DefaultCurrency:           "EUR",
 			AgentCommerceEnabled:      true,
 			AgentHostedPaymentEnabled: hosted,
 			Domain:                    "shop.test",
@@ -194,6 +195,7 @@ func (f flowStack) sessionOf(t *testing.T, protocol string) *checkout.Session {
 		f.faults.carts.mint())
 	s.Buyer, s.Fulfillment, s.PayWayID = ready.Buyer, ready.Fulfillment,
 		ready.PayWayID
+	s.ShownTotal = ready.ShownTotal
 	s.Recompute()
 	require.Equal(t, checkout.StatusReadyForComplete, s.Status)
 	require.NoError(t, f.store.Create(t.Context(), s,

@@ -24,6 +24,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -154,6 +155,8 @@ const msgRecordsUnavailable = "Checkout is temporarily unavailable."
 // writeUnavailable is the protocol body for a transient gateway-side
 // failure (Redis, rendering); the platform retries.
 func writeUnavailable(w http.ResponseWriter, msg string) {
+	w.Header().Set("Retry-After",
+		strconv.Itoa(mcptool.UnavailableRetryAfter))
 	writeError(w, http.StatusServiceUnavailable, Error{
 		Type: "service_unavailable", Code: "unavailable", Message: msg,
 	})
@@ -163,6 +166,8 @@ func writeUnavailable(w http.ResponseWriter, msg string) {
 // session is not rendered: the platform must read it again, not order
 // again.
 func writePlacedUnrendered(w http.ResponseWriter, s *checkout.Session) {
+	w.Header().Set("Retry-After",
+		strconv.Itoa(mcptool.UnavailableRetryAfter))
 	writeError(w, http.StatusServiceUnavailable, Error{
 		Type: "service_unavailable", Code: "order_placed",
 		Message: "Order " + s.OrderUUID + " is placed, but the " +
@@ -236,6 +241,8 @@ func upstreamError(w http.ResponseWriter, err error) {
 			Type: "invalid_request", Code: "invalid", Message: msg,
 		})
 	default:
+		w.Header().Set("Retry-After",
+			strconv.Itoa(mcptool.UnavailableRetryAfter))
 		writeError(w, http.StatusServiceUnavailable, Error{
 			Type: "service_unavailable", Code: "upstream_unavailable",
 			Message: "The store backend is temporarily unavailable.",
@@ -1527,6 +1534,21 @@ func (h *Handler) completeError(
 		writeInFlight(w, idemRetryAfter, msgSessionBusy)
 	case errors.Is(err, checkout.ErrSessionChanged):
 		saveFailed(w, err)
+	case errors.Is(err, checkout.ErrChoiceRefused):
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: "missing",
+			Message: "The store refuses one of this session's choices " +
+				"for its cart now. Read the session, which names it, " +
+				"change it with an update, then complete with a new " +
+				"Idempotency-Key.",
+		})
+	case errors.Is(err, checkout.ErrTotalNotShown):
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: "missing",
+			Message: "The session has shown no total yet. Read it, " +
+				"confirm the total with the buyer, then complete with a " +
+				"new Idempotency-Key.",
+		})
 	case errors.Is(err, checkout.ErrNotReady):
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "missing",
@@ -1571,6 +1593,16 @@ func (h *Handler) completeError(
 			Message: "No agent-completable payment method serves this " +
 				"delivery; send the buyer to continue_url.",
 		})
+	// The session stays ready, and its next read shows, and stores, the
+	// total now, which a complete under a new key places the order at.
+	case errors.Is(err, django.ErrTotalChanged):
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: django.CodeTotalChanged,
+			Message: "The store's total for this session is no longer the " +
+				"one it showed, so no order was placed. Read the session, " +
+				"confirm the total with the buyer, then complete with a new " +
+				"Idempotency-Key.",
+		})
 	// Django names no order, and neither does the answer. The session
 	// stays ready: once that order is canceled unpaid it can be completed.
 	case errors.Is(err, django.ErrCartHasUnpaidOrder):
@@ -1598,6 +1630,26 @@ func (h *Handler) render(
 	}
 }
 
+// storeShown stores the total a render of a stored session showed, which
+// its order is placed at: a session publishes only what is stored, so
+// one that cannot be stored is not rendered (renderBody). A session not
+// created yet is stored by its create, with the total.
+//
+// A read (GET, HEAD) holds no lock, and stores it only by taking the
+// lock (checkout.Store.StoreShown): the update or complete holding it
+// never loses its save to a read.
+func (h *Handler) storeShown(r *http.Request, s *checkout.Session) error {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return h.store.StoreShown(r.Context(), acpCaller, s)
+	}
+	err := h.store.Save(r.Context(), s)
+	if err != nil {
+		h.log.WarnContext(r.Context(), "acp: shown total not stored",
+			slog.String("session", s.ID), slog.String("error", err.Error()))
+	}
+	return err
+}
+
 // renderBody encodes the session, or answers why it cannot and reports
 // false.
 func (h *Handler) renderBody(
@@ -1605,8 +1657,26 @@ func (h *Handler) renderBody(
 	s *checkout.Session,
 ) ([]byte, bool) {
 	// ACP names no language: the store's default.
+	shown := s.ShownTotal
 	payload, err := Render(r.Context(), h.dj, t,
 		h.site.Links(t.Domain, t.DefaultLocale), s)
+	if err == nil && s.ShownTotal != shown && s.Revision != "" {
+		// A total that is not stored is not published: its order would
+		// be placed at the one stored before.
+		if err := h.storeShown(r, s); err != nil {
+			switch {
+			case errors.Is(err, checkout.ErrLocked):
+				writeInFlight(w, idemRetryAfter, msgSessionBusy)
+			case errors.Is(err, checkout.ErrSessionChanged):
+				saveFailed(w, err)
+			case errors.Is(err, checkout.ErrNotFound):
+				h.sessionError(w, err)
+			default:
+				writeUnavailable(w, msgRecordsUnavailable)
+			}
+			return nil, false
+		}
+	}
 	if err == nil {
 		var body []byte
 		if body, err = json.Marshal(payload); err == nil {

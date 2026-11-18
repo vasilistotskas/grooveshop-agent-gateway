@@ -14,9 +14,9 @@ import (
 
 type ShippingOptionsIn struct {
 	CountryCode string `json:"countryCode" jsonschema:"ISO 3166-1 alpha-2 destination, e.g. GR"`
-	OrderValue  string `json:"orderValue,omitempty" jsonschema:"the cart's freeThresholdValue from get_cart as a decimal string: the items after discounts, excluding shipping, which free-shipping thresholds are judged on; ignored when the call names a cart, whose own value is used"`
-	WeightGrams int    `json:"weightGrams,omitempty" jsonschema:"the cart's totalWeightGrams from get_cart; without it no option is left out for its weight cap"`
-	CartID      string `json:"cartId,omitempty" jsonschema:"the cartId a cart tool returned; without it no option is left out for being too large for the cart"`
+	OrderValue  string `json:"orderValue,omitempty" jsonschema:"the cart's freeThresholdValue from get_cart as a decimal string: the items after discounts, excluding shipping, which free-shipping thresholds are judged on; ignored when the call names a cart that holds items, whose own value is used"`
+	WeightGrams int    `json:"weightGrams,omitempty" jsonschema:"for a destination with no cart: the weight to judge each option's weight cap on, without it none is left out for weight; ignored when the call names a cart that holds items, whose own weight Django judges"`
+	CartID      string `json:"cartId,omitempty" jsonschema:"the cartId a cart tool returned: its options are priced as its order would be charged, and one too heavy or too large for it is left out"`
 }
 
 type ShippingOptionOut struct {
@@ -53,43 +53,22 @@ func (h *handlers) getShippingOptions(
 		return nil, out, errors.New("countryCode is required (e.g. GR)")
 	}
 
-	q := django.ShippingQuery{
-		CountryCode:      in.CountryCode,
-		OrderValueAmount: in.OrderValue,
-		Currency:         t.DefaultCurrency,
-	}
-	if in.WeightGrams > 0 {
-		q.WeightGrams = strconv.Itoa(in.WeightGrams)
-	}
-	// The cart is the chat shopper's (their cart token) or cartId; with
-	// neither, Django flags no option for size. A named cart's own value
-	// is the one its order is charged on, whatever the model passed.
-	if in.CartID != "" || django.HasCartToken(ctx) {
-		c, err := h.deps.Django.GetCart(ctx, t.Domain, lang, in.CartID)
-		if err != nil {
-			return nil, out, h.cartGoneErr(err)
-		}
-		q.OrderValueAmount = c.FreeThresholdValue.String()
-	}
-	opts, err := h.deps.Django.ShippingOptions(
-		ctx, t.Domain, lang, in.CartID, q)
+	// The cart is the chat shopper's (their cart token) or cartId: its
+	// options are priced by the store's checkout quote, as its order
+	// would be charged, whatever value or weight the model passed. With
+	// neither, the value and weight given are priced, and Django flags
+	// no option for size.
+	options, err := h.shippingOptions(ctx, t, lang, in)
 	if err != nil {
-		return nil, out, upstreamErr(err, "shipping options are unavailable")
+		return nil, out, err
 	}
-	out.Options = make([]ShippingOptionOut, 0, len(opts))
-	for _, o := range opts {
+	out.Options = make([]ShippingOptionOut, 0, len(options))
+	for _, o := range options {
 		// Listed upstream so a storefront can explain the greyed-out
 		// option; an agent can only act on options it may choose.
-		if !o.FitsCart() {
-			continue
+		if o.fits {
+			out.Options = append(out.Options, o.ShippingOptionOut)
 		}
-		out.Options = append(out.Options, ShippingOptionOut{
-			ProviderCode: o.ProviderCode,
-			ProviderName: o.ProviderName,
-			Kind:         o.Kind,
-			Price:        num(o.Price),
-			Currency:     o.Currency,
-		})
 	}
 
 	// Free-shipping thresholds are informative, not load-bearing — a
@@ -110,6 +89,69 @@ func (h *handlers) getShippingOptions(
 			"locker/shop chosen via find_pickup_points.",
 		len(out.Options), in.CountryCode,
 	), out, nil
+}
+
+// pricedOption is one delivery option and whether the cart fits it.
+type pricedOption struct {
+	ShippingOptionOut
+	fits bool
+}
+
+// shippingOptions prices the deliveries to in.CountryCode: by the
+// checkout quote of the named cart (or the chat shopper's), else, and for
+// a cart with nothing in it yet, by the value and weight the call gives.
+func (h *handlers) shippingOptions(
+	ctx context.Context, t *tenant.Tenant, lang string, in ShippingOptionsIn,
+) ([]pricedOption, error) {
+	if in.CartID != "" || django.HasCartToken(ctx) {
+		q, err := h.deps.Django.Quote(ctx, t.Domain, lang, in.CartID,
+			django.QuoteRequest{CountryID: in.CountryCode})
+		apiErr, refused := errors.AsType[*django.APIError](err)
+		switch {
+		// An empty cart has nothing to judge: the options are the
+		// store's own, asked for no cart (not even the shopper's token).
+		case refused && apiErr.Code == django.CodeCartEmpty:
+			in.CartID = ""
+			return h.bareShippingOptions(django.WithCartToken(ctx, nil), t,
+				lang, in)
+		case err != nil:
+			return nil, h.cartGoneErr(err)
+		}
+		out := make([]pricedOption, 0, len(q.ShippingOptions))
+		for _, o := range q.ShippingOptions {
+			out = append(out, pricedOption{fits: o.FitsCart(),
+				ProviderCode: o.ProviderCode, ProviderName: o.ProviderName,
+				Kind: o.Kind, Price: num(o.Price), Currency: q.Currency})
+		}
+		return out, nil
+	}
+	return h.bareShippingOptions(ctx, t, lang, in)
+}
+
+// bareShippingOptions prices the deliveries on the value and weight the
+// call gives, with no cart judged.
+func (h *handlers) bareShippingOptions(
+	ctx context.Context, t *tenant.Tenant, lang string, in ShippingOptionsIn,
+) ([]pricedOption, error) {
+	q := django.ShippingQuery{
+		CountryCode:      in.CountryCode,
+		OrderValueAmount: in.OrderValue,
+		Currency:         t.DefaultCurrency,
+	}
+	if in.WeightGrams > 0 {
+		q.WeightGrams = strconv.Itoa(in.WeightGrams)
+	}
+	opts, err := h.deps.Django.ShippingOptions(ctx, t.Domain, lang, "", q)
+	if err != nil {
+		return nil, upstreamErr(err, "shipping options are unavailable")
+	}
+	out := make([]pricedOption, 0, len(opts))
+	for _, o := range opts {
+		out = append(out, pricedOption{fits: o.FitsCart(),
+			ProviderCode: o.ProviderCode, ProviderName: o.ProviderName,
+			Kind: o.Kind, Price: num(o.Price), Currency: o.Currency})
+	}
+	return out, nil
 }
 
 type PickupPointsIn struct {

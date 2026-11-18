@@ -356,6 +356,10 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 			"invalid"},
 		"checkout.ErrNotReady": {
 			checkout.ErrNotReady, http.StatusBadRequest, "missing"},
+		"checkout.ErrChoiceRefused": {
+			checkout.ErrChoiceRefused, http.StatusBadRequest, "missing"},
+		"checkout.ErrTotalNotShown": {
+			checkout.ErrTotalNotShown, http.StatusBadRequest, "missing"},
 		"checkout.ErrPaymentMethodUnsupported": {
 			checkout.ErrPaymentMethodUnsupported, http.StatusBadRequest,
 			"unsupported"},
@@ -388,6 +392,8 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 		"django.ErrCartHasUnpaidOrder": {
 			django.ErrCartHasUnpaidOrder, http.StatusBadRequest,
 			"cart_has_unpaid_order"},
+		"django.ErrTotalChanged": {
+			django.ErrTotalChanged, http.StatusBadRequest, "total_changed"},
 		"django.ErrValidation": {
 			django.ErrValidation, http.StatusBadRequest, "invalid"},
 		"django.ErrInvalidCartToken": {

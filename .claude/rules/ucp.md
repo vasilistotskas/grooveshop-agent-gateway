@@ -196,7 +196,17 @@ wins over this page.
   An `incomplete` answer stores nothing, claims no completion (the same
   key can be used again) and places nothing; the stored checkout keeps
   its status. The platform selects the method with update_checkout,
-  which shows the new fee and total.
+  which shows the new fee and total. A first method the store does not
+  offer for the delivery is `unsupported`.
+
+  The order is placed at the total the checkout showed
+  (`Session.ShownTotal`, `.claude/rules/checkout.md`). One Django
+  refuses because the total changed since is the tool error
+  `total_changed`, its completion claim released, and shows no total:
+  the platform reads the checkout, which shows and stores the total now.
+  A retry under the same key runs again and sends the total stored
+  before, so it places nothing at a total no answer showed, and a
+  complete after the read places the order at the total the read showed.
 - **continue_url** is only where the spec requires it,
   `requires_escalation`: the PSP's page while its link can be paid,
   else the order's (never the cart's). Not in an open checkout (`incomplete`, `ready_for_complete`),

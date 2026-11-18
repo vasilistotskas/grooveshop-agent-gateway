@@ -57,14 +57,23 @@ const (
 
 	// lockSteps sizes the session lock, in upstream timeouts: the calls
 	// a completion makes under it before its last write of the session.
-	// The handler looks the payment up, Flow.admit reads the pay ways
-	// and reserves the stock, and then the completion's own budget runs.
+	// The handler looks the payment up, Flow.admit prices the checkout
+	// (its cart, its quote, its pay way), reads the pay ways and
+	// reserves the stock, and then the completion's own budget runs. A
+	// UCP complete that names a checkout's first method prices it once
+	// more first (firstMethodFee), and a slow Django can outlast the lock
+	// there too.
 	// Django cuts each call at one timeout, so a request that holds the
 	// lock longer has had a call retried (a GET, after a 5xx or a
 	// dropped connection) or writes many cart lines. Its lock lapses
 	// then, which costs nothing but the queueing: Save is what keeps a
 	// session from being written by two requests.
-	lockSteps = 3 + completionSteps
+	lockSteps = 3 + admitPricingSteps + completionSteps
+
+	// admitPricingSteps are the calls Flow.admit's ComputePricing makes
+	// for a checkout it admits: the cart, one quote (a refused choice
+	// quotes again, and is refused), the pay way.
+	admitPricingSteps = 3
 
 	// claimDone is the value of a completion key whose order was placed,
 	// kept for the session's terminal lifetime so a retried key renders
@@ -108,8 +117,10 @@ func NewStore(rdb *redis.Client, upstreamTimeout time.Duration) *Store {
 //   - v5: a session keeps the expires_at it published, which never
 //     moves earlier (a v4 pod knows nothing of it, and its save drops
 //     it).
+//   - v6: a session keeps the total it showed, which its order is
+//     placed at (a v5 pod knows nothing of it, and its save drops it).
 func sessionKey(schema, id string) string {
-	return "ag:" + schema + ":cs:v5:" + id
+	return "ag:" + schema + ":cs:v6:" + id
 }
 
 func lockKey(schema, id string) string {
@@ -558,6 +569,34 @@ func (st *Store) LockSession(
 		return nil, nil, err
 	}
 	return s, release, nil
+}
+
+// StoreShown stores the total a read showed for a session it does not
+// hold the lock of (Session.ShownTotal), taking the lock for the write:
+// storing over a call that holds it would make that call's own save
+// fail. Nothing is stored while another call holds the lock
+// (ErrLocked), or when the session was stored since the read loaded it
+// (ErrSessionChanged) with another total: that call, or a later read,
+// stores its own. One stored since with the same total is the read's.
+func (st *Store) StoreShown(
+	ctx context.Context, caller Caller, read *Session,
+) error {
+	s, release, err := st.LockSession(ctx, read.Schema, caller, read.ID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	stored := s.ShownTotal != nil && read.ShownTotal != nil &&
+		*s.ShownTotal == *read.ShownTotal
+	switch {
+	case stored:
+		// Another read stored the same total since.
+		return nil
+	case s.Revision != read.Revision:
+		return ErrSessionChanged
+	}
+	s.ShownTotal = read.ShownTotal
+	return st.Save(ctx, s)
 }
 
 // ClaimCompletion makes complete idempotent: the first caller for a key

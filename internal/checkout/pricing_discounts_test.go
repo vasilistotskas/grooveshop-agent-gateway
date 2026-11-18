@@ -13,14 +13,15 @@ import (
 func TestAddDiscounts(t *testing.T) {
 	t.Run("each offer keeps its own amount", func(t *testing.T) {
 		p := &Pricing{}
-		require.NoError(t, p.addDiscounts(&django.Cart{
-			AppliedPromotions: []django.AppliedPromotion{
+		require.NoError(t, p.addDiscounts(&django.Quote{
+			AppliedPromotions: []django.QuotePromotion{
 				{PromotionID: 3, Name: "2+1", Amount: json.Number("10.79")},
 				{
 					PromotionID: 5, Name: "-5 €", Code: "SAVE5",
 					Amount: json.Number("5.00"),
 				},
 			},
+		}, &django.Cart{
 			AppliedCoupons: []django.AppliedCoupon{
 				{Code: "SAVE5", Amount: json.Number("5.00")},
 			},
@@ -35,7 +36,7 @@ func TestAddDiscounts(t *testing.T) {
 
 	t.Run("a free-shipping coupon applies at 0", func(t *testing.T) {
 		p := &Pricing{}
-		require.NoError(t, p.addDiscounts(&django.Cart{
+		require.NoError(t, p.addDiscounts(&django.Quote{}, &django.Cart{
 			AppliedCoupons: []django.AppliedCoupon{{
 				Code: "SHIPFREE", Amount: json.Number("0"),
 				FreeShipping: true,
@@ -46,31 +47,46 @@ func TestAddDiscounts(t *testing.T) {
 			p.Discounts)
 	})
 
-	t.Run("a refused coupon is a rejection in the spec vocabulary",
-		func(t *testing.T) {
-			p := &Pricing{}
-			require.NoError(t, p.addDiscounts(&django.Cart{
-				AppliedPromotions: []django.AppliedPromotion{
-					{PromotionID: 3, Name: "2+1", Amount: json.Number("10.79")},
-				},
-				AppliedCoupons: []django.AppliedCoupon{
-					{
-						Code: "GAN20", Amount: json.Number("0"),
-						Rejection: "discount_code_not_applicable",
-					},
-					{
-						Code: "WEAK", Amount: json.Number("0"),
-						Rejection: DiscountCodeCombinationDisallowed,
-					},
-				},
-			}))
+	t.Run("the coupon the quote blocks is a rejection in the spec "+
+		"vocabulary, whatever the cart says of it", func(t *testing.T) {
+		p := &Pricing{}
+		require.NoError(t, p.addDiscounts(&django.Quote{
+			AppliedPromotions: []django.QuotePromotion{
+				{PromotionID: 3, Name: "2+1", Amount: json.Number("10.79")},
+			},
+			BlockingCoupon: &django.QuoteBlockingCoupon{
+				Code: "FIRST10", Reason: "discount_code_not_applicable",
+			},
+		}, &django.Cart{
+			AppliedCoupons: []django.AppliedCoupon{
+				{Code: "FIRST10", Amount: json.Number("0"), FreeShipping: true},
+			},
+		}))
 
-			assert.Equal(t, []PricedDiscount{
-				{PromotionID: 3, Name: "2+1", Amount: 1079},
-			}, p.Discounts)
-			assert.Equal(t, []DiscountRejection{
-				{Code: "GAN20", Reason: DiscountCodeInvalid},
-				{Code: "WEAK", Reason: DiscountCodeCombinationDisallowed},
-			}, p.RefusedCoupons)
-		})
+		assert.Equal(t, []PricedDiscount{
+			{PromotionID: 3, Name: "2+1", Amount: 1079},
+		}, p.Discounts)
+		assert.Equal(t, []DiscountRejection{
+			{Code: "FIRST10", Reason: DiscountCodeInvalid},
+		}, p.RefusedCoupons)
+		require.NotNil(t, p.CouponRefused,
+			"the order is refused for it: the checkout is not ready")
+		assert.Equal(t, p.CouponRefused, p.Refused())
+	})
+
+	t.Run("a coupon the cart refuses without blocking the order is a "+
+		"rejection too", func(t *testing.T) {
+		p := &Pricing{}
+		require.NoError(t, p.addDiscounts(&django.Quote{}, &django.Cart{
+			AppliedCoupons: []django.AppliedCoupon{{
+				Code: "WEAK", Amount: json.Number("0"),
+				Rejection: DiscountCodeCombinationDisallowed,
+			}},
+		}))
+
+		assert.Empty(t, p.Discounts)
+		assert.Equal(t, []DiscountRejection{
+			{Code: "WEAK", Reason: DiscountCodeCombinationDisallowed},
+		}, p.RefusedCoupons)
+	})
 }

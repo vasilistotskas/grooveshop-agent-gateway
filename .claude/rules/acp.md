@@ -141,6 +141,14 @@ Loads when working on the ACP handler, or the routes that answer before it. The 
     session awaits a payment. The status `expired` is never sent: a
     session past its `expires_at` is no longer stored, and is the
     404 `msgSessionGone` that says an order may exist.
+  - A complete Django refuses because the session's total changed
+    since it was shown (`django.ErrTotalChanged`) is 400
+    `total_changed`: nothing placed, the session ready again, and its
+    next read shows, and stores, the total a complete with a new key
+    places the order at. Fulfillment options are the quote's
+    (`Pricing.ShippingOptions`, home delivery the cart fits), and a
+    delivery or pay way the store refuses is an `invalid` error at the
+    member to choose again, with the status `not_ready_for_payment`.
   - `completeError` answers every `checkout` and `django` sentinel
     deliberately (`TestCompleteErrorMapsEverySentinel` walks them): a
     refusal is a 4xx, and an order that exists or may is never

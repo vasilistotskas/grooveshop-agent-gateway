@@ -338,9 +338,9 @@ func TestACPIdempotencyKeys(t *testing.T) {
 	})
 
 	// A claim lasts what its request can take when the store answers
-	// every call just inside the upstream timeout: the lock's six, and
+	// every call just inside the upstream timeout: the lock's nine, and
 	// one more for the write that settles the key.
-	t.Run("a settled key is kept 24 hours, a claim seven upstream timeouts",
+	t.Run("a settled key is kept 24 hours, a claim ten upstream timeouts",
 		func(t *testing.T) {
 			key := uuid.NewString()
 			resp, body := create(t, key, createBody)
@@ -382,11 +382,11 @@ func TestACPIdempotencyKeys(t *testing.T) {
 				"ag:demostore:acp:idem:complete.v3:"+id+":"+completeKey).Result()
 			require.NoError(t, err)
 			assert.Positive(t, ttl, "a claim must expire")
-			assert.InDelta(t, (7 * ucpUpstreamTimeout).Seconds(),
+			assert.InDelta(t, (10 * ucpUpstreamTimeout).Seconds(),
 				ttl.Seconds(), 2)
 			lock, err := stack.rdb.TTL(ctx, lockRedisKey(id)).Result()
 			require.NoError(t, err)
-			assert.InDelta(t, (6 * ucpUpstreamTimeout).Seconds(),
+			assert.InDelta(t, (9 * ucpUpstreamTimeout).Seconds(),
 				lock.Seconds(), 2)
 			release()
 			assert.Equal(t, http.StatusOK, <-done)

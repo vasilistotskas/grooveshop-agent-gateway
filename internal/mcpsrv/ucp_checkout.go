@@ -1054,6 +1054,12 @@ func (h *handlers) firstMethodFee(
 	case err != nil:
 		return nil, upstreamErr(err,
 			"the checkout's totals could not be read; retry")
+	case pricing.PayWayRefused != nil:
+		return nil, &mcptool.ToolError{Code: mcptool.CodeUnsupported,
+			Detail: pricing.PayWayRefused.Detail,
+			Hint: "the payment method this call names is not offered for " +
+				"this checkout's delivery; name another advertised " +
+				"instrument, or select one with update_checkout"}
 	case pricing.PayWay == nil:
 		// A render goes on without a fee it could not read. A placement
 		// does not: the fee decides whether the order is placed.
@@ -1107,10 +1113,30 @@ func completeErr(s *checkout.Session, err error) error {
 		return stockShortfallErr(err)
 	case errors.Is(err, django.ErrCartHasUnpaidOrder):
 		return cartOrderUnpaidErr(err)
+	// The answer shows no total: the next read shows, and stores, the
+	// total now, so the same key keeps this answer until the platform has
+	// read it, and completes at the total that read showed.
+	case errors.Is(err, django.ErrTotalChanged):
+		return &mcptool.ToolError{Code: django.CodeTotalChanged,
+			Hint: "the store's total for this checkout is no longer the " +
+				"one it showed, so no order was placed; read it with " +
+				"get_checkout, confirm the total with the buyer, then " +
+				"complete"}
 	case errors.Is(err, checkout.ErrSessionChanged):
 		return saveFailed(err)
 	case errors.Is(err, checkout.ErrCompletionInProgress):
 		return errCompletionInFlight
+	case errors.Is(err, checkout.ErrChoiceRefused):
+		return &mcptool.ToolError{Code: mcptool.CodeMissing,
+			Detail: err.Error(),
+			Hint: "the store refuses one of this checkout's choices for " +
+				"its cart now; read it with get_checkout, which names it, " +
+				"and change it with update_checkout, then complete"}
+	case errors.Is(err, checkout.ErrTotalNotShown):
+		return &mcptool.ToolError{Code: mcptool.CodeMissing,
+			Hint: "this checkout has shown no total yet; read it with " +
+				"get_checkout, confirm the total with the buyer, then " +
+				"complete"}
 	case errors.Is(err, checkout.ErrNotReady):
 		return &mcptool.ToolError{Code: mcptool.CodeMissing,
 			Hint: "this checkout is not ready to complete; still needed: " +
@@ -1501,36 +1527,79 @@ func (h *handlers) checkoutResult(
 	default:
 		text = fmt.Sprintf("Checkout %s status: %s.", s.ID, s.Status)
 	}
+	// A choice the store refuses now makes a ready checkout render
+	// incomplete; its error says what to change.
+	if s.Status == checkout.StatusReadyForComplete &&
+		payload.Status == string(checkout.StatusIncomplete) {
+		text = fmt.Sprintf("Checkout %s is incomplete — %s", s.ID,
+			firstError(payload).Text)
+	}
 	return textResult("%s", text), CheckoutResult{checkout: payload}, nil
 }
 
 // rendered builds the checkout and stores what the render read from its
-// order (a status the order decided, its expiry) before giving it: a
-// checkout publishes only what is stored, so no later read gives an
-// earlier expires_at. The save is a compare-and-set: a checkout another
-// request stored meanwhile is read again and rendered once more. A placed
-// checkout whose state cannot be stored is answered as one placed and
-// not rendered.
+// order (a status the order decided, its expiry) and the total it shows
+// (Session.ShownTotal) before giving it: a checkout publishes only what is
+// stored, so no later read gives an earlier expires_at, and its order is
+// placed at the total it showed. A read (unlocked) that changed only the
+// total stores it by taking the lock, and not while another call holds
+// it (checkout.Store.StoreShown). The save is a compare-and-set: a
+// checkout another request stored meanwhile is read again and rendered
+// once more. A placed checkout whose state cannot be stored is answered
+// as one placed and not rendered; an open one as unavailable, or as busy
+// or changed when another call holds or stored it: a total that is not
+// stored is never published, since its order would be placed at the one
+// stored before.
 func (h *handlers) rendered(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
 	neg ucp.Negotiated,
 ) (*ucp.Checkout, error) {
 	for again := true; ; again = false {
-		status, expires := s.Status, s.ExpiresAt
+		status, expires, shown := s.Status, s.ExpiresAt, s.ShownTotal
 		payload, err := h.deps.UCP.BuildCheckout(ctx, t, s,
 			neg.Declaration(ucp.CapabilityCheckout))
 		if err != nil ||
-			(s.Status == status && s.ExpiresAt.Equal(expires)) {
+			(s.Status == status && s.ExpiresAt.Equal(expires) &&
+				s.ShownTotal == shown) {
 			return payload, err
 		}
-		err = h.deps.Checkout.Save(ctx, s)
-		if err == nil {
+		// A read changed only the total it shows: it stores it under
+		// the lock, which another call may hold. A total that cannot be
+		// stored is not published: its order would be placed at the one
+		// stored before.
+		if read, _ := ctx.Value(unlockedKey{}).(bool); read &&
+			s.Status == status && s.ExpiresAt.Equal(expires) {
+			err = h.deps.Checkout.StoreShown(ctx, ucpCaller(ctx), s)
+			switch {
+			case err == nil:
+				return payload, nil
+			case errors.Is(err, checkout.ErrLocked):
+				return nil, errCheckoutBusy
+			case errors.Is(err, checkout.ErrNotFound):
+				return nil, errCheckoutGone
+			case !errors.Is(err, checkout.ErrSessionChanged):
+				return nil, errCheckoutUnavailable
+			}
+		} else if err = h.deps.Checkout.Save(ctx, s); err == nil {
 			return payload, nil
+		}
+		// An open checkout has no order to speak of: one whose state
+		// cannot be stored is unavailable, one that other requests keep
+		// storing is answered as changed.
+		open := s.Open()
+		if open && !errors.Is(err, checkout.ErrSessionChanged) {
+			h.deps.Log.WarnContext(ctx, "checkout: shown total not stored",
+				slog.String("session", s.ID),
+				slog.String("error", err.Error()))
+			return nil, errCheckoutUnavailable
 		}
 		if !again || !errors.Is(err, checkout.ErrSessionChanged) {
 			h.deps.Log.WarnContext(ctx, "checkout: order state not stored",
 				slog.String("session", s.ID),
 				slog.String("error", err.Error()))
+			if open {
+				return nil, saveFailed(err)
+			}
 			return nil, unrenderedErr(s)
 		}
 		now, err := h.deps.Checkout.Load(
@@ -1538,6 +1607,8 @@ func (h *handlers) rendered(
 		switch {
 		case errors.Is(err, checkout.ErrNotFound):
 			return nil, errCheckoutGone
+		case err != nil && open:
+			return nil, errCheckoutUnavailable
 		case err != nil:
 			return nil, unrenderedErr(s)
 		}
@@ -1602,8 +1673,20 @@ func (h *handlers) getCheckout(
 			case err != nil:
 				return nil, zero, errCheckoutUnavailable
 			}
-			return h.checkoutResult(ctx, t, s, neg)
+			return h.checkoutResult(unlocked(ctx), t, s, neg)
 		})
+}
+
+// unlockedKey marks a call that renders a checkout without holding its
+// lock: a read.
+type unlockedKey struct{}
+
+// unlocked marks ctx as a call that does not hold the checkout's lock: a
+// read. It stores the total an open checkout shows only by taking the
+// lock (checkout.Store.StoreShown), so the update or completion holding
+// it never loses its save to a read.
+func unlocked(ctx context.Context) context.Context {
+	return context.WithValue(ctx, unlockedKey{}, true)
 }
 
 // cancelCheckout abandons a session the buyer is no longer pursuing.

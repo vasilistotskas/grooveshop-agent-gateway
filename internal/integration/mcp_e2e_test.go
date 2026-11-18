@@ -21,6 +21,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django/djangotest"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/server"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
@@ -112,6 +113,21 @@ func fakeDjangoMux(t *testing.T) http.Handler {
 			}
 			serveFixture(t, w, "cart_with_items.json")
 		})
+	mux.HandleFunc("POST /api/v1/cart/quote", func(w http.ResponseWriter,
+		r *http.Request) {
+		read := func(name string) []byte {
+			raw, err := os.ReadFile(fixturePath(name))
+			assert.NoError(t, err)
+			return raw
+		}
+		djangotest.Store{
+			Cart:            read("cart_with_items.json"),
+			ShippingOptions: read("shipping_options.json"),
+			PayWays: map[int64][]byte{
+				1: read("pay_way_1.json"), 2: read("pay_way_2.json"),
+			},
+		}.Quote(w, r)
+	})
 	route("POST /api/v1/cart/item", "cart_item_created.json")
 	route("PUT /api/v1/cart/item/410", "cart_item_created.json")
 	mux.HandleFunc("DELETE /api/v1/cart/item/410",

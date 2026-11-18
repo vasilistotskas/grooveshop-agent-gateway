@@ -53,7 +53,7 @@ func payWayDjango(t *testing.T) (*django.Client, func() url.Values) {
 	mux.HandleFunc("GET /api/v1/cart",
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(pricingCart("0.0", false, nil)))
+			_, _ = w.Write([]byte(pricingCart("0.0", false)))
 		})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -115,18 +115,6 @@ func TestAvailablePayWayRefusesAMethodNotOffered(t *testing.T) {
 	pw, err := availablePayWay(t.Context(), dj, pricingTenant(), s)
 	require.NoError(t, err)
 	assert.Equal(t, django.ProviderVivaWallet, pw.ProviderCode)
-}
-
-// A selected method's fee is part of the total the buyer approves, read
-// from the pay-way detail endpoint.
-func TestComputePricingAddsTheSelectedPayWayFee(t *testing.T) {
-	dj, _ := payWayDjango(t)
-	s := &Session{CartID: "29eb4495-e018-45e7-b59c-6646302bd4ef", PayWayID: 1}
-	p, _, err := ComputePricing(t.Context(), dj, pricingTenant(), s)
-	require.NoError(t, err)
-	assert.True(t, p.HasPaymentFee)
-	assert.EqualValues(t, 200, p.PaymentFee)
-	assert.EqualValues(t, 20200, p.Total)
 }
 
 // Only a definitive 4xx proves nothing was created; anything else leaves

@@ -13,8 +13,8 @@ import (
 // pod that still writes sessions unconditionally keeps its own, under
 // the unversioned key, and never shares one with a pod that fences them.
 func TestSessionKeyIsVersioned(t *testing.T) {
-	assert.Equal(t, "ag:alpha:cs:v5:id", sessionKey("alpha", "id"))
-	assert.Equal(t, "ag:alpha:cs:v5:id:lock", lockKey("alpha", "id"))
+	assert.Equal(t, "ag:alpha:cs:v6:id", sessionKey("alpha", "id"))
+	assert.Equal(t, "ag:alpha:cs:v6:id:lock", lockKey("alpha", "id"))
 }
 
 // The session that holds a cart is named in a key family of its own:
@@ -120,6 +120,6 @@ func TestAnIdempotencyKeyOutsideTheBoundWritesNothing(t *testing.T) {
 func TestLockAndClaimsAreSizedFromTheUpstreamTimeout(t *testing.T) {
 	const timeout = 10 * time.Second
 	st := NewStore(nil, timeout)
-	assert.Equal(t, (3+completionSteps)*timeout, st.lockTTL)
+	assert.Equal(t, (3+admitPricingSteps+completionSteps)*timeout, st.lockTTL)
 	assert.Equal(t, st.lockTTL+timeout, st.claimTTL)
 }

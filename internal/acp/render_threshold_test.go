@@ -4,8 +4,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,51 +12,38 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django/djangotest"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
-// thresholdDjango serves the coupon cart (929.36 of items, 836.42 after
-// its discount) and prices delivery as Django does with a 900.00
-// free-shipping threshold, on the orderValueAmount it is sent; pay way 7
-// costs 2.00, waived from 900.00.
-func thresholdDjango(t *testing.T) *django.Client {
+// quotedDjango serves the coupon cart (929.36 of items, 836.42 after its
+// discount), quotes ACS home delivery at 3.50 and pay way 7 at 2.00, as
+// Django prices them.
+func quotedDjango(t *testing.T) *django.Client {
 	t.Helper()
-	cart, err := os.ReadFile(filepath.Join("..", "..", "testdata",
-		"fixtures", "django", "cart_with_coupon.json"))
-	require.NoError(t, err)
+	cart := readFixture(t, "cart_with_coupon.json")
+	payWay := []byte(`{"id":7,"key":"PAY_ON_DELIVERY","translations":{},` +
+		`"active":true,"cost":2.00,"freeThreshold":0,"sortOrder":1,` +
+		`"providerCode":"cash_on_delivery","settlement":"courier_cash"}`)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/cart",
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(cart)
 		})
-	mux.HandleFunc("GET /api/v1/shipping/options",
-		func(w http.ResponseWriter, r *http.Request) {
-			value, err := money.MinorUnits(
-				r.URL.Query().Get("orderValueAmount"))
-			assert.NoError(t, err)
-			price := "3.50"
-			if value >= 90000 {
-				price = "0.0"
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[{"providerCode":"acs",` +
-				`"providerName":"ACS Courier","kind":"home_delivery",` +
-				`"price":` + price + `,"currency":"EUR","priority":10,` +
-				`"countryCode":"GR","maxWeightGrams":null,` +
-				`"exceedsMaxWeight":false,"exceedsParcelSize":false,` +
-				`"metadata":{}}]`))
-		})
 	mux.HandleFunc("GET /api/v1/pay_way/7",
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":7,"key":"PAY_ON_DELIVERY",` +
-				`"translations":{},"active":true,"cost":2.00,` +
-				`"freeThreshold":900.00,"sortOrder":1,` +
-				`"providerCode":"cash_on_delivery",` +
-				`"settlement":"courier_cash"}`))
+			_, _ = w.Write(payWay)
 		})
+	mux.HandleFunc("POST /api/v1/cart/quote", djangotest.Store{
+		Cart: cart,
+		ShippingOptions: []byte(`[{"providerCode":"acs",` +
+			`"providerName":"ACS Courier","kind":"home_delivery",` +
+			`"price":3.50,"exceedsMaxWeight":false,` +
+			`"exceedsParcelSize":false}]`),
+		PayWays: map[int64][]byte{7: payWay},
+	}.Quote)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -67,10 +52,10 @@ func thresholdDjango(t *testing.T) *django.Client {
 		5*time.Second, log, obs.NewMetrics())
 }
 
-// A coupon that takes the cart below both free thresholds is charged
-// delivery and the pay way's fee, in the offered option and in the
-// totals, as Django charges the order.
-func TestRenderJudgesFreeThresholdsAfterDiscounts(t *testing.T) {
+// The offered option and every total row are the store's quote, and the
+// total is the one the order is placed at, which the render records on
+// the session for its order.
+func TestRenderShowsTheQuote(t *testing.T) {
 	tn := testTenant()
 	s := checkout.NewSession("public", tn.Domain, "acp", renderSessionCart)
 	s.Fulfillment = checkout.Fulfillment{
@@ -82,7 +67,7 @@ func TestRenderJudgesFreeThresholdsAfterDiscounts(t *testing.T) {
 	s.PayWayID = 7
 	s.Recompute()
 
-	payload, err := Render(t.Context(), thresholdDjango(t), tn,
+	payload, err := Render(t.Context(), quotedDjango(t), tn,
 		testLinks(tn), s)
 	require.NoError(t, err)
 
@@ -94,11 +79,14 @@ func TestRenderJudgesFreeThresholdsAfterDiscounts(t *testing.T) {
 	for _, total := range payload.Totals {
 		totals[total.Type] = total.Amount
 	}
+	want := int64(92936 - 9294 + 350 + 200)
 	assert.Equal(t, map[string]int64{
 		"subtotal":    92936,
 		"discount":    9294,
 		"fulfillment": 350,
 		"fee":         200,
-		"total":       92936 - 9294 + 350 + 200,
+		"total":       want,
 	}, totals)
+	assert.Equal(t, &django.ExpectedTotal{Amount: want, Currency: "EUR"},
+		s.ShownTotal, "the total its order is placed at")
 }

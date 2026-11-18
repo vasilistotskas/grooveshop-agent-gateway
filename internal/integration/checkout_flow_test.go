@@ -49,7 +49,7 @@ func startFlow(t *testing.T, upstreamTimeout time.Duration) flowStack {
 		store: store, rdb: rdb, faults: faults,
 		tenant: &tenant.Tenant{
 			SchemaName: "demostore", DefaultLocale: "el",
-			Domain: "shop.test",
+			DefaultCurrency: "EUR", Domain: "shop.test",
 		},
 	}
 }
@@ -73,10 +73,17 @@ func (f flowStack) readySession(t *testing.T) *checkout.Session {
 	s.PayWayID = 1
 	s.Recompute()
 	require.Equal(t, checkout.StatusReadyForComplete, s.Status)
+	// What its last render showed: the fixture cart, delivered free and
+	// paid in cash without a fee.
+	s.ShownTotal = &fixtureShownTotal
 	require.NoError(t, f.store.Create(t.Context(), s,
 		checkout.CartHolder{}))
 	return s
 }
+
+// fixtureShownTotal is the total a checkout of the fixture cart shows with
+// ACS home delivery and cash on delivery: its items, as Django quotes them.
+var fixtureShownTotal = django.ExpectedTotal{Amount: 92936, Currency: "EUR"}
 
 func (f flowStack) stored(t *testing.T, s *checkout.Session) *checkout.Session {
 	t.Helper()
@@ -244,9 +251,10 @@ func TestCompleteStoresNothingForASessionItDoesNotAdmit(t *testing.T) {
 		{"another attempt's snapshot", func(s *checkout.Session) {
 			s.Status = checkout.StatusCompleteInProgress
 		}, checkout.ErrCompletionInProgress},
+		// The store's quote refuses it before the pay ways are read.
 		{"a pay way the store does not offer", func(s *checkout.Session) {
 			s.PayWayID = 99
-		}, checkout.ErrPayWayUnavailable},
+		}, checkout.ErrChoiceRefused},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

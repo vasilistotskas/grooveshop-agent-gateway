@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 )
 
 // storeTimeout is the upstream timeout the store tests size their locks
@@ -436,10 +437,10 @@ func TestLock(t *testing.T) {
 	_, err = store.Lock(ctx, s.Schema, s.ID)
 	require.ErrorIs(t, err, checkout.ErrLocked)
 
-	// Six upstream timeouts: what a completion does under it.
+	// Nine upstream timeouts: what a completion does under it.
 	ttl, err := rdb.PTTL(ctx, lockRedisKey(s.ID)).Result()
 	require.NoError(t, err)
-	assert.InDelta(t, (6 * storeTimeout).Seconds(), ttl.Seconds(), 2)
+	assert.InDelta(t, (9 * storeTimeout).Seconds(), ttl.Seconds(), 2)
 
 	// The lock lapses and another request takes it.
 	require.NoError(t, rdb.Del(ctx, lockRedisKey(s.ID)).Err())
@@ -478,7 +479,7 @@ func TestClaim(t *testing.T) {
 		require.NotNil(t, claim)
 		ttl, err := rdb.PTTL(ctx, key).Result()
 		require.NoError(t, err)
-		assert.InDelta(t, (7 * storeTimeout).Seconds(), ttl.Seconds(), 2)
+		assert.InDelta(t, (10 * storeTimeout).Seconds(), ttl.Seconds(), 2)
 
 		claimed, settled := held(t, key)
 		assert.False(t, claimed, "a second request claimed a held key")
@@ -562,5 +563,75 @@ func TestClaim(t *testing.T) {
 		assert.True(t, recorded)
 		_, settled := held(t, key)
 		assert.Equal(t, "late", settled)
+	})
+}
+
+// A read stores the total it showed only under the free lock, over the
+// state it read, and nothing but that total: a call holding the lock
+// keeps it, and a session stored since is not written over.
+func TestAReadStoresTheTotalItShowedOnlyUnderTheFreeLock(t *testing.T) {
+	ctx := t.Context()
+	store, _ := startStore(t)
+	caller := checkout.Caller{Protocol: checkout.ProtocolUCP}
+	stored := func(t *testing.T, s *checkout.Session) *checkout.Session {
+		t.Helper()
+		got, err := store.Load(ctx, s.Schema, caller, s.ID)
+		require.NoError(t, err)
+		return got
+	}
+	shown := &django.ExpectedTotal{Amount: 4200, Currency: "EUR"}
+
+	t.Run("free", func(t *testing.T) {
+		s := newSession()
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
+		read := stored(t, s)
+		read.ShownTotal = shown
+		read.Buyer.FirstName = "not stored by a read"
+
+		require.NoError(t, store.StoreShown(ctx, caller, read))
+
+		got := stored(t, s)
+		assert.Equal(t, shown, got.ShownTotal)
+		assert.Empty(t, got.Buyer.FirstName, "nothing but the total")
+		_, err := store.Lock(ctx, s.Schema, s.ID)
+		require.NoError(t, err, "the read released the lock")
+	})
+
+	t.Run("held by another call", func(t *testing.T) {
+		s := newSession()
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
+		read := stored(t, s)
+		release, err := store.Lock(ctx, s.Schema, s.ID)
+		require.NoError(t, err)
+		defer release()
+		read.ShownTotal = shown
+
+		require.ErrorIs(t, store.StoreShown(ctx, caller, read),
+			checkout.ErrLocked)
+		assert.Nil(t, stored(t, s).ShownTotal)
+	})
+
+	t.Run("stored since the read", func(t *testing.T) {
+		s := newSession()
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
+		read := stored(t, s)
+		require.NoError(t, store.Save(ctx, stored(t, s)))
+		read.ShownTotal = shown
+
+		require.ErrorIs(t, store.StoreShown(ctx, caller, read),
+			checkout.ErrSessionChanged)
+		assert.Nil(t, stored(t, s).ShownTotal)
+	})
+
+	t.Run("stored since with the same total", func(t *testing.T) {
+		s := newSession()
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
+		first, second := stored(t, s), stored(t, s)
+		first.ShownTotal, second.ShownTotal = shown, shown
+		require.NoError(t, store.StoreShown(ctx, caller, first))
+
+		require.NoError(t, store.StoreShown(ctx, caller, second),
+			"another read stored the same total: nothing to refuse")
+		assert.Equal(t, shown, stored(t, s).ShownTotal)
 	})
 }

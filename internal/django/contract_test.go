@@ -283,6 +283,18 @@ var djangoContract = []contractCall{
 		names: map[string]string{"Cart": "CartDetail"},
 	},
 	{
+		fn: "Quote", method: http.MethodPost,
+		path: "/cart/quote", status: http.StatusOK,
+		body: reflect.TypeFor[QuoteRequest](),
+		out:  reflect.TypeFor[Quote](),
+		names: map[string]string{
+			"QuoteRequest":        "CartQuoteRequestRequest",
+			"Quote":               "CartQuote",
+			"QuotePromotion":      "QuoteAppliedPromotion",
+			"QuoteShippingOption": "QuoteShippingOption",
+		},
+	},
+	{
 		fn: "AddCartItem", method: http.MethodPost,
 		path: "/cart/item", status: http.StatusCreated,
 		body: reflect.TypeFor[cartItemCreate](),
@@ -371,9 +383,10 @@ var djangoContract = []contractCall{
 		body: reflect.TypeFor[OrderCreate](),
 		out:  reflect.TypeFor[Order](),
 		names: map[string]string{
-			"OrderCreate": "OrderCreateFromCartRequest",
-			"Attribution": "OrderAttributionInputRequest",
-			"Order":       "OrderDetail",
+			"OrderCreate":   "OrderCreateFromCartRequest",
+			"Attribution":   "OrderAttributionInputRequest",
+			"ExpectedTotal": "ExpectedTotalRequest",
+			"Order":         "OrderDetail",
 		},
 	},
 	{
