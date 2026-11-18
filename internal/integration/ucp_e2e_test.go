@@ -4,7 +4,6 @@ package integration
 
 import (
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/sha256"
@@ -21,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -91,11 +91,13 @@ type receivedWebhook struct {
 	body               []byte
 }
 
-// webhookSink records signed order webhooks a platform would receive.
+// webhookSink records signed order webhooks a platform would receive,
+// and answers each with status (200 unless set).
 type webhookSink struct {
 	mu       sync.Mutex
 	hooks    []receivedWebhook
 	received chan struct{}
+	status   atomic.Int32
 }
 
 func newWebhookSink() *webhookSink {
@@ -112,6 +114,10 @@ func (s *webhookSink) handler() http.Handler {
 		})
 		s.mu.Unlock()
 		s.received <- struct{}{}
+		if status := s.status.Load(); status != 0 {
+			w.WriteHeader(int(status))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	})
 }
@@ -734,8 +740,8 @@ lines:
 	return ""
 }
 
-// startUCPGateway boots the full stack with real Redis, the webhook
-// dispatcher running, and the internal events route armed.
+// startUCPGateway boots the full stack with real Redis, the signing keys
+// checked, and the internal events route armed.
 func startUCPGateway(t *testing.T) ucpStack {
 	t.Helper()
 	return startUCPGatewayBehind(t,
@@ -785,15 +791,13 @@ func startUCPGatewayBehind(
 	// The fixture tenant's key, for signature/KID assertions.
 	key, err := keys.ForSchema(t.Context(), "demostore")
 	require.NoError(t, err)
-	dispatcher := ucp.NewDispatcher(rdb, keys, log, "e2e", true)
-	ctx, cancel := context.WithCancel(t.Context())
-	go dispatcher.Run(ctx)
-	t.Cleanup(cancel)
+	require.NoError(t, keys.AwaitKEK(t.Context(), log))
 
 	handler := server.New(server.Deps{
 		Cfg: cfg, Log: log, Metrics: metrics, Redis: rdb,
 		Django: dj, Resolver: resolver, Version: "test",
-		Keys: keys, Dispatcher: dispatcher, Profiles: newProfiles(t),
+		Keys: keys, Webhooks: ucp.NewWebhooks(keys, true),
+		Profiles: newProfiles(t),
 	})
 	srv := httptest.NewServer(front(handler))
 	t.Cleanup(srv.Close)
@@ -1317,43 +1321,27 @@ func TestUCPEndToEnd(t *testing.T) {
 		assert.Equal(t, "requires_escalation", escalated["status"])
 		assert.Equal(t, vivaCheckoutURL, escalated["continue_url"])
 
-		// Django's Celery task pushes the payment-completed event.
-		event, err := json.Marshal(map[string]any{
-			"schemaName":    "demostore",
-			"orderUuid":     fixtureOrderUUID,
-			"status":        "PROCESSING",
-			"paymentStatus": "COMPLETED",
-		})
-		require.NoError(t, err)
-		req, err := http.NewRequest(http.MethodPost,
-			gw.URL+"/internal/events/order-status", bytes.NewReader(event))
-		require.NoError(t, err)
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Internal-Token", internalSecret)
-		resp, err := http.DefaultClient.Do(req)
-		require.NoError(t, err)
-		_ = resp.Body.Close()
-		require.Equal(t, http.StatusNoContent, resp.StatusCode)
-
-		// The dispatcher delivers the signed webhook to the platform.
-		select {
-		case <-sink.received:
-		case <-time.After(15 * time.Second):
-			t.Fatal("platform webhook was never delivered")
-		}
+		// Django's outbox sends the payment-completed event, and the
+		// gateway delivers the signed webhook within the call.
+		paid := orderEventAt(time.Now(), "PROCESSING", "COMPLETED")
+		require.Equal(t, http.StatusNoContent, stack.sendEvent(t, paid))
+		require.Len(t, sink.received, 1, "delivered before the answer")
+		<-sink.received
 		sink.mu.Lock()
 		hook := sink.hooks[0]
 		sink.mu.Unlock()
 
 		verifyWebhook(t, hook, key.JWK())
-		// Standard Webhooks headers, and the business named as signer.
-		assert.NotEmpty(t, hook.header.Get("Webhook-Id"))
-		assert.NotEmpty(t, hook.header.Get("Webhook-Timestamp"))
+		// Standard Webhooks headers: the event's own id and time.
+		assert.Equal(t, paid["eventId"], hook.header.Get("Webhook-Id"))
+		assert.Equal(t, eventUnix(t, paid),
+			hook.header.Get("Webhook-Timestamp"))
+		// The business is named as signer.
 		assert.Contains(t, hook.header.Get("UCP-Agent"),
 			`profile="https://`)
 		assert.Contains(t, hook.header.Get("UCP-Agent"), "/.well-known/ucp")
 
-		// The body is the full order entity, never the queue record.
+		// The body is the full order entity.
 		var delivered map[string]any
 		require.NoError(t, json.Unmarshal(hook.body, &delivered))
 		assert.Equal(t, fixtureOrderUUID, delivered["id"])
@@ -1379,30 +1367,47 @@ func TestUCPEndToEnd(t *testing.T) {
 		// for weeks after. Events route through the order link, so the
 		// platform still hears about them.
 		stack.lapse(t, sessionRedisKey(checkoutID))
-		shipped, err := json.Marshal(map[string]any{
-			"schemaName": "demostore", "orderUuid": fixtureOrderUUID,
-			"status": "SHIPPED", "paymentStatus": "COMPLETED",
-		})
-		require.NoError(t, err)
-		req, err = http.NewRequest(http.MethodPost,
-			gw.URL+"/internal/events/order-status", bytes.NewReader(shipped))
-		require.NoError(t, err)
-		req.Header.Set("X-Internal-Token", internalSecret)
-		resp, err = http.DefaultClient.Do(req)
-		require.NoError(t, err)
-		_ = resp.Body.Close()
-		require.Equal(t, http.StatusNoContent, resp.StatusCode)
-		select {
-		case <-sink.received:
-		case <-time.After(15 * time.Second):
-			t.Fatal("an event after session expiry was never delivered")
-		}
+		shipped := orderEventAt(time.Now(), "SHIPPED", "COMPLETED")
+		require.Equal(t, http.StatusNoContent, stack.sendEvent(t, shipped))
+		require.Len(t, sink.received, 1,
+			"an event after session expiry is delivered")
+		<-sink.received
 		sink.mu.Lock()
 		late := sink.hooks[len(sink.hooks)-1]
 		sink.mu.Unlock()
 		verifyWebhook(t, late, key.JWK())
-		assert.NotEqual(t, hook.header.Get("Webhook-Id"),
-			late.header.Get("Webhook-Id"), "each event is its own delivery")
+		assert.Equal(t, shipped["eventId"], late.header.Get("Webhook-Id"),
+			"each event is its own delivery")
+
+		// The outbox settles an event by the platform's answer: one worth
+		// another attempt is a 503 carrying the wait the platform asked
+		// for, and the attempt after it carries the same Webhook-Id and
+		// Webhook-Timestamp; a refusal fails the event for good.
+		retried := orderEventAt(time.Now().Add(-time.Hour), "SHIPPED",
+			"COMPLETED")
+		sink.status.Store(http.StatusServiceUnavailable)
+		resp := stack.postEvent(t, retried)
+		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+		sink.status.Store(http.StatusOK)
+		require.Equal(t, http.StatusNoContent, stack.sendEvent(t, retried))
+		sink.status.Store(http.StatusGone)
+		assert.Equal(t, http.StatusUnprocessableEntity,
+			stack.sendEvent(t, orderEventAt(time.Now(), "SHIPPED",
+				"COMPLETED")))
+		sink.status.Store(0)
+		require.Len(t, sink.received, 3)
+		for range 3 {
+			<-sink.received
+		}
+		sink.mu.Lock()
+		first, again := sink.hooks[len(sink.hooks)-3], sink.hooks[len(sink.hooks)-2]
+		sink.mu.Unlock()
+		for _, h := range []string{"Webhook-Id", "Webhook-Timestamp"} {
+			assert.Equal(t, first.header.Get(h), again.header.Get(h), h)
+		}
+		assert.Equal(t, eventUnix(t, retried),
+			again.header.Get("Webhook-Timestamp"),
+			"the event's time, an hour before the attempt")
 	})
 
 	// Complete is a command, not an update: it never places an order at a
@@ -1850,18 +1855,28 @@ func TestUCPEndToEnd(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	})
 
-	t.Run("unknown order events are acknowledged", func(t *testing.T) {
-		event := []byte(`{"schemaName": "demostore", "orderUuid": ` +
-			`"00000000-0000-0000-0000-000000000000", ` +
-			`"paymentStatus": "COMPLETED"}`)
-		req, err := http.NewRequest(http.MethodPost,
-			gw.URL+"/internal/events/order-status", bytes.NewReader(event))
+	// Django sends an order's first event as the order commits, which can
+	// be before the completion that placed it wrote the order's link: an
+	// event without one is asked again while that completion may still
+	// run, and is settled once it cannot be.
+	t.Run("an order event without a link waits for the completion's "+
+		"budget", func(t *testing.T) {
+		const unknown = "00000000-0000-0000-0000-000000000000"
+		fresh := orderEventAt(time.Now(), "PENDING", "PENDING")
+		fresh["orderUuid"] = unknown
+		resp := stack.postEvent(t, fresh)
+		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+		wait, err := strconv.Atoi(resp.Header.Get("Retry-After"))
 		require.NoError(t, err)
-		req.Header.Set("X-Internal-Token", internalSecret)
-		resp, err := http.DefaultClient.Do(req)
-		require.NoError(t, err)
-		_ = resp.Body.Close()
-		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+		budget := checkout.CompletionBudget(ucpUpstreamTimeout)
+		assert.Positive(t, wait)
+		assert.LessOrEqual(t, time.Duration(wait)*time.Second,
+			budget+time.Second)
+
+		old := orderEventAt(time.Now().Add(-budget-time.Second),
+			"PENDING", "PENDING")
+		old["orderUuid"] = unknown
+		assert.Equal(t, http.StatusNoContent, stack.sendEvent(t, old))
 	})
 
 	t.Run("an id no checkout can have writes no key", func(t *testing.T) {

@@ -17,6 +17,7 @@ type Metrics struct {
 	UpstreamDuration *prometheus.HistogramVec
 	TenantCache      *prometheus.CounterVec
 	ToolCalls        *prometheus.CounterVec
+	OrderWebhooks    *prometheus.CounterVec
 	RateLimited      prometheus.Counter
 	FeedFailures     prometheus.Counter
 }
@@ -52,6 +53,11 @@ func NewMetrics() *Metrics {
 			Help: "MCP tool calls by server (mcp, chat, mcp_admin), tool " +
 				"and outcome.",
 		}, []string{"server", "tool", "outcome"}),
+		OrderWebhooks: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gateway_order_webhooks_total",
+			Help: "Order webhooks delivered, or failed for good by the " +
+				"gateway's own verdict (the outbox's give-ups are Django's).",
+		}, []string{"outcome"}),
 		RateLimited: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "gateway_rate_limited_total",
 			Help: "Requests rejected by the gateway rate limiter.",
@@ -70,6 +76,7 @@ func NewMetrics() *Metrics {
 		m.UpstreamDuration,
 		m.TenantCache,
 		m.ToolCalls,
+		m.OrderWebhooks,
 		m.RateLimited,
 		m.FeedFailures,
 	)

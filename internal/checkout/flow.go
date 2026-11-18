@@ -526,8 +526,8 @@ func (f *Flow) PlacedOrder(ctx context.Context, s *Session) string {
 //
 // It takes no lock: its save is a compare-and-set like every other, and
 // a save that lost returns ErrSessionChanged for the caller to retry. A
-// lock would answer "busy" to every push while a crashed pod's lock
-// lasted, and Django's few retries can all fall inside that. An event
+// lock would answer "busy" to every event while a crashed pod's lock
+// lasted, for nothing the compare-and-set does not already give. An event
 // that lands while the completion that placed its order is still
 // finishing is stored too: that completion stores its own outcome over
 // it (saveOverEvent).

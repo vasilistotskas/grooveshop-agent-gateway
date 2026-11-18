@@ -1,13 +1,15 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
+	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -41,54 +43,63 @@ func requireInternalToken(secret string, next http.Handler) http.Handler {
 	})
 }
 
-// orderEventBody is what Django's Celery task POSTs on order/payment
-// status transitions. Only the order is read from it: the webhook carries
-// the order entity as Django reports it now, not the event's fields.
+// orderEventBudget bounds the whole answer to one order event: the
+// reads, the session's update and the signed post to the platform.
+// Django's outbox reads the answer for 30 s
+// (AGENT_ORDER_EVENT_READ_TIMEOUT) and takes one it did not get for the
+// gateway being unreachable, which stops its sweep of the store: the
+// gateway answers first.
+const orderEventBudget = 25 * time.Second
+
+// Outcomes of gateway_order_webhooks_total.
+const (
+	webhookDelivered = "delivered"
+	webhookFailed    = "failed"
+)
+
+// orderEventBody is one event of Django's outbox (django-api
+// agent/outbox.py): an order an agent placed changed. Only the order is
+// read from it: the webhook carries the order entity as Django reports
+// it now, not the event's fields.
 type orderEventBody struct {
-	SchemaName     string `json:"schemaName"`
-	OrderUUID      string `json:"orderUuid"`
-	Status         string `json:"status"`
-	PaymentStatus  string `json:"paymentStatus"`
-	TrackingNumber string `json:"trackingNumber"`
-}
-
-// webhookIDSpace namespaces event-derived Webhook-Ids (UUIDv5).
-var webhookIDSpace = uuid.MustParse("8c6b8e0e-5f3a-4f1e-9a57-2f0d3b6c1a44")
-
-// webhookID identifies one order event. Celery re-pushes an event whose
-// acknowledgement was lost, and Standard Webhooks requires the id to stay
-// the same across retries so the platform can dedupe, so it is derived
-// from the event's own content rather than minted per push. Two pushes of
-// the same state are the same event: the body is a state snapshot.
-func (b orderEventBody) webhookID() string {
-	return uuid.NewSHA1(webhookIDSpace, []byte(strings.Join([]string{
-		b.SchemaName, b.OrderUUID, b.Status, b.PaymentStatus,
-		b.TrackingNumber,
-	}, "\x00"))).String()
+	// EventID is the outbox row's id, and OccurredAt the event's time:
+	// the Webhook-Id and the Webhook-Timestamp, the same on every attempt.
+	EventID       string `json:"eventId"`
+	OccurredAt    string `json:"occurredAt"`
+	SchemaName    string `json:"schemaName"`
+	OrderUUID     string `json:"orderUuid"`
+	Status        string `json:"status"`
+	PaymentStatus string `json:"paymentStatus"`
 }
 
 // orderEventDeps is what the order-event route drives.
 type orderEventDeps struct {
-	Store      *checkout.Store
-	Flow       *checkout.Flow
-	Resolver   *tenant.Resolver
-	Django     *django.Client
-	Dispatcher *ucp.Dispatcher
-	Site       storefront.Site
-	Log        *slog.Logger
+	Store    *checkout.Store
+	Flow     *checkout.Flow
+	Resolver *tenant.Resolver
+	Django   *django.Client
+	Webhooks *ucp.Webhooks
+	Site     storefront.Site
+	Log      *slog.Logger
+	Metrics  *obs.Metrics
 }
 
 // internalOrderEvents handles POST /internal/events/order-status.
 //
+// Django's outbox keeps the event and calls this until it settles. The
+// gateway updates the checkout, and delivers the platform's webhook
+// within the call, once, and its answer is the outcome: 204 delivered
+// (or nothing to deliver), 503 try again later (with Retry-After when
+// there is a time to name), 422 failed for good. A 400 is a body no
+// retry fixes.
+//
 // Events route through the order link, not the checkout session: the
 // session expires within a day, and the store keeps reporting shipment
-// and delivery for weeks after. Responding non-2xx makes Celery retry,
-// which combined with the stream dispatcher yields at-least-once platform
-// delivery; a 2xx is final, so it is reserved for events that are
-// handled, or that no retry could ever deliver.
+// and delivery for weeks after.
 func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 	return requireInternalToken(secret, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
+		ctx, cancel := context.WithTimeout(r.Context(), orderEventBudget)
+		defer cancel()
 		var body orderEventBody
 		if err := json.NewDecoder(
 			http.MaxBytesReader(w, r.Body, 64<<10),
@@ -96,30 +107,51 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 			http.Error(w, "invalid body", http.StatusBadRequest)
 			return
 		}
-		if body.SchemaName == "" || body.OrderUUID == "" {
-			http.Error(w, "schemaName and orderUuid are required",
-				http.StatusBadRequest)
+		eventID, eventErr := uuid.Parse(body.EventID)
+		occurred, timeErr := time.Parse(time.RFC3339Nano, body.OccurredAt)
+		if body.SchemaName == "" || body.OrderUUID == "" ||
+			eventErr != nil || timeErr != nil {
+			http.Error(w, "schemaName, orderUuid, eventId (a UUID) and "+
+				"occurredAt (RFC 3339) are required", http.StatusBadRequest)
 			return
 		}
 		obs.SetTenant(ctx, body.SchemaName)
+		event := []any{
+			slog.String("event", eventID.String()),
+			slog.String("order", body.OrderUUID),
+		}
 		retry := func(msg string, err error) {
-			d.Log.ErrorContext(ctx, "order event retried",
+			d.Log.ErrorContext(ctx, "order event retried", append(event,
 				slog.String("reason", msg),
-				slog.String("order", body.OrderUUID),
-				slog.String("error", err.Error()))
+				slog.String("error", err.Error()))...)
 			http.Error(w, "retry", http.StatusServiceUnavailable)
 		}
-		drop := func(msg string, err error) {
-			d.Log.ErrorContext(ctx, "order event dropped",
+		fail := func(msg string, err error) {
+			d.Log.ErrorContext(ctx, "order event failed", append(event,
 				slog.String("reason", msg),
-				slog.String("order", body.OrderUUID),
-				slog.String("error", err.Error()))
-			w.WriteHeader(http.StatusNoContent)
+				slog.String("error", err.Error()))...)
+			d.Metrics.OrderWebhooks.WithLabelValues(webhookFailed).Inc()
+			http.Error(w, msg, http.StatusUnprocessableEntity)
 		}
 
 		link, err := d.Store.OrderLinkFor(ctx, body.SchemaName, body.OrderUUID)
 		if errors.Is(err, checkout.ErrNotFound) {
-			// Placed outside an agent checkout: nothing to update.
+			// Django sends an order's first event as the order commits,
+			// and the completion that placed it writes the link once
+			// Django answered: until that completion's budget has run out
+			// from the event, the link may still come.
+			wait := time.Until(occurred.Add(
+				checkout.CompletionBudget(d.Django.Timeout())))
+			if wait > 0 {
+				w.Header().Set("Retry-After", retryAfterSeconds(wait))
+				http.Error(w, "retry", http.StatusServiceUnavailable)
+				return
+			}
+			// The link is lost (a flush or a restore, or a write that
+			// failed), or was never written (the completion never got
+			// Django's answer): nothing is left to route the event through.
+			d.Log.WarnContext(ctx, "order event without an order link",
+				event...)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -127,9 +159,17 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 			retry("order link read failed", err)
 			return
 		}
-		if err := d.Flow.ApplyOrderEvent(ctx, body.SchemaName,
-			link.CheckoutID, body.OrderUUID, body.Status,
-			body.PaymentStatus); err != nil {
+		err = d.Flow.ApplyOrderEvent(ctx, body.SchemaName,
+			link.CheckoutID, body.OrderUUID, body.Status, body.PaymentStatus)
+		if errors.Is(err, checkout.ErrSessionChanged) {
+			// Another request stored the session meanwhile, most often the
+			// completion that placed the order finishing: ask again soon
+			// (the outbox waits its minimum), not after its backoff.
+			w.Header().Set("Retry-After", retryAfterSeconds(time.Second))
+			retry("the checkout changed meanwhile", err)
+			return
+		}
+		if err != nil {
 			retry("order event apply failed", err)
 			return
 		}
@@ -138,11 +178,9 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 			return
 		}
 
+		// A store that does not resolve (suspended, say) is retried: the
+		// outbox runs only while the store exists, so it may resolve again.
 		t, err := d.Resolver.Resolve(ctx, link.Domain)
-		if errors.Is(err, tenant.ErrUnknownTenant) {
-			drop("order event for a store that no longer resolves", err)
-			return
-		}
 		if err != nil {
 			retry("order event tenant resolve failed", err)
 			return
@@ -151,7 +189,7 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 		// that now belongs to another store must never receive this
 		// store's order, signed with that store's key.
 		if t.SchemaName != body.SchemaName {
-			drop("order event domain moved to another store",
+			fail("the store's domain moved to another store",
 				fmt.Errorf("domain %s now resolves to %s",
 					link.Domain, t.SchemaName))
 			return
@@ -159,7 +197,7 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 		order, err := d.Django.PlacedOrder(
 			ctx, t.Domain, t.DefaultLocale, body.OrderUUID)
 		if errors.Is(err, django.ErrNotFound) {
-			drop("order event for an order that no longer exists", err)
+			fail("the order no longer exists", err)
 			return
 		}
 		if err != nil {
@@ -171,26 +209,50 @@ func internalOrderEvents(secret string, d orderEventDeps) http.Handler {
 			d.Site.Links(t.Domain, t.DefaultLocale), order, link.CheckoutID,
 			ucp.OrderCapabilities())
 		if err != nil {
-			drop("order event order unrenderable", err)
+			fail("the order cannot be rendered", err)
 			return
 		}
 		raw, err := json.Marshal(entity)
 		if err != nil {
-			drop("order event order unencodable", err)
+			fail("the order cannot be encoded", err)
 			return
 		}
-		if err := d.Dispatcher.Enqueue(ctx, ucp.Delivery{
-			ID:        body.webhookID(),
-			Schema:    t.SchemaName,
-			Domain:    t.Domain,
-			TargetURL: link.WebhookURL,
-			Body:      raw,
-		}); err != nil {
-			retry("order event enqueue failed", err)
-			return
+		reply, err := d.Webhooks.Send(ctx, ucp.Delivery{
+			ID:         eventID.String(),
+			OccurredAt: occurred,
+			Schema:     t.SchemaName,
+			Domain:     t.Domain,
+			TargetURL:  link.WebhookURL,
+			Body:       raw,
+		})
+		switch {
+		case errors.Is(err, ucp.ErrPlatformURL):
+			fail("the platform's webhook URL cannot be called", err)
+		case err != nil:
+			retry("order webhook unanswered", err)
+		case reply.Delivered():
+			d.Log.InfoContext(ctx, "order webhook delivered", append(event,
+				slog.Int("status", reply.Status))...)
+			d.Metrics.OrderWebhooks.WithLabelValues(webhookDelivered).Inc()
+			w.WriteHeader(http.StatusNoContent)
+		case reply.Retryable():
+			d.Log.WarnContext(ctx, "order webhook to be retried", append(event,
+				slog.Int("status", reply.Status))...)
+			if reply.RetryAfter > 0 {
+				w.Header().Set("Retry-After",
+					retryAfterSeconds(reply.RetryAfter))
+			}
+			http.Error(w, "retry", http.StatusServiceUnavailable)
+		default:
+			fail("the platform refused the webhook",
+				fmt.Errorf("platform answered %d", reply.Status))
 		}
-		w.WriteHeader(http.StatusNoContent)
 	}))
+}
+
+// retryAfterSeconds is a wait as Retry-After's delta-seconds, rounded up.
+func retryAfterSeconds(wait time.Duration) string {
+	return strconv.FormatInt(int64((wait+time.Second-1)/time.Second), 10)
 }
 
 // feedInvalidateBody names the tenant whose feeds went stale.

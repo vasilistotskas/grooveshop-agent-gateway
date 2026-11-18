@@ -29,11 +29,11 @@ func TestValidatePlatformURLRejectsEmptyAndCredentials(t *testing.T) {
 		"https://ucp.dev@evil.example/profile.json", false), ErrPlatformURL)
 }
 
-// create_checkout is reachable ANONYMOUSLY, and the dispatcher POSTs to
+// create_checkout is reachable ANONYMOUSLY, and the gateway POSTs to
 // whatever is stored here on every order transition — so an unvalidated
 // value turns the gateway into a blind request origin for in-cluster
-// addresses, and a blackhole endpoint occupies a delivery worker for the
-// full retry budget.
+// addresses, and a blackhole endpoint holds each order event's call for
+// its whole budget.
 func TestValidatePlatformURLRejectsInternalTargets(t *testing.T) {
 	cases := map[string]string{
 		"plain http":      "http://platform.example.com/hook",

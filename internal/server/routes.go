@@ -47,8 +47,8 @@ type Deps struct {
 	// Keys serves the per-schema signing keys that sign UCP order
 	// webhooks and publish in each tenant's profile.
 	Keys *ucp.Keys
-	// Dispatcher delivers queued order webhooks (Run started by main).
-	Dispatcher *ucp.Dispatcher
+	// Webhooks signs and posts the platforms' order webhooks.
+	Webhooks *ucp.Webhooks
 	// Profiles resolves calling platforms' UCP profiles for capability
 	// negotiation.
 	Profiles *ucp.ProfileResolver
@@ -169,13 +169,13 @@ func New(d Deps) http.Handler {
 		tenantMW(tenant.RequireCheckout(
 			ucp.ProfileHandler(d.Keys, d.Cfg.PaymentHandlerEnv, d.Log))))
 
-	// Cluster-internal: Django's order-event push. Not tenant-scoped —
+	// Cluster-internal: Django's order events, from its outbox. Not tenant-scoped —
 	// the event body carries the schema.
 	mux.Handle("POST /internal/events/order-status", internalOrderEvents(
 		d.Cfg.InternalSecret, orderEventDeps{
 			Store: checkoutStore, Flow: checkoutFlow, Resolver: d.Resolver,
-			Django: d.Django, Dispatcher: d.Dispatcher, Site: site,
-			Log: d.Log,
+			Django: d.Django, Webhooks: d.Webhooks, Site: site,
+			Log: d.Log, Metrics: d.Metrics,
 		}))
 
 	// ACP is always mounted; access is gated per tenant at request time
@@ -319,8 +319,8 @@ func (a *muxAnswer) Write(b []byte) (int, error) { return len(b), nil }
 // exceptInternal applies mw to every route but /internal/*. Those are
 // Django's own workers pushing over the cluster Service (no ingress
 // routes them) and authenticated by the shared secret; a per-client bucket
-// would throttle a status burst from one Celery pod, and Django treats
-// a 4xx as final and drops the event.
+// would throttle a burst of events from one Celery pod, and Django's
+// outbox would wait out its backoff after each 429.
 func exceptInternal(
 	mw func(http.Handler) http.Handler, next http.Handler,
 ) http.Handler {

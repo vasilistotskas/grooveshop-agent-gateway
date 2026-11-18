@@ -73,4 +73,5 @@ Loads when working on the global middleware chain, logging, metrics or health. T
   Django-down must never flip readiness (agents get actionable errors,
   not 502s). The server answers from boot while the check waits for
   Redis, so a pod booting during a Redis restart is unready, not
-  crash-looping; order-webhook delivery starts once the check passed.
+  crash-looping; no order webhook is signed before the check passed
+  (`ucp.Webhooks.Send`).

@@ -23,7 +23,7 @@ Last run: the smoke check on 2026-11-07, gateway v1.37.2, on production (Django 
 | M4 A real agent shops | Staging | n/a | PASS |
 | U1 UCP cash on delivery | Staging | PASS | PASS |
 | U2 Hosted payment handoff | Staging | n/a | PASS |
-| U3 Signed webhook | Local | PASS | n/a |
+| U3 Signed webhook | Local | PASS before Django's outbox; **not run since** | n/a |
 | U4 UCP cancel | Staging | PASS | PASS |
 | A1 ACP cash on delivery | Staging | PASS | **Not run:** needs the tenant's token |
 | A2 ACP cancel | Staging | PASS | **Not run:** needs the tenant's token |
@@ -134,7 +134,7 @@ export UCP_PROFILE="http://<your-container>:8090/profile.json"
 Local gotchas:
 
 - Use `127.0.0.1`, not `localhost`. `*.localhost` resolves to `::1` in Node, and Docker publishes on `127.0.0.1`.
-- `celery_worker` may not be running, so a flow needing a task runs it directly: `push_order_event_to_gateway.run(order_id)` in `manage.py shell`, inside `schema_context("demo")`.
+- `celery_worker` may not be running, so a flow needing a task runs it directly in `manage.py shell`, inside `schema_context("demo")`: the order events waiting in Django's outbox go out with `agent.outbox.deliver_due()`.
 - Local data differs: `demo.localhost` has only flat-rate delivery, no Viva, and `fyteia.localhost` has its features on.
 
 ## 3. MCP
@@ -289,20 +289,19 @@ tool complete_checkout "{\"meta\":$(ucp_meta "$(uuid)"),\"id\":\"$ID\",\"checkou
 
 **Label:** Local. **Purpose:** an order event reaches the platform, signed so it can prove the sender. Staging has no public endpoint to receive one.
 
-Serve a profile whose `dev.ucp.shopping.order` capability has `config.webhook_url` pointing at a small HTTP sink on Django's network, place an order as in U1, then push the real task in `manage.py shell`:
+Serve a profile whose `dev.ucp.shopping.order` capability has `config.webhook_url` pointing at a small HTTP sink on Django's network, and place an order as in U1. Its "created" event waits in Django's outbox (`AgentOrderEvent`); send what is due in `manage.py shell`:
 
 ```python
 from django_tenants.utils import schema_context
-from order.models import Order
-from order.tasks import push_order_event_to_gateway
+from agent.outbox import deliver_due
 
 with schema_context("demo"):
-    push_order_event_to_gateway.run(Order.objects.get(uuid="<order uuid>").id)
+    print(deliver_due())  # {'delivered': 1}
 ```
 
-Verify at the sink: `Content-Digest` must equal the SHA-256 of the raw body, and the RFC 9421 signature, rebuilt from `Signature-Input`, must verify as ES256 against the JWK with the same `kid` in the store's `/.well-known/ucp`.
+Verify at the sink: `Content-Digest` must equal the SHA-256 of the raw body, and the RFC 9421 signature, rebuilt from `Signature-Input`, must verify as ES256 against the JWK with the same `kid` in the store's `/.well-known/ucp`. `Webhook-Id` is the outbox row's id and `Webhook-Timestamp` its `occurred_at`. Answer 503 from the sink once: the row stays `pending`, and its next attempt carries the same two headers.
 
-**Observed:** PASS. Digest matches, signature valid, key published in the profile, `UCP-Agent` and `Webhook-Id` present, body is the full order entity.
+**Observed:** PASS before the outbox (Django's Celery push, gateway v1.47.0 and earlier). Digest matches, signature valid, key published in the profile, `UCP-Agent` and `Webhook-Id` present, body is the full order entity. Not run since.
 
 ### U4. Cancel
 
@@ -706,7 +705,7 @@ Each store's ES256 key signs its order webhooks; its public half is in the store
    It seals every store's key still unsealed, deletes every unsealed record whose key the sealed record holds and every sentinel, logs one `signing keys sealed` line (`sealed`, `already_sealed`, `unsealed_deleted`), and exits non-zero if it left any store alone (`signing key left unsealed`, with the reason). Run it a second time right after: its line then lists no store under `sealed` or `unsealed_deleted`, which proves nothing unsealed is left. Later runs may list stores under `unsealed_deleted`: a store first keyed after step 3 still gets a sentinel, which expires by itself 7 days after it was written, so nothing needs deleting by hand.
 4. **A store it left alone** holds one key unsealed and another sealed. That takes a record deleted by hand while an old pod ran. The new pods publish the sealed key; delete the unsealed record by hand once you know which key platforms were last shown.
 
-**Never change `SIGNING_KEY_ENCRYPTION_KEY` in place.** A key sealed under another one does not open: every store's profile answers 503 and its webhooks wait, unsent and pending, until the key is right. Changing it needs every record sealed again under the new key, which no command does yet.
+**Never change `SIGNING_KEY_ENCRYPTION_KEY` in place.** A key sealed under another one does not open: a pod started with it exits once Redis holds keys and none opens (`AwaitKEK`), and is never ready, so the gateway serves nothing. Django's outbox keeps the order events meanwhile, until the key is right or their attempts run out. Changing it needs every record sealed again under the new key, which no command does yet.
 
 **A rollback** to the earlier release:
 
@@ -728,3 +727,18 @@ kubectl --context grooveshop -n "$NS" rollout restart deploy/agent-gateway
 ```
 
 Each pod holds the key it read in memory until it restarts, and the first pod to need the key after the restart mints the new one. Platforms see a rotation: the profile publishes only the new key, so a webhook signed with the old one before the restart no longer verifies.
+
+## 13. The release that removed the webhook stream (#111)
+
+Gateway releases up to v1.47.0 answered an order event once it was queued in the Redis stream `ag:webhooks:orders`, and Django's outbox then marked the event `delivered`. The release after them delivers within the call and reads no stream: whatever the old pods leave queued is never sent, and the outbox cannot send it again (*Send again now* skips a delivered row). In each environment:
+
+```bash
+NS=grooveshop-staging   # then, for production: NS=grooveshop
+r() { kubectl --context grooveshop -n "$NS" exec redis-gateway-0 -c redis-gateway -- redis-cli "$@"; }
+```
+
+1. **Before the promote:** `r XLEN ag:webhooks:orders` and `r XPENDING ag:webhooks:orders dispatch` both say 0. A stream that is not empty is still being delivered: wait, and check again.
+2. **After the rollout** (`kubectl ... rollout status deploy/agent-gateway`): the same check. An entry left there is a webhook no pod will send. `r XRANGE ag:webhooks:orders - +` names its store, its target and its order in the `delivery` field: write them down. The platform catches up with that order's next event, since every webhook carries the whole order.
+3. **Then delete the key**, which holds the stream and its `dispatch` group: `r DEL ag:webhooks:orders`.
+
+Observed 2026-11-18, before the promote: both environments empty, 0 pending; production held no order link.

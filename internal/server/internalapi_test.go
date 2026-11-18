@@ -120,23 +120,43 @@ func TestInternalFeedInvalidateRedisFailureIsRetryable(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
 
-// Celery re-pushes an event whose acknowledgement was lost; the platform
-// must see the same Webhook-Id so it can dedupe, while a new state is a
-// new event.
-func TestWebhookIDIsDerivedFromTheEvent(t *testing.T) {
-	ev := orderEventBody{
-		SchemaName: "demostore", OrderUUID: "b9be45e5-6062-4976-ae7b-2c31eb2ad689",
-		Status: "PROCESSING", PaymentStatus: "COMPLETED",
+// An order event is Django's outbox row: without its id and time the
+// webhook has no Webhook-Id and Webhook-Timestamp to carry unchanged
+// across attempts, so the body is refused, which no retry fixes. The
+// token is still checked first.
+func TestOrderEventRequiresTheOutboxRowsIDAndTime(t *testing.T) {
+	h := internalOrderEvents(testSecret, orderEventDeps{})
+	send := func(token, body string) int {
+		req := httptest.NewRequest(http.MethodPost,
+			"/internal/events/order-status", strings.NewReader(body))
+		req.Header.Set("X-Internal-Token", token)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
 	}
-	again := ev
-	assert.Equal(t, ev.webhookID(), again.webhookID())
+	const order = `"schemaName":"demostore",` +
+		`"orderUuid":"b9be45e5-6062-4976-ae7b-2c31eb2ad689"`
+	const id = `"eventId":"0193a6f0-7c1e-7b3a-9c4d-5e6f7a8b9c0d"`
+	const at = `"occurredAt":"2026-11-18T02:00:00.123456+00:00"`
 
-	shipped := ev
-	shipped.Status, shipped.TrackingNumber = "SHIPPED", "ACS123"
-	assert.NotEqual(t, ev.webhookID(), shipped.webhookID())
+	assert.Equal(t, http.StatusForbidden, send("nope", "{"+order+"}"))
+	for name, body := range map[string]string{
+		"no event id":        "{" + order + "," + at + "}",
+		"an id not a UUID":   "{" + order + `,"eventId":"7",` + at + "}",
+		"no event time":      "{" + order + "," + id + "}",
+		"a time not RFC3339": "{" + order + "," + id + `,"occurredAt":"yesterday"}`,
+		"no order":           `{"schemaName":"demostore",` + id + "," + at + "}",
+		"no store":           `{"orderUuid":"b9be45e5-6062-4976-ae7b-2c31eb2ad689",` + id + "," + at + "}",
+		"not JSON":           "{",
+	} {
+		assert.Equal(t, http.StatusBadRequest, send(testSecret, body), name)
+	}
+}
 
-	other := ev
-	other.SchemaName = "acme"
-	assert.NotEqual(t, ev.webhookID(), other.webhookID(),
-		"the same order uuid in another store is another event")
+// Retry-After is whole seconds, rounded up, so Django never comes back
+// before the wait is over.
+func TestRetryAfterSecondsRoundsUp(t *testing.T) {
+	assert.Equal(t, "1", retryAfterSeconds(time.Millisecond))
+	assert.Equal(t, "30", retryAfterSeconds(30*time.Second))
+	assert.Equal(t, "31", retryAfterSeconds(30*time.Second+time.Nanosecond))
 }

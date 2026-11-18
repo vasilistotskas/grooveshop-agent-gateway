@@ -106,30 +106,23 @@ func run(l *logging) error {
 	if err != nil {
 		return err
 	}
-	// The pod name: webhook deliveries are claimed per consumer, and a
-	// consumer that disappears has its pending deliveries taken over.
-	consumer, err := os.Hostname()
-	if err != nil {
-		return err
-	}
-	dispatcher := ucp.NewDispatcher(rdb, keys, log, consumer,
-		cfg.AllowLocalWebhooks)
+	webhooks := ucp.NewWebhooks(keys, cfg.AllowLocalWebhooks)
 	profiles, err := ucp.NewProfileResolver(cfg.AllowLocalWebhooks, log)
 	if err != nil {
 		return err
 	}
 
 	handler := server.New(server.Deps{
-		Cfg:        cfg,
-		Log:        log,
-		Metrics:    metrics,
-		Redis:      rdb,
-		Django:     dj,
-		Resolver:   resolver,
-		Version:    version,
-		Keys:       keys,
-		Dispatcher: dispatcher,
-		Profiles:   profiles,
+		Cfg:      cfg,
+		Log:      log,
+		Metrics:  metrics,
+		Redis:    rdb,
+		Django:   dj,
+		Resolver: resolver,
+		Version:  version,
+		Keys:     keys,
+		Webhooks: webhooks,
+		Profiles: profiles,
 	})
 
 	signaled, stop := signal.NotifyContext(
@@ -147,23 +140,14 @@ func run(l *logging) error {
 	// sends it nothing else. The check waits for Redis as readiness does
 	// (a pod booting while Redis restarts serves once it answers, never
 	// crash-loops into the restart backoff), and ends the process only
-	// on the definite failure: stored keys, none of which opens.
-	//
-	// Order-webhook delivery starts once it passed, so nothing is signed
-	// before the key is known to open. It stops consuming at the signal,
-	// so its drain runs alongside the HTTP shutdown inside the pod's
-	// grace period; deliveries enqueued meanwhile wait in the stream for
-	// another pod. It is waited for before Redis closes: the deferred
-	// Close must not race its final acknowledgements.
+	// on the definite failure: stored keys, none of which opens. No
+	// order webhook is signed before it passed (ucp.Webhooks.Send). It
+	// is waited for before Redis closes.
 	var background sync.WaitGroup
 	background.Go(func() {
-		if err := keys.AwaitKEK(ctx, log); err != nil {
-			if errors.Is(err, ucp.ErrKEKOpensNoKey) {
-				abort(err)
-			}
-			return
+		if err := keys.AwaitKEK(ctx, log); errors.Is(err, ucp.ErrKEKOpensNoKey) {
+			abort(err)
 		}
-		background.Go(func() { dispatcher.Run(ctx) })
 	})
 	defer func() {
 		abort(nil) // a listen failure returns without the signal
