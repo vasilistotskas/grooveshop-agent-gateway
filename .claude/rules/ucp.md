@@ -290,7 +290,10 @@ wins over this page.
   The outbox calls `POST /internal/events/order-status` with its row's
   `eventId` and `occurredAt`: the `Webhook-Id` and the
   `Webhook-Timestamp`, the same on every attempt, as UCP requires of a
-  retry (the signature's `created` is the attempt's). Within the call
+  retry (the signature's `created` is the attempt's: a platform that
+  judges a delivery's freshness reads that, and one that refuses an old
+  `Webhook-Timestamp` departs from UCP, its 4xx failing the event for
+  good). Within the call
   the gateway updates the checkout (`Flow.ApplyOrderEvent`), renders
   the order and posts it once (`ucp.Webhooks.Send`), all within
   `orderEventBudget` (25 s, under the outbox's 30 s read timeout), and
