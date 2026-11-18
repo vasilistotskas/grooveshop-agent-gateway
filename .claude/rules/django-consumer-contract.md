@@ -35,7 +35,7 @@ contract files. The code wins over this page.
   sentinels of `internal/django/errors.go` (`ErrNotFound`,
   `ErrConflict`, `ErrValidation`, `ErrThrottled`, `ErrUpstreamDown`,
   `ErrUnauthorized`, `ErrForbidden`, `ErrCartUnreachable`,
-  `ErrCartTokenRefused`, `ErrCartHasUnpaidOrder`) — branch with
+  `ErrCartTokenRefused`, `ErrCartHasUnpaidOrder`, `ErrTotalChanged`) — branch with
   `errors.Is`, never on status literals.
   An error answer is logged at debug with the route's template, the
   status and Django's `code`, never its detail.

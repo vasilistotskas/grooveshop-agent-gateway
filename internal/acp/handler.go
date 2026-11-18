@@ -1527,6 +1527,14 @@ func (h *Handler) completeError(
 		writeInFlight(w, idemRetryAfter, msgSessionBusy)
 	case errors.Is(err, checkout.ErrSessionChanged):
 		saveFailed(w, err)
+	case errors.Is(err, checkout.ErrChoiceRefused):
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: "invalid",
+			Message: "The store refuses one of this session's choices " +
+				"for its cart now. Read the session, which names it, " +
+				"change it with an update, then complete with a new " +
+				"Idempotency-Key.",
+		})
 	case errors.Is(err, checkout.ErrTotalNotShown):
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "missing",
@@ -1639,7 +1647,11 @@ func (h *Handler) renderBody(
 	shown := s.ShownTotal
 	payload, err := Render(r.Context(), h.dj, t,
 		h.site.Links(t.Domain, t.DefaultLocale), s)
-	if err == nil && s.ShownTotal != shown && s.Revision != "" {
+	// A read holds no lock: storing would make the update or complete
+	// that holds it lose its save. The total is stored by those, and an
+	// order sent at an older one is refused (django.ErrTotalChanged).
+	if err == nil && s.ShownTotal != shown && s.Revision != "" &&
+		r.Method != http.MethodGet {
 		h.storeShown(r, s)
 	}
 	if err == nil {

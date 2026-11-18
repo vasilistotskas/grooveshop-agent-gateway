@@ -301,7 +301,7 @@ Loads when working on a checkout session on either surface, its completion, its 
   gateway adds nothing up of its own: the free thresholds, the promotion
   waiver, the carrier's weight and parcels are Django's. A checkout that
   has not chosen both a delivery and a pay way shows the rows the quote
-  priced, which no order is placed at (`Pricing.Final`).
+  priced.
   - **A choice the store refuses is named, not priced.** A delivery the
     store does not ship that way or the cart outgrew
     (`shipping_unavailable`, `shipping_weight_exceeded`,
@@ -318,19 +318,26 @@ Loads when working on a checkout session on either surface, its completion, its 
     `unavailable` with `retryAfterSeconds`, ACP 503). So is a quote in
     another currency than the store's, under which every amount is
     shown.
-  - **The total shown is stored.** Every render of an open checkout sets
-    `Session.ShownTotal` (`Session.Show`), and the surfaces store it:
-    UCP's `rendered` with the status and expiry, ACP's `storeShown`, a
-    create with its session. A store that fails is answered all the same:
-    the order would be sent at the total stored before, which Django
-    refuses. An open checkout that other requests keep storing is
-    answered as changed (UCP `conflict`), never as a placed order.
+  - **The total shown is stored by the calls that hold the lock.** Every
+    render of an open checkout sets `Session.ShownTotal`
+    (`Session.Show`), and the calls holding its lock store it: UCP's
+    `rendered` with the status and expiry, ACP's `storeShown`, a create
+    with its session. A read holds no lock and does not store it
+    (`mcpsrv.unlocked`, ACP's GET): a read that stored it would make the
+    update or completion holding the lock lose its save. A read showing a
+    newer total than stored, or a store that fails, costs one
+    `total_changed`: the order sent at the total stored is refused, and
+    that answer, under the lock, stores the new one. An open checkout
+    that other requests keep storing is answered as changed (UCP
+    `conflict`), never as a placed order.
   - **The order is placed only at it.** `Flow.admit` refuses a checkout
     that has shown no total (`ErrTotalNotShown`, which is `ErrNotReady`:
-    read it, then complete), and `Flow.place` sends it as
+    read it, then complete), and one whose choices the store's quote now
+    refuses, whatever its stored status (`ErrChoiceRefused`, also
+    `ErrNotReady`). `Flow.place` sends the shown total as
     `expectedTotal`. Django creates the order only at exactly that
     amount due, and answers another with 409 `total_changed`
-    (`django.ErrTotalChanged`, a `*django.TotalChangedError`): nothing
+    (`django.ErrTotalChanged`): nothing
     was created, the checkout is stored ready again, and the surface
     answers with the total now (UCP: the checkout, `incomplete` for that
     answer, with a `recoverable` error `total_changed`, its claim

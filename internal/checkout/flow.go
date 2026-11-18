@@ -15,6 +15,11 @@ import (
 // ErrNotReady marks a complete call on a session that still misses data.
 var ErrNotReady = errors.New("checkout: session is not ready to complete")
 
+// ErrChoiceRefused marks a complete call on a session the store refuses
+// a choice or the data of now (Pricing.Refused): it is ErrNotReady too.
+var ErrChoiceRefused = fmt.Errorf(
+	"%w: the store refuses one of its choices", ErrNotReady)
+
 // ErrTotalNotShown marks a complete call on a session no stored render
 // showed a total for: its order would have no total to be placed at. It
 // is ErrNotReady too; reading the checkout stores one.
@@ -326,6 +331,17 @@ func (f *Flow) admit(
 	// checkout whose render was never stored has shown none.
 	if s.ShownTotal == nil {
 		return nil, ErrTotalNotShown
+	}
+	// A choice the store refuses now (the cart outgrew the carrier, the
+	// pay way is no longer offered) leaves the shown total without its
+	// row: the checkout is not ready, whatever its stored status says.
+	pricing, _, err := ComputePricing(ctx, f.dj, t, s)
+	if err != nil {
+		return nil, err
+	}
+	if r := pricing.Refused(); r != nil {
+		return nil, fmt.Errorf("%w: %s (%s)", ErrChoiceRefused, r.Detail,
+			r.Code)
 	}
 
 	// Checked against the FINAL delivery: a method selected before the

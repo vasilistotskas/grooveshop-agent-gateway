@@ -157,7 +157,6 @@ func TestComputePricingIsTheQuote(t *testing.T) {
 	assert.True(t, p.HasPaymentFee)
 	assert.EqualValues(t, 200, p.PaymentFee)
 	assert.EqualValues(t, 18550, p.Total, "the quote's expected total")
-	assert.True(t, p.Final)
 	assert.Equal(t, "EUR", p.Currency)
 	assert.Len(t, p.ShippingOptions, 1)
 	require.NotNil(t, p.PayWay, "the pay way's settlement is read")
@@ -200,7 +199,6 @@ func TestComputePricingWithoutEveryChoice(t *testing.T) {
 	p, _, err := ComputePricing(t.Context(), dj, pricingTenant(), s)
 	require.NoError(t, err)
 	assert.Zero(t, (*asked)[0].PayWayID)
-	assert.False(t, p.Final)
 	assert.False(t, p.HasPaymentFee)
 	assert.EqualValues(t, 20000-2000+350, p.Total)
 	assert.Nil(t, p.PayWay)
@@ -234,7 +232,6 @@ func TestComputePricingDropsARefusedChoice(t *testing.T) {
 	assert.Equal(t, &Refusal{Code: django.CodeShippingWeightExceeded,
 		Detail: "Too heavy."}, p.DeliveryRefused)
 	assert.False(t, p.HasDelivery)
-	assert.False(t, p.Final)
 	assert.Nil(t, p.PayWay, "a refused pay way is not the checkout's")
 }
 
@@ -261,7 +258,7 @@ func TestComputePricingRefusedData(t *testing.T) {
 	t.Run("the checkout's data", func(t *testing.T) {
 		dj, asked := quoteDjango(t, pricingCart("0.0", false),
 			func(r django.QuoteRequest) (int, string) {
-				if r != (django.QuoteRequest{}) {
+				if r.Email != "" {
 					return http.StatusBadRequest, `{"email":["Enter a ` +
 						`valid email address."],"code":"invalid",` +
 						`"fields":{"email":[{"message":"Enter a valid ` +
@@ -273,10 +270,10 @@ func TestComputePricingRefusedData(t *testing.T) {
 			readySession())
 		require.NoError(t, err)
 		require.Len(t, *asked, 2)
-		assert.Equal(t, django.QuoteRequest{}, (*asked)[1])
+		assert.Equal(t, django.QuoteRequest{CountryID: "GR"}, (*asked)[1],
+			"the cart is priced, its deliveries still listed")
 		require.NotNil(t, p.InputRefused)
 		assert.Contains(t, p.InputRefused.Detail, "valid email")
-		assert.False(t, p.Final)
 	})
 	t.Run("a pay way the store no longer has", func(t *testing.T) {
 		dj, _ := quoteDjango(t, pricingCart("0.0", false),
@@ -305,7 +302,6 @@ func TestComputePricingRefusedData(t *testing.T) {
 			readySession())
 		require.NoError(t, err)
 		assert.Zero(t, p.Total)
-		assert.False(t, p.Final)
 		assert.Equal(t, "EUR", p.Currency)
 	})
 	t.Run("a quote in another currency than the store's", func(t *testing.T) {

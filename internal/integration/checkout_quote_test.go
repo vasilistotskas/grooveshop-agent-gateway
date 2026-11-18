@@ -55,6 +55,31 @@ func TestAnOrderIsPlacedAtTheTotalItsCheckoutShowed(t *testing.T) {
 	}
 }
 
+// A choice the store refuses for the cart now (cash on delivery is not
+// offered for the checkout's carrier) leaves its total without that row:
+// the checkout renders not ready, and a completion places nothing.
+func TestARefusedChoiceIsNotCompleted(t *testing.T) {
+	stack := startUCPGateway(t)
+	for _, surface := range completionSurfaces(t, stack) {
+		t.Run(surface.name, func(t *testing.T) {
+			ctx := t.Context()
+			id := surface.ready(t)
+			placed := stack.faults.ordersPlaced.Load()
+
+			stack.faults.codNotDelivered.Store(true)
+			defer stack.faults.codNotDelivered.Store(false)
+			read := surface.read(ctx, id)
+			refused := surface.answer(ctx, id, uuid.NewString(), nil)
+
+			assert.Contains(t,
+				[]string{"incomplete", "not_ready_for_payment"}, read.status)
+			assert.Empty(t, refused.status, "no order, no checkout placed")
+			assert.NotEmpty(t, refused.refusal)
+			assert.Equal(t, placed, stack.faults.ordersPlaced.Load())
+		})
+	}
+}
+
 // A total that cannot be read is unavailability, never a total without
 // the rows it could not price: neither surface renders the checkout then.
 func TestAQuoteThatCannotBeReadIsUnavailable(t *testing.T) {

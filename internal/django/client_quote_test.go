@@ -71,7 +71,7 @@ func TestQuoteSendsTheChoicesMade(t *testing.T) {
 
 // The expected total always rides the order, so Django creates it only
 // at the total the buyer was shown; Django's refusal of another total is
-// its own error, carrying the total it would create the order at now.
+// its own error.
 func TestCreateOrderSendsTheExpectedTotal(t *testing.T) {
 	var got map[string]any
 	status := http.StatusCreated
@@ -106,10 +106,6 @@ func TestCreateOrderSendsTheExpectedTotal(t *testing.T) {
 		"cart-uuid", body)
 	require.ErrorIs(t, err, ErrTotalChanged)
 	require.ErrorIs(t, err, ErrConflict)
-	changed, ok := errors.AsType[*TotalChangedError](err)
-	require.True(t, ok)
-	assert.Equal(t, &ExpectedTotal{Amount: 93726, Currency: "EUR"},
-		changed.Now)
 	apiErr, ok := errors.AsType[*APIError](err)
 	require.True(t, ok)
 	assert.Equal(t, CodeTotalChanged, apiErr.Code)

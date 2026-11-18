@@ -49,7 +49,7 @@ func startFlow(t *testing.T, upstreamTimeout time.Duration) flowStack {
 		store: store, rdb: rdb, faults: faults,
 		tenant: &tenant.Tenant{
 			SchemaName: "demostore", DefaultLocale: "el",
-			Domain: "shop.test",
+			DefaultCurrency: "EUR", Domain: "shop.test",
 		},
 	}
 }
@@ -251,9 +251,10 @@ func TestCompleteStoresNothingForASessionItDoesNotAdmit(t *testing.T) {
 		{"another attempt's snapshot", func(s *checkout.Session) {
 			s.Status = checkout.StatusCompleteInProgress
 		}, checkout.ErrCompletionInProgress},
+		// The store's quote refuses it before the pay ways are read.
 		{"a pay way the store does not offer", func(s *checkout.Session) {
 			s.PayWayID = 99
-		}, checkout.ErrPayWayUnavailable},
+		}, checkout.ErrChoiceRefused},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

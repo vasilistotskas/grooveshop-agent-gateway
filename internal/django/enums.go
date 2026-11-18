@@ -52,8 +52,8 @@ const CodeCartHasUnpaidOrder = "cart_has_unpaid_order"
 
 // CodeTotalChanged is the `code` of Django's 409 refusing an order whose
 // expectedTotal is not the amount due it computes now
-// (order/enum/create_error.py). CreateOrder reports it as a
-// *TotalChangedError.
+// (order/enum/create_error.py). CreateOrder reports it as
+// ErrTotalChanged.
 const CodeTotalChanged = "total_changed"
 
 // CodePayWayUnavailable is the `code` of Django's 400 refusing a pay way

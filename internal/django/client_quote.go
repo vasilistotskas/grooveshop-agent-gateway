@@ -3,8 +3,6 @@ package django
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
 )
 
@@ -121,43 +119,4 @@ func (c *Client) Quote(
 		return nil, cartRefusal(ctx, err)
 	}
 	return &out, nil
-}
-
-// totalChangedBody is the part of Django's 409 total_changed the gateway
-// reads: the total the order would have been created at now.
-type totalChangedBody struct {
-	Error struct {
-		Quote struct {
-			ExpectedTotal *ExpectedTotal `json:"expectedTotal"`
-		} `json:"quote"`
-	} `json:"error"`
-}
-
-// TotalChangedError is Django's refusal of an order whose expected total
-// is not the amount due it computes now (409 total_changed): nothing was
-// created. Now is the total it would have been created at, nil when the
-// body did not carry one.
-type TotalChangedError struct {
-	Now *ExpectedTotal
-	err error
-}
-
-func (e *TotalChangedError) Error() string {
-	return fmt.Sprintf("%s: %s", ErrTotalChanged, e.err)
-}
-
-func (e *TotalChangedError) Unwrap() []error {
-	return []error{ErrTotalChanged, e.err}
-}
-
-// totalChanged reads a 409 total_changed, or reports false.
-func totalChanged(err error) (*TotalChangedError, bool) {
-	apiErr, ok := errors.AsType[*APIError](err)
-	if !ok || apiErr.Code != CodeTotalChanged {
-		return nil, false
-	}
-	var body totalChangedBody
-	_ = json.Unmarshal(apiErr.Body, &body)
-	return &TotalChangedError{Now: body.Error.Quote.ExpectedTotal, err: err},
-		true
 }

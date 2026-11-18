@@ -123,7 +123,7 @@ type Attribution struct {
 // caller owns idempotency (checkout sessions guard completion). Django's
 // refusal of a cart whose earlier order awaits its payment is
 // ErrCartHasUnpaidOrder, and of a total that is no longer the amount due
-// a *TotalChangedError (ErrTotalChanged).
+// ErrTotalChanged.
 func (c *Client) CreateOrder(
 	ctx context.Context, host, lang, cartID string, body OrderCreate,
 ) (*Order, error) {
@@ -140,8 +140,9 @@ func (c *Client) CreateOrder(
 		apiErr.Code == CodeCartHasUnpaidOrder {
 		return nil, fmt.Errorf("%w: %w", ErrCartHasUnpaidOrder, err)
 	}
-	if changed, ok := totalChanged(err); ok {
-		return nil, changed
+	if apiErr, ok := errors.AsType[*APIError](err); ok &&
+		apiErr.Code == CodeTotalChanged {
+		return nil, fmt.Errorf("%w: %w", ErrTotalChanged, err)
 	}
 	if err != nil {
 		return nil, err

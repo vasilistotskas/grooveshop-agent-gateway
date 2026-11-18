@@ -83,6 +83,7 @@ func startBranchFlow(t *testing.T, hosted bool) (flowStack, *branchDjango) {
 		store: store, rdb: rdb, faults: faults,
 		tenant: &tenant.Tenant{
 			SchemaName: "demostore", DefaultLocale: "el",
+			DefaultCurrency:           "EUR",
 			AgentCommerceEnabled:      true,
 			AgentHostedPaymentEnabled: hosted,
 			Domain:                    "shop.test",

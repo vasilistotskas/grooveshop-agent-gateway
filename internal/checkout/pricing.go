@@ -37,8 +37,8 @@ type PricedDiscount struct {
 // renderers serialize. Amounts are minor units. Before an order exists
 // every amount is Django's checkout quote (django.Client.Quote), the one
 // computation order creation runs; the gateway adds nothing up of its
-// own except the total of a checkout that has not chosen everything yet,
-// which no order can be placed at (Final).
+// own except the total of a checkout that has not chosen everything yet:
+// the rows the quote priced.
 //
 // DiscountTotal is what promotions and the applied coupon take off; the
 // product-markdown saving is already in the line prices and is no row
@@ -63,11 +63,6 @@ type Pricing struct {
 	Total          int64
 	// Currency is the ISO 4217 code of every amount.
 	Currency string
-	// Final reports whether Total is the total an order would be placed
-	// at: a delivery and a pay way are both chosen and priced. Without
-	// it Total leaves out what is not chosen yet, and the checkout cannot
-	// be completed.
-	Final bool
 	// DeliveryRefused and PayWayRefused are the checkout's choices the
 	// store no longer takes for this cart (it does not ship that way, the
 	// cart outgrew the carrier, the pay way is not offered for the
@@ -100,6 +95,20 @@ type Pricing struct {
 type Refusal struct {
 	Code   string
 	Detail string
+}
+
+// Refused is the first of the checkout's choices or data the store
+// refuses for this cart, nil when it refuses none: an order cannot be
+// placed until it is corrected.
+func (p *Pricing) Refused() *Refusal {
+	for _, r := range []*Refusal{
+		p.DeliveryRefused, p.PayWayRefused, p.InputRefused,
+	} {
+		if r != nil {
+			return r
+		}
+	}
+	return nil
 }
 
 // ComputePricing fetches the cart fresh for its lines and Django's quote
@@ -219,8 +228,13 @@ func (p *Pricing) quote(
 		case apiErr.Code == django.CodeCartEmpty:
 			return &django.Quote{ItemsSubtotal: "0", DiscountTotal: "0",
 				Currency: t.DefaultCurrency}, nil
+		// The country is kept, so the deliveries stay listed, unless it
+		// is what the store refuses.
 		case errors.Is(err, django.ErrValidation) &&
-			req != (django.QuoteRequest{}):
+			req != (django.QuoteRequest{CountryID: req.CountryID}):
+			p.InputRefused = refusal
+			req = django.QuoteRequest{CountryID: req.CountryID}
+		case errors.Is(err, django.ErrValidation) && req.CountryID != "":
 			p.InputRefused = refusal
 			req = django.QuoteRequest{}
 		default:
@@ -278,7 +292,7 @@ func (p *Pricing) addQuote(q *django.Quote, cart *django.Cart) error {
 		p.HasPaymentFee = p.PaymentFee > 0
 	}
 	if q.ExpectedTotal != nil {
-		p.Total, p.Final = q.ExpectedTotal.Amount, true
+		p.Total = q.ExpectedTotal.Amount
 		return nil
 	}
 	p.Total = max(p.ItemsSubtotal-p.DiscountTotal+p.DeliveryFee+p.PaymentFee, 0)
@@ -343,7 +357,7 @@ func orderPricing(
 		p.DiscountTotal += amount
 	}
 	p.HasPaymentFee = p.PaymentFee > 0
-	p.Currency, p.Final = b.Currency, true
+	p.Currency = b.Currency
 	return p, nil
 }
 

@@ -14,8 +14,8 @@ import (
 
 type ShippingOptionsIn struct {
 	CountryCode string `json:"countryCode" jsonschema:"ISO 3166-1 alpha-2 destination, e.g. GR"`
-	OrderValue  string `json:"orderValue,omitempty" jsonschema:"the cart's freeThresholdValue from get_cart as a decimal string: the items after discounts, excluding shipping, which free-shipping thresholds are judged on; ignored when the call names a cart, whose own value is used"`
-	WeightGrams int    `json:"weightGrams,omitempty" jsonschema:"the cart's totalWeightGrams from get_cart; without it no option is left out for its weight cap; ignored when the call names a cart, whose own weight is used"`
+	OrderValue  string `json:"orderValue,omitempty" jsonschema:"the cart's freeThresholdValue from get_cart as a decimal string: the items after discounts, excluding shipping, which free-shipping thresholds are judged on; ignored when the call names a cart that holds items, whose own value is used"`
+	WeightGrams int    `json:"weightGrams,omitempty" jsonschema:"the cart's totalWeightGrams from get_cart; without it no option is left out for its weight cap; ignored when the call names a cart that holds items, whose own weight is used"`
 	CartID      string `json:"cartId,omitempty" jsonschema:"the cartId a cart tool returned: its options are priced as its order would be charged, and one too heavy or too large for it is left out"`
 }
 

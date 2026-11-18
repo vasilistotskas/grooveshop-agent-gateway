@@ -987,10 +987,7 @@ func (h *handlers) completeSession(
 			return fromSnapshot(func() (*mcp.CallToolResult, CheckoutResult,
 				error) {
 				res, out, err2 := h.checkoutResult(ctx, t, s, neg)
-				if err2 != nil {
-					return nil, CheckoutResult{}, completeErr(s, err)
-				}
-				return incompleteBy(res, out, nil, totalChanged())
+				return incompleteBy(res, out, err2, totalChanged())
 			})
 		}
 		// Refused before the order was sent, or by Django for the order
@@ -1147,6 +1144,12 @@ func completeErr(s *checkout.Session, err error) error {
 		return saveFailed(err)
 	case errors.Is(err, checkout.ErrCompletionInProgress):
 		return errCompletionInFlight
+	case errors.Is(err, checkout.ErrChoiceRefused):
+		return &mcptool.ToolError{Code: mcptool.CodeMissing,
+			Detail: err.Error(),
+			Hint: "the store refuses one of this checkout's choices for " +
+				"its cart now; read it with get_checkout, which names it, " +
+				"and change it with update_checkout, then complete"}
 	case errors.Is(err, checkout.ErrTotalNotShown):
 		return &mcptool.ToolError{Code: mcptool.CodeMissing,
 			Hint: "this checkout has shown no total yet; read it with " +
@@ -1542,6 +1545,13 @@ func (h *handlers) checkoutResult(
 	default:
 		text = fmt.Sprintf("Checkout %s status: %s.", s.ID, s.Status)
 	}
+	// A choice the store refuses now makes a ready checkout render
+	// incomplete; its error says what to change.
+	if s.Status == checkout.StatusReadyForComplete &&
+		payload.Status == string(checkout.StatusIncomplete) {
+		text = fmt.Sprintf("Checkout %s is incomplete — %s", s.ID,
+			firstError(payload).Text)
+	}
 	return textResult("%s", text), CheckoutResult{checkout: payload}, nil
 }
 
@@ -1564,9 +1574,10 @@ func (h *handlers) rendered(
 		status, expires, shown := s.Status, s.ExpiresAt, s.ShownTotal
 		payload, err := h.deps.UCP.BuildCheckout(ctx, t, s,
 			neg.Declaration(ucp.CapabilityCheckout))
+		read, _ := ctx.Value(unlockedKey{}).(bool)
 		if err != nil ||
 			(s.Status == status && s.ExpiresAt.Equal(expires) &&
-				s.ShownTotal == shown) {
+				(s.ShownTotal == shown || read)) {
 			return payload, err
 		}
 		err = h.deps.Checkout.Save(ctx, s)
@@ -1663,8 +1674,22 @@ func (h *handlers) getCheckout(
 			case err != nil:
 				return nil, zero, errCheckoutUnavailable
 			}
-			return h.checkoutResult(ctx, t, s, neg)
+			return h.checkoutResult(unlocked(ctx), t, s, neg)
 		})
+}
+
+// unlockedKey marks a call that renders a checkout without holding its
+// lock: a read.
+type unlockedKey struct{}
+
+// unlocked marks ctx as a call that does not hold the checkout's lock. It
+// does not store the total an open checkout shows (rendered): a read that
+// stored it would make the update or completion holding the lock lose
+// its save. The total is stored by the calls that hold the lock, and an
+// order sent at an older one is refused (django.ErrTotalChanged), whose
+// answer, under the lock, stores the new one.
+func unlocked(ctx context.Context) context.Context {
+	return context.WithValue(ctx, unlockedKey{}, true)
 }
 
 // cancelCheckout abandons a session the buyer is no longer pursuing.
