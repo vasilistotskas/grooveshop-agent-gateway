@@ -325,10 +325,11 @@ Loads when working on a checkout session on either surface, its completion, its 
     `storeShown`, a create with its session. A read holds no lock
     (`mcpsrv.unlocked`, ACP's GET and HEAD), and stores it only by taking
     the lock while no call holds it (`Store.StoreShown`): storing over
-    an update or completion would make that call's own save fail. A
-    total shown and not stored (the lock was held, Redis failed) costs
-    one `total_changed`: the order sent at the total stored is refused,
-    and the next render stores the new one. A read that stores holds the
+    an update or completion would make that call's own save fail. **A
+    changed total that cannot be stored is not published**: the answer
+    is busy (the lock is held), changed (stored since) or unavailable
+    (Redis failed), never the checkout at it, since its order would be
+    placed at the one stored before. A read that stores holds the
     lock for two reads and a write: an update or completion arriving then
     is answered busy (UCP `errCheckoutBusy`, ACP 409), and a pod that
     dies inside it leaves the lock to lapse. An open checkout that other

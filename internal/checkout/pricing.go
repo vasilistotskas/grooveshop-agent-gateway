@@ -212,9 +212,12 @@ func (p *Pricing) quote(
 	req := QuoteRequest(s)
 	for {
 		q, err := dj.Quote(ctx, t.Domain, t.DefaultLocale, s.CartID, req)
+		if err == nil {
+			return q, quoted(req, q)
+		}
 		apiErr, ok := errors.AsType[*django.APIError](err)
-		if err == nil || !ok {
-			return q, err
+		if !ok {
+			return nil, err
 		}
 		refusal := &Refusal{Code: apiErr.Code, Detail: apiErr.Detail}
 		switch {
@@ -241,6 +244,19 @@ func (p *Pricing) quote(
 			return nil, err
 		}
 	}
+}
+
+// quoted checks that a quote prices every choice it was asked: a row it
+// left out would be a total without it.
+func quoted(req django.QuoteRequest, q *django.Quote) error {
+	switch {
+	case req.ShippingKind != "" && q.Shipping == nil,
+		req.PayWayID > 0 && q.PaymentMethodFee == nil,
+		req.ShippingKind != "" && req.PayWayID > 0 && q.ExpectedTotal == nil:
+		return fmt.Errorf("%w: the quote leaves out a chosen row",
+			django.ErrUpstreamDown)
+	}
+	return nil
 }
 
 // payWayRefusal reports whether code is one of Django's refusals of a

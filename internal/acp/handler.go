@@ -24,6 +24,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -154,6 +155,8 @@ const msgRecordsUnavailable = "Checkout is temporarily unavailable."
 // writeUnavailable is the protocol body for a transient gateway-side
 // failure (Redis, rendering); the platform retries.
 func writeUnavailable(w http.ResponseWriter, msg string) {
+	w.Header().Set("Retry-After",
+		strconv.Itoa(mcptool.UnavailableRetryAfter))
 	writeError(w, http.StatusServiceUnavailable, Error{
 		Type: "service_unavailable", Code: "unavailable", Message: msg,
 	})
@@ -236,6 +239,8 @@ func upstreamError(w http.ResponseWriter, err error) {
 			Type: "invalid_request", Code: "invalid", Message: msg,
 		})
 	default:
+		w.Header().Set("Retry-After",
+			strconv.Itoa(mcptool.UnavailableRetryAfter))
 		writeError(w, http.StatusServiceUnavailable, Error{
 			Type: "service_unavailable", Code: "upstream_unavailable",
 			Message: "The store backend is temporarily unavailable.",
@@ -1623,31 +1628,23 @@ func (h *Handler) render(
 }
 
 // storeShown stores the total a render of a stored session showed, which
-// its order is placed at: a session publishes only what is stored. A
-// session not created yet is stored by its create, with the total. One
-// that cannot be stored (another request stored it meanwhile, Redis
-// failed) is answered all the same: its order would be placed at the
-// total stored before, which Django refuses with the new one
-// (django.ErrTotalChanged), so nothing is placed at a total it did not
-// show.
+// its order is placed at: a session publishes only what is stored, so
+// one that cannot be stored is not rendered (renderBody). A session not
+// created yet is stored by its create, with the total.
 //
 // A read (GET, HEAD) holds no lock, and stores it only by taking the
 // lock (checkout.Store.StoreShown): the update or complete holding it
 // never loses its save to a read.
-func (h *Handler) storeShown(r *http.Request, s *checkout.Session) {
+func (h *Handler) storeShown(r *http.Request, s *checkout.Session) error {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		// Held by another call, or stored since: that call stores its own.
-		if err := h.store.StoreShown(r.Context(), acpCaller, s); err != nil {
-			h.log.DebugContext(r.Context(), "acp: shown total not stored "+
-				"by a read", slog.String("session", s.ID),
-				slog.String("error", err.Error()))
-		}
-		return
+		return h.store.StoreShown(r.Context(), acpCaller, s)
 	}
-	if err := h.store.Save(r.Context(), s); err != nil {
+	err := h.store.Save(r.Context(), s)
+	if err != nil {
 		h.log.WarnContext(r.Context(), "acp: shown total not stored",
 			slog.String("session", s.ID), slog.String("error", err.Error()))
 	}
+	return err
 }
 
 // renderBody encodes the session, or answers why it cannot and reports
@@ -1661,7 +1658,21 @@ func (h *Handler) renderBody(
 	payload, err := Render(r.Context(), h.dj, t,
 		h.site.Links(t.Domain, t.DefaultLocale), s)
 	if err == nil && s.ShownTotal != shown && s.Revision != "" {
-		h.storeShown(r, s)
+		// A total that is not stored is not published: its order would
+		// be placed at the one stored before.
+		if err := h.storeShown(r, s); err != nil {
+			switch {
+			case errors.Is(err, checkout.ErrLocked):
+				writeInFlight(w, idemRetryAfter, msgSessionBusy)
+			case errors.Is(err, checkout.ErrSessionChanged):
+				saveFailed(w, err)
+			case errors.Is(err, checkout.ErrNotFound):
+				h.sessionError(w, err)
+			default:
+				writeUnavailable(w, msgRecordsUnavailable)
+			}
+			return nil, false
+		}
 	}
 	if err == nil {
 		var body []byte

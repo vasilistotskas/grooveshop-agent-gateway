@@ -99,6 +99,7 @@ func TestARefusedChoiceIsNotCompleted(t *testing.T) {
 			ctx := t.Context()
 			id := surface.ready(t)
 			placed := stack.faults.ordersPlaced.Load()
+			sent := stack.faults.orderCreates.Load()
 
 			stack.faults.codNotDelivered.Store(true)
 			defer stack.faults.codNotDelivered.Store(false)
@@ -110,6 +111,8 @@ func TestARefusedChoiceIsNotCompleted(t *testing.T) {
 			assert.Empty(t, refused.status, "no order, no checkout placed")
 			assert.NotEmpty(t, refused.refusal)
 			assert.Equal(t, placed, stack.faults.ordersPlaced.Load())
+			assert.Equal(t, sent, stack.faults.orderCreates.Load(),
+				"the refused choice never reaches the store's order call")
 		})
 	}
 }

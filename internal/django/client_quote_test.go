@@ -66,7 +66,8 @@ func TestQuoteSendsTheChoicesMade(t *testing.T) {
 	_, err = c.Quote(t.Context(), "shop.example.test", "el", "cart-uuid",
 		QuoteRequest{})
 	require.NoError(t, err)
-	assert.Empty(t, got, "nothing chosen, nothing sent")
+	assert.Equal(t, map[string]any{}, got,
+		"nothing chosen, an empty object sent")
 }
 
 // The expected total always rides the order, so Django creates it only

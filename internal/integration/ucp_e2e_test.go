@@ -434,8 +434,9 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			}
 			quote(w, r)
 		})
-	// amountDue is what Django charges an order with these choices now.
-	amountDue := func(order map[string]any) any {
+	// amountDue is Django's quote of an order with these choices now: its
+	// expected total, or its refusal of a choice.
+	amountDue := func(order map[string]any) *httptest.ResponseRecorder {
 		// A map of decoded JSON values always encodes.
 		choices, _ := json.Marshal(map[string]any{
 			"payWayId": order["payWayId"], "shippingKind": order["shippingKind"],
@@ -446,9 +447,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 		rec := httptest.NewRecorder()
 		quote(rec, httptest.NewRequest(http.MethodPost, "/api/v1/cart/quote",
 			bytes.NewReader(choices)))
-		var q map[string]any
-		assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), &q))
-		return q["expectedTotal"]
+		return rec
 	}
 	outer.HandleFunc("GET /api/v1/region/GR/get_regions_by_country_alpha_2",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -703,7 +702,17 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			// It is placed only at the amount due now, as Django places
 			// it (order/services.py, OrderTotalChangedError).
 			assert.NotEmpty(t, body["expectedTotal"])
-			if !assert.ObjectsAreEqual(amountDue(body), body["expectedTotal"]) {
+			due := amountDue(body)
+			if due.Code != http.StatusOK {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(due.Code)
+				_, _ = w.Write(due.Body.Bytes())
+				return
+			}
+			var now map[string]any
+			assert.NoError(t, json.Unmarshal(due.Body.Bytes(), &now))
+			if !assert.ObjectsAreEqual(now["expectedTotal"],
+				body["expectedTotal"]) {
 				raw, err := os.ReadFile(
 					fixturePath("order_total_changed.json"))
 				if !assert.NoError(t, err) {

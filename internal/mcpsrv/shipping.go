@@ -15,7 +15,7 @@ import (
 type ShippingOptionsIn struct {
 	CountryCode string `json:"countryCode" jsonschema:"ISO 3166-1 alpha-2 destination, e.g. GR"`
 	OrderValue  string `json:"orderValue,omitempty" jsonschema:"the cart's freeThresholdValue from get_cart as a decimal string: the items after discounts, excluding shipping, which free-shipping thresholds are judged on; ignored when the call names a cart that holds items, whose own value is used"`
-	WeightGrams int    `json:"weightGrams,omitempty" jsonschema:"the cart's totalWeightGrams from get_cart; without it no option is left out for its weight cap; ignored when the call names a cart that holds items, whose own weight is used"`
+	WeightGrams int    `json:"weightGrams,omitempty" jsonschema:"for a destination with no cart: the weight to judge each option's weight cap on, without it none is left out for weight; ignored when the call names a cart that holds items, whose own weight Django judges"`
 	CartID      string `json:"cartId,omitempty" jsonschema:"the cartId a cart tool returned: its options are priced as its order would be charged, and one too heavy or too large for it is left out"`
 }
 
@@ -108,8 +108,12 @@ func (h *handlers) shippingOptions(
 			django.QuoteRequest{CountryID: in.CountryCode})
 		apiErr, refused := errors.AsType[*django.APIError](err)
 		switch {
+		// An empty cart has nothing to judge: the options are the
+		// store's own, asked for no cart (not even the shopper's token).
 		case refused && apiErr.Code == django.CodeCartEmpty:
-			return h.bareShippingOptions(ctx, t, lang, in)
+			in.CartID = ""
+			return h.bareShippingOptions(django.WithCartToken(ctx, nil), t,
+				lang, in)
 		case err != nil:
 			return nil, h.cartGoneErr(err)
 		}

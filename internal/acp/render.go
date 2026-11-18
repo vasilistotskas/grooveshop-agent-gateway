@@ -323,7 +323,9 @@ func refusedChoices(p *checkout.Pricing) []Message {
 			Param:      "$.selected_fulfillment_options",
 			Resolution: "requires_buyer_input", ContentType: "plain",
 			Content: strings.TrimSpace(r.Detail + " Select another " +
-				"fulfillment option from fulfillment_options."),
+				"fulfillment option from fulfillment_options; when it " +
+				"lists none, change the address or the cart, or hand the " +
+				"buyer to continue_url."),
 		})
 	}
 	if r := p.PayWayRefused; r != nil {

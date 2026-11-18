@@ -24,6 +24,7 @@ type Store struct {
 }
 
 type cartBody struct {
+	Items                 []json.RawMessage `json:"items"`
 	TotalPrice            json.Number       `json:"totalPrice"`
 	PromotionDiscount     json.Number       `json:"promotionDiscount"`
 	FreeThresholdValue    json.Number       `json:"freeThresholdValue"`
@@ -60,6 +61,10 @@ func (s Store) Quote(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(s.Cart, &cart) != nil ||
 		json.Unmarshal(s.ShippingOptions, &options) != nil {
 		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if len(cart.Items) == 0 {
+		refuse(w, django.CodeCartEmpty)
 		return
 	}
 	items := minor(cart.TotalPrice)

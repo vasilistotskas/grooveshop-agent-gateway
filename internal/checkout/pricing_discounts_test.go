@@ -14,7 +14,7 @@ func TestAddDiscounts(t *testing.T) {
 	t.Run("each offer keeps its own amount", func(t *testing.T) {
 		p := &Pricing{}
 		require.NoError(t, p.addDiscounts(&django.Quote{
-			AppliedPromotions: []django.AppliedPromotion{
+			AppliedPromotions: []django.QuotePromotion{
 				{PromotionID: 3, Name: "2+1", Amount: json.Number("10.79")},
 				{
 					PromotionID: 5, Name: "-5 €", Code: "SAVE5",
@@ -51,7 +51,7 @@ func TestAddDiscounts(t *testing.T) {
 		"vocabulary, whatever the cart says of it", func(t *testing.T) {
 		p := &Pricing{}
 		require.NoError(t, p.addDiscounts(&django.Quote{
-			AppliedPromotions: []django.AppliedPromotion{
+			AppliedPromotions: []django.QuotePromotion{
 				{PromotionID: 3, Name: "2+1", Amount: json.Number("10.79")},
 			},
 			BlockingCoupon: &django.QuoteBlockingCoupon{

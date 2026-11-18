@@ -987,6 +987,15 @@ func (h *handlers) completeSession(
 			return fromSnapshot(func() (*mcp.CallToolResult, CheckoutResult,
 				error) {
 				res, out, err2 := h.checkoutResult(ctx, t, s, neg)
+				// The render read the checkout again: one another call
+				// placed meanwhile is answered as it is.
+				if err2 == nil && out.checkout != nil &&
+					!slices.Contains([]string{
+						string(checkout.StatusIncomplete),
+						string(checkout.StatusReadyForComplete),
+					}, out.checkout.Status) {
+					return res, out, nil
+				}
 				return incompleteBy(res, out, err2, totalChanged())
 			})
 		}
@@ -1024,8 +1033,7 @@ func totalChanged() ucp.Message {
 		Severity: "recoverable",
 		Text: "The store's total for this checkout changed since it was " +
 			"shown, so no order was placed. Confirm the total shown here " +
-			"with the buyer, then call complete_checkout again (the same " +
-			"idempotency key may be used)."}
+			"with the buyer, then call complete_checkout again."}
 }
 
 // errNoPaymentMethod refuses a complete of a checkout that holds no
@@ -1559,10 +1567,10 @@ func (h *handlers) checkoutResult(
 // it (checkout.Store.StoreShown). The save is a compare-and-set: a
 // checkout another request stored meanwhile is read again and rendered
 // once more. A placed checkout whose state cannot be stored is answered
-// as one placed and not rendered. An open one is answered all the same:
-// its order would be placed at the total stored before, which Django
-// refuses with the new one (django.ErrTotalChanged), so nothing is
-// placed at a total the checkout did not show.
+// as one placed and not rendered; an open one as unavailable, or as busy
+// or changed when another call holds or stored it: a total that is not
+// stored is never published, since its order would be placed at the one
+// stored before.
 func (h *handlers) rendered(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
 	neg ucp.Negotiated,
@@ -1577,31 +1585,35 @@ func (h *handlers) rendered(
 			return payload, err
 		}
 		// A read changed only the total it shows: it stores it under
-		// the lock, when no other call holds it.
+		// the lock, which another call may hold. A total that cannot be
+		// stored is not published: its order would be placed at the one
+		// stored before.
 		if read, _ := ctx.Value(unlockedKey{}).(bool); read &&
 			s.Status == status && s.ExpiresAt.Equal(expires) {
-			if err := h.deps.Checkout.StoreShown(
-				ctx, ucpCaller(ctx), s); err != nil {
-				h.deps.Log.DebugContext(ctx, "checkout: shown total not "+
-					"stored by a read", slog.String("session", s.ID),
-					slog.String("error", err.Error()))
+			err = h.deps.Checkout.StoreShown(ctx, ucpCaller(ctx), s)
+			switch {
+			case err == nil:
+				return payload, nil
+			case errors.Is(err, checkout.ErrLocked):
+				return nil, errCheckoutBusy
+			case errors.Is(err, checkout.ErrNotFound):
+				return nil, errCheckoutGone
+			case !errors.Is(err, checkout.ErrSessionChanged):
+				return nil, errCheckoutUnavailable
 			}
+		} else if err = h.deps.Checkout.Save(ctx, s); err == nil {
 			return payload, nil
 		}
-		err = h.deps.Checkout.Save(ctx, s)
-		if err == nil {
-			return payload, nil
-		}
-		if s.Open() && !errors.Is(err, checkout.ErrSessionChanged) {
+		// An open checkout has no order to speak of: one whose state
+		// cannot be stored is unavailable, one that other requests keep
+		// storing is answered as changed.
+		open := s.Open()
+		if open && !errors.Is(err, checkout.ErrSessionChanged) {
 			h.deps.Log.WarnContext(ctx, "checkout: shown total not stored",
 				slog.String("session", s.ID),
 				slog.String("error", err.Error()))
-			return payload, nil
+			return nil, errCheckoutUnavailable
 		}
-		// An open checkout has no order to speak of: one that other
-		// requests keep storing is answered as changed, one that cannot
-		// be read again as unavailable.
-		open := s.Open()
 		if !again || !errors.Is(err, checkout.ErrSessionChanged) {
 			h.deps.Log.WarnContext(ctx, "checkout: order state not stored",
 				slog.String("session", s.ID),

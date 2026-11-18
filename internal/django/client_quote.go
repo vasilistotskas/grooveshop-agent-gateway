@@ -29,7 +29,7 @@ type QuoteRequest struct {
 type Quote struct {
 	ItemsSubtotal     json.Number          `json:"itemsSubtotal"`
 	DiscountTotal     json.Number          `json:"discountTotal"`
-	AppliedPromotions []AppliedPromotion   `json:"appliedPromotions"`
+	AppliedPromotions []QuotePromotion     `json:"appliedPromotions"`
 	BlockingCoupon    *QuoteBlockingCoupon `json:"blockingCoupon"`
 	Shipping          *QuoteShipping       `json:"shipping"`
 	PaymentMethodFee  *QuotePaymentFee     `json:"paymentMethodFee"`
@@ -39,6 +39,16 @@ type Quote struct {
 	// request's country, priced as an order would be; nil without a
 	// country.
 	ShippingOptions []QuoteShippingOption `json:"shippingOptions" contract:"nullable"`
+}
+
+// QuotePromotion is one offer that took money off the quoted cart, with
+// its own amount; the amounts sum to Quote.DiscountTotal. Code is the
+// coupon that earned it, empty for an automatic promotion.
+type QuotePromotion struct {
+	PromotionID int64       `json:"promotionId"`
+	Name        string      `json:"name"`
+	Code        string      `json:"code" contract:"nullable"`
+	Amount      json.Number `json:"amount"`
 }
 
 // QuoteBlockingCoupon is an attached coupon order creation refuses the
