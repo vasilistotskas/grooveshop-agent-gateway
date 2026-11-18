@@ -436,10 +436,10 @@ func TestLock(t *testing.T) {
 	_, err = store.Lock(ctx, s.Schema, s.ID)
 	require.ErrorIs(t, err, checkout.ErrLocked)
 
-	// Six upstream timeouts: what a completion does under it.
+	// Nine upstream timeouts: what a completion does under it.
 	ttl, err := rdb.PTTL(ctx, lockRedisKey(s.ID)).Result()
 	require.NoError(t, err)
-	assert.InDelta(t, (6 * storeTimeout).Seconds(), ttl.Seconds(), 2)
+	assert.InDelta(t, (9 * storeTimeout).Seconds(), ttl.Seconds(), 2)
 
 	// The lock lapses and another request takes it.
 	require.NoError(t, rdb.Del(ctx, lockRedisKey(s.ID)).Err())
@@ -478,7 +478,7 @@ func TestClaim(t *testing.T) {
 		require.NotNil(t, claim)
 		ttl, err := rdb.PTTL(ctx, key).Result()
 		require.NoError(t, err)
-		assert.InDelta(t, (7 * storeTimeout).Seconds(), ttl.Seconds(), 2)
+		assert.InDelta(t, (10 * storeTimeout).Seconds(), ttl.Seconds(), 2)
 
 		claimed, settled := held(t, key)
 		assert.False(t, claimed, "a second request claimed a held key")

@@ -318,18 +318,19 @@ Loads when working on a checkout session on either surface, its completion, its 
     `unavailable` with `retryAfterSeconds`, ACP 503). So is a quote in
     another currency than the store's, under which every amount is
     shown.
-  - **The total shown is stored by the calls that hold the lock.** Every
-    render of an open checkout sets `Session.ShownTotal`
-    (`Session.Show`), and the calls holding its lock store it: UCP's
-    `rendered` with the status and expiry, ACP's `storeShown`, a create
-    with its session. A read holds no lock and does not store it
-    (`mcpsrv.unlocked`, ACP's GET): a read that stored it would make the
-    update or completion holding the lock lose its save. A read showing a
-    newer total than stored, or a store that fails, costs one
-    `total_changed`: the order sent at the total stored is refused, and
-    that answer, under the lock, stores the new one. An open checkout
-    that other requests keep storing is answered as changed (UCP
-    `conflict`), never as a placed order.
+  - **The total shown is stored, never over a call that holds the
+    lock.** Every render of an open checkout sets `Session.ShownTotal`
+    (`Session.Show`). The calls holding its lock store it with their
+    own write: UCP's `rendered` with the status and expiry, ACP's
+    `storeShown`, a create with its session. A read holds no lock
+    (`mcpsrv.unlocked`, ACP's GET and HEAD), and stores it only by taking
+    the lock while no call holds it (`Store.StoreShown`): storing over
+    an update or completion would make that call's own save fail. A
+    total shown and not stored (the lock was held, Redis failed) costs
+    one `total_changed`: the order sent at the total stored is refused,
+    and the next render stores the new one. An open checkout that other
+    requests keep storing is answered as changed (UCP `conflict`), never
+    as a placed order.
   - **The order is placed only at it.** `Flow.admit` refuses a checkout
     that has shown no total (`ErrTotalNotShown`, which is `ErrNotReady`:
     read it, then complete), and one whose choices the store's quote now

@@ -1135,11 +1135,6 @@ func completeErr(s *checkout.Session, err error) error {
 		return stockShortfallErr(err)
 	case errors.Is(err, django.ErrCartHasUnpaidOrder):
 		return cartOrderUnpaidErr(err)
-	case errors.Is(err, django.ErrTotalChanged):
-		return &mcptool.ToolError{Code: django.CodeTotalChanged,
-			Hint: "the store's total for this checkout changed, so no " +
-				"order was placed; read it with get_checkout, confirm the " +
-				"total with the buyer, then complete again"}
 	case errors.Is(err, checkout.ErrSessionChanged):
 		return saveFailed(err)
 	case errors.Is(err, checkout.ErrCompletionInProgress):
@@ -1559,7 +1554,9 @@ func (h *handlers) checkoutResult(
 // order (a status the order decided, its expiry) and the total it shows
 // (Session.ShownTotal) before giving it: a checkout publishes only what is
 // stored, so no later read gives an earlier expires_at, and its order is
-// placed at the total it showed. The save is a compare-and-set: a
+// placed at the total it showed. A read (unlocked) that changed only the
+// total stores it by taking the lock, and not while another call holds
+// it (checkout.Store.StoreShown). The save is a compare-and-set: a
 // checkout another request stored meanwhile is read again and rendered
 // once more. A placed checkout whose state cannot be stored is answered
 // as one placed and not rendered. An open one is answered all the same:
@@ -1574,11 +1571,22 @@ func (h *handlers) rendered(
 		status, expires, shown := s.Status, s.ExpiresAt, s.ShownTotal
 		payload, err := h.deps.UCP.BuildCheckout(ctx, t, s,
 			neg.Declaration(ucp.CapabilityCheckout))
-		read, _ := ctx.Value(unlockedKey{}).(bool)
 		if err != nil ||
 			(s.Status == status && s.ExpiresAt.Equal(expires) &&
-				(s.ShownTotal == shown || read)) {
+				s.ShownTotal == shown) {
 			return payload, err
+		}
+		// A read changed only the total it shows: it stores it under
+		// the lock, when no other call holds it.
+		if read, _ := ctx.Value(unlockedKey{}).(bool); read &&
+			s.Status == status && s.ExpiresAt.Equal(expires) {
+			if err := h.deps.Checkout.StoreShown(
+				ctx, ucpCaller(ctx), s); err != nil {
+				h.deps.Log.DebugContext(ctx, "checkout: shown total not "+
+					"stored by a read", slog.String("session", s.ID),
+					slog.String("error", err.Error()))
+			}
+			return payload, nil
 		}
 		err = h.deps.Checkout.Save(ctx, s)
 		if err == nil {
@@ -1682,12 +1690,10 @@ func (h *handlers) getCheckout(
 // lock: a read.
 type unlockedKey struct{}
 
-// unlocked marks ctx as a call that does not hold the checkout's lock. It
-// does not store the total an open checkout shows (rendered): a read that
-// stored it would make the update or completion holding the lock lose
-// its save. The total is stored by the calls that hold the lock, and an
-// order sent at an older one is refused (django.ErrTotalChanged), whose
-// answer, under the lock, stores the new one.
+// unlocked marks ctx as a call that does not hold the checkout's lock: a
+// read. It stores the total an open checkout shows only by taking the
+// lock (checkout.Store.StoreShown), so the update or completion holding
+// it never loses its save to a read.
 func unlocked(ctx context.Context) context.Context {
 	return context.WithValue(ctx, unlockedKey{}, true)
 }

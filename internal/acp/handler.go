@@ -1529,7 +1529,7 @@ func (h *Handler) completeError(
 		saveFailed(w, err)
 	case errors.Is(err, checkout.ErrChoiceRefused):
 		writeError(w, http.StatusBadRequest, Error{
-			Type: "invalid_request", Code: "invalid",
+			Type: "invalid_request", Code: "missing",
 			Message: "The store refuses one of this session's choices " +
 				"for its cart now. Read the session, which names it, " +
 				"change it with an update, then complete with a new " +
@@ -1630,9 +1630,19 @@ func (h *Handler) render(
 // total stored before, which Django refuses with the new one
 // (django.ErrTotalChanged), so nothing is placed at a total it did not
 // show.
+//
+// A read (GET, HEAD) holds no lock, and stores it only by taking the
+// lock (checkout.Store.StoreShown): the update or complete holding it
+// never loses its save to a read.
 func (h *Handler) storeShown(r *http.Request, s *checkout.Session) {
-	if err := h.store.Save(r.Context(), s); err != nil {
-		h.log.WarnContext(r.Context(), "acp: shown total not stored",
+	var err error
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		err = h.store.StoreShown(r.Context(), acpCaller, s)
+	} else {
+		err = h.store.Save(r.Context(), s)
+	}
+	if err != nil {
+		h.log.DebugContext(r.Context(), "acp: shown total not stored",
 			slog.String("session", s.ID), slog.String("error", err.Error()))
 	}
 }
@@ -1647,11 +1657,7 @@ func (h *Handler) renderBody(
 	shown := s.ShownTotal
 	payload, err := Render(r.Context(), h.dj, t,
 		h.site.Links(t.Domain, t.DefaultLocale), s)
-	// A read holds no lock: storing would make the update or complete
-	// that holds it lose its save. The total is stored by those, and an
-	// order sent at an older one is refused (django.ErrTotalChanged).
-	if err == nil && s.ShownTotal != shown && s.Revision != "" &&
-		r.Method != http.MethodGet {
+	if err == nil && s.ShownTotal != shown && s.Revision != "" {
 		h.storeShown(r, s)
 	}
 	if err == nil {

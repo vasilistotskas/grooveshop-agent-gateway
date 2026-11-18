@@ -204,7 +204,7 @@ wins over this page.
   refuses because the total changed since (`total_changed`) is answered
   with the checkout at the total now, `incomplete` for that answer and a
   `recoverable` error `total_changed`, its completion claim released
-  (the tool error `total_changed` when that checkout cannot be read).
+  (the render's own error when that checkout cannot be read).
 - **continue_url** is only where the spec requires it,
   `requires_escalation`: the PSP's page while its link can be paid,
   else the order's (never the cart's). Not in an open checkout (`incomplete`, `ready_for_complete`),

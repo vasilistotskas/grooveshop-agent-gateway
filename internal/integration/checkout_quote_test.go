@@ -55,6 +55,40 @@ func TestAnOrderIsPlacedAtTheTotalItsCheckoutShowed(t *testing.T) {
 	}
 }
 
+// A price that changes after the checkout showed its total (the store's
+// cash-on-delivery fee now applies) is not charged unseen: the
+// completion is refused and places nothing, a read shows and stores the
+// new total, and the next completion places the order at it.
+func TestAChangedPriceIsChargedOnlyOnceShown(t *testing.T) {
+	stack := startUCPGateway(t)
+	for _, surface := range completionSurfaces(t, stack) {
+		t.Run(surface.name, func(t *testing.T) {
+			ctx := t.Context()
+			id := surface.ready(t)
+			placed := stack.faults.ordersPlaced.Load()
+
+			stack.faults.codFee.Store(true)
+			defer stack.faults.codFee.Store(false)
+			refused := surface.answer(ctx, id, uuid.NewString(), nil)
+			assert.Equal(t, placed, stack.faults.ordersPlaced.Load(),
+				"nothing is charged at a total the buyer was not shown")
+			if surface.name == "acp" {
+				assert.Equal(t, "400 total_changed", refused.refusal)
+				surface.read(ctx, id)
+			}
+
+			assert.Equal(t, "completed",
+				surface.complete(ctx, id, uuid.NewString(), nil))
+			order := stack.faults.lastOrder.Load()
+			require.NotNil(t, order)
+			assert.Equal(t, map[string]any{
+				"amount":   float64(fixtureShownTotal.Amount + 450),
+				"currency": fixtureShownTotal.Currency,
+			}, (*order)["expectedTotal"], "the total the read showed")
+		})
+	}
+}
+
 // A choice the store refuses for the cart now (cash on delivery is not
 // offered for the checkout's carrier) leaves its total without that row:
 // the checkout renders not ready, and a completion places nothing.

@@ -357,7 +357,7 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 		"checkout.ErrNotReady": {
 			checkout.ErrNotReady, http.StatusBadRequest, "missing"},
 		"checkout.ErrChoiceRefused": {
-			checkout.ErrChoiceRefused, http.StatusBadRequest, "invalid"},
+			checkout.ErrChoiceRefused, http.StatusBadRequest, "missing"},
 		"checkout.ErrTotalNotShown": {
 			checkout.ErrTotalNotShown, http.StatusBadRequest, "missing"},
 		"checkout.ErrPaymentMethodUnsupported": {

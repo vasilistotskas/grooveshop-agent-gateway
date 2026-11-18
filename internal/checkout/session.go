@@ -154,8 +154,8 @@ type Session struct {
 	// what the buyer was shown, the one total its order is placed at
 	// (django.OrderCreate.ExpectedTotal), since Django creates the order
 	// only at it. Every render of an open checkout sets it (Show), and the
-	// surfaces store it: a checkout publishes only what is stored. Nil
-	// until a render of the checkout was stored.
+	// surfaces store it, a read only under the free lock
+	// (Store.StoreShown). Nil until a render of the checkout was stored.
 	ShownTotal *django.ExpectedTotal `json:"shownTotal,omitempty"`
 	// Unconfirmed marks a session in progress whose order was sent and
 	// never answered: the order may exist. One in progress without it,

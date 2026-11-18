@@ -120,6 +120,6 @@ func TestAnIdempotencyKeyOutsideTheBoundWritesNothing(t *testing.T) {
 func TestLockAndClaimsAreSizedFromTheUpstreamTimeout(t *testing.T) {
 	const timeout = 10 * time.Second
 	st := NewStore(nil, timeout)
-	assert.Equal(t, (3+completionSteps)*timeout, st.lockTTL)
+	assert.Equal(t, (3+admitPricingSteps+completionSteps)*timeout, st.lockTTL)
 	assert.Equal(t, st.lockTTL+timeout, st.claimTTL)
 }
