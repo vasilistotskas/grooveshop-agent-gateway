@@ -42,8 +42,7 @@ type PricedDiscount struct {
 //
 // DiscountTotal is what promotions and the applied coupon take off; the
 // product-markdown saving is already in the line prices and is no row
-// here: one would count it twice. FreeShipping says a promotion waived
-// the delivery.
+// here: one would count it twice.
 //
 // Discounts says which offer earned what, so no coupon is credited with
 // an automatic promotion's money; RefusedCoupons are the attached codes
@@ -55,7 +54,6 @@ type Pricing struct {
 	DiscountTotal  int64
 	Discounts      []PricedDiscount
 	RefusedCoupons []DiscountRejection
-	FreeShipping   bool
 	DeliveryFee    int64
 	HasDelivery    bool
 	PaymentFee     int64
@@ -70,6 +68,10 @@ type Pricing struct {
 	// must choose again.
 	DeliveryRefused *Refusal
 	PayWayRefused   *Refusal
+	// CouponRefused is the attached coupon order creation refuses the
+	// cart for (Quote.BlockingCoupon): its discount is not in the price,
+	// and the code must be removed before the order.
+	CouponRefused *Refusal
 	// InputRefused is the store's refusal of the checkout's other data
 	// (an email it does not take, a country or kind it does not know):
 	// only the cart is priced, and the checkout must correct it.
@@ -102,7 +104,7 @@ type Refusal struct {
 // placed until it is corrected.
 func (p *Pricing) Refused() *Refusal {
 	for _, r := range []*Refusal{
-		p.DeliveryRefused, p.PayWayRefused, p.InputRefused,
+		p.DeliveryRefused, p.PayWayRefused, p.CouponRefused, p.InputRefused,
 	} {
 		if r != nil {
 			return r
@@ -298,7 +300,6 @@ func (p *Pricing) addQuote(q *django.Quote, cart *django.Cart) error {
 			return err
 		}
 		p.HasDelivery = true
-		p.FreeShipping = q.Shipping.WaivedBy == django.FreeShippingByPromotion
 	}
 	if q.PaymentMethodFee != nil && !q.PaymentMethodFee.Waived {
 		if p.PaymentFee, err = money.MinorUnits(
@@ -311,7 +312,10 @@ func (p *Pricing) addQuote(q *django.Quote, cart *django.Cart) error {
 		p.Total = q.ExpectedTotal.Amount
 		return nil
 	}
-	p.Total = max(p.ItemsSubtotal-p.DiscountTotal+p.DeliveryFee+p.PaymentFee, 0)
+	// As Django adds it up: the discount takes the products to zero at
+	// most, and the delivery and the fee come on top.
+	p.Total = max(p.ItemsSubtotal-p.DiscountTotal, 0) + p.DeliveryFee +
+		p.PaymentFee
 	return nil
 }
 
@@ -401,10 +405,13 @@ func (p *Pricing) addDiscounts(q *django.Quote, cart *django.Cart) error {
 		}
 	}
 	if b := q.BlockingCoupon; b != nil {
+		reason := mapDiscountReason(b.Reason)
 		p.RefusedCoupons = append(p.RefusedCoupons, DiscountRejection{
-			Code:   b.Code,
-			Reason: mapDiscountReason(b.Reason),
+			Code: b.Code, Reason: reason,
 		})
+		p.CouponRefused = &Refusal{Code: reason, Detail: fmt.Sprintf(
+			"The store refuses discount code %q (%s) for an order.",
+			b.Code, reason)}
 	}
 	for _, c := range cart.AppliedCoupons {
 		switch {

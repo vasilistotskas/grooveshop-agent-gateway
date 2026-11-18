@@ -709,14 +709,10 @@
             "properties": {
               "price": {
                 "type": "number"
-              },
-              "waivedBy": {
-                "nullable": true
               }
             },
             "required": [
-              "price",
-              "waivedBy"
+              "price"
             ],
             "type": "object"
           },

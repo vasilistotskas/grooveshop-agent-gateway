@@ -23,6 +23,10 @@ type Store struct {
 	PayWays         map[int64][]byte
 }
 
+// waivedByPromotion is Django's waivedBy for a delivery a promotion made
+// free.
+const waivedByPromotion = "promotion"
+
 type cartBody struct {
 	Items                 []json.RawMessage `json:"items"`
 	TotalPrice            json.Number       `json:"totalPrice"`
@@ -72,7 +76,7 @@ func (s Store) Quote(w http.ResponseWriter, r *http.Request) {
 	value := minor(cart.FreeThresholdValue)
 	price := func(o optionBody) (int64, any) {
 		if cart.PromotionFreeShipping {
-			return 0, django.FreeShippingByPromotion
+			return 0, waivedByPromotion
 		}
 		return minor(o.Price), nil
 	}

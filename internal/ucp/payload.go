@@ -402,6 +402,12 @@ func refusedChoices(p *checkout.Pricing) []Message {
 				"left out of the total: choose another one this delivery " +
 				"is offered with update_checkout.")})
 	}
+	if r := p.CouponRefused; r != nil {
+		out = append(out, Message{Type: "error", Code: r.Code,
+			Severity: "recoverable", Path: "$.discounts.codes",
+			Text: strings.TrimSpace(r.Detail + " Remove it with " +
+				"update_checkout before completing.")})
+	}
 	if r := p.InputRefused; r != nil {
 		out = append(out, Message{Type: "error", Code: r.Code,
 			Severity: "recoverable",

@@ -59,12 +59,10 @@ type QuoteBlockingCoupon struct {
 	Reason string `json:"reason"`
 }
 
-// QuoteShipping is the chosen delivery's price. WaivedBy says what made
-// it free: FreeShippingByPromotion or FreeShippingByThreshold, empty when
-// it is charged or simply costs nothing.
+// QuoteShipping is the chosen delivery's price, free when the carrier's
+// threshold or a promotion waived it.
 type QuoteShipping struct {
-	Price    json.Number `json:"price"`
-	WaivedBy string      `json:"waivedBy" contract:"nullable,untyped"`
+	Price json.Number `json:"price"`
 }
 
 // QuotePaymentFee is the chosen pay way's fee for this cart: 0 when it
@@ -97,12 +95,6 @@ type ExpectedTotal struct {
 	Amount   int64  `json:"amount"`
 	Currency string `json:"currency"`
 }
-
-// The waivedBy values of a quoted delivery.
-const (
-	FreeShippingByPromotion = "promotion"
-	FreeShippingByThreshold = "threshold"
-)
 
 // Quote prices the cart with the choices made so far. Nothing is
 // written: a quote never creates a cart (an unknown one is a 404

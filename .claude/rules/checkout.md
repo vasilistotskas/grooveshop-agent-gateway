@@ -308,7 +308,9 @@ Loads when working on a checkout session on either surface, its completion, its 
     `shipping_parcel_too_large`), or a pay way not offered for the
     delivery or gone (`pay_way_unavailable`, `pay_way_not_found`), is
     left out and the rest quoted again (`Pricing.DeliveryRefused`,
-    `PayWayRefused`). Any other refusal of the checkout's data (an email
+    `PayWayRefused`), and so is an attached coupon the order would be
+    refused for (`Quote.BlockingCoupon`, `Pricing.CouponRefused`: remove
+    it). Any other refusal of the checkout's data (an email
     the store does not take) leaves only the cart to price
     (`Pricing.InputRefused`), and an empty cart prices nothing. An open
     checkout is then rendered not ready, with an error naming what to
@@ -343,12 +345,11 @@ Loads when working on a checkout session on either surface, its completion, its 
     `expectedTotal`. Django creates the order only at exactly that
     amount due, and answers another with 409 `total_changed`
     (`django.ErrTotalChanged`): nothing
-    was created, the checkout is stored ready again, and the surface
-    answers with the total now (UCP: the checkout, `incomplete` for that
-    answer, with a `recoverable` error `total_changed`, its claim
-    released; ACP: 400 `total_changed`, the next read showing the
-    total). So no order is ever placed at a total its checkout did not
-    show.
+    was created, the checkout is stored ready again, and the answer shows
+    no total (UCP the tool error `total_changed`, its claim released; ACP
+    400 `total_changed`, kept against its key): the next read shows, and
+    stores, the total now. So no order is ever placed at a total its
+    checkout did not show, a same-key retry included.
 - **One live checkout holds a cart** (#141). Two sessions on one cart
   could each place an order, because Django keeps the cart of an order
   that awaits its online payment. The store keeps it to one:

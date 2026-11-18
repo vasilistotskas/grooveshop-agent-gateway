@@ -1598,9 +1598,10 @@ func (h *Handler) completeError(
 	case errors.Is(err, django.ErrTotalChanged):
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: django.CodeTotalChanged,
-			Message: "The store's total for this session changed since it " +
-				"was shown, so no order was placed. Read the session, " +
-				"confirm the new total with the buyer, then complete again.",
+			Message: "The store's total for this session is no longer the " +
+				"one it showed, so no order was placed. Read the session, " +
+				"confirm the total with the buyer, then complete with a new " +
+				"Idempotency-Key.",
 		})
 	// Django names no order, and neither does the answer. The session
 	// stays ready: once that order is canceled unpaid it can be completed.

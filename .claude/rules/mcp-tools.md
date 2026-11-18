@@ -82,7 +82,7 @@ Loads when working on a tool of any of the three MCP servers. The code wins over
     `unsupported`;
   - not enough stock: `out_of_stock`;
   - a total that changed since the checkout showed it:
-    `total_changed` (UCP answers the checkout at the total now, see
+    `total_changed` (read the checkout, which shows the total now, see
     `.claude/rules/ucp.md`);
   - an order placed whose checkout was not saved or not rendered:
     `order_placed`; an outcome never recorded:

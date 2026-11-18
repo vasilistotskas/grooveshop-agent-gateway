@@ -980,25 +980,6 @@ func (h *handlers) completeSession(
 	placement, err := h.deps.Flow.Complete(ctx, t, s)
 	h.settleCompletion(ctx, s, claim, placement)
 	if placement == checkout.NothingPlaced {
-		if errors.Is(err, django.ErrTotalChanged) {
-			// The order was refused at the total the checkout showed:
-			// the answer shows, and stores, the total now, and the same
-			// key completes at it.
-			return fromSnapshot(func() (*mcp.CallToolResult, CheckoutResult,
-				error) {
-				res, out, err2 := h.checkoutResult(ctx, t, s, neg)
-				// The render read the checkout again: one another call
-				// placed meanwhile is answered as it is.
-				if err2 == nil && out.checkout != nil &&
-					!slices.Contains([]string{
-						string(checkout.StatusIncomplete),
-						string(checkout.StatusReadyForComplete),
-					}, out.checkout.Status) {
-					return res, out, nil
-				}
-				return incompleteBy(res, out, err2, totalChanged())
-			})
-		}
 		// Refused before the order was sent, or by Django for the order
 		// itself: either way nothing of this call exists.
 		return refusedBy(completeErr(s, err))
@@ -1023,17 +1004,6 @@ func (h *handlers) completeSession(
 		}
 		return render()
 	})
-}
-
-// totalChanged is the recoverable error of a complete Django refused
-// because the checkout's total is no longer the amount due: no order was
-// placed, and the checkout answering it shows the total now.
-func totalChanged() ucp.Message {
-	return ucp.Message{Type: "error", Code: django.CodeTotalChanged,
-		Severity: "recoverable",
-		Text: "The store's total for this checkout changed since it was " +
-			"shown, so no order was placed. Confirm the total shown here " +
-			"with the buyer, then call complete_checkout again."}
 }
 
 // errNoPaymentMethod refuses a complete of a checkout that holds no
@@ -1143,6 +1113,15 @@ func completeErr(s *checkout.Session, err error) error {
 		return stockShortfallErr(err)
 	case errors.Is(err, django.ErrCartHasUnpaidOrder):
 		return cartOrderUnpaidErr(err)
+	// The answer shows no total: the next read shows, and stores, the
+	// total now, so the same key keeps this answer until the platform has
+	// read it, and completes at the total that read showed.
+	case errors.Is(err, django.ErrTotalChanged):
+		return &mcptool.ToolError{Code: django.CodeTotalChanged,
+			Hint: "the store's total for this checkout is no longer the " +
+				"one it showed, so no order was placed; read it with " +
+				"get_checkout, confirm the total with the buyer, then " +
+				"complete"}
 	case errors.Is(err, checkout.ErrSessionChanged):
 		return saveFailed(err)
 	case errors.Is(err, checkout.ErrCompletionInProgress):

@@ -60,6 +60,16 @@ func (stack ucpStack) lost(id string) func() error {
 
 var errRedisDown = errors.New("redis is down")
 
+// readOnly is a stored session without what a read of it may store: its
+// revision, when it was stored and the expiry its order sets.
+func readOnly(t *testing.T, stored string) checkout.Session {
+	t.Helper()
+	var s checkout.Session
+	require.NoError(t, json.Unmarshal([]byte(stored), &s))
+	s.Revision, s.UpdatedAt, s.ExpiresAt = "", time.Time{}, time.Time{}
+	return s
+}
+
 // What each surface answers for a session that is no longer stored, and
 // for one that cannot be read.
 var (
@@ -102,7 +112,11 @@ func TestACompleteRefusedForAnotherCompletesOrderReadsAgain(t *testing.T) {
 
 			held.open()
 			assertStored(t, <-first, status)
-			assert.Equal(t, placed, stack.storedBytes(t, id))
+			// What a read stores of a checkout awaiting its payment (the
+			// expiry its order's deadline sets, which the fake moves with
+			// the clock) is a read's; nothing else of the session moved.
+			assert.Equal(t, readOnly(t, placed),
+				readOnly(t, stack.storedBytes(t, id)))
 			assert.EqualValues(t, 1, stack.faults.orderCreates.Load())
 		})
 	}

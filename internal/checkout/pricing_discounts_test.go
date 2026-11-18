@@ -69,6 +69,9 @@ func TestAddDiscounts(t *testing.T) {
 		assert.Equal(t, []DiscountRejection{
 			{Code: "FIRST10", Reason: DiscountCodeInvalid},
 		}, p.RefusedCoupons)
+		require.NotNil(t, p.CouponRefused,
+			"the order is refused for it: the checkout is not ready")
+		assert.Equal(t, p.CouponRefused, p.Refused())
 	})
 
 	t.Run("a coupon the cart refuses without blocking the order is a "+

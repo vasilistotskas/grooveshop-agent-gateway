@@ -20,7 +20,6 @@ func TestDecodeQuote(t *testing.T) {
 	assert.Nil(t, q.BlockingCoupon)
 	require.NotNil(t, q.Shipping)
 	assert.Equal(t, "4.9", q.Shipping.Price.String())
-	assert.Empty(t, q.Shipping.WaivedBy)
 	require.NotNil(t, q.PaymentMethodFee)
 	assert.Equal(t, "2", q.PaymentMethodFee.Amount.String())
 	assert.Equal(t, "EUR", q.Currency)

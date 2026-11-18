@@ -178,7 +178,6 @@ func TestComputePricingWaivers(t *testing.T) {
 	p, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
 		readySession())
 	require.NoError(t, err)
-	assert.True(t, p.FreeShipping)
 	assert.True(t, p.HasDelivery)
 	assert.Zero(t, p.DeliveryFee)
 	assert.False(t, p.HasPaymentFee)

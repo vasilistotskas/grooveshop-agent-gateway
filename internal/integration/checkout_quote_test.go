@@ -13,8 +13,8 @@ import (
 // A checkout's order is placed at the total the checkout showed. A
 // completion sends it, and Django refuses another (the total changed
 // since). That refusal places nothing and leaves the checkout ready, and
-// the answer gives the new total: UCP shows the checkout at it, and ACP
-// tells the platform to read it. The next completion places the order
+// the answer shows no total: it tells the platform to read the
+// checkout, which shows and stores the total now. The next completion places the order
 // at the total the checkout shows then.
 func TestAnOrderIsPlacedAtTheTotalItsCheckoutShowed(t *testing.T) {
 	stack := startUCPGateway(t)
@@ -30,10 +30,10 @@ func TestAnOrderIsPlacedAtTheTotalItsCheckoutShowed(t *testing.T) {
 
 			assert.Equal(t, placed, stack.faults.ordersPlaced.Load(),
 				"nothing is placed at a total the checkout did not show")
+			assert.Empty(t, refused.status, "no total is shown")
 			switch surface.name {
 			case "ucp":
-				assert.Equal(t, "incomplete", refused.status)
-				assert.Contains(t, refused.text, "no order was placed")
+				assert.Contains(t, refused.refusal, "total_changed")
 			case "acp":
 				assert.Equal(t, "400 total_changed", refused.refusal)
 			}
@@ -74,8 +74,11 @@ func TestAChangedPriceIsChargedOnlyOnceShown(t *testing.T) {
 				"nothing is charged at a total the buyer was not shown")
 			if surface.name == "acp" {
 				assert.Equal(t, "400 total_changed", refused.refusal)
-				surface.read(ctx, id)
 			}
+			// The same key until the platform reads the checkout: the
+			// order is never placed at a total it has not shown.
+			assert.Empty(t, refused.status)
+			surface.read(ctx, id)
 
 			assert.Equal(t, "completed",
 				surface.complete(ctx, id, uuid.NewString(), nil))

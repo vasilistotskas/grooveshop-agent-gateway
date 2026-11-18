@@ -310,8 +310,6 @@ func renderDiscounts(
 	}
 }
 
-// appendStateMessages surfaces what still blocks payment, in the spec's
-// error vocabulary so agents know what buyer input to collect.
 // refusedChoices are the errors of the session's choices the store
 // refused for this cart, in the store's words: ACP's invalid, at the
 // member the buyer chooses again.
@@ -337,6 +335,14 @@ func refusedChoices(p *checkout.Pricing) []Message {
 				"fulfillment option."),
 		})
 	}
+	if r := p.CouponRefused; r != nil {
+		out = append(out, Message{
+			Type: "error", Code: "invalid", Param: "$.discounts.codes",
+			Resolution: "requires_buyer_input", ContentType: "plain",
+			Content: strings.TrimSpace(r.Detail + " Remove it with an " +
+				"update before completing."),
+		})
+	}
 	if r := p.InputRefused; r != nil {
 		out = append(out, Message{
 			Type: "error", Code: "invalid",
@@ -349,6 +355,8 @@ func refusedChoices(p *checkout.Pricing) []Message {
 	return out
 }
 
+// appendStateMessages surfaces what still blocks payment, in the spec's
+// error vocabulary so agents know what buyer input to collect.
 func appendStateMessages(s *checkout.Session, out *Session) {
 	if s.Status != checkout.StatusIncomplete {
 		if out.Status == "requires_escalation" {

@@ -108,8 +108,6 @@ func TestProfileMatchesBusinessSchema(t *testing.T) {
 	assert.Equal(t, "ES256", profile.Keys[0]["alg"])
 }
 
-// fixtureDjango serves the recorded fixtures BuildCheckout consumes; an
-// optional cartFixture overrides the default cart payload.
 // readFixture is a recorded Django body.
 func readFixture(t *testing.T, name string) []byte {
 	t.Helper()
@@ -119,6 +117,8 @@ func readFixture(t *testing.T, name string) []byte {
 	return b
 }
 
+// fixtureDjango serves the recorded fixtures BuildCheckout consumes; an
+// optional cartFixture overrides the default cart payload.
 func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
 	t.Helper()
 	fixture := func(name string) http.HandlerFunc {
