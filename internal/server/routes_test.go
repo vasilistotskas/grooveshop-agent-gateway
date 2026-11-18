@@ -24,8 +24,8 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
-// A burst of order events from one Celery pod must all land: Django
-// drops a 4xx, so a 429 here would lose the event for good.
+// A burst of order events from one Celery pod must all land: a 429
+// here would hold each event back for the outbox's backoff.
 func TestInternalRoutesBypassTheRateLimiter(t *testing.T) {
 	limiter := httpmw.NewRateLimiter(1, 1, obs.NewMetrics())
 	h := exceptInternal(limiter.Middleware(), http.HandlerFunc(

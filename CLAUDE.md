@@ -23,7 +23,7 @@ internal endpoints and the operational routes:
 | `/acp/*` | ACP agentic checkout REST (spec 2026-04-17) |
 | `/feeds/*` | Product feeds: google.xml, meta.xml, tiktok.xml, acp.json |
 | `POST /chat` | First-party shopping chatbot (SSE; OpenAI-compatible protocol via openai-go — Gemini free tier by default, any compatible provider via CHAT_BASE_URL) |
-| `/internal/*` | Cluster-only, shared-secret header: Django's order-event push (`POST /internal/events/order-status`) and feed invalidation (`POST /internal/feeds/invalidate`) |
+| `/internal/*` | Cluster-only, shared-secret header: Django's order events, sent by its outbox (`POST /internal/events/order-status`) and feed invalidation (`POST /internal/feeds/invalidate`) |
 | `GET /healthz`, `GET /readyz` | Liveness / readiness (readiness gates on Redis and the startup check of the signing keys; Django is reported, never gating) |
 | `GET /metrics` | Prometheus metrics (registry from `internal/obs`) |
 

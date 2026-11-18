@@ -260,11 +260,9 @@ Loads when working on a checkout session on either surface, its completion, its 
       final, so one delivered late or out of order is still true.
 
     It takes no session lock. Its save is the compare-and-set, and a
-    lost one is a 503 that Django sends again. Django retries five
-    times, each after a random delay between zero and 10, 20, 40, 80
-    and 160 seconds (`push_order_event_to_gateway`, Celery's
-    `retry_jitter`), so all five can fall inside the time a crashed
-    pod's lock lasts, and a lock would then lose the event.
+    lost one is a 503 that Django's outbox sends again later (its
+    backoff starts at ten minutes; `.claude/rules/ucp.md`, order
+    webhooks).
     `Flow.PlacedOrder` reads the same record for a session in progress,
     so a call on one whose completion placed the order and could not
     save it is answered with the order (`placedUnsavedErr`,

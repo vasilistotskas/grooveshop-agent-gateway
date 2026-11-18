@@ -26,7 +26,7 @@ behind basic auth).
 | `/acp/*` | ACP agentic checkout REST, enabled per store |
 | `/feeds/*` | Product feeds: `google.xml`, `meta.xml`, `tiktok.xml`, `acp.json` |
 | `POST /chat` | Backend of the storefront's shopping chatbot (server-sent events): an OpenAI-compatible model looping over the same commerce tools |
-| `/internal/*` | Cluster-only, shared secret: Django's order-status push (forwarded to agents as signed UCP order webhooks) and feed invalidation |
+| `/internal/*` | Cluster-only, shared secret: Django's order events, sent by its outbox (delivered to agents as signed UCP order webhooks within the call) and feed invalidation |
 | `GET /healthz`, `GET /readyz`, `GET /metrics` | Liveness, readiness (gated on Redis and the signing keys' startup check, never on Django) and Prometheus metrics |
 
 - **Tenant resolution.** The store comes from the real `Host` header only (an inbound

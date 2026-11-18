@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+// idleConnsPerHost is how many idle connections to one platform a pod
+// keeps for reuse.
+const idleConnsPerHost = 8
+
 // platformClient calls URLs a platform controls — its profile, its
 // webhook endpoint. UCP's fetch-safety rules apply to both: never follow
 // a redirect, and connect only to public addresses. allowLocal is the
@@ -47,7 +51,7 @@ func platformClient(allowLocal bool, timeout time.Duration) *http.Client {
 			Proxy:               nil,
 			DialContext:         dialer.DialContext,
 			TLSHandshakeTimeout: 5 * time.Second,
-			MaxIdleConnsPerHost: deliveryWorkers,
+			MaxIdleConnsPerHost: idleConnsPerHost,
 			IdleConnTimeout:     90 * time.Second,
 			ForceAttemptHTTP2:   true,
 		},

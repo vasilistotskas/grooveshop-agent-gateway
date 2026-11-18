@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -44,31 +45,78 @@ func (stack ucpStack) orderEvent(paymentStatus string) (int, error) {
 	return stack.orderStatusEvent("PROCESSING", paymentStatus)
 }
 
-// orderStatusEvent is Django's push of an order's status and payment
-// status. It asserts nothing.
+// orderStatusEvent is Django's outbox sending an order's status and
+// payment status, as an event of now. It asserts nothing.
 func (stack ucpStack) orderStatusEvent(
 	orderStatus, paymentStatus string,
 ) (int, error) {
-	event, err := json.Marshal(map[string]any{
-		"schemaName": "demostore", "orderUuid": fixtureOrderUUID,
-		"status": orderStatus, "paymentStatus": paymentStatus,
-	})
+	resp, err := stack.event(orderEventAt(time.Now(), orderStatus,
+		paymentStatus))
 	if err != nil {
 		return 0, err
 	}
-	req, err := http.NewRequest(http.MethodPost,
-		stack.gw.URL+"/internal/events/order-status", bytes.NewReader(event))
+	return resp.StatusCode, nil
+}
+
+// orderEventAt is an outbox row of the fixture order, an event that
+// happened at at.
+func orderEventAt(
+	at time.Time, orderStatus, paymentStatus string,
+) map[string]any {
+	return map[string]any{
+		"eventId":    uuid.Must(uuid.NewV7()).String(),
+		"eventType":  "updated",
+		"occurredAt": at.UTC().Format("2006-01-02T15:04:05.000000-07:00"),
+		"schemaName": "demostore", "orderUuid": fixtureOrderUUID,
+		"status": orderStatus, "paymentStatus": paymentStatus,
+		"trackingNumber": "",
+	}
+}
+
+// eventUnix is an event's time as Webhook-Timestamp carries it.
+func eventUnix(t *testing.T, event map[string]any) string {
+	t.Helper()
+	at, err := time.Parse(time.RFC3339Nano, event["occurredAt"].(string))
+	require.NoError(t, err)
+	return strconv.FormatInt(at.Unix(), 10)
+}
+
+// event sends one outbox row to the gateway, as Django does, and returns
+// the answer, its body closed. It asserts nothing.
+func (stack ucpStack) event(event map[string]any) (*http.Response, error) {
+	body, err := json.Marshal(event)
 	if err != nil {
-		return 0, err
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost,
+		stack.gw.URL+"/internal/events/order-status", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Internal-Token", internalSecret)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	_ = resp.Body.Close()
-	return resp.StatusCode, nil
+	return resp, nil
+}
+
+// postEvent is event for the test's goroutine.
+func (stack ucpStack) postEvent(
+	t *testing.T, event map[string]any,
+) *http.Response {
+	t.Helper()
+	resp, err := stack.event(event)
+	require.NoError(t, err)
+	return resp
+}
+
+// sendEvent is postEvent's status.
+func (stack ucpStack) sendEvent(t *testing.T, event map[string]any) int {
+	t.Helper()
+	return stack.postEvent(t, event).StatusCode
 }
 
 // savesKey reports whether cmd is the script that stores key.

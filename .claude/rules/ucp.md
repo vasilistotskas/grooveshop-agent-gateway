@@ -276,46 +276,46 @@ wins over this page.
   order detail deliberately does not decode (PII), and an event needs a
   shipment timestamp upstream does not expose.
 - Order webhooks route through that link, never the session, and carry
-  the full UCP order entity rendered at enqueue. They are signed per RFC
+  the full UCP order entity rendered when the event is sent. They are signed per RFC
   9421 with the tenant's ES256 key (`internal/httpsig`; UCP's baseline
   algorithm), with Standard Webhooks `Webhook-Id`/`Webhook-Timestamp`
   and `UCP-Agent` naming the tenant profile. The signature covers
   `webhook-id` and `webhook-timestamp` beside UCP's REST components
   (`signedComponents`), as UCP after 2026-08-25 requires of an order
-  webhook. The queue is a Redis stream
-  consumer group (`ag:webhooks:orders`, one consumer per pod name): a
-  delivery is acknowledged only on a terminal outcome, a consumer's own
-  pending entries replay on restart, and a dead consumer's are claimed
-  after the visibility timeout. Delivery dials only public addresses and
-  never follows redirects.
-- **One webhook target holds at most its share of a pod's workers**
-  (`perTargetDeliveries` of `deliveryWorkers`, `targetSlots`). The
-  target is the registrable domain of the URL's host, its IDNA A-label
-  (`deliveryTarget`: eTLD+1 by the public suffix list, its private
-  section included), or the address as the rate limiter counts one
-  (`httpmw.AddrBucket`): a name under one's own domain is free, so a cap
-  per host or origin would give one owner as many shares as names. A
-  delivery read while its target is at the cap waits in process in the
-  target's queue, first in first out, and the worker that frees one of
-  the target's slots takes it next, so a burst to a busy platform goes
-  out as fast as it answers. A delivery beyond the queues' bounds
-  (`maxQueuedPerTarget`, `maxQueued`), or one not started within
-  `queueMaxWait` of its read (waiting for its target's slot or for a
-  free worker, `handOut`), is left pending, never acknowledged, for
-  reclaim after the visibility timeout. The read time is stamped before
-  the Redis call, and a delivery is cut at `deliveryBudget`, so what a
-  pod holds ends within `queueMaxWait` + `deliveryBudget` + `ackTimeout`
-  of its read, under the visibility timeout: no entry is taken over
-  while its pod still works on it. A reclaim sweep goes on from its last cursor until it has
-  scanned every pending entry. So an endpoint that does not answer
-  delays its own deliveries, never another platform's.
-- **Order webhooks carry no ordering guarantee.** Up to two deliveries
-  to one target run at once, a failed attempt is retried after a
-  backoff, and reclaim takes entries over later, so two events of one
-  order can arrive in either order; each carries the full order entity.
-- **A key that cannot be read is never a terminal outcome**: a delivery
-  is acknowledged as failed only when every attempt reached the
-  endpoint; one whose store's key could not be read stays pending.
+  webhook. Delivery dials only public addresses and never follows
+  redirects, and signs nothing before the boot check of the
+  key-encryption key passed (`Keys.Checked`).
+- **Django's outbox keeps each event; the gateway keeps none**
+  (django-api `agent/outbox.py`, `internal/server/internalapi.go`).
+  The outbox calls `POST /internal/events/order-status` with its row's
+  `eventId` and `occurredAt`: the `Webhook-Id` and the
+  `Webhook-Timestamp`, the same on every attempt, as UCP requires of a
+  retry (the signature's `created` is the attempt's). Within the call
+  the gateway updates the checkout (`Flow.ApplyOrderEvent`), renders
+  the order and posts it once (`ucp.Webhooks.Send`), all within
+  `orderEventBudget` (25 s, under the outbox's 30 s read timeout), and
+  answers the outcome:
+  - 204: delivered, or nothing to deliver (the checkout named no
+    webhook);
+  - 503: try again later. Redis, Django or the store's key failed, the
+    post got no answer, or the platform answered 408, 429 or 5xx (its
+    `Retry-After` is passed on). A key that cannot be read is never
+    final;
+  - 422: failed for good. The platform answered anything else (a
+    redirect included), the target is not a public address, the store
+    no longer resolves or its domain is another store's, or Django no
+    longer serves the order;
+  - 400: a body without its store, order, event id (a UUID) or time
+    (RFC 3339).
+
+  An order without a link is answered 503 with `Retry-After` until
+  `checkout.CompletionBudget` has passed since the event: Django sends
+  an order's first event as it commits, before the completion that
+  placed it writes the link (`Flow.place`). After that, 204 and a warn
+  line: the link is lost. `gateway_order_webhooks_total{outcome}`
+  counts `delivered` and `failed`. Retries, their backoff, ordering
+  and fairness are the outbox's: an order's events go out in the order
+  they happened, and each store is swept on its own.
 - **The signing key is sealed at rest** (`internal/ucp/keys.go`):
   Redis, its AOF files and their backups sit outside the process, and
   the scalar signs a store's order webhooks.

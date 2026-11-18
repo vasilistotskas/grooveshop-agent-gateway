@@ -147,7 +147,7 @@ func ClientBucket(r *http.Request) string {
 
 // AddrBucket names the holder of addr as ClientBucket does: an IPv4
 // address (IPv4-mapped IPv6 included) is itself, an IPv6 address its
-// /64. The webhook dispatcher caps the deliveries to one such target.
+// /64.
 func AddrBucket(addr netip.Addr) string {
 	if addr = addr.Unmap(); addr.Is4() {
 		return addr.String()
