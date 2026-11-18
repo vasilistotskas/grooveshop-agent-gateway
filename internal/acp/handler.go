@@ -1527,6 +1527,13 @@ func (h *Handler) completeError(
 		writeInFlight(w, idemRetryAfter, msgSessionBusy)
 	case errors.Is(err, checkout.ErrSessionChanged):
 		saveFailed(w, err)
+	case errors.Is(err, checkout.ErrTotalNotShown):
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: "missing",
+			Message: "The session has shown no total yet. Read it, " +
+				"confirm the total with the buyer, then complete with a " +
+				"new Idempotency-Key.",
+		})
 	case errors.Is(err, checkout.ErrNotReady):
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "missing",

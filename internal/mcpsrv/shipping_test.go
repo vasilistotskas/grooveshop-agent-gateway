@@ -151,6 +151,40 @@ func TestShippingOptionsForACartOfferOnlyWhatItFits(t *testing.T) {
 	assert.Equal(t, "EUR", out.Options[0].Currency)
 }
 
+// A named cart with nothing in it has no quote: its options are those of
+// no cart, on the value and weight the call gives.
+func TestShippingOptionsForAnEmptyCartAreTheStoresOwn(t *testing.T) {
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			asked = append(asked, r.URL.Path)
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case quotePath:
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"detail": "Cart is empty.", ` +
+					`"code": "cart_empty"}`))
+			case optionsPath:
+				assert.Empty(t, r.Header.Get("X-Cart-Id"))
+				_, _ = w.Write([]byte(`[` +
+					shippingRow("acs", "home_delivery", false, false) + `]`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+	t.Cleanup(srv.Close)
+	h := &handlers{deps: Deps{Site: testSite, Django: django.New(
+		srv.URL+"/api/v1", "api.example.test", "secret", 5*time.Second,
+		slog.New(slog.DiscardHandler), nil)}}
+
+	_, out, err := h.getShippingOptions(storeContext(), nil,
+		ShippingOptionsIn{CountryCode: "GR", CartID: shippingCart})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acs:home_delivery"}, offered(out))
+	assert.Equal(t, []string{quotePath, optionsPath}, asked[:2])
+}
+
 // Without a cart nothing is judged for size, only for the weight given,
 // and free shipping on the value the model passed.
 func TestShippingOptionsWithoutACartLeaveOutOnlyTheOverweight(t *testing.T) {

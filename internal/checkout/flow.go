@@ -15,6 +15,12 @@ import (
 // ErrNotReady marks a complete call on a session that still misses data.
 var ErrNotReady = errors.New("checkout: session is not ready to complete")
 
+// ErrTotalNotShown marks a complete call on a session no stored render
+// showed a total for: its order would have no total to be placed at. It
+// is ErrNotReady too; reading the checkout stores one.
+var ErrTotalNotShown = fmt.Errorf(
+	"%w: it has shown no total yet", ErrNotReady)
+
 // ErrPaymentMethodUnsupported marks a pay way the agentic surface cannot
 // finish: any online pay way other than Viva hosted authorization (Stripe
 // included), or one whose settlement is unknown.
@@ -319,8 +325,7 @@ func (f *Flow) admit(
 	// The order is placed at the total the checkout showed, and a
 	// checkout whose render was never stored has shown none.
 	if s.ShownTotal == nil {
-		return nil, fmt.Errorf("%w: no total has been shown; read the "+
-			"checkout", ErrNotReady)
+		return nil, ErrTotalNotShown
 	}
 
 	// Checked against the FINAL delivery: a method selected before the

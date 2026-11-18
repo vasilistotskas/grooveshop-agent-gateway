@@ -3,6 +3,7 @@ package checkout
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
@@ -70,9 +71,14 @@ type Pricing struct {
 	// DeliveryRefused and PayWayRefused are the checkout's choices the
 	// store no longer takes for this cart (it does not ship that way, the
 	// cart outgrew the carrier, the pay way is not offered for the
-	// delivery), left out of the price. The checkout must choose again.
+	// delivery or no longer exists), left out of the price. The checkout
+	// must choose again.
 	DeliveryRefused *Refusal
 	PayWayRefused   *Refusal
+	// InputRefused is the store's refusal of the checkout's other data
+	// (an email it does not take, a country or kind it does not know):
+	// only the cart is priced, and the checkout must correct it.
+	InputRefused *Refusal
 	// ShippingOptions is every delivery the store offers to the
 	// checkout's country, at the price this cart would be charged for
 	// it; nil without a country, and once an order exists.
@@ -146,6 +152,13 @@ func ComputePricing(
 	if err != nil {
 		return nil, nil, err
 	}
+	// Every amount is labelled with the store's currency: a quote in
+	// another is a store whose settings disagree, and is not shown.
+	if q.Currency != t.DefaultCurrency || (q.ExpectedTotal != nil &&
+		q.ExpectedTotal.Currency != t.DefaultCurrency) {
+		return nil, nil, fmt.Errorf("checkout: the store quotes %s, "+
+			"its checkout shows %s", q.Currency, t.DefaultCurrency)
+	}
 	if err := p.addQuote(q, cart); err != nil {
 		return nil, nil, err
 	}
@@ -182,6 +195,8 @@ func QuoteRequest(s *Session) django.QuoteRequest {
 // quote asks Django what the session's choices cost. A choice the store
 // refuses is recorded on p and dropped, and the rest quoted again: the
 // pay way is judged first, against the delivery, so at most both are.
+// Any other refusal of the session's data leaves only the cart to price.
+// An empty cart has nothing to price.
 func (p *Pricing) quote(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant, s *Session,
 ) (*django.Quote, error) {
@@ -189,23 +204,36 @@ func (p *Pricing) quote(
 	for {
 		q, err := dj.Quote(ctx, t.Domain, t.DefaultLocale, s.CartID, req)
 		apiErr, ok := errors.AsType[*django.APIError](err)
+		if err == nil || !ok {
+			return q, err
+		}
+		refusal := &Refusal{Code: apiErr.Code, Detail: apiErr.Detail}
 		switch {
-		case err == nil:
-			return q, nil
-		case !ok || !errors.Is(err, django.ErrValidation):
-		case apiErr.Code == django.CodePayWayUnavailable && req.PayWayID > 0:
-			p.PayWayRefused = &Refusal{Code: apiErr.Code, Detail: apiErr.Detail}
+		case payWayRefusal(apiErr.Code) && req.PayWayID > 0:
+			p.PayWayRefused = refusal
 			req.PayWayID = 0
-			continue
 		case shippingRefusal(apiErr.Code) && req.ShippingKind != "":
-			p.DeliveryRefused = &Refusal{
-				Code: apiErr.Code, Detail: apiErr.Detail}
+			p.DeliveryRefused = refusal
 			req.ShippingKind, req.ShippingProviderCode = "", ""
 			req.RegionID = ""
-			continue
+		case apiErr.Code == django.CodeCartEmpty:
+			return &django.Quote{ItemsSubtotal: "0", DiscountTotal: "0",
+				Currency: t.DefaultCurrency}, nil
+		case errors.Is(err, django.ErrValidation) &&
+			req != (django.QuoteRequest{}):
+			p.InputRefused = refusal
+			req = django.QuoteRequest{}
+		default:
+			return nil, err
 		}
-		return nil, err
 	}
+}
+
+// payWayRefusal reports whether code is one of Django's refusals of a
+// pay way for a checkout: not offered for its delivery, or gone.
+func payWayRefusal(code string) bool {
+	return code == django.CodePayWayUnavailable ||
+		code == django.CodePayWayNotFound
 }
 
 // shippingRefusal reports whether code is one of Django's refusals of a
@@ -323,7 +351,8 @@ func orderPricing(
 // the attached coupon. A coupon that applies with no money of its own
 // (free shipping, a gift) takes nothing off, so the quote does not list
 // it: the cart names it, and it is listed at 0. The coupon the quote
-// says order creation refuses is a rejection.
+// says order creation refuses is a rejection, and so is one the cart
+// says is refused without blocking the order.
 func (p *Pricing) addDiscounts(q *django.Quote, cart *django.Cart) error {
 	monetary := map[string]bool{}
 	for _, ap := range q.AppliedPromotions {
@@ -348,8 +377,16 @@ func (p *Pricing) addDiscounts(q *django.Quote, cart *django.Cart) error {
 		})
 	}
 	for _, c := range cart.AppliedCoupons {
-		blocked := q.BlockingCoupon != nil && q.BlockingCoupon.Code == c.Code
-		if c.Rejection == "" && !blocked && !monetary[c.Code] {
+		switch {
+		case q.BlockingCoupon != nil && q.BlockingCoupon.Code == c.Code:
+		// Refused without blocking the order (another offer won, it
+		// applies to nothing in the cart): the cart says why.
+		case c.Rejection != "":
+			p.RefusedCoupons = append(p.RefusedCoupons, DiscountRejection{
+				Code:   c.Code,
+				Reason: mapDiscountReason(c.Rejection),
+			})
+		case !monetary[c.Code]:
 			p.Discounts = append(p.Discounts, PricedDiscount{
 				Name: c.Code,
 				Code: c.Code,

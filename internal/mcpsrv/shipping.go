@@ -98,15 +98,19 @@ type pricedOption struct {
 }
 
 // shippingOptions prices the deliveries to in.CountryCode: by the
-// checkout quote of the named cart (or the chat shopper's), else by the
-// value and weight the call gives.
+// checkout quote of the named cart (or the chat shopper's), else, and for
+// a cart with nothing in it yet, by the value and weight the call gives.
 func (h *handlers) shippingOptions(
 	ctx context.Context, t *tenant.Tenant, lang string, in ShippingOptionsIn,
 ) ([]pricedOption, error) {
 	if in.CartID != "" || django.HasCartToken(ctx) {
 		q, err := h.deps.Django.Quote(ctx, t.Domain, lang, in.CartID,
 			django.QuoteRequest{CountryID: in.CountryCode})
-		if err != nil {
+		apiErr, refused := errors.AsType[*django.APIError](err)
+		switch {
+		case refused && apiErr.Code == django.CodeCartEmpty:
+			return h.bareShippingOptions(ctx, t, lang, in)
+		case err != nil:
 			return nil, h.cartGoneErr(err)
 		}
 		out := make([]pricedOption, 0, len(q.ShippingOptions))
@@ -117,6 +121,14 @@ func (h *handlers) shippingOptions(
 		}
 		return out, nil
 	}
+	return h.bareShippingOptions(ctx, t, lang, in)
+}
+
+// bareShippingOptions prices the deliveries on the value and weight the
+// call gives, with no cart judged.
+func (h *handlers) bareShippingOptions(
+	ctx context.Context, t *tenant.Tenant, lang string, in ShippingOptionsIn,
+) ([]pricedOption, error) {
 	q := django.ShippingQuery{
 		CountryCode:      in.CountryCode,
 		OrderValueAmount: in.OrderValue,

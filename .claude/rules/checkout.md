@@ -306,21 +306,28 @@ Loads when working on a checkout session on either surface, its completion, its 
     store does not ship that way or the cart outgrew
     (`shipping_unavailable`, `shipping_weight_exceeded`,
     `shipping_parcel_too_large`), or a pay way not offered for the
-    delivery (`pay_way_unavailable`), is left out and the rest quoted
-    again (`Pricing.DeliveryRefused`, `PayWayRefused`). An open checkout
-    is then rendered not ready, with an error at the member to choose
-    again (UCP `incomplete`, ACP `not_ready_for_payment`).
+    delivery or gone (`pay_way_unavailable`, `pay_way_not_found`), is
+    left out and the rest quoted again (`Pricing.DeliveryRefused`,
+    `PayWayRefused`). Any other refusal of the checkout's data (an email
+    the store does not take) leaves only the cart to price
+    (`Pricing.InputRefused`), and an empty cart prices nothing. An open
+    checkout is then rendered not ready, with an error naming what to
+    correct (UCP `incomplete`, ACP `not_ready_for_payment`).
   - **A quote that cannot be read is an error**, never a total without
     a row: the render fails, and each surface answers unavailable (UCP
-    `unavailable` with `retryAfterSeconds`, ACP 503).
+    `unavailable` with `retryAfterSeconds`, ACP 503). So is a quote in
+    another currency than the store's, under which every amount is
+    shown.
   - **The total shown is stored.** Every render of an open checkout sets
     `Session.ShownTotal` (`Session.Show`), and the surfaces store it:
     UCP's `rendered` with the status and expiry, ACP's `storeShown`, a
     create with its session. A store that fails is answered all the same:
     the order would be sent at the total stored before, which Django
-    refuses.
+    refuses. An open checkout that other requests keep storing is
+    answered as changed (UCP `conflict`), never as a placed order.
   - **The order is placed only at it.** `Flow.admit` refuses a checkout
-    that has shown no total (`ErrNotReady`), and `Flow.place` sends it as
+    that has shown no total (`ErrTotalNotShown`, which is `ErrNotReady`:
+    read it, then complete), and `Flow.place` sends it as
     `expectedTotal`. Django creates the order only at exactly that
     amount due, and answers another with 409 `total_changed`
     (`django.ErrTotalChanged`, a `*django.TotalChangedError`): nothing

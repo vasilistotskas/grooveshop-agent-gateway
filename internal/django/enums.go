@@ -60,6 +60,14 @@ const CodeTotalChanged = "total_changed"
 // the store does not offer for the chosen delivery (cart/views/cart.py).
 const CodePayWayUnavailable = "pay_way_unavailable"
 
+// CodePayWayNotFound is the `code` of Django's 404 for a pay way it does
+// not have (cart/views/cart.py).
+const CodePayWayNotFound = "pay_way_not_found"
+
+// CodeCartEmpty is the `code` of Django's 400 refusing to price or order
+// a cart with no lines.
+const CodeCartEmpty = "cart_empty"
+
 // The codes of Django's 400 refusing a delivery that cannot be priced for
 // a cart (shipping/enum/refusal.py, ShippingRefusal): the store does not
 // ship that way to the country, or the cart does not fit it.

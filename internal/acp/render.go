@@ -335,6 +335,15 @@ func refusedChoices(p *checkout.Pricing) []Message {
 				"fulfillment option."),
 		})
 	}
+	if r := p.InputRefused; r != nil {
+		out = append(out, Message{
+			Type: "error", Code: "invalid",
+			Resolution: "requires_buyer_input", ContentType: "plain",
+			Content: strings.TrimSpace("The store refuses this session's " +
+				"data: " + r.Detail + " Only its items are priced: " +
+				"correct it with an update."),
+		})
+	}
 	return out
 }
 

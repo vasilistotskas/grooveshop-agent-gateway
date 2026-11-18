@@ -987,7 +987,10 @@ func (h *handlers) completeSession(
 			return fromSnapshot(func() (*mcp.CallToolResult, CheckoutResult,
 				error) {
 				res, out, err2 := h.checkoutResult(ctx, t, s, neg)
-				return incompleteBy(res, out, err2, totalChanged(err))
+				if err2 != nil {
+					return nil, CheckoutResult{}, completeErr(s, err)
+				}
+				return incompleteBy(res, out, nil, totalChanged())
 			})
 		}
 		// Refused before the order was sent, or by Django for the order
@@ -1019,18 +1022,13 @@ func (h *handlers) completeSession(
 // totalChanged is the recoverable error of a complete Django refused
 // because the checkout's total is no longer the amount due: no order was
 // placed, and the checkout answering it shows the total now.
-func totalChanged(err error) ucp.Message {
-	now := "another"
-	if changed, ok := errors.AsType[*django.TotalChangedError](err); ok &&
-		changed.Now != nil {
-		now = money.Format(changed.Now.Amount) + " " + changed.Now.Currency
-	}
+func totalChanged() ucp.Message {
 	return ucp.Message{Type: "error", Code: django.CodeTotalChanged,
 		Severity: "recoverable",
-		Text: fmt.Sprintf("The store's total for this checkout is now %s, "+
-			"not the one it showed, so no order was placed. Confirm the "+
-			"total shown here with the buyer, then call complete_checkout "+
-			"again (the same idempotency key may be used).", now)}
+		Text: "The store's total for this checkout changed since it was " +
+			"shown, so no order was placed. Confirm the total shown here " +
+			"with the buyer, then call complete_checkout again (the same " +
+			"idempotency key may be used)."}
 }
 
 // errNoPaymentMethod refuses a complete of a checkout that holds no
@@ -1149,6 +1147,11 @@ func completeErr(s *checkout.Session, err error) error {
 		return saveFailed(err)
 	case errors.Is(err, checkout.ErrCompletionInProgress):
 		return errCompletionInFlight
+	case errors.Is(err, checkout.ErrTotalNotShown):
+		return &mcptool.ToolError{Code: mcptool.CodeMissing,
+			Hint: "this checkout has shown no total yet; read it with " +
+				"get_checkout, confirm the total with the buyer, then " +
+				"complete"}
 	case errors.Is(err, checkout.ErrNotReady):
 		return &mcptool.ToolError{Code: mcptool.CodeMissing,
 			Hint: "this checkout is not ready to complete; still needed: " +
@@ -1576,10 +1579,17 @@ func (h *handlers) rendered(
 				slog.String("error", err.Error()))
 			return payload, nil
 		}
+		// An open checkout has no order to speak of: one that other
+		// requests keep storing is answered as changed, one that cannot
+		// be read again as unavailable.
+		open := s.Open()
 		if !again || !errors.Is(err, checkout.ErrSessionChanged) {
 			h.deps.Log.WarnContext(ctx, "checkout: order state not stored",
 				slog.String("session", s.ID),
 				slog.String("error", err.Error()))
+			if open {
+				return nil, saveFailed(err)
+			}
 			return nil, unrenderedErr(s)
 		}
 		now, err := h.deps.Checkout.Load(
@@ -1587,6 +1597,8 @@ func (h *handlers) rendered(
 		switch {
 		case errors.Is(err, checkout.ErrNotFound):
 			return nil, errCheckoutGone
+		case err != nil && open:
+			return nil, errCheckoutUnavailable
 		case err != nil:
 			return nil, unrenderedErr(s)
 		}

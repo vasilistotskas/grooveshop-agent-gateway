@@ -70,4 +70,20 @@ func TestAddDiscounts(t *testing.T) {
 			{Code: "FIRST10", Reason: DiscountCodeInvalid},
 		}, p.RefusedCoupons)
 	})
+
+	t.Run("a coupon the cart refuses without blocking the order is a "+
+		"rejection too", func(t *testing.T) {
+		p := &Pricing{}
+		require.NoError(t, p.addDiscounts(&django.Quote{}, &django.Cart{
+			AppliedCoupons: []django.AppliedCoupon{{
+				Code: "WEAK", Amount: json.Number("0"),
+				Rejection: DiscountCodeCombinationDisallowed,
+			}},
+		}))
+
+		assert.Empty(t, p.Discounts)
+		assert.Equal(t, []DiscountRejection{
+			{Code: "WEAK", Reason: DiscountCodeCombinationDisallowed},
+		}, p.RefusedCoupons)
+	})
 }

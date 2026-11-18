@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -238,19 +239,83 @@ func TestComputePricingDropsARefusedChoice(t *testing.T) {
 }
 
 // A quote that cannot be read is an error, never a total without the
-// row it could not price; another refusal is the caller's to answer.
+// row it could not price, and so is a cart Django no longer has.
 func TestComputePricingQuoteFailures(t *testing.T) {
-	for status, want := range map[int]error{
-		http.StatusServiceUnavailable: django.ErrUpstreamDown,
-		http.StatusBadRequest:         django.ErrValidation,
-		http.StatusNotFound:           django.ErrNotFound,
+	for status, body := range map[int]string{
+		http.StatusServiceUnavailable: `{"detail":"down"}`,
+		http.StatusNotFound: `{"detail":"Cart not found",` +
+			`"code":"cart_not_found"}`,
 	} {
 		dj, _ := quoteDjango(t, pricingCart("0.0", false),
+			func(django.QuoteRequest) (int, string) { return status, body })
+		_, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+			readySession())
+		require.Error(t, err, status)
+	}
+}
+
+// The store's refusal of the checkout's other data (an email it does not
+// take, say) is named, and only the cart is priced; a pay way the store
+// no longer has is a refused choice; an empty cart has nothing to price.
+func TestComputePricingRefusedData(t *testing.T) {
+	t.Run("the checkout's data", func(t *testing.T) {
+		dj, asked := quoteDjango(t, pricingCart("0.0", false),
+			func(r django.QuoteRequest) (int, string) {
+				if r != (django.QuoteRequest{}) {
+					return http.StatusBadRequest, `{"email":["Enter a ` +
+						`valid email address."],"code":"invalid",` +
+						`"fields":{"email":[{"message":"Enter a valid ` +
+						`email address.","code":"invalid"}]}}`
+				}
+				return http.StatusOK, quoteBody("null", "null", "null")
+			})
+		p, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+			readySession())
+		require.NoError(t, err)
+		require.Len(t, *asked, 2)
+		assert.Equal(t, django.QuoteRequest{}, (*asked)[1])
+		require.NotNil(t, p.InputRefused)
+		assert.Contains(t, p.InputRefused.Detail, "valid email")
+		assert.False(t, p.Final)
+	})
+	t.Run("a pay way the store no longer has", func(t *testing.T) {
+		dj, _ := quoteDjango(t, pricingCart("0.0", false),
+			func(r django.QuoteRequest) (int, string) {
+				if r.PayWayID != 0 {
+					return http.StatusNotFound, `{"detail":"Payment method ` +
+						`not found","code":"pay_way_not_found"}`
+				}
+				return http.StatusOK, quoteBody(
+					`{"price":3.50,"waivedBy":null}`, "null", "null")
+			})
+		p, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+			readySession())
+		require.NoError(t, err)
+		require.NotNil(t, p.PayWayRefused)
+		assert.Equal(t, django.CodePayWayNotFound, p.PayWayRefused.Code)
+		assert.True(t, p.HasDelivery)
+	})
+	t.Run("an empty cart", func(t *testing.T) {
+		dj, _ := quoteDjango(t, pricingCart("0.0", false),
 			func(django.QuoteRequest) (int, string) {
-				return status, `{"detail":"no","code":"invalid_order_data"}`
+				return http.StatusBadRequest, `{"detail":"Cart is empty.",` +
+					`"code":"cart_empty"}`
+			})
+		p, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+			readySession())
+		require.NoError(t, err)
+		assert.Zero(t, p.Total)
+		assert.False(t, p.Final)
+		assert.Equal(t, "EUR", p.Currency)
+	})
+	t.Run("a quote in another currency than the store's", func(t *testing.T) {
+		dj, _ := quoteDjango(t, pricingCart("0.0", false),
+			func(django.QuoteRequest) (int, string) {
+				return http.StatusOK, strings.Replace(quoteBody("null",
+					"null", "null"), `"EUR"`, `"USD"`, 1)
 			})
 		_, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
 			readySession())
-		require.ErrorIs(t, err, want, status)
-	}
+		require.Error(t, err, "never shown under the store's currency")
+	})
 }
