@@ -705,7 +705,7 @@ Each store's ES256 key signs its order webhooks; its public half is in the store
    It seals every store's key still unsealed, deletes every unsealed record whose key the sealed record holds and every sentinel, logs one `signing keys sealed` line (`sealed`, `already_sealed`, `unsealed_deleted`), and exits non-zero if it left any store alone (`signing key left unsealed`, with the reason). Run it a second time right after: its line then lists no store under `sealed` or `unsealed_deleted`, which proves nothing unsealed is left. Later runs may list stores under `unsealed_deleted`: a store first keyed after step 3 still gets a sentinel, which expires by itself 7 days after it was written, so nothing needs deleting by hand.
 4. **A store it left alone** holds one key unsealed and another sealed. That takes a record deleted by hand while an old pod ran. The new pods publish the sealed key; delete the unsealed record by hand once you know which key platforms were last shown.
 
-**Never change `SIGNING_KEY_ENCRYPTION_KEY` in place.** A key sealed under another one does not open: every store's profile answers 503, and its order events are answered 503, so Django's outbox keeps them until the key is right or its attempts run out. Changing it needs every record sealed again under the new key, which no command does yet.
+**Never change `SIGNING_KEY_ENCRYPTION_KEY` in place.** A key sealed under another one does not open: a pod started with it exits once Redis holds keys and none opens (`AwaitKEK`), and is never ready, so the gateway serves nothing. Django's outbox keeps the order events meanwhile, until the key is right or their attempts run out. Changing it needs every record sealed again under the new key, which no command does yet.
 
 **A rollback** to the earlier release:
 
@@ -727,3 +727,17 @@ kubectl --context grooveshop -n "$NS" rollout restart deploy/agent-gateway
 ```
 
 Each pod holds the key it read in memory until it restarts, and the first pod to need the key after the restart mints the new one. Platforms see a rotation: the profile publishes only the new key, so a webhook signed with the old one before the restart no longer verifies.
+
+## 13. The release that removed the webhook stream (#111)
+
+Gateway releases up to v1.47.0 answered an order event once it was queued in the Redis stream `ag:webhooks:orders`, and Django's outbox then marked the event `delivered`. The release after them delivers within the call and reads no stream: whatever the old pods leave queued is never sent, and the outbox cannot send it again (*Send again now* skips a delivered row). In each environment (`NS=grooveshop-staging`, then `NS=grooveshop`):
+
+```bash
+r() { kubectl --context grooveshop -n "$NS" exec redis-gateway-0 -c redis-gateway -- redis-cli "$@"; }
+```
+
+1. **Before the promote:** `r XLEN ag:webhooks:orders` and `r XPENDING ag:webhooks:orders dispatch` both say 0. A stream that is not empty is still being delivered: wait, and check again.
+2. **After the rollout** (`kubectl ... rollout status deploy/agent-gateway`): the same check. An entry left there is a webhook no pod will send. `r XRANGE ag:webhooks:orders - +` names its store, its target and its order in the `delivery` field: write them down. The platform catches up with that order's next event, since every webhook carries the whole order.
+3. **Then delete the key**, which holds the stream and its `dispatch` group: `r DEL ag:webhooks:orders`.
+
+Observed 2026-11-18, before the promote: both environments empty, 0 pending; production held no order link.

@@ -128,9 +128,11 @@ func TestSendIsBoundedByItsContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := hooks.Send(ctx, testDelivery(platform.URL))
+	_, err := hooks.Send(ctx, testDelivery(platform.URL+"/hook?token=s3cret"))
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrPlatformURL, "an outage, worth a retry")
+	assert.NotContains(t, err.Error(), "s3cret",
+		"a token in the platform's URL is not logged")
 	assert.Less(t, time.Since(start), 5*time.Second)
 }
 

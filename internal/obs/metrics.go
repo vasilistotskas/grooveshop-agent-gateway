@@ -55,8 +55,8 @@ func NewMetrics() *Metrics {
 		}, []string{"server", "tool", "outcome"}),
 		OrderWebhooks: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "gateway_order_webhooks_total",
-			Help: "Order events settled for a platform's webhook: delivered, " +
-				"or failed for good.",
+			Help: "Order webhooks delivered, or failed for good by the " +
+				"gateway's own verdict (the outbox's give-ups are Django's).",
 		}, []string{"outcome"}),
 		RateLimited: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "gateway_rate_limited_total",

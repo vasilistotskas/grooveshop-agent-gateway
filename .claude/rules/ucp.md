@@ -318,9 +318,14 @@ wins over this page.
   placed it writes the link (`Flow.place`). After that, 204 and a warn
   line: the link is lost (or, for an order whose creation Django never
   answered, was never written). `gateway_order_webhooks_total{outcome}`
-  counts `delivered` and `failed`. Retries, their backoff and their
+  counts `delivered` and the gateway's own `failed` (its 422s); an event
+  the outbox gives up on after retries is counted by Django, not here.
+  A failed post's error names the target's host, never its URL (a
+  platform may carry a token in the query). Retries, their backoff and their
   order are the outbox's: an order's events go out in the order they
   happened, and each store is swept on its own, one event at a time.
+  The stream releases up to v1.47.0 queued in is read by nothing: the
+  runbook's section 13 empties and deletes it at that rollout.
   So a platform that does not answer holds up only its own store's
   retries, each by up to `postTimeout`; nothing caps one platform's
   share within a store.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -135,7 +136,13 @@ func (w *Webhooks) Send(ctx context.Context, dl Delivery) (Reply, error) {
 
 	resp, err := w.hc.Do(req)
 	if err != nil {
-		return Reply{}, fmt.Errorf("ucp: webhook post: %w", err)
+		// A *url.Error names the whole URL, and a platform may carry a
+		// token in its query: the error names only the host.
+		if ue, ok := errors.AsType[*url.Error](err); ok {
+			err = ue.Err
+		}
+		return Reply{}, fmt.Errorf("ucp: webhook post to %s: %w",
+			req.URL.Host, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	// Drain so the keep-alive connection is reusable for the next
