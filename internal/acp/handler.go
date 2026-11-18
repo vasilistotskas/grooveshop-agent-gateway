@@ -166,6 +166,8 @@ func writeUnavailable(w http.ResponseWriter, msg string) {
 // session is not rendered: the platform must read it again, not order
 // again.
 func writePlacedUnrendered(w http.ResponseWriter, s *checkout.Session) {
+	w.Header().Set("Retry-After",
+		strconv.Itoa(mcptool.UnavailableRetryAfter))
 	writeError(w, http.StatusServiceUnavailable, Error{
 		Type: "service_unavailable", Code: "order_placed",
 		Message: "Order " + s.OrderUUID + " is placed, but the " +

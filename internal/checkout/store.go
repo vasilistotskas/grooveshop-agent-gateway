@@ -576,7 +576,8 @@ func (st *Store) LockSession(
 // storing over a call that holds it would make that call's own save
 // fail. Nothing is stored while another call holds the lock
 // (ErrLocked), or when the session was stored since the read loaded it
-// (ErrSessionChanged): that call, or a later read, stores its own.
+// (ErrSessionChanged) with another total: that call, or a later read,
+// stores its own. One stored since with the same total is the read's.
 func (st *Store) StoreShown(
 	ctx context.Context, caller Caller, read *Session,
 ) error {
@@ -585,7 +586,13 @@ func (st *Store) StoreShown(
 		return err
 	}
 	defer release()
-	if s.Revision != read.Revision {
+	stored := s.ShownTotal != nil && read.ShownTotal != nil &&
+		*s.ShownTotal == *read.ShownTotal
+	switch {
+	case stored:
+		// Another read stored the same total since.
+		return nil
+	case s.Revision != read.Revision:
 		return ErrSessionChanged
 	}
 	s.ShownTotal = read.ShownTotal

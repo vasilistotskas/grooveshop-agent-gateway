@@ -622,4 +622,16 @@ func TestAReadStoresTheTotalItShowedOnlyUnderTheFreeLock(t *testing.T) {
 			checkout.ErrSessionChanged)
 		assert.Nil(t, stored(t, s).ShownTotal)
 	})
+
+	t.Run("stored since with the same total", func(t *testing.T) {
+		s := newSession()
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
+		first, second := stored(t, s), stored(t, s)
+		first.ShownTotal, second.ShownTotal = shown, shown
+		require.NoError(t, store.StoreShown(ctx, caller, first))
+
+		require.NoError(t, store.StoreShown(ctx, caller, second),
+			"another read stored the same total: nothing to refuse")
+		assert.Equal(t, shown, stored(t, s).ShownTotal)
+	})
 }
