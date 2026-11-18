@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 )
 
 // storeTimeout is the upstream timeout the store tests size their locks
@@ -562,5 +563,63 @@ func TestClaim(t *testing.T) {
 		assert.True(t, recorded)
 		_, settled := held(t, key)
 		assert.Equal(t, "late", settled)
+	})
+}
+
+// A read stores the total it showed only under the free lock, over the
+// state it read, and nothing but that total: a call holding the lock
+// keeps it, and a session stored since is not written over.
+func TestAReadStoresTheTotalItShowedOnlyUnderTheFreeLock(t *testing.T) {
+	ctx := t.Context()
+	store, _ := startStore(t)
+	caller := checkout.Caller{Protocol: checkout.ProtocolUCP}
+	stored := func(t *testing.T, s *checkout.Session) *checkout.Session {
+		t.Helper()
+		got, err := store.Load(ctx, s.Schema, caller, s.ID)
+		require.NoError(t, err)
+		return got
+	}
+	shown := &django.ExpectedTotal{Amount: 4200, Currency: "EUR"}
+
+	t.Run("free", func(t *testing.T) {
+		s := newSession()
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
+		read := stored(t, s)
+		read.ShownTotal = shown
+		read.Buyer.FirstName = "not stored by a read"
+
+		require.NoError(t, store.StoreShown(ctx, caller, read))
+
+		got := stored(t, s)
+		assert.Equal(t, shown, got.ShownTotal)
+		assert.Empty(t, got.Buyer.FirstName, "nothing but the total")
+		_, err := store.Lock(ctx, s.Schema, s.ID)
+		require.NoError(t, err, "the read released the lock")
+	})
+
+	t.Run("held by another call", func(t *testing.T) {
+		s := newSession()
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
+		read := stored(t, s)
+		release, err := store.Lock(ctx, s.Schema, s.ID)
+		require.NoError(t, err)
+		defer release()
+		read.ShownTotal = shown
+
+		require.ErrorIs(t, store.StoreShown(ctx, caller, read),
+			checkout.ErrLocked)
+		assert.Nil(t, stored(t, s).ShownTotal)
+	})
+
+	t.Run("stored since the read", func(t *testing.T) {
+		s := newSession()
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
+		read := stored(t, s)
+		require.NoError(t, store.Save(ctx, stored(t, s)))
+		read.ShownTotal = shown
+
+		require.ErrorIs(t, store.StoreShown(ctx, caller, read),
+			checkout.ErrSessionChanged)
+		assert.Nil(t, stored(t, s).ShownTotal)
 	})
 }

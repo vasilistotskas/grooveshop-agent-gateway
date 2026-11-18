@@ -328,7 +328,10 @@ Loads when working on a checkout session on either surface, its completion, its 
     an update or completion would make that call's own save fail. A
     total shown and not stored (the lock was held, Redis failed) costs
     one `total_changed`: the order sent at the total stored is refused,
-    and the next render stores the new one. An open checkout that other
+    and the next render stores the new one. A read that stores holds the
+    lock for two reads and a write: an update or completion arriving then
+    is answered busy (UCP `errCheckoutBusy`, ACP 409), and a pod that
+    dies inside it leaves the lock to lapse. An open checkout that other
     requests keep storing is answered as changed (UCP `conflict`), never
     as a placed order.
   - **The order is placed only at it.** `Flow.admit` refuses a checkout

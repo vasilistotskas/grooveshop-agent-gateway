@@ -436,13 +436,13 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 		})
 	// amountDue is what Django charges an order with these choices now.
 	amountDue := func(order map[string]any) any {
-		choices, err := json.Marshal(map[string]any{
+		// A map of decoded JSON values always encodes.
+		choices, _ := json.Marshal(map[string]any{
 			"payWayId": order["payWayId"], "shippingKind": order["shippingKind"],
 			"shippingProviderCode": order["shippingProviderCode"],
 			"countryId":            order["countryId"], "regionId": order["regionId"],
 			"email": order["email"],
 		})
-		assert.NoError(t, err)
 		rec := httptest.NewRecorder()
 		quote(rec, httptest.NewRequest(http.MethodPost, "/api/v1/cart/quote",
 			bytes.NewReader(choices)))

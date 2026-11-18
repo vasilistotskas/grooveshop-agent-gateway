@@ -59,7 +59,10 @@ const (
 	// a completion makes under it before its last write of the session.
 	// The handler looks the payment up, Flow.admit prices the checkout
 	// (its cart, its quote, its pay way), reads the pay ways and
-	// reserves the stock, and then the completion's own budget runs.
+	// reserves the stock, and then the completion's own budget runs. A
+	// UCP complete that names a checkout's first method prices it once
+	// more first (firstMethodFee), and a slow Django can outlast the lock
+	// there too.
 	// Django cuts each call at one timeout, so a request that holds the
 	// lock longer has had a call retried (a GET, after a 5xx or a
 	// dropped connection) or writes many cart lines. Its lock lapses

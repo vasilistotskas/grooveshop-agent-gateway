@@ -1635,14 +1635,17 @@ func (h *Handler) render(
 // lock (checkout.Store.StoreShown): the update or complete holding it
 // never loses its save to a read.
 func (h *Handler) storeShown(r *http.Request, s *checkout.Session) {
-	var err error
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		err = h.store.StoreShown(r.Context(), acpCaller, s)
-	} else {
-		err = h.store.Save(r.Context(), s)
+		// Held by another call, or stored since: that call stores its own.
+		if err := h.store.StoreShown(r.Context(), acpCaller, s); err != nil {
+			h.log.DebugContext(r.Context(), "acp: shown total not stored "+
+				"by a read", slog.String("session", s.ID),
+				slog.String("error", err.Error()))
+		}
+		return
 	}
-	if err != nil {
-		h.log.DebugContext(r.Context(), "acp: shown total not stored",
+	if err := h.store.Save(r.Context(), s); err != nil {
+		h.log.WarnContext(r.Context(), "acp: shown total not stored",
 			slog.String("session", s.ID), slog.String("error", err.Error()))
 	}
 }
