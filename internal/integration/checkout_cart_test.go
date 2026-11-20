@@ -130,8 +130,9 @@ func TestACartIsTakenWithItsSession(t *testing.T) {
 
 // Who holds a cart is decided on the holding session's state: an open
 // one keeps it, and so does one whose order is being placed or awaits
-// its payment. A canceled or completed one, and a record whose session
-// is gone, leave the cart to the next checkout.
+// its payment, and one whose record lives while its session is not
+// read. A canceled or completed one, and a record that ended, leave the
+// cart to the next checkout.
 func TestWhoHoldsACart(t *testing.T) {
 	ctx := t.Context()
 	store, rdb := startStore(t)
@@ -233,6 +234,45 @@ func TestWhoHoldsACart(t *testing.T) {
 		require.NoError(t, store.Create(ctx, next, seen))
 		assert.Equal(t, next.ID, heldBy(t, rdb, holder.CartID))
 	})
+
+	// The session the record named ends with its record, and another
+	// create takes the cart, between HolderOf's read of the session and
+	// its second read of the record. The record then names a session
+	// that is read: the holder changed, and is decided again, never
+	// taken for one that cannot be read.
+	t.Run("a record another create took while it was read",
+		func(t *testing.T) {
+			gone := newSession()
+			require.NoError(t, store.Create(ctx, gone,
+				checkout.CartHolder{}))
+			taker := newSession()
+			require.NoError(t, store.Create(ctx, taker,
+				checkout.CartHolder{}))
+			record := cartRecordPrefix + gone.CartID
+			var swapped atomic.Bool
+			rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+				args := cmd.Args()
+				if cmd.Name() != "get" || len(args) < 2 ||
+					args[1] != sessionRedisKey(gone.ID) ||
+					!swapped.CompareAndSwap(false, true) {
+					return nil
+				}
+				if err := rdb.Del(ctx, sessionRedisKey(gone.ID)).Err(); err != nil {
+					return err
+				}
+				return rdb.Set(ctx, record, taker.ID, time.Minute).Err()
+			}))
+
+			_, err := store.HolderOf(ctx, gone.Schema, gone.CartID)
+			require.ErrorIs(t, err, checkout.ErrSessionChanged)
+			require.True(t, swapped.Load())
+
+			seen, err := store.HolderOf(ctx, gone.Schema, gone.CartID)
+			require.NoError(t, err)
+			require.NotNil(t, seen.Session)
+			assert.Equal(t, taker.ID, seen.Session.ID)
+			assert.False(t, seen.Unread())
+		})
 
 	// Two creates read one free holder. The first takes the cart; the
 	// second expected the holder it read, finds another, and is refused.

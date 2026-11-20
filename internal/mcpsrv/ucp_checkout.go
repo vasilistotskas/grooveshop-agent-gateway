@@ -302,7 +302,10 @@ func (h *handlers) createFromCart(
 			"cart_id is not a cart id: send the cartId the cart tools " +
 				"returned, or omit it and send checkout.line_items")
 	}
-	if _, err := h.cartHolder(ctx, t, cartID); err != nil {
+	// A holder that changed while it was read is decided again by
+	// takeCart.
+	if _, err := h.cartHolder(ctx, t, cartID); err != nil &&
+		!errors.Is(err, checkout.ErrSessionChanged) {
 		return nil, zero, err
 	}
 	s, err := h.newSession(ctx, t, &in.Checkout, neg)
@@ -369,6 +372,10 @@ func (h *handlers) takeCart(
 	}()
 	for range cartCreateRounds {
 		holder, err := h.cartHolder(ctx, t, s.CartID)
+		if errors.Is(err, checkout.ErrSessionChanged) {
+			// Another create took the cart while it was read.
+			continue
+		}
 		if err != nil {
 			return release, err
 		}
@@ -473,11 +480,16 @@ func (h *handlers) cancel(ctx context.Context, s *checkout.Session) error {
 //     another release while a key move rolls out, or one Redis lost. An
 //     order may exist, and nothing of it can be canceled here.
 //
-// No refusal names the holder or its order.
+// No refusal names the holder or its order. A holder that changed while
+// it was read (another create took the cart) is
+// checkout.ErrSessionChanged, which takeCart decides again on.
 func (h *handlers) cartHolder(
 	ctx context.Context, t *tenant.Tenant, cartID string,
 ) (checkout.CartHolder, error) {
 	holder, err := h.deps.Checkout.HolderOf(ctx, t.SchemaName, cartID)
+	if errors.Is(err, checkout.ErrSessionChanged) {
+		return holder, err
+	}
 	if err != nil {
 		return holder, errCheckoutUnavailable
 	}

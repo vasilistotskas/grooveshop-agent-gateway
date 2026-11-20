@@ -369,7 +369,10 @@ func (h CartHolder) Free() bool {
 	return h.Session.Terminal()
 }
 
-// HolderOf reads the checkout that holds a cart.
+// HolderOf reads the checkout that holds a cart. A record that names
+// another session by the time it is read again, after the session it
+// first named was not found, is ErrSessionChanged: another create took
+// the cart meanwhile, and the caller decides again on it.
 func (st *Store) HolderOf(
 	ctx context.Context, schema, cartID string,
 ) (CartHolder, error) {
@@ -391,13 +394,15 @@ func (st *Store) HolderOf(
 		// one lifetime, and every delete of a session takes its record):
 		// a record that is gone now ended with its session between the
 		// two reads.
-		_, err := st.rdb.Get(ctx, key).Result()
-		if errors.Is(err, redis.Nil) {
+		now, err := st.rdb.Get(ctx, key).Result()
+		switch {
+		case errors.Is(err, redis.Nil):
 			return CartHolder{}, nil
-		}
-		if err != nil {
+		case err != nil:
 			return CartHolder{},
 				fmt.Errorf("%w: cart holder: %w", ErrUnavailable, err)
+		case now != id:
+			return CartHolder{}, ErrSessionChanged
 		}
 		return CartHolder{record: id}, nil
 	case err != nil:

@@ -423,7 +423,10 @@ Loads when working on a checkout session on either surface, its completion, its 
     release while a key move rolls out, or one Redis lost. Either may
     still place an order, or have placed one. `HolderOf` reads the
     record again after a session it does not find, so a record that
-    ended with its session between the two reads frees the cart. UCP
+    ended with its session between the two reads frees the cart, and
+    one that names another session by then is a holder that changed
+    (`ErrSessionChanged`: another create took the cart), which the
+    create decides again on (`takeCart`). UCP
     answers the create `conflict` (`errCartUnread`): an order may exist,
     check before starting another checkout. The rule names no version,
     so from the move after `cs:v7` on it holds the cart both ways;
