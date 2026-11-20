@@ -411,9 +411,11 @@ func Load() (Config, error) {
 			maxOrderCreateAttempts, cfg.OrderCreateAttempts)
 	}
 	// The repeats wait inside the order's one upstream timeout: waits
-	// that fill it leave the last repeat no time to be sent.
-	if waits := time.Duration(cfg.OrderCreateAttempts-1) *
-		cfg.OrderCreateRetryDelay; waits >= cfg.UpstreamTimeout {
+	// that fill it leave the last repeat no time to be sent. The delay is
+	// held to the timeout's share per wait, never multiplied: a long
+	// delay times the waits overflows a Duration.
+	if waits := time.Duration(cfg.OrderCreateAttempts - 1); waits > 0 &&
+		cfg.OrderCreateRetryDelay > (cfg.UpstreamTimeout-1)/waits {
 		return Config{}, fmt.Errorf(
 			"config: ORDER_CREATE_ATTEMPTS (%d) waits of "+
 				"ORDER_CREATE_RETRY_DELAY (%s) between them must take less "+

@@ -119,8 +119,12 @@ func NewStore(rdb *redis.Client, upstreamTimeout time.Duration) *Store {
 //     it).
 //   - v6: a session keeps the total it showed, which its order is
 //     placed at (a v5 pod knows nothing of it, and its save drops it).
+//   - v7: every order a session sends names its checkout, which Django
+//     answers a repeat with, and a complete resumes a session whose
+//     order went unanswered (a v6 pod sends its order without the
+//     checkout's id: a resume of its session would place a second one).
 func sessionKey(schema, id string) string {
-	return "ag:" + schema + ":cs:v6:" + id
+	return "ag:" + schema + ":cs:v7:" + id
 }
 
 func lockKey(schema, id string) string {

@@ -124,11 +124,14 @@ Loads when working on a checkout session on either surface, its completion, its 
     and no order was sent. It does not mean nothing happened: an
     update has written its cart lines and coupon to Django by then, so
     UCP adds `checkoutNotUpdated` to that answer. A completion's last
-    save can lose only to an order event, or to a read that stored what
-    the order said (`rendered`), the other writers of a session in
-    progress, which move it only to `completed`: the completion then stores its outcome over
-    the event's (`Flow.saveOverEvent`), keeping `completed` if the
-    event said the order is paid. A last save that still cannot be
+    save can lose only to an order event, to a read that stored what
+    the order said (`rendered`), which move it only to `completed`, or
+    to a completion that resumed it early (a reader whose clock runs
+    ahead): the completion then stores its outcome over the event's
+    (`Flow.saveOverEvent`), keeping `completed` if the event said the
+    order is paid. A completion whose order went unanswered knows no
+    order, and leaves a stored session that names one as it is. A last
+    save that still cannot be
     stored, after its order was placed, is `ErrSessionNotSaved` with
     the key spent, and does not wrap `ErrSessionChanged`. A save Redis
     failed is `ErrUnavailable`, answered "the checkout records are
@@ -291,7 +294,7 @@ Loads when working on a checkout session on either surface, its completion, its 
       warn and answered 204, and the session is left as it is: a
       session is never completed without its order. The record
       `Flow.place` writes beside the session (`Store.IndexOrder`:
-      `ag:{schema}:cs:v6:{id}:order`, the order's uuid) is for calls on
+      `ag:{schema}:cs:v7:{id}:order`, the order's uuid) is for calls on
       the session, not events: it can be lost (a flush or a
       restore);
     - the event's order status and payment status set the status

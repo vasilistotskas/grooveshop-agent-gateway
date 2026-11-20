@@ -214,11 +214,16 @@ type checkoutFaults struct {
 	// for a connection Django dropped after its commit.
 	orderAnswerLost atomic.Int32
 	// placedBy holds the order each checkout placed (agentCheckout), a
-	// fakeOrder. Django answers
-	// a repeat with it before its view judges anything else
-	// (order/views/order.py, OrderViewSet.create), though after its
-	// throttles, so ordersPlaced counts each checkout's order once.
+	// fakeOrder. Django answers a repeat with it before its view judges
+	// anything else (order/views/order.py, OrderViewSet.create), though
+	// after its throttles, so ordersPlaced counts each checkout's order
+	// once.
 	placedBy sync.Map
+	// placing holds a *sync.Mutex per checkout, held from the lookup in
+	// placedBy to the order's store there: two creations of one checkout
+	// place one order, as Django's unique index on the checkout keeps
+	// it.
+	placing sync.Map
 	// orderHold runs inside an accepted order creation, before it
 	// answers.
 	orderHold atomic.Pointer[func(*http.Request)]
@@ -666,6 +671,10 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			// Every order names its checkout, which places one order.
 			checkoutID, _ := body["agentCheckout"].(string)
 			assert.NotEmpty(t, checkoutID)
+			placing, _ := faults.placing.LoadOrStore(checkoutID,
+				&sync.Mutex{})
+			placing.(*sync.Mutex).Lock()
+			defer placing.(*sync.Mutex).Unlock()
 			if placed, ok := faults.placedBy.Load(checkoutID); ok {
 				servePlacedOrder(t, w, faults, checkoutID, placed.(fakeOrder))
 				return
@@ -764,16 +773,15 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				faults.agentProtocol.Store(attribution["agentProtocol"])
 			}
 			faults.lastOrder.Store(&body)
-			faults.orderOnline.Store(body["payWayId"] != float64(1) ||
+			online := body["payWayId"] != float64(1) ||
 				faults.codOnlineFrom.Load() > 0 ||
-				faults.codServedOnline.Load())
+				faults.codServedOnline.Load()
+			faults.orderOnline.Store(online)
 			if hold := faults.orderHold.Load(); hold != nil {
 				(*hold)(r)
 			}
 			faults.ordersPlaced.Add(1)
-			placed := fakeOrder{
-				online: faults.orderOnline.Load(), at: time.Now().UTC(),
-			}
+			placed := fakeOrder{online: online, at: time.Now().UTC()}
 			if at := faults.orderCreatedAt.Load(); at != nil {
 				placed.at = *at
 			}

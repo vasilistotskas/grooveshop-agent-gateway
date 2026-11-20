@@ -331,16 +331,28 @@ func (f *Flow) run(
 
 // saveOverEvent stores a completion's outcome over a session that was
 // stored since the completion marked it in progress. Every handler
-// refuses a session in progress, so that other writer is an order event
-// (ApplyOrderEvent), which records the order this completion placed and
-// may complete the session when the payment has landed, or a read that
-// stored what that order said (Session.FollowOrder), which may too. The completion
-// knows more (the payment page it opened), so its outcome is stored over
-// the event's, keeping "completed" if the event said the order is paid.
+// refuses a session in progress until it is Resumable, so that other
+// writer is an order event (ApplyOrderEvent), which records the order
+// this completion placed and may complete the session when the payment
+// has landed, a read that stored what that order said
+// (Session.FollowOrder), which may too, or a completion that resumed
+// this one. The completion knows more (the payment page it opened), so
+// its outcome is stored over the event's, keeping "completed" if the
+// event said the order is paid.
+//
+// A completion that knows no order (Django left it unanswered) knows
+// less than a stored session that names one: an event recorded it, or a
+// completion that resumed this one placed it (a reader whose clock runs
+// ahead resumes early, CompletionDeadline). That session is kept as it
+// is, and s becomes it.
 func (f *Flow) saveOverEvent(ctx context.Context, s *Session) error {
 	stored, err := f.st.Load(ctx, s.Schema, s.creator(), s.ID)
 	if err != nil {
 		return err
+	}
+	if s.OrderUUID == "" && stored.OrderUUID != "" {
+		*s = *stored
+		return nil
 	}
 	// The event's save published an expiry too: never an earlier one.
 	s.ExpiresAt = later(s.ExpiresAt, stored.ExpiresAt)

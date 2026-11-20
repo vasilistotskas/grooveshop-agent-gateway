@@ -508,6 +508,9 @@ func TestLoadOrderCreateWaitsFitTheUpstreamTimeout(t *testing.T) {
 	}{
 		{"3", "5s", "10s", true},
 		{"5", "2500ms", "10s", true},
+		{"5", "2499ms", "10s", false},
+		// Two waits of it overflow a Duration to a negative one.
+		{"3", "2562047h", "10s", true},
 		{"3", "4900ms", "10s", false},
 		{"1", "1h", "10s", false},
 		{"", "", "", false},

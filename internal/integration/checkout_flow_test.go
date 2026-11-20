@@ -1088,6 +1088,43 @@ func TestResumeIsOneCallAndNeverOverARunningCompletion(t *testing.T) {
 	assert.EqualValues(t, 1, f.faults.orderCreates.Load()-creates)
 }
 
+// A reader whose clock runs ahead resumes a completion that is still
+// sending: the resume places the order and stores the checkout
+// completed. The first completion, still unanswered, knows no order,
+// and leaves the stored checkout as the resume left it.
+func TestAnUnansweredCompletionKeepsTheOrderAResumeStored(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	s := f.readySession(t)
+	f.faults.orderCreate.Store(true)
+	var resumed atomic.Bool
+	var resumeErr error
+	resume := func(r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/order" ||
+			!resumed.CompareAndSwap(false, true) {
+			return
+		}
+		ahead := f.stored(t, s)
+		ahead.UpdatedAt = time.Now().Add(-time.Hour)
+		f.faults.orderCreate.Store(false)
+		_, resumeErr = f.flow.Resume(t.Context(), f.tenant, ahead)
+		f.faults.orderCreate.Store(true)
+	}
+	f.faults.before.Store(&resume)
+
+	placement, err := f.flow.Complete(t.Context(), f.tenant, s)
+
+	require.NoError(t, resumeErr)
+	require.ErrorIs(t, err, checkout.ErrOrderOutcomeUnknown)
+	assert.Equal(t, checkout.OrderMayExist, placement)
+	assert.EqualValues(t, 1, f.faults.ordersPlaced.Load())
+	stored := f.stored(t, s)
+	assert.Equal(t, checkout.StatusCompleted, stored.Status)
+	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
+	assert.False(t, stored.Unconfirmed)
+	assert.Equal(t, stored.Revision, s.Revision,
+		"the completion holds the session as stored")
+}
+
 // The repeats of one completion share the order's one upstream timeout:
 // a policy that would send later than that stops at it.
 func TestTheRepeatsStopAtTheOrdersOneTimeout(t *testing.T) {

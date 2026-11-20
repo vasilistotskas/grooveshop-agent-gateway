@@ -590,7 +590,7 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 
 ## 10. Before deploying a release that moves the checkout session key
 
-**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Five have so far:
+**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Six have so far:
 
 | Release | Key | Why an older pod must not share a session |
 |---|---|---|
@@ -599,6 +599,7 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 | The one that binds a checkout to the platform that signed its creation | `cs:v3` to `cs:v4` | It knows nothing of that platform: it would answer any caller for the session, and its save would drop the platform |
 | The one that publishes `expires_at` (gateway #108) | `cs:v4` to `cs:v5` | It knows nothing of the expiry a session published: its save would drop it, and a later answer could give an earlier one |
 | The one that prices from Django's quote (gateway #107) | `cs:v5` to `cs:v6` | It knows nothing of the total a session showed: its save would drop it, and the session would then place no order until it is read again |
+| The one that resumes an unanswered order (gateway #83) | `cs:v6` to `cs:v7` | It sends an order without its checkout's id, so Django cannot answer a repeat with it: a new pod resuming that session would place a second order |
 
 **The pods it replaces must already answer a missing session truthfully.** Since the release with gateway #138, a checkout no session is stored for is answered "an order may exist, check before starting another", never only "start a new one". While a key-moving release rolls out, a pod of either kind then answers truthfully for a session it cannot see. Do not deploy one onto pods older than that.
 
@@ -681,7 +682,7 @@ Callers are told "in progress" for three upstream timeouts after the mark. After
 2. Decide whether an order exists.
    - `$key:order` exists, or the session has an `orderUuid`: it does. Leave the session; give the platform or the buyer the order.
    - Otherwise search the gateway's logs for the session id (`session`). "checkout: session save failed" and "checkout: order index write failed" each name the `order` when one exists.
-   - Otherwise look in the store's Django admin for an order with the buyer's email created at or after the session's `updatedAt`. The buyer's order confirmation email settles the same question.
+   - Otherwise look in the store's Django admin for an order with the buyer's email created at or after the session's `createdAt`: every save moves `updatedAt`, the one that stored it unconfirmed included, so an order sent before that save is older than it. That window can hold the buyer's other orders: match the cart's products and total. The buyer's order confirmation email settles the same question.
 
 3. Clear it **only when you have confirmed that no order exists**: no order was sent (step 2's logs), or the order request ended in Django without one. An admin search that finds nothing while that request may still be running is not that confirmation. Then `$R DEL "$key"`: the next call on that checkout id gets the missing-session answer, and the platform starts a new checkout. The cart's record (`ag:{schema}:checkoutcart:{cartId}`, the session's `cartId`) then names a session that is not stored, which holds nothing: leave it, the next checkout on that cart replaces it. While the session is stored, a `create_checkout` naming its cart is refused. If the outcome stays unknown, keep the session and start no new checkout. A session with `"unconfirmed":true` is otherwise kept the full 24 hours.
 
