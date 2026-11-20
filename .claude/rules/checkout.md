@@ -408,15 +408,28 @@ Loads when working on a checkout session on either surface, its completion, its 
     the cart. `Store.Create` stores the session and takes the cart in
     one script (`saveScript`): when no session holds the cart, or the
     record still names the holder the caller read (`Store.HolderOf`)
-    and that holder is free (`CartHolder.Free`: no longer stored,
-    canceled or completed). A cart another session holds is
+    and that holder is free (`CartHolder.Free`: no record, or a
+    session canceled or completed). A cart another session holds is
     `ErrCartHeld`, and nothing is written.
   - The record lives as long as its session: every save sets its
     expiry to the session's, and the save that ends a session and
     `Store.Discard` delete it, each only while it names that session.
     A save writes the record again where Redis holds none (lost to a
-    flush or a restore). A record whose session is not stored holds
-    nothing.
+    flush or a restore).
+  - **A record whose session this release does not read holds the cart
+    until the record ends** (`CartHolder.Unread`). A session and its
+    record end together, so such a holder is not gone but unknown: a
+    session stored under another key version by a pod of another
+    release while a key move rolls out, or one Redis lost. Either may
+    still place an order, or have placed one. `HolderOf` reads the
+    record again after a session it does not find, so a record that
+    ended with its session between the two reads frees the cart. UCP
+    answers the create `conflict` (`errCartUnread`): an order may exist,
+    check before starting another checkout. The rule names no version,
+    so from the move after `cs:v7` on it holds the cart both ways;
+    pods older than it free a cart whose holder they cannot read
+    (`docs/agent-protocols-runbook.md` section 10). An operator who
+    deletes a session deletes its record with it (section 11).
   - UCP `create_checkout` with `cart_id` (`mcpsrv.createFromCart`)
     takes a UUID only, in its canonical spelling
     (`checkout.CanonicalCartID`: Django reads every spelling as one

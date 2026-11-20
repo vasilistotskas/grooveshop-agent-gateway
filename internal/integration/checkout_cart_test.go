@@ -194,7 +194,11 @@ func TestWhoHoldsACart(t *testing.T) {
 		assert.True(t, seen.Free())
 	})
 
-	t.Run("a record whose session is gone", func(t *testing.T) {
+	// A record whose session this release does not read: one stored
+	// under another key version, by a pod of another release while a
+	// key move rolls out, or one Redis lost. That checkout may still
+	// place an order, so the cart stays held until the record ends.
+	t.Run("a record whose session is not read", func(t *testing.T) {
 		holder := newSession()
 		require.NoError(t, store.Create(ctx, holder, checkout.CartHolder{}))
 		require.NoError(t, rdb.Del(ctx, sessionRedisKey(holder.ID)).Err())
@@ -202,12 +206,30 @@ func TestWhoHoldsACart(t *testing.T) {
 		seen, err := store.HolderOf(ctx, holder.Schema, holder.CartID)
 		require.NoError(t, err)
 		assert.Nil(t, seen.Session)
-		assert.True(t, seen.Free())
-		// A create that never read the record does not replace it.
-		blind := sessionOn(holder.CartID)
-		require.ErrorIs(t, store.Create(ctx, blind, checkout.CartHolder{}),
-			checkout.ErrCartHeld)
+		assert.True(t, seen.Unread())
+		assert.False(t, seen.Free())
 		next := sessionOn(holder.CartID)
+		require.ErrorIs(t, store.Create(ctx, next, seen),
+			checkout.ErrCartHeld)
+		// Nor does a create that never read the record replace it.
+		require.ErrorIs(t, store.Create(ctx, next, checkout.CartHolder{}),
+			checkout.ErrCartHeld)
+		assert.Equal(t, holder.ID, heldBy(t, rdb, holder.CartID))
+		_, err = store.LoadAnyProtocol(ctx, next.Schema, next.ID)
+		require.ErrorIs(t, err, checkout.ErrNotFound)
+
+		// The record ends with the lifetime its session gave it, and the
+		// cart is free then.
+		require.NoError(t, rdb.PExpire(ctx, cartRecordPrefix+holder.CartID,
+			time.Millisecond).Err())
+		require.Eventually(t, func() bool {
+			return rdb.Exists(ctx, cartRecordPrefix+holder.CartID).
+				Val() == 0
+		}, time.Second, 5*time.Millisecond)
+		seen, err = store.HolderOf(ctx, holder.Schema, holder.CartID)
+		require.NoError(t, err)
+		assert.False(t, seen.Unread())
+		assert.True(t, seen.Free())
 		require.NoError(t, store.Create(ctx, next, seen))
 		assert.Equal(t, next.ID, heldBy(t, rdb, holder.CartID))
 	})
@@ -948,13 +970,31 @@ func TestCreateCheckoutOnACartInACheckout(t *testing.T) {
 			replaced(t, cart, old)
 		})
 
-	t.Run("a checkout that is gone leaves the cart to a new one",
-		func(t *testing.T) {
-			cart := stack.faults.carts.mint()
-			old := p.started(t, cart)
-			stack.lapse(t, sessionRedisKey(old))
-			replaced(t, cart, old)
-		})
+	// A record that names a checkout this server does not read: one a
+	// pod of another release stored under its own key while a key move
+	// rolls out, or one Redis lost. That checkout may place an order, or
+	// have placed one, so the cart is kept until the record ends with
+	// the lifetime its checkout gave it.
+	t.Run("a checkout this server does not read keeps the cart until "+
+		"its record ends", func(t *testing.T) {
+		cart := stack.faults.carts.mint()
+		old := p.started(t, cart)
+		stack.lapse(t, sessionRedisKey(old))
+		sessions := stack.sessionCount(t)
+
+		a := p.create(ctx, cart, nil)
+		assert.Empty(t, a.id, "a second checkout was started")
+		assert.Contains(t, a.refusal, `"code":"conflict"`)
+		assert.Contains(t, a.refusal, "cannot read")
+		assert.Contains(t, a.refusal, "an order may exist")
+		assert.NotContains(t, a.refusal, old)
+		assert.NotContains(t, a.refusal, "start a new")
+		assert.Equal(t, sessions, stack.sessionCount(t))
+		assert.Equal(t, old, heldBy(t, stack.rdb, cart))
+
+		stack.lapse(t, cartRecordPrefix+cart)
+		replaced(t, cart, old)
+	})
 }
 
 // A checkout started from line items, on either protocol, holds the cart

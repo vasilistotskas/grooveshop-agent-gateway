@@ -468,7 +468,10 @@ func (h *handlers) cancel(ctx context.Context, s *checkout.Session) error {
 //     another platform signed the creation of, which is that platform's.
 //     One whose order Django canceled is canceled here whatever its
 //     protocol or platform: nothing is left of it to finish, and its own
-//     surface refuses to cancel a checkout that placed an order.
+//     surface refuses to cancel a checkout that placed an order;
+//   - a checkout this release does not read (CartHolder.Unread): one of
+//     another release while a key move rolls out, or one Redis lost. An
+//     order may exist, and nothing of it can be canceled here.
 //
 // No refusal names the holder or its order.
 func (h *handlers) cartHolder(
@@ -481,6 +484,8 @@ func (h *handlers) cartHolder(
 	s := holder.Session
 	switch {
 	case holder.Free():
+	case holder.Unread():
+		return holder, errCartUnread
 	case s.MayHaveOrder():
 		canceled, err := h.orderCanceled(ctx, t, s)
 		if err != nil {
@@ -565,6 +570,19 @@ var (
 			"cannot be changed by this call, so no checkout was " +
 			"created; that checkout must be finished or canceled by " +
 			"whoever started it before this cart can be checked out here"}
+
+	// errCartUnread: the cart's record names a checkout this server
+	// cannot read. Like errCheckoutGone it never says to start another
+	// checkout: an order may exist.
+	errCartUnread = &mcptool.ToolError{Code: mcptool.CodeConflict,
+		Hint: "this cart is held by a checkout whose records this " +
+			"server cannot read, so an order may exist and no checkout " +
+			"was created: do not start another checkout for it before " +
+			"checking. If you hold that checkout's id, read it with " +
+			"get_checkout; if you hold its order id, read the order " +
+			"with get_order or track_order; if not, ask the shopper for " +
+			"the store's order confirmation. The cart is released when " +
+			"that checkout's record ends"}
 
 	// errCartBusy: in every round another request was at work on the
 	// cart's checkout, or had just changed it.

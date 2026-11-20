@@ -612,6 +612,8 @@ The new pods do not read sessions the old pods stored, and the reverse, on purpo
 | `completed`, `canceled` | As above; only the session's own read is lost | As above |
 | A payment event for a session a **new** pod stored, delivered to an **old** pod | The old pod finds the order link, looks under the old key, finds no session and answers 204, which is final for Django. The order webhook still goes out. That session stays `requires_escalation` until it ends, 24 hours after its order was placed: `get_checkout` keeps showing the payment page of a paid order, `get_order` shows the truth | Cannot happen |
 
+**A cart held by the other release's checkout.** The record of the checkout that holds a cart (`ag:{schema}:checkoutcart:{cartId}`) is not versioned: it names its session by id. A pod that finds a record whose session it does not read under its own key holds the cart until the record ends (`CartHolder.Unread`, since the `cs:v7` release), with the lifetime its session gave it: half an hour after an open checkout's last save, up to a day for one that ended or whose order exists or may. A `create_checkout` naming such a cart is answered `conflict`: held by a checkout this server cannot read, an order may exist, check before starting another. That holds for the old release's checkouts during the rollout and after it, until their records end, and it is the same rule for a session Redis lost. Pods older than the `cs:v7` release read such a record as a free cart, so while one serves beside a new pod, a create on it can take a cart a new pod's checkout holds. The Deployment rolls its two replicas one at a time (`maxSurge: 1`, `maxUnavailable: 1`, the infrastructure repo's `base/agent-gateway.yaml`), so that window lasts from the first new pod's readiness until the last old pod stops taking requests; Django still refuses an agent's order from a cart whose earlier order awaits its online payment (django-api #693). From the move after `cs:v7` on, pods of both releases hold such a cart.
+
 So before the deploy, list the sessions whose order exists or may. Since v1.44.0 the gateway's Redis is its own instance, `redis-gateway`, database **0** (`REDIS_URL` in the infrastructure repo's `base/agent-gateway.yaml`), and its container already has `REDISCLI_AUTH` set. Run this from your machine: it runs the check in that container's shell (`sh -s`), so a failure ends the check and not your shell. It prints how many sessions it read (a session's lock and its placed-order record are not sessions and are not counted; the carts' records are under `ag:*:checkoutcart:*`, outside the scan), then the ones that matter:
 
 ```bash
@@ -679,12 +681,55 @@ Callers are told "in progress" for three upstream timeouts after the mark. After
 
    The gateway's completion has ended once `updatedAt` is more than three times `UPSTREAM_TIMEOUT` old. Django's order request may still be running: the gateway's timeout ends its wait, not Django's work.
 
-2. Decide whether an order exists.
+2. Decide whether an order exists. Only the checkout's id names an order as this checkout's: an order found by the buyer's email, the products or the total may be another of the buyer's orders, and is not this checkout's on that alone.
    - `$key:order` exists, or the session has an `orderUuid`: it does. Leave the session; give the platform or the buyer the order.
-   - Otherwise search the gateway's logs for the session id (`session`). "checkout: session save failed" and "checkout: order index write failed" each name the `order` when one exists.
-   - Otherwise look in the store's Django admin for an order with the buyer's email created at or after the session's `createdAt`: every save moves `updatedAt`, the one that stored it unconfirmed included, so an order sent before that save is older than it. That window can hold the buyer's other orders: match the cart's products and total. The buyer's order confirmation email settles the same question.
+   - Otherwise ask Django for the order that names the checkout (`agentCheckout`, on every order a `cs:v7` session sends; Django #759). `<schema>` and `<session id>` are the key's second and last parts:
 
-3. Clear it **only when you have confirmed that no order exists**: no order was sent (step 2's logs), or the order request ended in Django without one. An admin search that finds nothing while that request may still be running is not that confirmation. Then `$R DEL "$key"`: the next call on that checkout id gets the missing-session answer, and the platform starts a new checkout. The cart's record (`ag:{schema}:checkoutcart:{cartId}`, the session's `cartId`) then names a session that is not stored, which holds nothing: leave it, the next checkout on that cart replaces it. While the session is stored, a `create_checkout` naming its cart is refused. If the outcome stays unknown, keep the session and start no new checkout. A session with `"unconfirmed":true` is otherwise kept the full 24 hours.
+     ```bash
+     kubectl --context grooveshop -n <namespace> exec deploy/backend -c backend -- \
+       .venv/bin/python manage.py shell -c "
+     from uuid import UUID
+     from django_tenants.utils import schema_context
+     from order.services import OrderService
+     with schema_context('<schema>'):
+         o = OrderService.order_for_agent_checkout(UUID('<session id>'))
+         print(o.uuid if o else 'none')
+     "
+     ```
+
+     An order printed is this checkout's, a deleted one included. `none` means no order only once Django's order request has ended (step 1): one still running can commit its order after.
+   - Search the gateway's logs for the session id (`session`) too. "checkout: session save failed" and "checkout: order index write failed" each name the `order` when one exists. "checkout: the store did not tie the order to its checkout" names an order Django took without the checkout's id, which the lookup above cannot find: that order is this checkout's.
+   - Anything else (an admin search by email, products or total that finds a candidate, or the buyer's confirmation email) leaves the outcome unknown: keep the session (step 3).
+
+3. Clear it **only when you have confirmed that no order exists**, and only while no complete can resume it. A complete of a session stuck in progress sends its order again (section 11's first paragraph), so a confirmation taken while a complete may arrive does not justify the delete: hold the session first, confirm under the hold, and delete under it.
+   1. Hold it with the session's own lock, which every update, complete and cancel takes before it reads the session (a complete that finds it held is told the session is busy, and retries). The hold lasts 15 minutes:
+
+      ```bash
+      hold="inflight:operator-$(date +%s)"
+      $R SET "$key:lock" "$hold" NX PX 900000   # OK: held. (nil): a request holds it; try again shortly
+      ```
+
+      If it never answers `OK`, keep the session.
+   2. Read the session again under the hold: `$R GET "$key"`. It must still be `complete_in_progress` with no `orderUuid`, `$R EXISTS "$key:order"` must be `0`, and its `updatedAt` must be more than three times `UPSTREAM_TIMEOUT` old (a resume that ran before the hold moved it, and may still be running). Note its `revision`, `id` and `cartId`.
+   3. Confirm, now, that no order exists (step 2): no order was sent, or the order request ended in Django and the lookup prints `none`. A confirmation taken before the hold does not count.
+   4. Delete the session and its cart's record, only while the hold is still yours and the session is still the one you read. The cart's record (`ag:{schema}:checkoutcart:{cartId}`) names the session; left behind, it would keep the cart from every new checkout until it ended (a record whose session the gateway does not read holds the cart, section 10):
+
+      ```bash
+      $R EVAL "
+      if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 'hold lost' end
+      local s = redis.call('GET', KEYS[2])
+      if not s or cjson.decode(s).revision ~= ARGV[3] then return 'session changed' end
+      redis.call('DEL', KEYS[2])
+      if redis.call('GET', KEYS[3]) == ARGV[2] then redis.call('DEL', KEYS[3]) end
+      redis.call('DEL', KEYS[1])
+      return 'deleted'
+      " 3 "$key:lock" "$key" "ag:<schema>:checkoutcart:<cartId>" "$hold" "<id>" "<revision>"
+      ```
+
+      `deleted`: the next call on that checkout id gets the missing-session answer, and the platform starts a new checkout. `hold lost` (it lapsed) or `session changed`: nothing was deleted; start again from step 3.1.
+   5. If you stop before step 4, release the hold only while it is yours: `$R EVAL "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0" 1 "$key:lock" "$hold"`. Left, it lapses after its 15 minutes.
+
+   If the outcome stays unknown, keep the session and start no new checkout. A session with `"unconfirmed":true` is otherwise kept the full 24 hours.
 
    When an order exists, do not delete the session to "unblock" the platform: a new checkout for the same cart would be a second order. The order is the answer, and a complete of the session, once Django answers again, records it.
 

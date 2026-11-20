@@ -338,27 +338,43 @@ return 1
 // is a cart no checkout holds.
 type CartHolder struct {
 	// Session is the checkout the cart's record names. It is nil for a
-	// cart without a record, and for a record whose session is no longer
-	// stored: that record is stale, and holds nothing.
+	// cart without a record, and for a record whose session this release
+	// does not read (Unread).
 	Session *Session
 	// record is the record's value, which Create must still find to give
 	// the cart to another session.
 	record string
 }
 
-// Free reports whether another checkout may take the cart: no session
-// holds it, or the one that does is canceled or completed. An open
-// session keeps its cart, and so does one whose order is being placed
-// or awaits its payment.
+// Unread reports a cart whose record names a session that is not stored
+// under this release's key while the record lives. That holder is
+// unknown, not gone: a session under another key version (a pod of
+// another release still serves it while a release that moves the key
+// rolls out), or one Redis lost to a flush or a restore, may still place
+// an order or have placed one. It holds the cart until the record ends
+// with the lifetime its session gave it.
+func (h CartHolder) Unread() bool {
+	return h.Session == nil && h.record != ""
+}
+
+// Free reports whether another checkout may take the cart: no record
+// names a holder, or the session it names is canceled or completed. An
+// open session keeps its cart, and so does one whose order is being
+// placed or awaits its payment, and one this release does not read
+// (Unread).
 func (h CartHolder) Free() bool {
-	return h.Session == nil || h.Session.Terminal()
+	if h.Session == nil {
+		return h.record == ""
+	}
+	return h.Session.Terminal()
 }
 
 // HolderOf reads the checkout that holds a cart.
 func (st *Store) HolderOf(
 	ctx context.Context, schema, cartID string,
 ) (CartHolder, error) {
-	id, err := st.rdb.Get(ctx, cartKey(schema, cartID)).Result()
+	key := cartKey(schema, cartID)
+	id, err := st.rdb.Get(ctx, key).Result()
 	if errors.Is(err, redis.Nil) {
 		return CartHolder{}, nil
 	}
@@ -371,6 +387,18 @@ func (st *Store) HolderOf(
 	s, err := st.LoadAnyProtocol(ctx, schema, id)
 	switch {
 	case errors.Is(err, ErrNotFound):
+		// A session and its record end together (saveScript gives both
+		// one lifetime, and every delete of a session takes its record):
+		// a record that is gone now ended with its session between the
+		// two reads.
+		_, err := st.rdb.Get(ctx, key).Result()
+		if errors.Is(err, redis.Nil) {
+			return CartHolder{}, nil
+		}
+		if err != nil {
+			return CartHolder{},
+				fmt.Errorf("%w: cart holder: %w", ErrUnavailable, err)
+		}
 		return CartHolder{record: id}, nil
 	case err != nil:
 		return CartHolder{}, err

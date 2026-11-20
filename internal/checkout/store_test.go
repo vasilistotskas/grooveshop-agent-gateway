@@ -26,6 +26,32 @@ func TestCartRecordIsOutsideTheSessionKeys(t *testing.T) {
 	assert.False(t, strings.HasPrefix(cartKey("alpha", cart), "ag:alpha:cs:"))
 }
 
+// A cart is free with no record, or with a holder that ended. A record
+// whose session is not read here (another release's key, or lost) holds
+// the cart: that checkout may place an order.
+func TestWhenACartIsFree(t *testing.T) {
+	for name, tc := range map[string]struct {
+		holder       CartHolder
+		free, unread bool
+	}{
+		"no record": {CartHolder{}, true, false},
+		"a record whose session is not read": {
+			CartHolder{record: "id"}, false, true},
+		"an open holder": {CartHolder{record: "id",
+			Session: &Session{Status: StatusReadyForComplete}}, false, false},
+		"a holder placing its order": {CartHolder{record: "id",
+			Session: &Session{Status: StatusCompleteInProgress}}, false,
+			false},
+		"a completed holder": {CartHolder{record: "id",
+			Session: &Session{Status: StatusCompleted}}, true, false},
+		"a canceled holder": {CartHolder{record: "id",
+			Session: &Session{Status: StatusCanceled}}, true, false},
+	} {
+		assert.Equal(t, tc.free, tc.holder.Free(), name)
+		assert.Equal(t, tc.unread, tc.holder.Unread(), name)
+	}
+}
+
 // Django reads every spelling of a UUID as one cart. The gateway names a
 // cart in one, so one cart has one record; what is not a UUID names no
 // cart, and no key is built from it.
