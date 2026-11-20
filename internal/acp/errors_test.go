@@ -24,6 +24,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -62,7 +63,7 @@ func testHandler(t *testing.T, rdb *redis.Client) *Handler {
 	dj := fixtureDjango(t)
 	store := checkout.NewStore(rdb, dj.Timeout())
 	return NewHandler(dj, store,
-		checkout.NewFlow(dj, store, testSite, quietLog()), testSite,
+		checkout.NewFlow(dj, store, testSite, testOrderRetry, quietLog()), testSite,
 		quietLog())
 }
 
@@ -449,15 +450,19 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 	})
 
 	// A completion that has had its whole budget and still reads in
-	// progress never recorded its outcome: no Retry-After brings it.
+	// progress never recorded its outcome: a complete after Retry-After
+	// asks the store again (checkout.Flow.Resume).
 	t.Run("a completion past its budget is an unknown outcome",
 		func(t *testing.T) {
 			stuck := *session
 			stuck.UpdatedAt = time.Now().Add(-time.Hour)
 			rec := httptest.NewRecorder()
 			h.completeError(rec, req, &stuck, checkout.ErrCompletionInProgress)
-			specError(t, rec, http.StatusBadGateway, "order_outcome_unknown")
-			assert.Empty(t, rec.Header().Get("Retry-After"))
+			body := specError(t, rec, http.StatusBadGateway,
+				"order_outcome_unknown")
+			assert.Contains(t, body["message"], "Complete this session again")
+			assert.Equal(t, strconv.Itoa(mcptool.UnavailableRetryAfter),
+				rec.Header().Get("Retry-After"))
 		})
 
 	// A completion that stored its order as unanswered has ended: the
@@ -470,7 +475,8 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 			h.completeError(rec, req, &unconfirmed,
 				checkout.ErrCompletionInProgress)
 			specError(t, rec, http.StatusBadGateway, "order_outcome_unknown")
-			assert.Empty(t, rec.Header().Get("Retry-After"))
+			assert.Equal(t, strconv.Itoa(mcptool.UnavailableRetryAfter),
+				rec.Header().Get("Retry-After"))
 		})
 
 	// A save stamped in the future (a writer whose clock runs fast) is in

@@ -124,11 +124,16 @@ Loads when working on a checkout session on either surface, its completion, its 
     and no order was sent. It does not mean nothing happened: an
     update has written its cart lines and coupon to Django by then, so
     UCP adds `checkoutNotUpdated` to that answer. A completion's last
-    save can lose only to an order event, or to a read that stored what
-    the order said (`rendered`), the other writers of a session in
-    progress, which move it only to `completed`: the completion then stores its outcome over
-    the event's (`Flow.saveOverEvent`), keeping `completed` if the
-    event said the order is paid. A last save that still cannot be
+    save can lose only to an order event, to a read that stored what
+    the order said (`rendered`), which move it only to `completed`, or
+    to a completion that resumed it early (a reader whose clock runs
+    ahead): the completion then stores its outcome over the event's
+    (`Flow.saveOverEvent`), keeping `completed` if the event said the
+    order is paid. A completion whose order went unanswered knows no
+    order, and leaves a stored session that names one as it is. It
+    answers with that session, not "unknown", unless it is still in
+    progress (the resumed completion has not stored its outcome). A last
+    save that still cannot be
     stored, after its order was placed, is `ErrSessionNotSaved` with
     the key spent, and does not wrap `ErrSessionChanged`. A save Redis
     failed is `ErrUnavailable`, answered "the checkout records are
@@ -182,21 +187,66 @@ Loads when working on a checkout session on either surface, its completion, its 
     price is the other outcomes of that same failure, and a pod that
     dies in between: an order placed or unanswered is answered from
     its session for half an hour, and as a missing session after. The
-    stored value cannot tell them apart; Django could (#83, Django
-    #637). `docs/agent-protocols-runbook.md` section 11 is the
-    operator's side.
+    stored value cannot tell them apart, and Django can: within that
+    half hour a complete resumes the session (below), and Django
+    answers the order it placed, if any.
+    `docs/agent-protocols-runbook.md` section 11 is the operator's side.
   - A complete of one answers what it is, before any lookup: the
     session when its order is placed (completed, or on UCP awaiting
     payment), in flight while it is being placed, canceled when it
     is. A session being placed is "in flight" only until
     `Flow.CompletionDeadline`, which for one stored unconfirmed is the
-    save that said so; past it, both surfaces say the outcome
-    was never recorded (ACP `order_outcome_unknown`, UCP
-    `errOutcomeUnknown`, which says what a person can do), and that
-    holds for a read whose render fails too (`renderBody`,
-    `checkoutResult`). A UCP read that renders says the same in its
-    text (`pending`), beside the status. It is offered no link back to
-    its cart.
+    save that said so.
+  - **Past that deadline a complete resumes it** (#83;
+    `Flow.Resumable`, `Flow.Resume`, called by both surfaces before
+    they answer a session that is not open). Django keeps one order per
+    agent checkout: every order call names the session
+    (`django.OrderCreate.AgentCheckout`, believed beside the internal
+    secret only), and a repeat is answered 201 with the order the
+    checkout placed, before its view judges anything else. So Resume
+    judges and reads nothing again either (the order may exist, its
+    cart gone with it, its pay way switched off since): it runs the
+    completion from the in-progress save on, as Complete does, and the
+    order Django answers says how it is paid (`isOnlinePayment`, for
+    Complete too). That save is the fence again, so of the calls that
+    loaded one resumable session one sends the order. Its outcome is
+    stored as a completion's: placed, ready again for a refusal,
+    unconfirmed again for an order still unanswered. An online order
+    answered to a repeated send may be one placed earlier, so it is
+    followed as it stands (`Flow.follow`: paid completes the checkout,
+    canceled cancels it, and a link is minted only where
+    `ResumePayment` would mint one), never handed a link blindly. UCP
+    takes no completion claim for it, and ACP's key does not keep its
+    502. The UCP complete that left the outcome unknown spent its key,
+    which reads the checkout back once a Resume is refused: its hint
+    says to complete with a new key. A reader whose clock runs ahead
+    can resume while the completion still runs; the order is then sent
+    twice and Django answers both with the one order, and the two
+    saves are ordered by the compare-and-set.
+  - **Within one completion the order is sent again while Django
+    leaves the outcome unknown** (not `refused`): `Flow.createOrder`,
+    up to `OrderRetry.Attempts` sends, `OrderRetry.Delay` apart
+    (`ORDER_CREATE_ATTEMPTS`, at most 5 for Django's per-cart budget of
+    10 order creations a minute, `ORDER_CREATE_RETRY_DELAY`). All of
+    them share the order's one upstream timeout of `completionSteps`,
+    so the completion's budget, the lock and the shutdown tail are
+    unchanged, and a send that timed out is not followed by another:
+    the next complete resumes it. A refusal from Django's view is never
+    sent again. A 429, 401 or 403 comes before the view
+    (`beforeTheView`: DRF throttles and checks permissions first), so
+    it refuses a first send, but to a repeated send (any after the
+    first, every send of a Resume) it says nothing about the order: it
+    is `ErrOrderOutcomeUnknown`, not sent again within the step.
+    Django's answer names its checkout (`django.Order.AgentCheckout`);
+    one that does not is logged at error, since a repeat of that
+    store's orders would order twice.
+  - Update, cancel and a read of a session past the deadline say the
+    store has not confirmed the order and that completing the checkout
+    again asks it (ACP 502 `order_outcome_unknown` with `Retry-After`,
+    UCP `errOutcomeUnknown` with `retry_after`), and that holds for a
+    read whose render fails too (`renderBody`, `checkoutResult`). A UCP
+    read that renders says the same in its text (`pending`), beside the
+    status. It is offered no link back to its cart.
   - **A handler holds a snapshot, and answers from it only through its
     exit.** Once update, complete or cancel has loaded its session, the
     lock that keeps the snapshot current can lapse, and another request
@@ -246,7 +296,7 @@ Loads when working on a checkout session on either surface, its completion, its 
       warn and answered 204, and the session is left as it is: a
       session is never completed without its order. The record
       `Flow.place` writes beside the session (`Store.IndexOrder`:
-      `ag:{schema}:cs:v6:{id}:order`, the order's uuid) is for calls on
+      `ag:{schema}:cs:v7:{id}:order`, the order's uuid) is for calls on
       the session, not events: it can be lost (a flush or a
       restore);
     - the event's order status and payment status set the status
@@ -358,15 +408,31 @@ Loads when working on a checkout session on either surface, its completion, its 
     the cart. `Store.Create` stores the session and takes the cart in
     one script (`saveScript`): when no session holds the cart, or the
     record still names the holder the caller read (`Store.HolderOf`)
-    and that holder is free (`CartHolder.Free`: no longer stored,
-    canceled or completed). A cart another session holds is
+    and that holder is free (`CartHolder.Free`: no record, or a
+    session canceled or completed). A cart another session holds is
     `ErrCartHeld`, and nothing is written.
   - The record lives as long as its session: every save sets its
     expiry to the session's, and the save that ends a session and
     `Store.Discard` delete it, each only while it names that session.
     A save writes the record again where Redis holds none (lost to a
-    flush or a restore). A record whose session is not stored holds
-    nothing.
+    flush or a restore).
+  - **A record whose session this release does not read holds the cart
+    until the record ends** (`CartHolder.Unread`). A session and its
+    record end together, so such a holder is not gone but unknown: a
+    session stored under another key version by a pod of another
+    release while a key move rolls out, or one Redis lost. Either may
+    still place an order, or have placed one. `HolderOf` reads the
+    record again after a session it does not find, so a record that
+    ended with its session between the two reads frees the cart, and
+    one that names another session by then is a holder that changed
+    (`ErrSessionChanged`: another create took the cart), which the
+    create decides again on (`takeCart`). UCP
+    answers the create `conflict` (`errCartUnread`): an order may exist,
+    check before starting another checkout. The rule names no version,
+    so from the move after `cs:v7` on it holds the cart both ways;
+    pods older than it free a cart whose holder they cannot read
+    (`docs/agent-protocols-runbook.md` section 10). An operator who
+    deletes a session deletes its record with it (section 11).
   - UCP `create_checkout` with `cart_id` (`mcpsrv.createFromCart`)
     takes a UUID only, in its canonical spelling
     (`checkout.CanonicalCartID`: Django reads every spelling as one

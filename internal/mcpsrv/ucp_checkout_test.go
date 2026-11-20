@@ -29,6 +29,11 @@ import (
 
 const fixtureOrderUUID = "b9be45e5-6062-4976-ae7b-2c31eb2ad689"
 
+// testOrderRetry sends an unanswered order up to three times, quickly.
+var testOrderRetry = checkout.OrderRetry{
+	Attempts: 3, Delay: 10 * time.Millisecond,
+}
+
 // ucpMeta names a platform profile served from the recorded fixture.
 func ucpMeta(t *testing.T, idem string) *MetaIn {
 	t.Helper()
@@ -380,7 +385,7 @@ func TestACompletionInFlightIsAConflict(t *testing.T) {
 	dj, _ := ucpDjango(t)
 	h := ucpHandlers(t, dj)
 	h.deps.Flow = checkout.NewFlow(dj, h.deps.Checkout, testSite,
-		slog.New(slog.DiscardHandler))
+		testOrderRetry, slog.New(slog.DiscardHandler))
 	s := checkout.NewSession("demostore", "shop.test",
 		checkout.ProtocolUCP, fixtureCartID)
 	s.Status = checkout.StatusCompleteInProgress
@@ -409,7 +414,7 @@ func TestClosedToRefusesWhatIsNotOpen(t *testing.T) {
 	dj, _ := ucpDjango(t)
 	h := ucpHandlers(t, dj)
 	h.deps.Flow = checkout.NewFlow(dj, h.deps.Checkout, testSite,
-		slog.New(slog.DiscardHandler))
+		testOrderRetry, slog.New(slog.DiscardHandler))
 	for _, status := range []checkout.Status{
 		checkout.StatusIncomplete, checkout.StatusReadyForComplete,
 		checkout.StatusCompleteInProgress, checkout.StatusRequiresEscalation,
@@ -432,7 +437,7 @@ func TestCheckoutRefusalsCarryACode(t *testing.T) {
 	dj, _ := ucpDjango(t)
 	h := ucpHandlers(t, dj)
 	h.deps.Flow = checkout.NewFlow(dj, h.deps.Checkout, testSite,
-		slog.New(slog.DiscardHandler))
+		testOrderRetry, slog.New(slog.DiscardHandler))
 	ctx := t.Context()
 	placed := checkout.NewSession("demostore", "shop.test",
 		checkout.ProtocolUCP, fixtureCartID)
@@ -463,11 +468,14 @@ func TestCheckoutRefusalsCarryACode(t *testing.T) {
 		"an outcome never recorded": {
 			completeErr(placed, checkout.ErrOrderOutcomeUnknown),
 			mcptool.CodeOrderOutcomeUnknown,
-			[]string{"never confirmed", "do not start another checkout"}},
+			[]string{"has not confirmed", "complete_checkout on this " +
+				"checkout again", "never places a second",
+				"do not start another checkout"}},
 		"an outcome never recorded, found by a call": {
 			h.closedTo(ctx, unknown, "updated"),
 			mcptool.CodeOrderOutcomeUnknown,
-			[]string{"never confirmed", "order confirmation email"}},
+			[]string{"has not confirmed", "complete_checkout on this " +
+				"checkout again"}},
 		"a payment link not made": {
 			completeErr(placed, checkout.ErrPaymentSessionFailed),
 			mcptool.CodePaymentLinkFailed,

@@ -327,6 +327,11 @@ func TestSplitStreetNumber(t *testing.T) {
 // testSite is a storefront built with el as its default language.
 var testSite = storefront.NewSite("el")
 
+// testOrderRetry sends an unanswered order up to three times, quickly.
+var testOrderRetry = checkout.OrderRetry{
+	Attempts: 3, Delay: 10 * time.Millisecond,
+}
+
 // testLinks are tn's storefront pages in its default language.
 func testLinks(tn *tenant.Tenant) storefront.Links {
 	return testSite.Links(tn.Domain, tn.DefaultLocale)

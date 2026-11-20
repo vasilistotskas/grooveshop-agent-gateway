@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"strings"
@@ -18,6 +19,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 )
 
 // requestTimeout bounds one call, so a hung service fails its test rather than
@@ -313,6 +316,29 @@ func TestUCPReadFailureNamesThePlacedOrder(t *testing.T) {
 	}))
 	assert.Contains(t, text, "order "+orderID+" is placed")
 	assert.Contains(t, text, "do not start a new checkout")
+}
+
+// Django keeps one order per agent checkout. The gateway's own order
+// call, sent again with the checkout's id once its order is placed and
+// its cart gone with it, is answered with that order and creates none:
+// what makes a completion whose answer was lost safe to send again.
+func TestARepeatedOrderCreateIsAnsweredWithTheCheckoutsOrder(t *testing.T) {
+	s := connect(t, "")
+	checkoutID, orderID := placeUCPOrder(t, s, productID(t, s), "GR")
+	endpoint, err := running.django.PortEndpoint(
+		t.Context(), "8000/tcp", "http")
+	require.NoError(t, err)
+	dj := django.New(endpoint+"/api/v1", platformHost, running.secret,
+		requestTimeout, slog.New(slog.DiscardHandler), nil)
+
+	order, err := dj.CreateOrder(t.Context(), storeHost, "",
+		uuid.NewString(), django.OrderCreate{
+			PayWayID: 1, TermsAccepted: true, AgentCheckout: checkoutID,
+		})
+
+	require.NoError(t, err)
+	assert.Equal(t, orderID, order.UUID)
+	assert.Equal(t, checkoutID, order.AgentCheckout)
 }
 
 func acpRequest(

@@ -302,7 +302,10 @@ func (h *handlers) createFromCart(
 			"cart_id is not a cart id: send the cartId the cart tools " +
 				"returned, or omit it and send checkout.line_items")
 	}
-	if _, err := h.cartHolder(ctx, t, cartID); err != nil {
+	// A holder that changed while it was read is decided again by
+	// takeCart.
+	if _, err := h.cartHolder(ctx, t, cartID); err != nil &&
+		!errors.Is(err, checkout.ErrSessionChanged) {
 		return nil, zero, err
 	}
 	s, err := h.newSession(ctx, t, &in.Checkout, neg)
@@ -369,6 +372,10 @@ func (h *handlers) takeCart(
 	}()
 	for range cartCreateRounds {
 		holder, err := h.cartHolder(ctx, t, s.CartID)
+		if errors.Is(err, checkout.ErrSessionChanged) {
+			// Another create took the cart while it was read.
+			continue
+		}
 		if err != nil {
 			return release, err
 		}
@@ -468,19 +475,29 @@ func (h *handlers) cancel(ctx context.Context, s *checkout.Session) error {
 //     another platform signed the creation of, which is that platform's.
 //     One whose order Django canceled is canceled here whatever its
 //     protocol or platform: nothing is left of it to finish, and its own
-//     surface refuses to cancel a checkout that placed an order.
+//     surface refuses to cancel a checkout that placed an order;
+//   - a checkout this release does not read (CartHolder.Unread): one of
+//     another release while a key move rolls out, or one Redis lost. An
+//     order may exist, and nothing of it can be canceled here.
 //
-// No refusal names the holder or its order.
+// No refusal names the holder or its order. A holder that changed while
+// it was read (another create took the cart) is
+// checkout.ErrSessionChanged, which takeCart decides again on.
 func (h *handlers) cartHolder(
 	ctx context.Context, t *tenant.Tenant, cartID string,
 ) (checkout.CartHolder, error) {
 	holder, err := h.deps.Checkout.HolderOf(ctx, t.SchemaName, cartID)
+	if errors.Is(err, checkout.ErrSessionChanged) {
+		return holder, err
+	}
 	if err != nil {
 		return holder, errCheckoutUnavailable
 	}
 	s := holder.Session
 	switch {
 	case holder.Free():
+	case holder.Unread():
+		return holder, errCartUnread
 	case s.MayHaveOrder():
 		canceled, err := h.orderCanceled(ctx, t, s)
 		if err != nil {
@@ -565,6 +582,19 @@ var (
 			"cannot be changed by this call, so no checkout was " +
 			"created; that checkout must be finished or canceled by " +
 			"whoever started it before this cart can be checked out here"}
+
+	// errCartUnread: the cart's record names a checkout this server
+	// cannot read. Like errCheckoutGone it never says to start another
+	// checkout: an order may exist.
+	errCartUnread = &mcptool.ToolError{Code: mcptool.CodeConflict,
+		Hint: "this cart is held by a checkout whose records this " +
+			"server cannot read, so an order may exist and no checkout " +
+			"was created: do not start another checkout for it before " +
+			"checking. If you hold that checkout's id, read it with " +
+			"get_checkout; if you hold its order id, read the order " +
+			"with get_order or track_order; if not, ask the shopper for " +
+			"the store's order confirmation. The cart is released when " +
+			"that checkout's record ends"}
 
 	// errCartBusy: in every round another request was at work on the
 	// cart's checkout, or had just changed it.
@@ -900,6 +930,16 @@ func (h *handlers) completeSession(
 		}
 		return afterSave(render)
 	}
+	// A checkout whose order went unanswered, or whose completion ended
+	// before it stored what happened, has its order sent again with its
+	// id, and Django answers the order it placed, if it placed one. Its
+	// payment is the one it was placed with, whatever this call names.
+	// No completion claim is taken: Django keeps one order per checkout,
+	// and the in-progress save lets one call through.
+	if h.deps.Flow.Resumable(s) {
+		placement, err := h.deps.Flow.Resume(ctx, t, s)
+		return h.placed(ctx, s, placement, err, render)
+	}
 	if closed := h.completeClosed(ctx, t, s, neg); closed != nil {
 		return fromSnapshot(closed)
 	}
@@ -979,6 +1019,14 @@ func (h *handlers) completeSession(
 
 	placement, err := h.deps.Flow.Complete(ctx, t, s)
 	h.settleCompletion(ctx, s, claim, placement)
+	return h.placed(ctx, s, placement, err, render)
+}
+
+// placed answers a completion by what Flow.Complete or Flow.Resume did.
+func (h *handlers) placed(
+	ctx context.Context, s *checkout.Session, placement checkout.Placement,
+	err error, render toolResult,
+) sessionAnswer {
 	if placement == checkout.NothingPlaced {
 		// Refused before the order was sent, or by Django for the order
 		// itself: either way nothing of this call exists.
@@ -1265,26 +1313,30 @@ func (h *handlers) closedTo(
 			action)}
 }
 
-// errOutcomeUnknown answers a checkout whose order the store never
-// confirmed or denied, once its completion can no longer be running: the
-// session stays so until it expires, and no call changes that. It tells
-// the agent what a person can do, because nothing the agent can call
-// will find out.
+// errOutcomeUnknown answers a checkout whose order the store has not
+// confirmed or denied, once no completion of it is running. Completing
+// it again asks the store again with the checkout's id
+// (checkout.Flow.Resume), and the store answers the order it placed, if
+// it placed one: that never orders twice, while another checkout could.
+// A new key: the complete that left the outcome unknown spent its own,
+// and once the store refuses the order (the checkout ready again) that
+// key only reads the checkout back.
 var errOutcomeUnknown = &mcptool.ToolError{
-	Code: mcptool.CodeOrderOutcomeUnknown,
-	Hint: "the store never confirmed whether this checkout's order was " +
-		"placed, and that will not change: do not complete it again, " +
-		"do not keep checking it, and do not start another checkout. " +
-		"Ask the shopper to look for the store's order confirmation " +
-		"email, or to ask the store; start a new checkout only if " +
-		"they find that no order was placed"}
+	Code:       mcptool.CodeOrderOutcomeUnknown,
+	RetryAfter: mcptool.UnavailableRetryAfter,
+	Hint: "the store has not confirmed whether this checkout's order " +
+		"was placed. Call complete_checkout on this checkout again " +
+		"shortly, with a new meta.idempotency-key: the store answers " +
+		"with the order this checkout placed, if it placed one, and " +
+		"never places a second, so do not start another checkout for " +
+		"this purchase"}
 
 // pending answers a call that finds the checkout's order being placed.
 // An order the completion placed and could not save is known (the
 // checkout or the store names it): that is the answer. Else, while the
 // completion can still run, to check again shortly; past that
-// (Flow.CompletionDeadline, as ACP judges it), that its outcome was
-// never recorded.
+// (Flow.CompletionDeadline, as ACP judges it), that its outcome is not
+// recorded, which a complete asks the store for (Flow.Resume).
 func (h *handlers) pending(ctx context.Context, s *checkout.Session) error {
 	if order := h.deps.Flow.PlacedOrder(ctx, s); order != "" {
 		return placedUnsavedErr(order)

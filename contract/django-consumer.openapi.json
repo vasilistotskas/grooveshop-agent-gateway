@@ -1004,6 +1004,10 @@
           "acsStationExternalId": {
             "type": "string"
           },
+          "agentCheckout": {
+            "format": "uuid",
+            "type": "string"
+          },
           "attribution": {
             "$ref": "#/components/schemas/OrderAttributionInputRequest"
           },
@@ -1064,6 +1068,7 @@
           }
         },
         "required": [
+          "agentCheckout",
           "city",
           "countryId",
           "email",
@@ -1081,11 +1086,18 @@
       },
       "OrderDetail": {
         "properties": {
+          "agentCheckout": {
+            "nullable": true,
+            "type": "string"
+          },
           "createdAt": {
             "type": "string"
           },
           "id": {
             "type": "integer"
+          },
+          "isOnlinePayment": {
+            "type": "boolean"
           },
           "isPaid": {
             "type": "boolean"
@@ -1326,8 +1338,10 @@
           }
         },
         "required": [
+          "agentCheckout",
           "createdAt",
           "id",
+          "isOnlinePayment",
           "isPaid",
           "items",
           "paymentAwaitsReview",

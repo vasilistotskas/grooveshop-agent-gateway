@@ -2,6 +2,7 @@ package django
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -424,11 +425,28 @@ type Order struct {
 	// PaymentAwaitsReview is a confirmed charge that did not match the
 	// order's total, on an order still undecided: the money left the
 	// customer and the store reconciles it by hand. Never offer it a link.
-	PaymentAwaitsReview bool             `json:"paymentAwaitsReview"`
-	Items               []OrderItem      `json:"items"`
-	TrackingDetails     *TrackingDetails `json:"trackingDetails"`
-	PricingBreakdown    PricingBreakdown `json:"pricingBreakdown"`
-	CreatedAt           string           `json:"createdAt"`
+	PaymentAwaitsReview bool `json:"paymentAwaitsReview"`
+	// IsOnlinePayment: the order's pay way is settled online, so it
+	// awaits a payment the shopper makes on a hosted page; false for one
+	// collected later (Django's settlement, read for the order).
+	IsOnlinePayment  bool             `json:"isOnlinePayment"`
+	Items            []OrderItem      `json:"items"`
+	TrackingDetails  *TrackingDetails `json:"trackingDetails"`
+	PricingBreakdown PricingBreakdown `json:"pricingBreakdown"`
+	CreatedAt        string           `json:"createdAt"`
+	// AgentCheckout is the checkout session that placed the order (its
+	// OrderCreate.AgentCheckout), null as "" for any other order.
+	AgentCheckout string `json:"agentCheckout" contract:"nullable"`
+}
+
+// Created is CreatedAt as a time, in UTC.
+func (o *Order) Created() (time.Time, error) {
+	at, err := time.Parse(time.RFC3339Nano, o.CreatedAt)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("django: order %s created at %q: %w",
+			o.UUID, o.CreatedAt, err)
+	}
+	return at.UTC(), nil
 }
 
 // HoldExpiresAt is PaymentHoldExpiresAt as a time, zero for none.

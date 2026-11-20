@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/acp"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 )
 
 // retryAfter is the whole seconds a 409 tells the platform to wait.
@@ -167,12 +168,15 @@ func TestACPErrorsFollowTheSpec(t *testing.T) {
 		})
 
 	// The completion stored the order as unanswered, so none is running:
-	// every call is told the outcome is unknown, from the first, and the
-	// completion's key keeps that answer although it is a 5xx.
-	t.Run("an unconfirmed order is unknown, the same on every call",
+	// every call but a complete is told the outcome is unknown, from the
+	// first, and to complete again after Retry-After. The 502 is not kept
+	// against the key (§6.5): the same key, sent again once the store
+	// answers, resumes the completion and places the one order.
+	t.Run("an unconfirmed order is placed by a retry of its key",
 		func(t *testing.T) {
 			id := acpReady(t, base)
 			before := stack.faults.orderCreates.Load()
+			placed := stack.faults.ordersPlaced.Load()
 			stack.faults.orderCreate.Store(true)
 			t.Cleanup(func() { stack.faults.orderCreate.Store(false) })
 			key := uuid.NewString()
@@ -185,20 +189,15 @@ func TestACPErrorsFollowTheSpec(t *testing.T) {
 			require.Equal(t, http.StatusBadGateway, resp.StatusCode)
 			assert.Contains(t, string(first),
 				`"code":"order_outcome_unknown"`)
-			// It says not to complete again, so never "a new key".
+			assert.Contains(t, string(first), "Complete this session again")
 			assert.NotContains(t, string(first), "new key")
-			stack.faults.orderCreate.Store(false)
+			assert.Equal(t, strconv.Itoa(mcptool.UnavailableRetryAfter),
+				resp.Header.Get("Retry-After"))
 			require.True(t, stack.storedSession(t, id).Unconfirmed)
-
-			resp, again := send()
-			assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
-			assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
-			assert.Equal(t, string(first), string(again))
+			assert.EqualValues(t, testOrderRetry.Attempts,
+				stack.faults.orderCreates.Load()-before)
 
 			for _, call := range []func() (*http.Response, map[string]any){
-				func() (*http.Response, map[string]any) {
-					return complete(id, uuid.NewString())
-				},
 				func() (*http.Response, map[string]any) {
 					return update(id, uuid.NewString())
 				},
@@ -210,10 +209,27 @@ func TestACPErrorsFollowTheSpec(t *testing.T) {
 				resp, body := call()
 				assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
 				assert.Equal(t, "order_outcome_unknown", body["code"])
-				assert.Empty(t, resp.Header.Get("Retry-After"))
 			}
-			assert.EqualValues(t, 1, stack.faults.orderCreates.Load()-before,
-				"no answer may send the order again")
+			assert.EqualValues(t, testOrderRetry.Attempts,
+				stack.faults.orderCreates.Load()-before,
+				"only a complete sends the order again")
+
+			stack.faults.orderCreate.Store(false)
+			resp, again := send()
+			require.Equal(t, http.StatusOK, resp.StatusCode, "%s", again)
+			assert.Empty(t, resp.Header.Get("Idempotent-Replayed"))
+			assert.Contains(t, string(again), `"status":"completed"`)
+			assert.EqualValues(t, 1, stack.faults.ordersPlaced.Load()-placed)
+
+			// The answer is the key's now, and the session's.
+			resp, replay := send()
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.Equal(t, "true", resp.Header.Get("Idempotent-Replayed"))
+			assert.Equal(t, string(again), string(replay))
+			resp, done := complete(id, uuid.NewString())
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.Equal(t, "completed", done["status"])
+			assert.EqualValues(t, 1, stack.faults.ordersPlaced.Load()-placed)
 		})
 
 	// The order was placed and both saves of the session failed: the key

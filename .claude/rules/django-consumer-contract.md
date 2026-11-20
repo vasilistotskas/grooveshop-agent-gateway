@@ -28,9 +28,12 @@ contract files. The code wins over this page.
   GET, or a request carrying `Idempotency-Key`, when a reused keep-alive
   connection dies before the first response byte. So `Idempotency-Key`
   goes only on a call Django deduplicates by it
-  (`core/middleware/idempotency.py`): today the chat's `add_to_cart`;
-  `POST /order` carries none until Django deduplicates order creation
-  (#83). A redirect is never followed: it is `ErrUpstreamDown`, not
+  (`core/middleware/idempotency.py`): today the chat's `add_to_cart`.
+  `POST /order` carries none: Django keeps one order per agent
+  checkout, by the checkout's id in the body (`agentCheckout`, believed
+  beside the internal secret only), and answers a repeat with that
+  order (201). Whether to send it again is the checkout flow's
+  (`checkout.Flow`, `ORDER_CREATE_ATTEMPTS`), never the transport's. A redirect is never followed: it is `ErrUpstreamDown`, not
   retried, as in `internal/ucp/fetch.go`. Errors unwrap to the
   sentinels of `internal/django/errors.go` (`ErrNotFound`,
   `ErrConflict`, `ErrValidation`, `ErrThrottled`, `ErrUpstreamDown`,

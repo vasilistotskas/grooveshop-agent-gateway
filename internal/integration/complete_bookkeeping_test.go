@@ -462,7 +462,9 @@ func (stack ucpStack) bookkeeping(
 // UCP's completion claim and ACP's record are different stores, but an
 // outcome means the same for both: the same session, the same order link,
 // the key spent once an order may exist. A refusal differs: ACP's key
-// keeps it as its answer, UCP's is released (refusalKey).
+// keeps it as its answer, UCP's is released (refusalKey). So does an
+// order the store did not confirm: ACP's key keeps no 5xx (§6.5), and
+// its retry resumes the completion (checkout.Flow.Resume).
 func TestCompleteBookkeepingIsTheSameOnBothSurfaces(t *testing.T) {
 	stack := startUCPGateway(t)
 	surfaces := completionSurfaces(t, stack)
@@ -474,12 +476,15 @@ func TestCompleteBookkeepingIsTheSameOnBothSurfaces(t *testing.T) {
 		refusal bool
 		// untouched: the completion must not write the session at all.
 		untouched bool
+		// acpReleases: ACP's key is released, whatever want says.
+		acpReleases bool
 	}{
 		{name: "an order placed", want: bookkeeping{
 			Session: checkout.StatusCompleted, Linked: true, Key: keySpent,
 		}},
 		{name: "an order the store did not confirm",
-			fault: &stack.faults.orderCreate, want: bookkeeping{
+			fault: &stack.faults.orderCreate, acpReleases: true,
+			want: bookkeeping{
 				Session: checkout.StatusCompleteInProgress, Key: keySpent,
 			}},
 		{name: "an order the store refused",
@@ -509,6 +514,9 @@ func TestCompleteBookkeepingIsTheSameOnBothSurfaces(t *testing.T) {
 				want := outcome.want
 				if outcome.refusal {
 					want.Key = refusalKey(surface.name)
+				}
+				if outcome.acpReleases && surface.name == "acp" {
+					want.Key = keyReleased
 				}
 				assert.Equal(t, want,
 					stack.bookkeeping(t, id, surface.keyName(id, key)))

@@ -215,6 +215,8 @@ func startGatewayOn(t *testing.T, djangoH http.Handler) *httptest.Server {
 		TenantCacheTTL:        time.Minute,
 		NegativeCacheTTL:      time.Minute,
 		UpstreamTimeout:       5 * time.Second,
+		OrderCreateAttempts:   testOrderRetry.Attempts,
+		OrderCreateRetryDelay: testOrderRetry.Delay,
 		RateLimitPerMin:       6000,
 		RateLimitBurst:        1000,
 		UCPSignatureMaxAge:    5 * time.Minute,

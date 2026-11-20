@@ -41,6 +41,13 @@ const (
 // secrets, gives 64.
 const minInternalSecretLen = 32
 
+// maxOrderCreateAttempts bounds ORDER_CREATE_ATTEMPTS by Django's budget
+// for the orders the gateway creates from one cart (order_create_anon,
+// 10 a minute per cart, core/api/throttling.py OrderCreateAnonThrottle):
+// a completion that spends at most half of it leaves the next complete,
+// which resumes it, room to ask again within the same minute.
+const maxOrderCreateAttempts = 5
+
 // signingKEKBytes is the length of SIGNING_KEY_ENCRYPTION_KEY once
 // decoded: an AES-256 key.
 const signingKEKBytes = 32
@@ -132,6 +139,16 @@ type Config struct {
 	TenantCacheTTL   time.Duration
 	NegativeCacheTTL time.Duration
 	UpstreamTimeout  time.Duration
+
+	// OrderCreateAttempts bounds how often a completion sends its order
+	// when Django leaves the outcome unknown (a lost connection, a 5xx,
+	// a timeout), and OrderCreateRetryDelay is the wait before each
+	// repeat. Django answers a repeat with the order the checkout
+	// placed, so a repeat never orders twice. Every attempt shares the
+	// order's one UPSTREAM_TIMEOUT of the completion's budget, so a
+	// repeat follows only a quick failure.
+	OrderCreateAttempts   int
+	OrderCreateRetryDelay time.Duration
 
 	// UCPSignatureMaxAge is how long after its created time a platform's
 	// request signature verifies, and UCPSignatureClockSkew the clock
@@ -237,6 +254,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.UpstreamTimeout, err = positiveOr("UPSTREAM_TIMEOUT", 10*time.Second, time.ParseDuration); err != nil {
+		return Config{}, err
+	}
+	if cfg.OrderCreateAttempts, err = positiveOr("ORDER_CREATE_ATTEMPTS", 3, strconv.Atoi); err != nil {
+		return Config{}, err
+	}
+	if cfg.OrderCreateRetryDelay, err = positiveOr("ORDER_CREATE_RETRY_DELAY", 2*time.Second, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
 	if cfg.UCPSignatureMaxAge, err = positiveOr("UCP_SIGNATURE_MAX_AGE", 5*time.Minute, time.ParseDuration); err != nil {
@@ -378,6 +401,26 @@ func Load() (Config, error) {
 	}
 	if cfg.SigningKeyKEK, err = decodeKEK(kek); err != nil {
 		return Config{}, err
+	}
+	// Every send of an order spends the cart's order-creation budget at
+	// Django, and a completion's sends must leave room for the next
+	// complete's.
+	if cfg.OrderCreateAttempts > maxOrderCreateAttempts {
+		return Config{}, fmt.Errorf(
+			"config: ORDER_CREATE_ATTEMPTS must be at most %d (got %d)",
+			maxOrderCreateAttempts, cfg.OrderCreateAttempts)
+	}
+	// The repeats wait inside the order's one upstream timeout: waits
+	// that fill it leave the last repeat no time to be sent. The delay is
+	// held to the timeout's share per wait, never multiplied: a long
+	// delay times the waits overflows a Duration.
+	if waits := time.Duration(cfg.OrderCreateAttempts - 1); waits > 0 &&
+		cfg.OrderCreateRetryDelay > (cfg.UpstreamTimeout-1)/waits {
+		return Config{}, fmt.Errorf(
+			"config: ORDER_CREATE_ATTEMPTS (%d) waits of "+
+				"ORDER_CREATE_RETRY_DELAY (%s) between them must take less "+
+				"than UPSTREAM_TIMEOUT (%s)", cfg.OrderCreateAttempts,
+			cfg.OrderCreateRetryDelay, cfg.UpstreamTimeout)
 	}
 	// A stale window shorter than the fresh one expires a cached feed
 	// before it is ever served stale.

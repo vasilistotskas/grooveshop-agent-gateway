@@ -13,8 +13,8 @@ import (
 // pod that still writes sessions unconditionally keeps its own, under
 // the unversioned key, and never shares one with a pod that fences them.
 func TestSessionKeyIsVersioned(t *testing.T) {
-	assert.Equal(t, "ag:alpha:cs:v6:id", sessionKey("alpha", "id"))
-	assert.Equal(t, "ag:alpha:cs:v6:id:lock", lockKey("alpha", "id"))
+	assert.Equal(t, "ag:alpha:cs:v7:id", sessionKey("alpha", "id"))
+	assert.Equal(t, "ag:alpha:cs:v7:id:lock", lockKey("alpha", "id"))
 }
 
 // The session that holds a cart is named in a key family of its own:
@@ -24,6 +24,32 @@ func TestCartRecordIsOutsideTheSessionKeys(t *testing.T) {
 	const cart = "29eb4495-e018-45e7-b59c-6646302bd4ef"
 	assert.Equal(t, "ag:alpha:checkoutcart:"+cart, cartKey("alpha", cart))
 	assert.False(t, strings.HasPrefix(cartKey("alpha", cart), "ag:alpha:cs:"))
+}
+
+// A cart is free with no record, or with a holder that ended. A record
+// whose session is not read here (another release's key, or lost) holds
+// the cart: that checkout may place an order.
+func TestWhenACartIsFree(t *testing.T) {
+	for name, tc := range map[string]struct {
+		holder       CartHolder
+		free, unread bool
+	}{
+		"no record": {CartHolder{}, true, false},
+		"a record whose session is not read": {
+			CartHolder{record: "id"}, false, true},
+		"an open holder": {CartHolder{record: "id",
+			Session: &Session{Status: StatusReadyForComplete}}, false, false},
+		"a holder placing its order": {CartHolder{record: "id",
+			Session: &Session{Status: StatusCompleteInProgress}}, false,
+			false},
+		"a completed holder": {CartHolder{record: "id",
+			Session: &Session{Status: StatusCompleted}}, true, false},
+		"a canceled holder": {CartHolder{record: "id",
+			Session: &Session{Status: StatusCanceled}}, true, false},
+	} {
+		assert.Equal(t, tc.free, tc.holder.Free(), name)
+		assert.Equal(t, tc.unread, tc.holder.Unread(), name)
+	}
 }
 
 // Django reads every spelling of a UUID as one cart. The gateway names a

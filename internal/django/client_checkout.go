@@ -99,6 +99,13 @@ type OrderCreate struct {
 	// ExpectedTotal is the total the buyer was shown: Django creates the
 	// order only at exactly it, else answers 409 total_changed.
 	ExpectedTotal ExpectedTotal `json:"expectedTotal"`
+
+	// AgentCheckout is the checkout session's id. Django believes it
+	// beside the internal secret alone, keeps one order per checkout,
+	// and answers a repeat with that order (201, the same body), before
+	// it judges anything else in the request: so a create whose answer
+	// was lost is sent again with the same id.
+	AgentCheckout string `json:"agentCheckout" contract:"format=uuid"`
 }
 
 // Attribution is the acquisition signal Django classifies into an
@@ -119,8 +126,9 @@ type Attribution struct {
 	AgentProtocol string   `json:"agentProtocol,omitempty"`
 }
 
-// CreateOrder places a guest order from the cart. Never retried: the
-// caller owns idempotency (checkout sessions guard completion). Django's
+// CreateOrder places a guest order from the cart, once: the caller
+// decides on sending it again, which is safe with the same
+// AgentCheckout (checkout.Flow). Django's
 // refusal of a cart whose earlier order awaits its payment is
 // ErrCartHasUnpaidOrder, and of a total that is no longer the amount due
 // ErrTotalChanged.

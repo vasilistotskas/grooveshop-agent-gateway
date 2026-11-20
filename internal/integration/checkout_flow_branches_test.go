@@ -79,7 +79,7 @@ func startBranchFlow(t *testing.T, hosted bool) (flowStack, *branchDjango) {
 	store := checkout.NewStore(rdb, 5*time.Second)
 	return flowStack{
 		flow: checkout.NewFlow(dj, store, storefront.NewSite("el"),
-			quietLogger()),
+			testOrderRetry, quietLogger()),
 		store: store, rdb: rdb, faults: faults,
 		tenant: &tenant.Tenant{
 			SchemaName: "demostore", DefaultLocale: "el",
@@ -176,6 +176,7 @@ func TestCompleteRefusesAPayWayItCannotFinish(t *testing.T) {
 		s := f.readySession(t)
 		viva := `"providerCode":"viva_wallet","settlement":"online"`
 		b.payWay.Store(&viva)
+		f.faults.codServedOnline.Store(true)
 
 		placement, err := f.flow.Complete(t.Context(), f.tenant, s)
 

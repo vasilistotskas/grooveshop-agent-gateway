@@ -186,8 +186,13 @@ func verifyWebhook(t *testing.T, hook receivedWebhook, jwk map[string]string) {
 // checkoutFaults injects upstream failures into the checkout fake.
 type checkoutFaults struct {
 	// paymentLink makes Viva's payment-session creation fail: the order
-	// exists, its payment link does not.
-	paymentLink atomic.Bool
+	// exists, its payment link does not. paymentLinks counts the links
+	// asked for.
+	paymentLink  atomic.Bool
+	paymentLinks atomic.Int32
+	// orderPaid makes an online order answered to a repeated creation
+	// read as paid.
+	orderPaid atomic.Bool
 	// orderCreate makes order creation answer 502 — an outcome the
 	// gateway cannot know.
 	orderCreate  atomic.Bool
@@ -204,6 +209,21 @@ type checkoutFaults struct {
 	// orderConflict makes order creation answer a 409 that is not a
 	// stock shortfall: nothing is created.
 	orderConflict atomic.Bool
+	// orderAnswerLost loses the answers of that many accepted order
+	// creations: the order is placed, and answered 502, as a proxy does
+	// for a connection Django dropped after its commit.
+	orderAnswerLost atomic.Int32
+	// placedBy holds the order each checkout placed (agentCheckout), a
+	// fakeOrder. Django answers a repeat with it before its view judges
+	// anything else (order/views/order.py, OrderViewSet.create), though
+	// after its throttles, so ordersPlaced counts each checkout's order
+	// once.
+	placedBy sync.Map
+	// placing holds a *sync.Mutex per checkout, held from the lookup in
+	// placedBy to the order's store there: two creations of one checkout
+	// place one order, as Django's unique index on the checkout keeps
+	// it.
+	placing sync.Map
 	// orderHold runs inside an accepted order creation, before it
 	// answers.
 	orderHold atomic.Pointer[func(*http.Request)]
@@ -223,11 +243,16 @@ type checkoutFaults struct {
 	regionLookup atomic.Bool
 	// payWayLookup makes the pay-way list answer 502.
 	payWayLookup atomic.Bool
+	// payWayDetail makes reading cash on delivery (pay way 1) answer 404.
+	payWayDetail atomic.Bool
 	// payWayReads counts the reads of the pay-way list; from the read
 	// numbered codOnlineFrom on (when set), cash on delivery (pay way 1)
 	// reads as a Viva pay way settled online.
 	payWayReads   atomic.Int32
 	codOnlineFrom atomic.Int32
+	// codServedOnline: a wrapper serves cash on delivery (pay way 1) as
+	// settled online, so the order placed with it is paid online.
+	codServedOnline atomic.Bool
 	// codFee makes cash on delivery (pay way 1) read without its free
 	// threshold, so its 4.50 fee applies to the fixture cart.
 	codFee atomic.Bool
@@ -505,6 +530,12 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 		})
 	outer.HandleFunc("GET /api/v1/pay_way/1",
 		func(w http.ResponseWriter, r *http.Request) {
+			if faults.payWayDetail.Load() {
+				// Switched off, or its provider unconfigured: Django
+				// hides it (PayWayService.shopper_facing).
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
 			if !faults.codFee.Load() {
 				inner.ServeHTTP(w, r)
 				return
@@ -625,18 +656,34 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
-			if faults.orderRefuse.Load() {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusBadRequest)
-				_, _ = w.Write([]byte(
-					`{"detail": "The cart can no longer be ordered."}`))
-				return
-			}
+			// DRF throttles before the view (APIView.initial).
 			if faults.orderThrottle.Load() {
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Retry-After", "3")
 				w.WriteHeader(http.StatusTooManyRequests)
 				_, _ = w.Write([]byte(`{"detail": "Request was throttled."}`))
+				return
+			}
+			raw, err := io.ReadAll(r.Body)
+			assert.NoError(t, err)
+			var body map[string]any
+			assert.NoError(t, json.Unmarshal(raw, &body))
+			// Every order names its checkout, which places one order.
+			checkoutID, _ := body["agentCheckout"].(string)
+			assert.NotEmpty(t, checkoutID)
+			placing, _ := faults.placing.LoadOrStore(checkoutID,
+				&sync.Mutex{})
+			placing.(*sync.Mutex).Lock()
+			defer placing.(*sync.Mutex).Unlock()
+			if placed, ok := faults.placedBy.Load(checkoutID); ok {
+				servePlacedOrder(t, w, faults, checkoutID, placed.(fakeOrder))
+				return
+			}
+			if faults.orderRefuse.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(
+					`{"detail": "The cart can no longer be ordered."}`))
 				return
 			}
 			if faults.orderUnpaid.Load() {
@@ -689,8 +736,6 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			// The cart rides the header, never the body.
 			assert.True(t, carts.known(r.Header.Get("X-Cart-Id")),
 				"the order names a cart the store never made")
-			var body map[string]any
-			assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			assert.NotEmpty(t, body["payWayId"])
 			assert.NotEmpty(t, body["email"])
 			// Django refuses an order without a region when the country
@@ -728,16 +773,29 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				faults.agentProtocol.Store(attribution["agentProtocol"])
 			}
 			faults.lastOrder.Store(&body)
-			faults.orderOnline.Store(body["payWayId"] != float64(1) ||
-				faults.codOnlineFrom.Load() > 0)
+			online := body["payWayId"] != float64(1) ||
+				faults.codOnlineFrom.Load() > 0 ||
+				faults.codServedOnline.Load()
+			faults.orderOnline.Store(online)
 			if hold := faults.orderHold.Load(); hold != nil {
 				(*hold)(r)
 			}
 			faults.ordersPlaced.Add(1)
-			serveFixture(t, w, "order_by_uuid.json")
+			placed := fakeOrder{online: online, at: time.Now().UTC()}
+			if at := faults.orderCreatedAt.Load(); at != nil {
+				placed.at = *at
+			}
+			faults.placedBy.Store(checkoutID, placed)
+			if faults.orderAnswerLost.Add(-1) >= 0 {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			faults.orderAnswerLost.Store(0)
+			servePlacedOrder(t, w, faults, checkoutID, placed)
 		})
 	outer.HandleFunc("POST /api/v1/order/684/create_checkout_session",
 		func(w http.ResponseWriter, r *http.Request) {
+			faults.paymentLinks.Add(1)
 			// Guest authorization rides ?uuid=.
 			assert.Equal(t, fixtureOrderUUID, r.URL.Query().Get("uuid"))
 			if faults.paymentLink.Load() {
@@ -761,6 +819,65 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 		}
 		carts.serve(outer, w, r)
 	})
+}
+
+// fakeOrder is an order the fake placed: whether it is paid online, and
+// when it was created.
+type fakeOrder struct {
+	online bool
+	at     time.Time
+}
+
+// servePlacedOrder answers an order creation with the fixture's order,
+// placed by checkoutID, as Django answers the first creation and every
+// repeat (201). An online one awaits its payment, which the faults may
+// have moved on (paymentProcessing, orderCanceled), and its hold is
+// ahead unless holdPassed. It runs on the fake's handler goroutine: an
+// error is reported, never t.FailNow.
+func servePlacedOrder(
+	t *testing.T, w http.ResponseWriter, faults *checkoutFaults,
+	checkoutID string, placed fakeOrder,
+) {
+	t.Helper()
+	raw, err := os.ReadFile(fixturePath("order_by_uuid.json"))
+	var order map[string]any
+	if err == nil {
+		err = json.Unmarshal(raw, &order)
+	}
+	if err != nil {
+		t.Errorf("read the fixture: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	order["agentCheckout"] = checkoutID
+	order["createdAt"] = placed.at.Format(time.RFC3339Nano)
+	if placed.online {
+		now := time.Now().UTC()
+		hold := now.Add(30 * time.Minute)
+		if faults.holdPassed.Load() {
+			hold = now.Add(-time.Minute)
+		}
+		order["isOnlinePayment"] = true
+		order["status"], order["paymentStatus"] = "PENDING", "PENDING"
+		order["paymentHoldExpiresAt"] = hold.Format(time.RFC3339)
+		order["paymentDecidedBy"] = now.Add(
+			50 * time.Minute).Format(time.RFC3339)
+		if faults.paymentProcessing.Load() {
+			order["paymentStatus"] = django.PaymentStatusProcessing
+			order["paymentDecidedBy"] = nil
+		}
+		if faults.orderCanceled.Load() {
+			order["status"] = django.OrderStatusCanceled
+		}
+		if faults.orderPaid.Load() {
+			order["paymentStatus"] = django.PaymentStatusCompleted
+			order["paymentHoldExpiresAt"] = nil
+			order["paymentDecidedBy"] = nil
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(order)
 }
 
 // fakeCarts gives each cart the fake makes an id of its own, as Django
@@ -888,6 +1005,8 @@ func startUCPGatewayBehind(
 		TenantCacheTTL:        time.Minute,
 		NegativeCacheTTL:      time.Minute,
 		UpstreamTimeout:       ucpUpstreamTimeout,
+		OrderCreateAttempts:   testOrderRetry.Attempts,
+		OrderCreateRetryDelay: testOrderRetry.Delay,
 		RateLimitPerMin:       6000,
 		RateLimitBurst:        1000,
 		UCPSignatureMaxAge:    5 * time.Minute,
@@ -1837,10 +1956,13 @@ func TestUCPEndToEnd(t *testing.T) {
 				"cannot be canceled")
 		})
 
-	t.Run("an unconfirmed order creation can never be placed twice",
+	// The order lands and every answer to it is lost: the checkout says
+	// the store has not confirmed it. A later complete, under a new key,
+	// asks the store again with the checkout's id, which answers the
+	// order it placed: the checkout then awaits that order's payment,
+	// and no second order is placed.
+	t.Run("an unconfirmed order is the one a later complete finds",
 		func(t *testing.T) {
-			stack.faults.orderCreate.Store(true)
-			t.Cleanup(func() { stack.faults.orderCreate.Store(false) })
 			res := callTool(t, session, "create_checkout", map[string]any{
 				"meta":    meta(""),
 				"cart_id": stack.faults.carts.mint(),
@@ -1851,7 +1973,15 @@ func TestUCPEndToEnd(t *testing.T) {
 			})
 			require.False(t, res.IsError)
 			checkoutID := structured(t, res)["id"].(string)
-			before := stack.faults.orderCreates.Load()
+			creates := stack.faults.orderCreates.Load()
+			placed := stack.faults.ordersPlaced.Load()
+			stack.faults.orderAnswerLost.Store(1)
+			lost := func(*http.Request) { stack.faults.orderCreate.Store(true) }
+			stack.faults.orderHold.Store(&lost)
+			t.Cleanup(func() {
+				stack.faults.orderHold.Store(nil)
+				stack.faults.orderCreate.Store(false)
+			})
 
 			res = callTool(t, session, "complete_checkout", map[string]any{
 				"meta":     meta(uuid.NewString()),
@@ -1860,19 +1990,25 @@ func TestUCPEndToEnd(t *testing.T) {
 			})
 			require.True(t, res.IsError)
 			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
-				"never confirmed whether this checkout's order was placed")
+				"has not confirmed whether this checkout's order was placed")
+			assert.EqualValues(t, testOrderRetry.Attempts,
+				stack.faults.orderCreates.Load()-creates)
 
-			// Upstream recovers; a retry under a NEW key must still not
-			// place the order a second time.
+			stack.faults.orderHold.Store(nil)
 			stack.faults.orderCreate.Store(false)
 			res = callTool(t, session, "complete_checkout", map[string]any{
 				"meta":     meta(uuid.NewString()),
 				"id":       checkoutID,
 				"checkout": map[string]any{"payment": map[string]any{}},
 			})
-			require.True(t, res.IsError)
-			assert.Equal(t, before+1, stack.faults.orderCreates.Load(),
-				"exactly one order creation attempt")
+			require.False(t, res.IsError, "%v", res.Content)
+			out := structured(t, res)
+			assert.Equal(t, "requires_escalation", out["status"])
+			assert.Equal(t, vivaCheckoutURL, out["continue_url"])
+			assert.EqualValues(t, 1, stack.faults.ordersPlaced.Load()-placed,
+				"one order for the checkout")
+			assert.EqualValues(t, testOrderRetry.Attempts+1,
+				stack.faults.orderCreates.Load()-creates)
 		})
 
 	t.Run("an unreachable profile is a -32001 discovery error",

@@ -94,6 +94,9 @@ type stack struct {
 	gateway       testcontainers.Container
 	redis         testcontainers.Container
 	seeded        seeded
+	// secret is the internal secret Django and the gateway share, for a
+	// test that calls Django as the gateway does.
+	secret string
 }
 
 // printLogs shows what the services said, for a failed run in CI. Everything
@@ -456,6 +459,7 @@ with schema_context("demostore"):
 		gateway:    gateway,
 		redis:      redis,
 		seeded:     data,
+		secret:     secret,
 	}, cleanup, nil
 }
 
