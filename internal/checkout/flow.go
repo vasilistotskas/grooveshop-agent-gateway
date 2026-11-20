@@ -311,7 +311,17 @@ func (f *Flow) run(
 		saveErr = f.st.put(ctx, s, s.Revision, outcome)
 	}
 	if errors.Is(saveErr, ErrSessionChanged) && placement == OrderMayExist {
-		saveErr = f.saveOverEvent(ctx, s)
+		var adopted bool
+		adopted, saveErr = f.saveOverEvent(ctx, s)
+		if adopted && s.Status != StatusCompleteInProgress {
+			// The order this completion left unanswered is placed, and
+			// the stored session says what became of it (a completion
+			// that resumed this one stored it, or an event since): that
+			// is the answer, not "unknown". One still in progress is the
+			// resumed completion's to finish, and its outcome is not
+			// stored yet: still unknown here.
+			err = nil
+		}
 	}
 	if saveErr != nil {
 		f.log.ErrorContext(ctx, "checkout: session save failed",
@@ -344,15 +354,17 @@ func (f *Flow) run(
 // less than a stored session that names one: an event recorded it, or a
 // completion that resumed this one placed it (a reader whose clock runs
 // ahead resumes early, CompletionDeadline). That session is kept as it
-// is, and s becomes it.
-func (f *Flow) saveOverEvent(ctx context.Context, s *Session) error {
+// is, s becomes it, and adopted reports it.
+func (f *Flow) saveOverEvent(
+	ctx context.Context, s *Session,
+) (adopted bool, err error) {
 	stored, err := f.st.Load(ctx, s.Schema, s.creator(), s.ID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if s.OrderUUID == "" && stored.OrderUUID != "" {
 		*s = *stored
-		return nil
+		return true, nil
 	}
 	// The event's save published an expiry too: never an earlier one.
 	s.ExpiresAt = later(s.ExpiresAt, stored.ExpiresAt)
@@ -362,10 +374,10 @@ func (f *Flow) saveOverEvent(ctx context.Context, s *Session) error {
 	case StatusCompleteInProgress:
 	default:
 		// Not what an event leaves: nothing is written over it.
-		return ErrSessionChanged
+		return false, ErrSessionChanged
 	}
 	s.Revision = stored.Revision
-	return f.st.Save(ctx, s)
+	return false, f.st.Save(ctx, s)
 }
 
 // CompletionDeadline is the latest a completion of s can still run, for a

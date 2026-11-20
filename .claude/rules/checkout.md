@@ -130,7 +130,9 @@ Loads when working on a checkout session on either surface, its completion, its 
     ahead): the completion then stores its outcome over the event's
     (`Flow.saveOverEvent`), keeping `completed` if the event said the
     order is paid. A completion whose order went unanswered knows no
-    order, and leaves a stored session that names one as it is. A last
+    order, and leaves a stored session that names one as it is. It
+    answers with that session, not "unknown", unless it is still in
+    progress (the resumed completion has not stored its outcome). A last
     save that still cannot be
     stored, after its order was placed, is `ErrSessionNotSaved` with
     the key spent, and does not wrap `ErrSessionChanged`. A save Redis

@@ -1091,7 +1091,8 @@ func TestResumeIsOneCallAndNeverOverARunningCompletion(t *testing.T) {
 // A reader whose clock runs ahead resumes a completion that is still
 // sending: the resume places the order and stores the checkout
 // completed. The first completion, still unanswered, knows no order,
-// and leaves the stored checkout as the resume left it.
+// leaves the stored checkout as the resume left it, and answers with it:
+// the order is known, so its outcome is not "unknown".
 func TestAnUnansweredCompletionKeepsTheOrderAResumeStored(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
 	s := f.readySession(t)
@@ -1114,13 +1115,50 @@ func TestAnUnansweredCompletionKeepsTheOrderAResumeStored(t *testing.T) {
 	placement, err := f.flow.Complete(t.Context(), f.tenant, s)
 
 	require.NoError(t, resumeErr)
-	require.ErrorIs(t, err, checkout.ErrOrderOutcomeUnknown)
+	require.NoError(t, err)
 	assert.Equal(t, checkout.OrderMayExist, placement)
 	assert.EqualValues(t, 1, f.faults.ordersPlaced.Load())
 	stored := f.stored(t, s)
 	assert.Equal(t, checkout.StatusCompleted, stored.Status)
 	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
 	assert.False(t, stored.Unconfirmed)
+	assert.Equal(t, stored.Revision, s.Revision,
+		"the completion holds the session as stored")
+	assert.Equal(t, checkout.StatusCompleted, s.Status,
+		"the completion answers with the order the resume placed")
+	assert.Equal(t, fixtureOrderUUID, s.OrderUUID)
+}
+
+// An order event can record the order on a checkout still in progress,
+// before the completion placing it has stored its outcome. A completion
+// that knows no order keeps that session, and its outcome stays unknown:
+// the stored session does not say yet what became of the order.
+func TestAnUnansweredCompletionOverAnOrderInProgressStaysUnknown(
+	t *testing.T,
+) {
+	f := startFlow(t, 5*time.Second)
+	s := f.readySession(t)
+	f.faults.orderCreate.Store(true)
+	var recorded atomic.Bool
+	var eventErr error
+	event := func(r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/order" ||
+			!recorded.CompareAndSwap(false, true) {
+			return
+		}
+		eventErr = f.flow.ApplyOrderEvent(t.Context(), s.Schema, s.ID,
+			fixtureOrderUUID, "PENDING", "PENDING")
+	}
+	f.faults.before.Store(&event)
+
+	placement, err := f.flow.Complete(t.Context(), f.tenant, s)
+
+	require.NoError(t, eventErr)
+	require.ErrorIs(t, err, checkout.ErrOrderOutcomeUnknown)
+	assert.Equal(t, checkout.OrderMayExist, placement)
+	stored := f.stored(t, s)
+	assert.Equal(t, checkout.StatusCompleteInProgress, stored.Status)
+	assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
 	assert.Equal(t, stored.Revision, s.Revision,
 		"the completion holds the session as stored")
 }
