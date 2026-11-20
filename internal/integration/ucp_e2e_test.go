@@ -186,8 +186,13 @@ func verifyWebhook(t *testing.T, hook receivedWebhook, jwk map[string]string) {
 // checkoutFaults injects upstream failures into the checkout fake.
 type checkoutFaults struct {
 	// paymentLink makes Viva's payment-session creation fail: the order
-	// exists, its payment link does not.
-	paymentLink atomic.Bool
+	// exists, its payment link does not. paymentLinks counts the links
+	// asked for.
+	paymentLink  atomic.Bool
+	paymentLinks atomic.Int32
+	// orderPaid makes an online order answered to a repeated creation
+	// read as paid.
+	orderPaid atomic.Bool
 	// orderCreate makes order creation answer 502 — an outcome the
 	// gateway cannot know.
 	orderCreate  atomic.Bool
@@ -208,10 +213,11 @@ type checkoutFaults struct {
 	// creations: the order is placed, and answered 502, as a proxy does
 	// for a connection Django dropped after its commit.
 	orderAnswerLost atomic.Int32
-	// placedBy names the order each checkout placed (agentCheckout).
-	// Django answers a repeat with it before it judges anything else
-	// (order/views/order.py, OrderViewSet.create), so ordersPlaced
-	// counts each checkout's order once.
+	// placedBy holds the order each checkout placed (agentCheckout), a
+	// fakeOrder. Django answers
+	// a repeat with it before its view judges anything else
+	// (order/views/order.py, OrderViewSet.create), though after its
+	// throttles, so ordersPlaced counts each checkout's order once.
 	placedBy sync.Map
 	// orderHold runs inside an accepted order creation, before it
 	// answers.
@@ -232,13 +238,16 @@ type checkoutFaults struct {
 	regionLookup atomic.Bool
 	// payWayLookup makes the pay-way list answer 502.
 	payWayLookup atomic.Bool
-	// payWayDetail makes reading cash on delivery (pay way 1) answer 502.
+	// payWayDetail makes reading cash on delivery (pay way 1) answer 404.
 	payWayDetail atomic.Bool
 	// payWayReads counts the reads of the pay-way list; from the read
 	// numbered codOnlineFrom on (when set), cash on delivery (pay way 1)
 	// reads as a Viva pay way settled online.
 	payWayReads   atomic.Int32
 	codOnlineFrom atomic.Int32
+	// codServedOnline: a wrapper serves cash on delivery (pay way 1) as
+	// settled online, so the order placed with it is paid online.
+	codServedOnline atomic.Bool
 	// codFee makes cash on delivery (pay way 1) read without its free
 	// threshold, so its 4.50 fee applies to the fixture cart.
 	codFee atomic.Bool
@@ -517,7 +526,9 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	outer.HandleFunc("GET /api/v1/pay_way/1",
 		func(w http.ResponseWriter, r *http.Request) {
 			if faults.payWayDetail.Load() {
-				w.WriteHeader(http.StatusBadGateway)
+				// Switched off, or its provider unconfigured: Django
+				// hides it (PayWayService.shopper_facing).
+				w.WriteHeader(http.StatusNotFound)
 				return
 			}
 			if !faults.codFee.Load() {
@@ -640,6 +651,14 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
+			// DRF throttles before the view (APIView.initial).
+			if faults.orderThrottle.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "3")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"detail": "Request was throttled."}`))
+				return
+			}
 			raw, err := io.ReadAll(r.Body)
 			assert.NoError(t, err)
 			var body map[string]any
@@ -647,8 +666,8 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			// Every order names its checkout, which places one order.
 			checkoutID, _ := body["agentCheckout"].(string)
 			assert.NotEmpty(t, checkoutID)
-			if _, placed := faults.placedBy.Load(checkoutID); placed {
-				servePlacedOrder(t, w, checkoutID)
+			if placed, ok := faults.placedBy.Load(checkoutID); ok {
+				servePlacedOrder(t, w, faults, checkoutID, placed.(fakeOrder))
 				return
 			}
 			if faults.orderRefuse.Load() {
@@ -656,13 +675,6 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(
 					`{"detail": "The cart can no longer be ordered."}`))
-				return
-			}
-			if faults.orderThrottle.Load() {
-				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Retry-After", "3")
-				w.WriteHeader(http.StatusTooManyRequests)
-				_, _ = w.Write([]byte(`{"detail": "Request was throttled."}`))
 				return
 			}
 			if faults.orderUnpaid.Load() {
@@ -753,21 +765,29 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			}
 			faults.lastOrder.Store(&body)
 			faults.orderOnline.Store(body["payWayId"] != float64(1) ||
-				faults.codOnlineFrom.Load() > 0)
+				faults.codOnlineFrom.Load() > 0 ||
+				faults.codServedOnline.Load())
 			if hold := faults.orderHold.Load(); hold != nil {
 				(*hold)(r)
 			}
 			faults.ordersPlaced.Add(1)
-			faults.placedBy.Store(checkoutID, true)
+			placed := fakeOrder{
+				online: faults.orderOnline.Load(), at: time.Now().UTC(),
+			}
+			if at := faults.orderCreatedAt.Load(); at != nil {
+				placed.at = *at
+			}
+			faults.placedBy.Store(checkoutID, placed)
 			if faults.orderAnswerLost.Add(-1) >= 0 {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
 			faults.orderAnswerLost.Store(0)
-			servePlacedOrder(t, w, checkoutID)
+			servePlacedOrder(t, w, faults, checkoutID, placed)
 		})
 	outer.HandleFunc("POST /api/v1/order/684/create_checkout_session",
 		func(w http.ResponseWriter, r *http.Request) {
+			faults.paymentLinks.Add(1)
 			// Guest authorization rides ?uuid=.
 			assert.Equal(t, fixtureOrderUUID, r.URL.Query().Get("uuid"))
 			if faults.paymentLink.Load() {
@@ -793,25 +813,63 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 	})
 }
 
+// fakeOrder is an order the fake placed: whether it is paid online, and
+// when it was created.
+type fakeOrder struct {
+	online bool
+	at     time.Time
+}
+
 // servePlacedOrder answers an order creation with the fixture's order,
 // placed by checkoutID, as Django answers the first creation and every
-// repeat (201).
-func servePlacedOrder(t *testing.T, w http.ResponseWriter, checkoutID string) {
+// repeat (201). An online one awaits its payment, which the faults may
+// have moved on (paymentProcessing, orderCanceled), and its hold is
+// ahead unless holdPassed. It runs on the fake's handler goroutine: an
+// error is reported, never t.FailNow.
+func servePlacedOrder(
+	t *testing.T, w http.ResponseWriter, faults *checkoutFaults,
+	checkoutID string, placed fakeOrder,
+) {
 	t.Helper()
-	// It runs on the fake's handler goroutine: an error is reported,
-	// never t.FailNow.
 	raw, err := os.ReadFile(fixturePath("order_by_uuid.json"))
+	var order map[string]any
+	if err == nil {
+		err = json.Unmarshal(raw, &order)
+	}
 	if err != nil {
 		t.Errorf("read the fixture: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	placed := bytes.Replace(raw, []byte(`"agentCheckout":null`),
-		[]byte(`"agentCheckout":"`+checkoutID+`"`), 1)
-	assert.NotEqual(t, raw, placed, "the fixture names no checkout")
+	order["agentCheckout"] = checkoutID
+	order["createdAt"] = placed.at.Format(time.RFC3339Nano)
+	if placed.online {
+		now := time.Now().UTC()
+		hold := now.Add(30 * time.Minute)
+		if faults.holdPassed.Load() {
+			hold = now.Add(-time.Minute)
+		}
+		order["isOnlinePayment"] = true
+		order["status"], order["paymentStatus"] = "PENDING", "PENDING"
+		order["paymentHoldExpiresAt"] = hold.Format(time.RFC3339)
+		order["paymentDecidedBy"] = now.Add(
+			50 * time.Minute).Format(time.RFC3339)
+		if faults.paymentProcessing.Load() {
+			order["paymentStatus"] = django.PaymentStatusProcessing
+			order["paymentDecidedBy"] = nil
+		}
+		if faults.orderCanceled.Load() {
+			order["status"] = django.OrderStatusCanceled
+		}
+		if faults.orderPaid.Load() {
+			order["paymentStatus"] = django.PaymentStatusCompleted
+			order["paymentHoldExpiresAt"] = nil
+			order["paymentDecidedBy"] = nil
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_, _ = w.Write(placed)
+	_ = json.NewEncoder(w).Encode(order)
 }
 
 // fakeCarts gives each cart the fake makes an id of its own, as Django

@@ -1096,6 +1096,9 @@
           "id": {
             "type": "integer"
           },
+          "isOnlinePayment": {
+            "type": "boolean"
+          },
           "isPaid": {
             "type": "boolean"
           },
@@ -1338,6 +1341,7 @@
           "agentCheckout",
           "createdAt",
           "id",
+          "isOnlinePayment",
           "isPaid",
           "items",
           "paymentAwaitsReview",

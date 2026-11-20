@@ -42,6 +42,14 @@ type flowStack struct {
 
 func startFlow(t *testing.T, upstreamTimeout time.Duration) flowStack {
 	t.Helper()
+	return startFlowRetrying(t, upstreamTimeout, testOrderRetry)
+}
+
+// startFlowRetrying is startFlow with its own order retry policy.
+func startFlowRetrying(
+	t *testing.T, upstreamTimeout time.Duration, retry checkout.OrderRetry,
+) flowStack {
+	t.Helper()
 	faults := new(checkoutFaults)
 	djangoSrv := httptest.NewServer(fakeCheckoutDjango(t, faults))
 	t.Cleanup(djangoSrv.Close)
@@ -51,7 +59,7 @@ func startFlow(t *testing.T, upstreamTimeout time.Duration) flowStack {
 	store := checkout.NewStore(rdb, upstreamTimeout)
 	return flowStack{
 		flow: checkout.NewFlow(dj, store, storefront.NewSite("el"),
-			testOrderRetry, quietLogger()),
+			retry, quietLogger()),
 		store: store, rdb: rdb, faults: faults,
 		tenant: &tenant.Tenant{
 			SchemaName: "demostore", DefaultLocale: "el",
@@ -213,6 +221,8 @@ func TestCompleteLeavesAnUnansweredOrderInProgress(t *testing.T) {
 	require.ErrorIs(t, err, checkout.ErrOrderOutcomeUnknown)
 	assert.Equal(t, checkout.OrderMayExist, placement,
 		"the key is spent: the order may exist")
+	assert.EqualValues(t, 1, f.faults.orderCreates.Load(),
+		"a send that timed out has used the order's step: none follows")
 	require.NotErrorIs(t, err, context.Canceled,
 		"ended by the store's silence, not by the caller leaving")
 	assert.GreaterOrEqual(t, time.Since(started), upstreamTimeout)
@@ -1037,21 +1047,20 @@ func TestResumeThatTheStoreRefusesLeavesTheCheckoutReady(t *testing.T) {
 	assert.Zero(t, f.faults.ordersPlaced.Load())
 }
 
-// A Resume that cannot read how the order is paid sends nothing: the
-// checkout stays unconfirmed for the next complete.
-func TestResumeThatCannotReadThePayWaySendsNothing(t *testing.T) {
+// Resume reads no pay way before it sends: staff may have switched the
+// order's pay way off since (Django then hides it, 404), and the order
+// it answers says how it is paid.
+func TestResumeReadsNoPayWay(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
 	s := f.unconfirmed(t, f.readySession(t), false)
-	creates := f.faults.orderCreates.Load()
-	before := f.stored(t, s)
 	f.faults.payWayDetail.Store(true)
+	f.faults.payWayLookup.Store(true)
 
 	placement, err := f.flow.Resume(t.Context(), f.tenant, s)
 
-	require.ErrorIs(t, err, checkout.ErrOrderOutcomeUnknown)
-	assert.Equal(t, checkout.NothingPlaced, placement)
-	assert.Equal(t, creates, f.faults.orderCreates.Load())
-	assert.Equal(t, before, f.stored(t, s))
+	require.NoError(t, err)
+	assert.Equal(t, checkout.OrderMayExist, placement)
+	assert.Equal(t, checkout.StatusCompleted, f.stored(t, s).Status)
 }
 
 // A session whose completion may still be running is not resumed, and
@@ -1077,4 +1086,160 @@ func TestResumeIsOneCallAndNeverOverARunningCompletion(t *testing.T) {
 	require.ErrorIs(t, err, checkout.ErrCompletionInProgress)
 	assert.Equal(t, checkout.NothingPlaced, placement)
 	assert.EqualValues(t, 1, f.faults.orderCreates.Load()-creates)
+}
+
+// The repeats of one completion share the order's one upstream timeout:
+// a policy that would send later than that stops at it.
+func TestTheRepeatsStopAtTheOrdersOneTimeout(t *testing.T) {
+	const upstreamTimeout = time.Second
+	f := startFlowRetrying(t, upstreamTimeout, checkout.OrderRetry{
+		Attempts: 5, Delay: 400 * time.Millisecond,
+	})
+	s := f.readySession(t)
+	f.faults.orderCreate.Store(true)
+
+	started := time.Now()
+	_, err := f.flow.Complete(t.Context(), f.tenant, s)
+
+	require.ErrorIs(t, err, checkout.ErrOrderOutcomeUnknown)
+	assert.EqualValues(t, 3, f.faults.orderCreates.Load(),
+		"sent at 0, 0.4 and 0.8 s; the next would be past the timeout")
+	assert.Less(t, time.Since(started), upstreamTimeout+time.Second)
+}
+
+// Django throttles before its view looks the checkout's order up, so a
+// 429 to a repeated send says nothing about the order: the outcome is
+// unknown, not refused, and the order is not sent again until a complete
+// resumes it. A first send's 429 stays a refusal.
+func TestAThrottledRepeatIsNoRefusal(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	s := f.readySession(t)
+	f.faults.orderAnswerLost.Store(1)
+	throttle := func(*http.Request) { f.faults.orderThrottle.Store(true) }
+	f.faults.orderHold.Store(&throttle)
+
+	placement, err := f.flow.Complete(t.Context(), f.tenant, s)
+
+	require.ErrorIs(t, err, checkout.ErrOrderOutcomeUnknown)
+	require.ErrorIs(t, err, django.ErrThrottled)
+	assert.Equal(t, checkout.OrderMayExist, placement)
+	assert.EqualValues(t, 2, f.faults.orderCreates.Load())
+	stored := f.stored(t, s)
+	assert.Equal(t, checkout.StatusCompleteInProgress, stored.Status)
+	assert.True(t, stored.Unconfirmed)
+
+	f.faults.orderHold.Store(nil)
+	placement, err = f.flow.Resume(t.Context(), f.tenant, stored)
+	require.ErrorIs(t, err, checkout.ErrOrderOutcomeUnknown,
+		"a resumed send is a repeat")
+	assert.Equal(t, checkout.OrderMayExist, placement)
+	stored = f.stored(t, s)
+	assert.True(t, stored.Unconfirmed)
+
+	f.faults.orderThrottle.Store(false)
+	_, err = f.flow.Resume(t.Context(), f.tenant, stored)
+	require.NoError(t, err)
+	assert.Equal(t, checkout.StatusCompleted, f.stored(t, s).Status)
+	assert.EqualValues(t, 1, f.faults.ordersPlaced.Load())
+
+	first := f.readySession(t)
+	f.faults.orderThrottle.Store(true)
+	placement, err = f.flow.Complete(t.Context(), f.tenant, first)
+	require.ErrorIs(t, err, django.ErrThrottled)
+	require.NotErrorIs(t, err, checkout.ErrOrderOutcomeUnknown)
+	assert.Equal(t, checkout.NothingPlaced, placement)
+}
+
+// placedUnsaved completes an online session whose order is placed and
+// whose every save after it fails, then ages it past its completion's
+// deadline: in progress, its order named only beside it.
+func (f flowStack) placedUnsaved(t *testing.T) *checkout.Session {
+	t.Helper()
+	ctx := t.Context()
+	f.tenant.AgentCommerceEnabled = true
+	f.tenant.AgentHostedPaymentEnabled = true
+	s := f.readySession(t)
+	s.PayWayID = 2
+	require.NoError(t, f.store.Save(ctx, s))
+	var linked, failing atomic.Bool
+	failing.Store(true)
+	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
+		if setsKey(cmd, ":orderlink:") {
+			linked.Store(true)
+		}
+		if failing.Load() && linked.Load() &&
+			savesKey(cmd, sessionRedisKey(s.ID)) {
+			return errors.New("redis is down")
+		}
+		return nil
+	}))
+	_, err := f.flow.Complete(ctx, f.tenant, s)
+	failing.Store(false)
+	require.ErrorIs(t, err, checkout.ErrSessionNotSaved)
+	stored := f.stored(t, s)
+	require.Equal(t, checkout.StatusCompleteInProgress, stored.Status)
+	require.Equal(t, fixtureOrderUUID, f.flow.PlacedOrder(ctx, stored))
+	stored.UpdatedAt = time.Now().Add(-time.Hour)
+	raw, err := json.Marshal(stored)
+	require.NoError(t, err)
+	require.NoError(t, f.rdb.Set(ctx, sessionRedisKey(s.ID), raw,
+		redis.KeepTTL).Err())
+	require.True(t, f.flow.Resumable(stored))
+	return stored
+}
+
+// A resumed online order that was placed is taken as it stands: Django
+// answers the same order, and its payment decides what the checkout
+// becomes. A link is asked for only while the checkout would offer one.
+func TestResumeFollowsAPlacedOnlineOrderAsItStands(t *testing.T) {
+	for name, tc := range map[string]struct {
+		fault  func(*checkoutFaults) *atomic.Bool
+		status checkout.Status
+		err    error
+		links  int32
+	}{
+		"awaiting its payment": {
+			status: checkout.StatusRequiresEscalation, links: 1},
+		"paid meanwhile": {
+			fault:  func(f *checkoutFaults) *atomic.Bool { return &f.orderPaid },
+			status: checkout.StatusCompleted},
+		"canceled meanwhile": {
+			fault: func(f *checkoutFaults) *atomic.Bool {
+				return &f.orderCanceled
+			},
+			status: checkout.StatusCanceled},
+		"its payment being processed": {
+			fault: func(f *checkoutFaults) *atomic.Bool {
+				return &f.paymentProcessing
+			},
+			status: checkout.StatusRequiresEscalation,
+			err:    checkout.ErrPaymentAwaitsStore},
+		"its hold over": {
+			fault:  func(f *checkoutFaults) *atomic.Bool { return &f.holdPassed },
+			status: checkout.StatusRequiresEscalation,
+			err:    checkout.ErrPaymentWindowClosed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := startFlow(t, 5*time.Second)
+			s := f.placedUnsaved(t)
+			links := f.faults.paymentLinks.Load()
+			if tc.fault != nil {
+				tc.fault(f.faults).Store(true)
+			}
+
+			placement, err := f.flow.Resume(t.Context(), f.tenant, s)
+
+			if tc.err != nil {
+				require.ErrorIs(t, err, tc.err)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, checkout.OrderMayExist, placement)
+			assert.Equal(t, tc.links, f.faults.paymentLinks.Load()-links)
+			assert.EqualValues(t, 1, f.faults.ordersPlaced.Load())
+			stored := f.stored(t, s)
+			assert.Equal(t, tc.status, stored.Status)
+			assert.Equal(t, fixtureOrderUUID, stored.OrderUUID)
+		})
+	}
 }

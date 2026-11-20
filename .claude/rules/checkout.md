@@ -198,25 +198,40 @@ Loads when working on a checkout session on either surface, its completion, its 
     agent checkout: every order call names the session
     (`django.OrderCreate.AgentCheckout`, believed beside the internal
     secret only), and a repeat is answered 201 with the order the
-    checkout placed, before Django judges anything else. So Resume
-    judges nothing again either (the order may exist, its cart gone
-    with it): it reads the pay way by id, for how the order is paid,
-    and runs the completion from the in-progress save on, as Complete
-    does. That save is the fence again, so of the calls that loaded one
-    resumable session one sends the order; a Resume that cannot read
-    the pay way sends nothing and is `ErrOrderOutcomeUnknown`. Its
-    outcome is stored as a completion's: placed (completed, or on UCP
-    awaiting payment), ready again for a refusal, unconfirmed again
-    for an order still unanswered. UCP takes no completion claim for
-    it, and ACP's key does not keep its 502.
+    checkout placed, before its view judges anything else. So Resume
+    judges and reads nothing again either (the order may exist, its
+    cart gone with it, its pay way switched off since): it runs the
+    completion from the in-progress save on, as Complete does, and the
+    order Django answers says how it is paid (`isOnlinePayment`, for
+    Complete too). That save is the fence again, so of the calls that
+    loaded one resumable session one sends the order. Its outcome is
+    stored as a completion's: placed, ready again for a refusal,
+    unconfirmed again for an order still unanswered. An online order
+    answered to a repeated send may be one placed earlier, so it is
+    followed as it stands (`Flow.follow`: paid completes the checkout,
+    canceled cancels it, and a link is minted only where
+    `ResumePayment` would mint one), never handed a link blindly. UCP
+    takes no completion claim for it, and ACP's key does not keep its
+    502. The UCP complete that left the outcome unknown spent its key,
+    which reads the checkout back once a Resume is refused: its hint
+    says to complete with a new key. A reader whose clock runs ahead
+    can resume while the completion still runs; the order is then sent
+    twice and Django answers both with the one order, and the two
+    saves are ordered by the compare-and-set.
   - **Within one completion the order is sent again while Django
     leaves the outcome unknown** (not `refused`): `Flow.createOrder`,
     up to `OrderRetry.Attempts` sends, `OrderRetry.Delay` apart
-    (`ORDER_CREATE_ATTEMPTS`, `ORDER_CREATE_RETRY_DELAY`). All of them
-    share the order's one upstream timeout of `completionSteps`, so
-    the completion's budget, the lock and the shutdown tail are
+    (`ORDER_CREATE_ATTEMPTS`, at most 5 for Django's per-cart budget of
+    10 order creations a minute, `ORDER_CREATE_RETRY_DELAY`). All of
+    them share the order's one upstream timeout of `completionSteps`,
+    so the completion's budget, the lock and the shutdown tail are
     unchanged, and a send that timed out is not followed by another:
-    the next complete resumes it. A refusal is never sent again.
+    the next complete resumes it. A refusal from Django's view is never
+    sent again. A 429, 401 or 403 comes before the view
+    (`beforeTheView`: DRF throttles and checks permissions first), so
+    it refuses a first send, but to a repeated send (any after the
+    first, every send of a Resume) it says nothing about the order: it
+    is `ErrOrderOutcomeUnknown`, not sent again within the step.
     Django's answer names its checkout (`django.Order.AgentCheckout`);
     one that does not is logged at error, since a repeat of that
     store's orders would order twice.

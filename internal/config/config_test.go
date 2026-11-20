@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -498,9 +499,6 @@ func TestLoadValidatesInternalSecret(t *testing.T) {
 	}
 }
 
-// A stale window shorter than the fresh one expires the cached feed
-// before it is ever served stale: every request past it waits for a
-// full generation.
 // The order's repeats all wait inside one upstream timeout: waits that
 // fill it would boot a gateway whose last repeat is never sent.
 func TestLoadOrderCreateWaitsFitTheUpstreamTimeout(t *testing.T) {
@@ -509,7 +507,7 @@ func TestLoadOrderCreateWaitsFitTheUpstreamTimeout(t *testing.T) {
 		wantErr                  bool
 	}{
 		{"3", "5s", "10s", true},
-		{"6", "2s", "10s", true},
+		{"5", "2500ms", "10s", true},
 		{"3", "4900ms", "10s", false},
 		{"1", "1h", "10s", false},
 		{"", "", "", false},
@@ -530,6 +528,24 @@ func TestLoadOrderCreateWaitsFitTheUpstreamTimeout(t *testing.T) {
 	}
 }
 
+// Each send spends the cart's order-creation budget at Django: more
+// than maxOrderCreateAttempts would leave the next complete none.
+func TestLoadOrderCreateAttemptsAreBounded(t *testing.T) {
+	setRequired(t)
+	t.Setenv("ORDER_CREATE_ATTEMPTS", strconv.Itoa(maxOrderCreateAttempts+1))
+	t.Setenv("ORDER_CREATE_RETRY_DELAY", "1ms")
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ORDER_CREATE_ATTEMPTS must be at most")
+
+	t.Setenv("ORDER_CREATE_ATTEMPTS", strconv.Itoa(maxOrderCreateAttempts))
+	_, err = Load()
+	require.NoError(t, err)
+}
+
+// A stale window shorter than the fresh one expires the cached feed
+// before it is ever served stale: every request past it waits for a
+// full generation.
 func TestLoadFeedStaleTTLIsNotShorterThanFresh(t *testing.T) {
 	for _, tc := range []struct {
 		fresh, stale string

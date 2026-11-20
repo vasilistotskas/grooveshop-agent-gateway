@@ -1288,14 +1288,18 @@ func (h *handlers) closedTo(
 // it again asks the store again with the checkout's id
 // (checkout.Flow.Resume), and the store answers the order it placed, if
 // it placed one: that never orders twice, while another checkout could.
+// A new key: the complete that left the outcome unknown spent its own,
+// and once the store refuses the order (the checkout ready again) that
+// key only reads the checkout back.
 var errOutcomeUnknown = &mcptool.ToolError{
 	Code:       mcptool.CodeOrderOutcomeUnknown,
 	RetryAfter: mcptool.UnavailableRetryAfter,
 	Hint: "the store has not confirmed whether this checkout's order " +
 		"was placed. Call complete_checkout on this checkout again " +
-		"shortly: the store answers with the order this checkout " +
-		"placed, if it placed one, and never places a second, so do " +
-		"not start another checkout for this purchase"}
+		"shortly, with a new meta.idempotency-key: the store answers " +
+		"with the order this checkout placed, if it placed one, and " +
+		"never places a second, so do not start another checkout for " +
+		"this purchase"}
 
 // pending answers a call that finds the checkout's order being placed.
 // An order the completion placed and could not save is known (the

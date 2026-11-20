@@ -29,13 +29,12 @@ import (
 
 const fixtureOrderUUID = "b9be45e5-6062-4976-ae7b-2c31eb2ad689"
 
-// ucpMeta names a platform profile served from the recorded fixture.
-
 // testOrderRetry sends an unanswered order up to three times, quickly.
 var testOrderRetry = checkout.OrderRetry{
 	Attempts: 3, Delay: 10 * time.Millisecond,
 }
 
+// ucpMeta names a platform profile served from the recorded fixture.
 func ucpMeta(t *testing.T, idem string) *MetaIn {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata",
