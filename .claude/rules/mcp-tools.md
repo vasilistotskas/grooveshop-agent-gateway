@@ -85,10 +85,11 @@ Loads when working on a tool of any of the three MCP servers. The code wins over
     `total_changed` (read the checkout, which shows the total now, see
     `.claude/rules/ucp.md`);
   - an order placed whose checkout was not saved or not rendered:
-    `order_placed`; an outcome never recorded:
-    `order_outcome_unknown`; an order whose payment link could not be
-    made: `payment_link_failed`. Each hint says not to start another
-    checkout.
+    `order_placed`; an order the store has not confirmed:
+    `order_outcome_unknown`, with `retry_after`, whose hint says to
+    complete the same checkout again (`checkout.Flow.Resume`); an order
+    whose payment link could not be made: `payment_link_failed`. Each
+    hint says not to start another checkout.
 
   A cart tool's failure goes through `handlers.cartErr`,
   or `handlers.cartGoneErr` for a call on the cart itself (a line's or a

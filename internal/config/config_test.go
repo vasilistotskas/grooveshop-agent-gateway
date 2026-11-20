@@ -125,6 +125,8 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, cfg.TenantCacheTTL)
 	assert.Equal(t, time.Minute, cfg.NegativeCacheTTL)
 	assert.Equal(t, 10*time.Second, cfg.UpstreamTimeout)
+	assert.Equal(t, 3, cfg.OrderCreateAttempts)
+	assert.Equal(t, 2*time.Second, cfg.OrderCreateRetryDelay)
 	assert.Equal(t, 120, cfg.RateLimitPerMin)
 	assert.Equal(t, 40, cfg.RateLimitBurst)
 	assert.Equal(t, time.Minute, cfg.ChatTurnTimeout)
@@ -183,6 +185,8 @@ func TestLoadRejectsNonPositiveValues(t *testing.T) {
 		"CHAT_MAX_ITERATIONS":       "-3",
 		"CHAT_TURN_TIMEOUT":         "0s",
 		"FEED_STALE_TTL":            "0h",
+		"ORDER_CREATE_ATTEMPTS":     "0",
+		"ORDER_CREATE_RETRY_DELAY":  "0s",
 	} {
 		t.Run(key, func(t *testing.T) {
 			setRequired(t)
@@ -497,6 +501,35 @@ func TestLoadValidatesInternalSecret(t *testing.T) {
 // A stale window shorter than the fresh one expires the cached feed
 // before it is ever served stale: every request past it waits for a
 // full generation.
+// The order's repeats all wait inside one upstream timeout: waits that
+// fill it would boot a gateway whose last repeat is never sent.
+func TestLoadOrderCreateWaitsFitTheUpstreamTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		attempts, delay, timeout string
+		wantErr                  bool
+	}{
+		{"3", "5s", "10s", true},
+		{"6", "2s", "10s", true},
+		{"3", "4900ms", "10s", false},
+		{"1", "1h", "10s", false},
+		{"", "", "", false},
+	} {
+		t.Run(tc.attempts+"x"+tc.delay+"/"+tc.timeout, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("ORDER_CREATE_ATTEMPTS", tc.attempts)
+			t.Setenv("ORDER_CREATE_RETRY_DELAY", tc.delay)
+			t.Setenv("UPSTREAM_TIMEOUT", tc.timeout)
+			_, err := Load()
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "ORDER_CREATE_RETRY_DELAY")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestLoadFeedStaleTTLIsNotShorterThanFresh(t *testing.T) {
 	for _, tc := range []struct {
 		fresh, stale string

@@ -79,7 +79,7 @@ func startBranchFlow(t *testing.T, hosted bool) (flowStack, *branchDjango) {
 	store := checkout.NewStore(rdb, 5*time.Second)
 	return flowStack{
 		flow: checkout.NewFlow(dj, store, storefront.NewSite("el"),
-			quietLogger()),
+			testOrderRetry, quietLogger()),
 		store: store, rdb: rdb, faults: faults,
 		tenant: &tenant.Tenant{
 			SchemaName: "demostore", DefaultLocale: "el",

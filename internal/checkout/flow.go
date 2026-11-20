@@ -33,11 +33,12 @@ var ErrPaymentMethodUnsupported = errors.New(
 	"checkout: this payment method cannot be completed by an agent yet")
 
 // ErrOrderOutcomeUnknown marks an order creation whose result never
-// arrived — a timeout, a dropped connection, a 5xx after the commit, an
-// unreadable success. The order may exist, and Django keeps the cart of
-// an order awaiting online payment, so a retry could place it twice: the
-// session stays complete_in_progress and callers must not free the
-// completion for another attempt.
+// arrived, after every attempt (OrderRetry): a timeout, a dropped
+// connection, a 5xx after the commit, an unreadable success. The order
+// may exist. The session stays complete_in_progress, stored unconfirmed,
+// and the next complete resumes it (Resume): Django answers the order
+// with the checkout's id the order it placed, if it placed one, so asking
+// again never orders twice. A Resume that cannot ask is this error too.
 var ErrOrderOutcomeUnknown = errors.New(
 	"checkout: the store did not confirm whether the order was placed")
 
@@ -137,20 +138,34 @@ func settleTimeout(upstreamTimeout time.Duration) time.Duration {
 	return upstreamTimeout
 }
 
+// OrderRetry is how a completion sends its order again while Django
+// leaves the outcome unknown (ORDER_CREATE_ATTEMPTS,
+// ORDER_CREATE_RETRY_DELAY): Attempts sends in all, Delay apart. Every
+// send names the checkout (django.OrderCreate.AgentCheckout), and Django
+// answers a repeat with the order the checkout placed, so a repeat never
+// orders twice. The attempts share the order's one upstream timeout of
+// the completion's budget (completionSteps).
+type OrderRetry struct {
+	Attempts int
+	Delay    time.Duration
+}
+
 // Flow orchestrates order creation over the existing Django endpoints.
 type Flow struct {
 	dj     *django.Client
 	st     *Store
 	site   storefront.Site
+	retry  OrderRetry
 	budget time.Duration
 	log    *slog.Logger
 }
 
 func NewFlow(
-	dj *django.Client, st *Store, site storefront.Site, log *slog.Logger,
+	dj *django.Client, st *Store, site storefront.Site, retry OrderRetry,
+	log *slog.Logger,
 ) *Flow {
 	return &Flow{
-		dj: dj, st: st, site: site,
+		dj: dj, st: st, site: site, retry: retry,
 		budget: CompletionBudget(dj.Timeout()), log: log,
 	}
 }
@@ -172,8 +187,9 @@ func NewFlow(
 // with an order, its checkout never saved as placed and no order link
 // for get_order or the order webhooks to find it by. The process can
 // still end it: a graceful shutdown waits for it (CompletionTail), but
-// a pod killed or lost mid-placement leaves the session in progress
-// (docs/agent-protocols-runbook.md, section 11).
+// a pod killed or lost mid-placement leaves the session in progress,
+// which the next complete resumes once no completion can be running
+// (Resume; docs/agent-protocols-runbook.md, section 11).
 func (f *Flow) Complete(
 	ctx context.Context, t *tenant.Tenant, s *Session,
 ) (Placement, error) {
@@ -184,8 +200,56 @@ func (f *Flow) Complete(
 		// saving it would overwrite that attempt's session.
 		return NothingPlaced, err
 	}
-	// No order exists yet, so a call whose context has already ended
-	// (a caller that left, a server shutting down) gets none.
+	return f.run(ctx, t, s, payWay)
+}
+
+// Resumable reports whether a complete of s resumes its placement
+// (Resume): s is in progress, and no completion of it can still be
+// running (CompletionDeadline). Its order was sent and never answered,
+// or its completion ended before it could store what happened.
+func (f *Flow) Resumable(s *Session) bool {
+	return s.Status == StatusCompleteInProgress &&
+		!time.Now().Before(f.CompletionDeadline(s))
+}
+
+// Resume finishes the placement of a Resumable session, as Complete
+// does from the in-progress save on: it sends the order again with the
+// checkout's id, and Django answers the order the checkout placed, if
+// it placed one, or places it now. Nothing is judged again before
+// that, since the order may exist: the session was admitted at the
+// total it showed, which the order is placed at, and only the pay way
+// is read, for how the order is paid. A Resume that cannot read it
+// sends nothing, and returns ErrOrderOutcomeUnknown with NothingPlaced:
+// the session stays as it was, and the next complete asks again.
+//
+// Of the calls that load one resumable session, the in-progress save
+// lets a single one through, as for Complete.
+func (f *Flow) Resume(
+	ctx context.Context, t *tenant.Tenant, s *Session,
+) (Placement, error) {
+	if !f.Resumable(s) {
+		return NothingPlaced, ErrCompletionInProgress
+	}
+	payWay, err := f.dj.PayWayByID(ctx, t.Domain, t.DefaultLocale,
+		s.PayWayID)
+	if err == nil && !payWay.HasKnownSettlement() {
+		err = fmt.Errorf("pay way %d reports settlement %q", payWay.ID,
+			payWay.Settlement)
+	}
+	if err != nil {
+		return NothingPlaced, fmt.Errorf("%w: its pay way: %w",
+			ErrOrderOutcomeUnknown, err)
+	}
+	return f.run(ctx, t, s, payWay)
+}
+
+// run places the order of a session Complete admitted, or Resume
+// resumes, and stores the session as that left it.
+func (f *Flow) run(
+	ctx context.Context, t *tenant.Tenant, s *Session, payWay *django.PayWay,
+) (Placement, error) {
+	// No order is sent yet, so a call whose context has already ended
+	// (a caller that left, a server shutting down) sends none.
 	if err := ctx.Err(); err != nil {
 		return NothingPlaced, err
 	}
@@ -194,13 +258,16 @@ func (f *Flow) Complete(
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), f.budget)
 	defer cancel()
 
-	// Persisted BEFORE the order exists, and only over the session this
-	// call loaded: of the completions that read one ready session, Redis
-	// lets a single one through here. A later complete then loads a
-	// completion in flight, not a ready session to place a second time.
-	s.Status = StatusCompleteInProgress
+	// Persisted BEFORE the order is sent, and only over the session this
+	// call loaded: of the completions that read one ready session, or
+	// one to resume, Redis lets a single one through here. A later
+	// complete then loads a completion in flight, not a session to place
+	// a second time. A resumed one is no longer unconfirmed: a
+	// completion is running again.
+	status, unconfirmed := s.Status, s.Unconfirmed
+	s.Status, s.Unconfirmed = StatusCompleteInProgress, false
 	fence := newWrite()
-	err = f.st.put(ctx, s, s.Revision, fence)
+	err := f.st.put(ctx, s, s.Revision, fence)
 	if err != nil && !errors.Is(err, ErrSessionChanged) {
 		// Redis failed it, and the write may still have been stored with
 		// only its reply lost: the session would then read as being
@@ -222,7 +289,7 @@ func (f *Flow) Complete(
 		// The write that guards the order was refused, by Redis failing
 		// or by a session that has moved on (ErrSessionChanged): no
 		// order is sent, and the session is not written again.
-		s.Status = StatusReadyForComplete
+		s.Status, s.Unconfirmed = status, unconfirmed
 		return NothingPlaced, err
 	}
 	placement, err := f.place(ctx, t, s, payWay)
@@ -293,8 +360,8 @@ func (f *Flow) saveOverEvent(ctx context.Context, s *Session) error {
 
 // CompletionDeadline is the latest a completion of s can still run, for a
 // session stored in progress: its budget starts just before that save,
-// which set s.UpdatedAt. A session still in progress after it stays so
-// until it expires, because its outcome was never recorded. The writer's
+// which set s.UpdatedAt. A session still in progress after it has no
+// recorded outcome, and the next complete resumes it (Resumable). The writer's
 // clock sets it and the reader's judges it: a reader ahead says "outcome
 // unknown" early, which is the safe wrong answer. A writer ahead stamps a
 // save in the reader's future; no completion runs longer than its budget
@@ -302,8 +369,7 @@ func (f *Flow) saveOverEvent(ctx context.Context, s *Session) error {
 //
 // A session stored unconfirmed was stored by its completion as it ended,
 // once Django left the order unanswered: none is running, so its
-// deadline is that save, and every call is told the outcome is unknown
-// from the first.
+// deadline is that save, and the next complete resumes it at once.
 func (f *Flow) CompletionDeadline(s *Session) time.Time {
 	saved := s.UpdatedAt
 	if now := time.Now(); saved.After(now) {
@@ -404,35 +470,36 @@ func (f *Flow) admit(
 func (f *Flow) place(
 	ctx context.Context, t *tenant.Tenant, s *Session, payWay *django.PayWay,
 ) (Placement, error) {
-	order, err := f.dj.CreateOrder(ctx, t.Domain, t.DefaultLocale, s.CartID,
-		django.OrderCreate{
-			PayWayID:             s.PayWayID,
-			FirstName:            s.Buyer.FirstName,
-			LastName:             s.Buyer.LastName,
-			Email:                s.Buyer.Email,
-			Phone:                s.Buyer.Phone,
-			Street:               s.Fulfillment.Street,
-			StreetNumber:         s.Fulfillment.StreetNumber,
-			City:                 s.Fulfillment.City,
-			Zipcode:              s.Fulfillment.Zipcode,
-			CountryID:            s.Fulfillment.CountryCode,
-			RegionID:             s.Fulfillment.RegionID,
-			ShippingProviderCode: s.Fulfillment.ProviderCode,
-			ShippingKind:         s.Fulfillment.Kind,
-			AcsStationExternalID: s.Fulfillment.AcsStationExternalID,
-			AcsStationBranch:     s.Fulfillment.AcsStationBranch,
-			BoxnowLockerID:       s.Fulfillment.BoxnowLockerID,
-			// Every UCP and ACP checkout response links the store's terms
-			// and privacy policy for the platform to present to the buyer
-			// (storefront.Terms, storefront.Privacy); completing it is the
-			// buyer's acceptance. Django records it as an agent checkout,
-			// proven by the internal secret.
-			TermsAccepted: true,
-			Attribution:   agentAttribution(s.Protocol),
-			// Django creates the order only at the total the buyer was
-			// shown, and answers another with django.ErrTotalChanged.
-			ExpectedTotal: *s.ShownTotal,
-		})
+	order, err := f.createOrder(ctx, t, s, django.OrderCreate{
+		PayWayID:             s.PayWayID,
+		FirstName:            s.Buyer.FirstName,
+		LastName:             s.Buyer.LastName,
+		Email:                s.Buyer.Email,
+		Phone:                s.Buyer.Phone,
+		Street:               s.Fulfillment.Street,
+		StreetNumber:         s.Fulfillment.StreetNumber,
+		City:                 s.Fulfillment.City,
+		Zipcode:              s.Fulfillment.Zipcode,
+		CountryID:            s.Fulfillment.CountryCode,
+		RegionID:             s.Fulfillment.RegionID,
+		ShippingProviderCode: s.Fulfillment.ProviderCode,
+		ShippingKind:         s.Fulfillment.Kind,
+		AcsStationExternalID: s.Fulfillment.AcsStationExternalID,
+		AcsStationBranch:     s.Fulfillment.AcsStationBranch,
+		BoxnowLockerID:       s.Fulfillment.BoxnowLockerID,
+		// Every UCP and ACP checkout response links the store's terms
+		// and privacy policy for the platform to present to the buyer
+		// (storefront.Terms, storefront.Privacy); completing it is the
+		// buyer's acceptance. Django records it as an agent checkout,
+		// proven by the internal secret.
+		TermsAccepted: true,
+		Attribution:   agentAttribution(s.Protocol),
+		// Django creates the order only at the total the buyer was
+		// shown, and answers another with django.ErrTotalChanged.
+		ExpectedTotal: *s.ShownTotal,
+		// One order per checkout: a repeat is answered with it.
+		AgentCheckout: s.ID,
+	})
 	if err != nil {
 		if !refused(err) {
 			s.Unconfirmed = true
@@ -441,6 +508,17 @@ func (f *Flow) place(
 		}
 		s.Status = StatusReadyForComplete
 		return NothingPlaced, err
+	}
+	if order.AgentCheckout != s.ID {
+		// Django took the order without the checkout's id (it did not
+		// believe the internal secret): a repeat of this checkout's
+		// order would place another. The order is this one's all the
+		// same.
+		f.log.ErrorContext(ctx,
+			"checkout: the store did not tie the order to its checkout",
+			slog.String("session", s.ID),
+			slog.String("order", order.UUID),
+			slog.String("agent_checkout", order.AgentCheckout))
 	}
 	s.OrderID = order.ID
 	s.OrderUUID = order.UUID
@@ -457,6 +535,36 @@ func (f *Flow) place(
 		return OrderMayExist, nil
 	}
 	return OrderMayExist, f.startPayment(ctx, t, s)
+}
+
+// createOrder sends the session's order, and sends it again while
+// Django leaves the outcome unknown (not refused), as f.retry allows.
+// Every attempt shares one upstream timeout, the order's step of the
+// completion's budget, so a repeat follows only a quick failure (a
+// refused or reset connection, a 5xx): one that timed out has used the
+// step. What is still unknown then is resumed by the next complete.
+func (f *Flow) createOrder(
+	ctx context.Context, t *tenant.Tenant, s *Session,
+	body django.OrderCreate,
+) (*django.Order, error) {
+	ctx, cancel := context.WithTimeout(ctx, f.dj.Timeout())
+	defer cancel()
+	for attempt := 1; ; attempt++ {
+		order, err := f.dj.CreateOrder(ctx, t.Domain, t.DefaultLocale,
+			s.CartID, body)
+		if err == nil || refused(err) || attempt >= f.retry.Attempts {
+			return order, err
+		}
+		f.log.WarnContext(ctx, "checkout: order unanswered, sending it again",
+			slog.String("session", s.ID),
+			slog.Int("attempt", attempt),
+			slog.String("error", err.Error()))
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(f.retry.Delay):
+		}
+	}
 }
 
 // ResumePayment mints the hosted payment link of an escalated order

@@ -176,15 +176,21 @@ func writePlacedUnrendered(w http.ResponseWriter, s *checkout.Session) {
 	})
 }
 
-// writeOutcomeUnknown answers for a session whose order the store never
-// confirmed or denied: it stays complete_in_progress until it expires, so
-// no retry changes the answer, and a new checkout could order twice.
+// writeOutcomeUnknown answers for a session whose order the store has
+// not confirmed or denied, once no completion of it is running.
+// Completing it again asks the store again with the session's id
+// (checkout.Flow.Resume), which answers the order it placed, if it
+// placed one; a new checkout could order twice.
 func writeOutcomeUnknown(w http.ResponseWriter) {
+	w.Header().Set("Retry-After",
+		strconv.Itoa(mcptool.UnavailableRetryAfter))
 	writeError(w, http.StatusBadGateway, Error{
 		Type: "processing_error", Code: "order_outcome_unknown",
-		Message: "The store did not confirm whether the order was " +
-			"placed. Do not complete again or start a new checkout: " +
-			"the buyer receives the store's confirmation email if it was.",
+		Message: "The store has not confirmed whether the order was " +
+			"placed. Complete this session again after Retry-After: the " +
+			"store answers with the order this session placed, if it " +
+			"placed one, and never places a second. Do not start a new " +
+			"checkout.",
 	})
 }
 
@@ -529,17 +535,19 @@ func requestMark(scope, key, hash string) string {
 //     session another request changed meanwhile;
 //   - a 429, a throttle, retried after its Retry-After too.
 //
-// Two 5xx answers of a completion are kept all the same, departing from
-// §6.5: the order whose outcome the store never confirmed (502
-// order_outcome_unknown), and the order placed whose session could not
-// be saved (500 order_placed). An order may exist behind each, and the
-// stored session may not say so, since the save that would have said it
-// may be the one that failed: a retry run afresh would be answered by
-// that session. So the key stays spent, and every retry of it is told
-// what the first attempt was. The spec has no answer that says "an
-// order may exist; do not place another" for a server to keep: a 4xx
-// tells the client it erred, its 409 asks for a retry, and a complete's
-// 200 must carry status completed and the order.
+// One 5xx answer of a completion is kept all the same, departing from
+// §6.5: the order placed whose session could not be saved (500
+// order_placed). The order exists, and the stored session may not say
+// so, since the save that would have said it may be the one that
+// failed: a retry run afresh would be answered by that session. So the
+// key stays spent, and every retry of it is told what the first attempt
+// was. The spec has no answer that says "an order exists; do not place
+// another" for a server to keep: a 4xx tells the client it erred, its
+// 409 asks for a retry, and a complete's 200 must carry status
+// completed and the order. An order whose outcome the store never
+// confirmed (502 order_outcome_unknown) is not kept: a retry of it
+// resumes the completion (checkout.Flow.Resume), which asks the store
+// again and never orders twice.
 func keptAgainstKey(orderUnsettled bool, status int) bool {
 	switch {
 	case orderUnsettled:
@@ -1043,7 +1051,7 @@ type answer struct {
 	// current: the request's own save of the session was just accepted,
 	// which proves its snapshot was the stored session.
 	current bool
-	// orderUnsettled: a completion whose order may exist while the stored
+	// orderUnsettled: a completion whose order exists while the stored
 	// session may not say so (see keptAgainstKey).
 	orderUnsettled bool
 }
@@ -1268,6 +1276,14 @@ func (h *Handler) completeSession(
 	r *http.Request, t *tenant.Tenant, s *checkout.Session,
 	req CompleteRequest,
 ) answer {
+	// A session whose order went unanswered, or whose completion ended
+	// before it stored what happened, has its order sent again with its
+	// id, and Django answers the order it placed, if it placed one. Its
+	// buyer and pay way are the ones it was placed with.
+	if h.flow.Resumable(s) {
+		placement, err := h.flow.Resume(r.Context(), t, s)
+		return h.placed(r, t, s, placement, err)
+	}
 	// Decided by what the session is, before any lookup, and nothing is
 	// written.
 	if !s.Open() {
@@ -1338,6 +1354,14 @@ func (h *Handler) completeSession(
 	}
 
 	placement, err := h.flow.Complete(r.Context(), t, s)
+	return h.placed(r, t, s, placement, err)
+}
+
+// placed answers a completion by what Flow.Complete or Flow.Resume did.
+func (h *Handler) placed(
+	r *http.Request, t *tenant.Tenant, s *checkout.Session,
+	placement checkout.Placement, err error,
+) answer {
 	if placement == checkout.NothingPlaced {
 		// Refused before the order was sent, or by Django for the order
 		// itself: either way nothing of this call exists.
@@ -1370,8 +1394,7 @@ func (h *Handler) completeSession(
 		}
 		h.render(w, r, t, s)
 	})
-	a.orderUnsettled = errors.Is(err, checkout.ErrOrderOutcomeUnknown) ||
-		errors.Is(err, checkout.ErrSessionNotSaved)
+	a.orderUnsettled = errors.Is(err, checkout.ErrSessionNotSaved)
 	return a
 }
 

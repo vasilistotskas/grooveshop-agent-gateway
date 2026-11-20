@@ -1,6 +1,7 @@
 package django
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -134,6 +135,46 @@ func TestCreateOrderSendsAttribution(t *testing.T) {
 		"shop.example.test", "el", "cart-uuid", OrderCreate{PayWayID: 1})
 	require.NoError(t, err)
 	assert.NotContains(t, got, "attribution")
+}
+
+// The checkout's id rides the body as agentCheckout, which Django keeps
+// one order per, and the answer names the checkout that placed it. The
+// call is sent once whatever the outcome: whether to send it again is
+// the checkout flow's decision, not the transport's, so no
+// Idempotency-Key is set for net/http to replay it by.
+func TestCreateOrderNamesItsCheckoutAndIsSentOnce(t *testing.T) {
+	const checkoutID = "3f1c2a9e-8d5b-4c7a-9e2f-1b6d0a4c8e75"
+	var got map[string]any
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			assert.Empty(t, r.Header.Get("Idempotency-Key"))
+			got = nil
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+			if calls > 1 {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(bytes.Replace(fixture(t, "order_by_uuid.json"),
+				[]byte(`"agentCheckout":null`),
+				[]byte(`"agentCheckout":"`+checkoutID+`"`), 1))
+		}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL)
+
+	order, err := c.CreateOrder(t.Context(), "shop.example.test", "el",
+		"cart-uuid", OrderCreate{PayWayID: 1, AgentCheckout: checkoutID})
+	require.NoError(t, err)
+	assert.Equal(t, checkoutID, got["agentCheckout"])
+	assert.Equal(t, checkoutID, order.AgentCheckout)
+
+	_, err = c.CreateOrder(t.Context(), "shop.example.test", "el",
+		"cart-uuid", OrderCreate{PayWayID: 1, AgentCheckout: checkoutID})
+	require.ErrorIs(t, err, ErrUpstreamDown)
+	assert.Equal(t, 2, calls, "a 5xx is answered, not sent again")
 }
 
 // Django's refusal of a cart whose earlier order awaits its payment is

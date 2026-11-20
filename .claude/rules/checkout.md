@@ -182,21 +182,51 @@ Loads when working on a checkout session on either surface, its completion, its 
     price is the other outcomes of that same failure, and a pod that
     dies in between: an order placed or unanswered is answered from
     its session for half an hour, and as a missing session after. The
-    stored value cannot tell them apart; Django could (#83, Django
-    #637). `docs/agent-protocols-runbook.md` section 11 is the
-    operator's side.
+    stored value cannot tell them apart, and Django can: within that
+    half hour a complete resumes the session (below), and Django
+    answers the order it placed, if any.
+    `docs/agent-protocols-runbook.md` section 11 is the operator's side.
   - A complete of one answers what it is, before any lookup: the
     session when its order is placed (completed, or on UCP awaiting
     payment), in flight while it is being placed, canceled when it
     is. A session being placed is "in flight" only until
     `Flow.CompletionDeadline`, which for one stored unconfirmed is the
-    save that said so; past it, both surfaces say the outcome
-    was never recorded (ACP `order_outcome_unknown`, UCP
-    `errOutcomeUnknown`, which says what a person can do), and that
-    holds for a read whose render fails too (`renderBody`,
-    `checkoutResult`). A UCP read that renders says the same in its
-    text (`pending`), beside the status. It is offered no link back to
-    its cart.
+    save that said so.
+  - **Past that deadline a complete resumes it** (#83;
+    `Flow.Resumable`, `Flow.Resume`, called by both surfaces before
+    they answer a session that is not open). Django keeps one order per
+    agent checkout: every order call names the session
+    (`django.OrderCreate.AgentCheckout`, believed beside the internal
+    secret only), and a repeat is answered 201 with the order the
+    checkout placed, before Django judges anything else. So Resume
+    judges nothing again either (the order may exist, its cart gone
+    with it): it reads the pay way by id, for how the order is paid,
+    and runs the completion from the in-progress save on, as Complete
+    does. That save is the fence again, so of the calls that loaded one
+    resumable session one sends the order; a Resume that cannot read
+    the pay way sends nothing and is `ErrOrderOutcomeUnknown`. Its
+    outcome is stored as a completion's: placed (completed, or on UCP
+    awaiting payment), ready again for a refusal, unconfirmed again
+    for an order still unanswered. UCP takes no completion claim for
+    it, and ACP's key does not keep its 502.
+  - **Within one completion the order is sent again while Django
+    leaves the outcome unknown** (not `refused`): `Flow.createOrder`,
+    up to `OrderRetry.Attempts` sends, `OrderRetry.Delay` apart
+    (`ORDER_CREATE_ATTEMPTS`, `ORDER_CREATE_RETRY_DELAY`). All of them
+    share the order's one upstream timeout of `completionSteps`, so
+    the completion's budget, the lock and the shutdown tail are
+    unchanged, and a send that timed out is not followed by another:
+    the next complete resumes it. A refusal is never sent again.
+    Django's answer names its checkout (`django.Order.AgentCheckout`);
+    one that does not is logged at error, since a repeat of that
+    store's orders would order twice.
+  - Update, cancel and a read of a session past the deadline say the
+    store has not confirmed the order and that completing the checkout
+    again asks it (ACP 502 `order_outcome_unknown` with `Retry-After`,
+    UCP `errOutcomeUnknown` with `retry_after`), and that holds for a
+    read whose render fails too (`renderBody`, `checkoutResult`). A UCP
+    read that renders says the same in its text (`pending`), beside the
+    status. It is offered no link back to its cart.
   - **A handler holds a snapshot, and answers from it only through its
     exit.** Once update, complete or cancel has loaded its session, the
     lock that keeps the snapshot current can lapse, and another request

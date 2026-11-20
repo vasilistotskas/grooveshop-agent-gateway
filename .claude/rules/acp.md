@@ -35,13 +35,17 @@ Loads when working on the ACP handler, or the routes that answer before it. The 
   - 409 is only `idempotency_in_flight`, with `Retry-After`: a key or
     the session lock in use, a session another request stored while
     this one ran (`checkout.ErrSessionChanged`), or an order being
-    placed until `Flow.CompletionDeadline`. Past it the outcome was
-    never recorded and stays so until the session expires: 502
-    `order_outcome_unknown`, no `Retry-After`. A session stored
-    unconfirmed (`Session.Unconfirmed`) is past it from the first call:
-    its completion stored that as it ended. A session in progress
-    whose order is known (`Flow.PlacedOrder`) answers neither: 500
-    `order_placed`, naming the order (`writePlacedUnsaved`).
+    placed until `Flow.CompletionDeadline`. Past it a complete resumes
+    the completion (`Flow.Resumable`, `Flow.Resume`): the order is sent
+    again with the session's id, and Django answers the order the
+    session placed, if it placed one. Update and cancel are answered
+    502 `order_outcome_unknown` with `Retry-After`, as is a complete
+    whose order is still unanswered: it says to complete again. A
+    session stored unconfirmed (`Session.Unconfirmed`) is past it from
+    the first call: its completion stored that as it ended. A session
+    in progress whose order is known (`Flow.PlacedOrder`) is answered
+    500 `order_placed`, naming the order (`writePlacedUnsaved`), until
+    the deadline, and resumed by a complete after it.
   - ACP completes only with a collect-later pay way: the handler
     chooses one (`checkout.OfflinePayWay`), and `Flow.admit` refuses an
     online pay way for a session whose platform does not choose it
@@ -92,13 +96,14 @@ Loads when working on the ACP handler, or the routes that answer before it. The 
     that asks for the same request again: a 5xx (§6.5), a 409
     `idempotency_in_flight` (§6.4: the key or the lock in use, a
     session another request changed) and a 429.
-  - Two 5xx answers are kept, departing from §6.5: 502
-    `order_outcome_unknown` and 500 `order_placed` for an order whose
-    session was not saved. An order may exist behind each and the
+  - One 5xx answer is kept, departing from §6.5: 500 `order_placed`
+    for an order whose session was not saved. The order exists and the
     stored session may not say so, so a retry run afresh could be told
-    otherwise; and the spec has no cacheable status for "an order may
-    exist; do not place another" (a 4xx says the client erred, its 409
-    asks for a retry, a complete's 200 must carry the order).
+    otherwise; and the spec has no cacheable status for "an order
+    exists; do not place another" (a 4xx says the client erred, its 409
+    asks for a retry, a complete's 200 must carry the order). 502
+    `order_outcome_unknown` is not kept: the same key sent again
+    resumes the completion, which never orders twice.
   - Keys are `ag:{schema}:acp:idem:create.v3:{key}` and
     `…:{update|complete|cancel}.v3:{session}:{key}` (`idemScope`,
     versioned by `idemVersion` with the record and the fingerprint: a

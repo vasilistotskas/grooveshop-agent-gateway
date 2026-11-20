@@ -133,6 +133,16 @@ type Config struct {
 	NegativeCacheTTL time.Duration
 	UpstreamTimeout  time.Duration
 
+	// OrderCreateAttempts bounds how often a completion sends its order
+	// when Django leaves the outcome unknown (a lost connection, a 5xx,
+	// a timeout), and OrderCreateRetryDelay is the wait before each
+	// repeat. Django answers a repeat with the order the checkout
+	// placed, so a repeat never orders twice. Every attempt shares the
+	// order's one UPSTREAM_TIMEOUT of the completion's budget, so a
+	// repeat follows only a quick failure.
+	OrderCreateAttempts   int
+	OrderCreateRetryDelay time.Duration
+
 	// UCPSignatureMaxAge is how long after its created time a platform's
 	// request signature verifies, and UCPSignatureClockSkew the clock
 	// difference allowed against its created and expires. Each is
@@ -237,6 +247,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.UpstreamTimeout, err = positiveOr("UPSTREAM_TIMEOUT", 10*time.Second, time.ParseDuration); err != nil {
+		return Config{}, err
+	}
+	if cfg.OrderCreateAttempts, err = positiveOr("ORDER_CREATE_ATTEMPTS", 3, strconv.Atoi); err != nil {
+		return Config{}, err
+	}
+	if cfg.OrderCreateRetryDelay, err = positiveOr("ORDER_CREATE_RETRY_DELAY", 2*time.Second, time.ParseDuration); err != nil {
 		return Config{}, err
 	}
 	if cfg.UCPSignatureMaxAge, err = positiveOr("UCP_SIGNATURE_MAX_AGE", 5*time.Minute, time.ParseDuration); err != nil {
@@ -381,6 +397,16 @@ func Load() (Config, error) {
 	}
 	// A stale window shorter than the fresh one expires a cached feed
 	// before it is ever served stale.
+	// The repeats wait inside the order's one upstream timeout: waits
+	// that fill it leave the last repeat no time to be sent.
+	if waits := time.Duration(cfg.OrderCreateAttempts-1) *
+		cfg.OrderCreateRetryDelay; waits >= cfg.UpstreamTimeout {
+		return Config{}, fmt.Errorf(
+			"config: ORDER_CREATE_ATTEMPTS (%d) waits of "+
+				"ORDER_CREATE_RETRY_DELAY (%s) between them must take less "+
+				"than UPSTREAM_TIMEOUT (%s)", cfg.OrderCreateAttempts,
+			cfg.OrderCreateRetryDelay, cfg.UpstreamTimeout)
+	}
 	if cfg.FeedStaleTTL < cfg.FeedFreshTTL {
 		return Config{}, fmt.Errorf(
 			"config: FEED_STALE_TTL (%s) must not be shorter than "+

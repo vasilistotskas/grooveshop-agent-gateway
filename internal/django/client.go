@@ -177,8 +177,9 @@ func waitToRetry(
 // the request is a GET or carries Idempotency-Key (request.go
 // isReplayable). So the key goes only on a call Django deduplicates by
 // it (core/middleware/idempotency.py): today the chat's add_to_cart.
-// POST /order carries none until Django deduplicates order creation
-// (#83).
+// POST /order carries none: Django deduplicates it by the checkout id in
+// its body (OrderCreate.AgentCheckout), and the checkout flow, not the
+// transport, decides when it is sent again.
 func (c *Client) send(ctx context.Context, method string, req request) error {
 	req.method = method
 	if key := idempotencyKeyFrom(ctx); key != "" {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -226,13 +227,15 @@ func TestAnUpdateThatCannotReadItsSessionAgainDoesNotCallTheCartGone(
 }
 
 // A session whose order is being placed, or was never confirmed, may
-// have an order it does not name. Every operation answers that, on both
-// surfaces: "in flight" while the completion can still be running, and
-// once it cannot, that the outcome was never recorded, with what a
-// person can do about it. One stored unconfirmed was stored by its
-// completion as it ended, so that is the answer from the first call. No
-// answer says to read again until it renders, and none offers a link
-// that starts the purchase again.
+// have an order it does not name. Every operation but a complete
+// answers that, on both surfaces: "in flight" while the completion can
+// still be running, and once it cannot, that the store has not
+// confirmed the order and that completing the checkout again asks it.
+// One stored unconfirmed was stored by its completion as it ended, so
+// that is the answer from the first call. No answer says to read again
+// until it renders, and none offers a link that starts the purchase
+// again. A complete once no completion is running asks the store again
+// with the checkout's id, and ends the checkout with the one order.
 func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 	ctx := t.Context()
 	stack := startUCPGateway(t)
@@ -247,6 +250,9 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 		ids[name] = id
 	}
 	stack.faults.orderCreate.Store(false)
+	require.EqualValues(t, len(ids)*testOrderRetry.Attempts,
+		stack.faults.orderCreates.Load(),
+		"each completion sends its order as often as it may, no more")
 
 	t.Run("acp offers no link back to the cart", func(t *testing.T) {
 		resp, body := acpCall(t, http.MethodGet,
@@ -258,28 +264,27 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 	// Its cart cannot be read: it may have gone with the order.
 	stack.faults.namedCartReadsFailFrom.Store(
 		stack.faults.namedCartReads.Load() + 1)
-	t.Cleanup(func() { stack.faults.namedCartReadsFailFrom.Store(0) })
 	calls := func(surface completionSurface) map[string]surfaceAnswer {
 		id := ids[surface.name]
 		return map[string]surfaceAnswer{
-			"read":     surface.read(ctx, id),
-			"update":   surface.update(ctx, id),
-			"complete": surface.answer(ctx, id, uuid.NewString(), nil),
-			"cancel":   surface.abandon(ctx, id),
+			"read":   surface.read(ctx, id),
+			"update": surface.update(ctx, id),
+			"cancel": surface.abandon(ctx, id),
 		}
 	}
 	unknown := func(t *testing.T) {
 		t.Helper()
 		for what, answer := range calls(surfaces["acp"]) {
 			assert.Equal(t, "502 order_outcome_unknown", answer.refusal, what)
-			assert.Empty(t, answer.retryAfter, what)
+			assert.Equal(t, strconv.Itoa(mcptool.UnavailableRetryAfter),
+				answer.retryAfter, what)
 		}
 		for what, answer := range calls(surfaces["ucp"]) {
 			assert.Equal(t, mcptool.CodeOrderOutcomeUnknown,
 				toolError(t, answer.refusal).Code, what)
-			assert.Contains(t, answer.refusal, "never confirmed", what)
+			assert.Contains(t, answer.refusal, "has not confirmed", what)
 			assert.Contains(t, answer.refusal,
-				"order confirmation email", what)
+				"complete_checkout on this checkout again", what)
 			assert.Contains(t, answer.refusal,
 				"do not start another checkout", what)
 			assert.NotContains(t, answer.refusal, "check its status", what)
@@ -303,15 +308,26 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 	}
 	restore(time.Now())
 	t.Run("while its completion may still run", func(t *testing.T) {
-		for what, answer := range calls(surfaces["acp"]) {
-			assert.Equal(t, "409 idempotency_in_flight", answer.refusal, what)
-		}
-		for what, answer := range calls(surfaces["ucp"]) {
-			te := toolError(t, answer.refusal)
-			assert.Equal(t, mcptool.CodeConflict, te.Code, what)
-			assert.Contains(t, te.Hint, "in progress or unconfirmed", what)
+		for _, surface := range surfaces {
+			answers := calls(surface)
+			answers["complete"] = surface.answer(ctx, ids[surface.name],
+				uuid.NewString(), nil)
+			for what, answer := range answers {
+				if surface.name == "acp" {
+					assert.Equal(t, "409 idempotency_in_flight",
+						answer.refusal, what)
+					continue
+				}
+				te := toolError(t, answer.refusal)
+				assert.Equal(t, mcptool.CodeConflict, te.Code, what)
+				assert.Contains(t, te.Hint, "in progress or unconfirmed",
+					what)
+			}
 		}
 	})
+	assert.EqualValues(t, len(ids)*testOrderRetry.Attempts,
+		stack.faults.orderCreates.Load(),
+		"no answer sends the order while a completion may be running")
 
 	// Past its budget the completion cannot be running any more.
 	restore(time.Now().Add(-time.Minute))
@@ -321,9 +337,21 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 	stack.faults.namedCartReadsFailFrom.Store(0)
 	read := surfaces["ucp"].read(ctx, ids["ucp"])
 	assert.Equal(t, "complete_in_progress", read.status, read.refusal)
-	assert.Contains(t, read.text, "never confirmed")
-	assert.Contains(t, read.text, "order confirmation email")
-	assert.EqualValues(t, len(ids), stack.faults.orderCreates.Load())
+	assert.Contains(t, read.text, "has not confirmed")
+	assert.Contains(t, read.text, "complete_checkout on this checkout again")
+
+	// The store never got those orders, so the complete places them.
+	t.Run("a complete asks the store again", func(t *testing.T) {
+		for name, surface := range surfaces {
+			assert.Equal(t, "completed",
+				surface.complete(ctx, ids[name], uuid.NewString(), nil),
+				name)
+			stored := stack.storedSession(t, ids[name])
+			assert.Equal(t, fixtureOrderUUID, stored.OrderUUID, name)
+			assert.False(t, stored.Unconfirmed, name)
+		}
+		assert.EqualValues(t, len(ids), stack.faults.ordersPlaced.Load())
+	})
 }
 
 // A canceled checkout answers what it is to a complete, on UCP as on

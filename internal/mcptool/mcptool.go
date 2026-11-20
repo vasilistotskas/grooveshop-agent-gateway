@@ -77,8 +77,9 @@ const (
 	// CodeOrderPlaced: the order exists, though the call could not say
 	// all of it; never place another.
 	CodeOrderPlaced = "order_placed"
-	// CodeOrderOutcomeUnknown: whether the order exists was never
-	// recorded, and no call will find out.
+	// CodeOrderOutcomeUnknown: whether the order exists is not
+	// recorded; completing the checkout again asks the store, which
+	// answers the order it placed, if it placed one.
 	CodeOrderOutcomeUnknown = "order_outcome_unknown"
 	// CodePaymentLinkFailed: the order exists and awaits a payment page
 	// that could not be opened.

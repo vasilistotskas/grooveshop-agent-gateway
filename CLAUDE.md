@@ -135,7 +135,10 @@ is read; read the one for an area before changing it from elsewhere.
   session is stored for is not "nothing happened"; a session answers
   only on the surface, and to the platform, that created it; a
   completion finishes without its caller; one completion places a
-  session's order, and no guard that expires decides which; no answer
+  session's order, and no guard that expires decides which; an order
+  Django left unanswered is sent again with the checkout's id, which
+  Django keeps one order per, and the next complete resumes one still
+  unanswered; no answer
   hands out a new checkout while an order for the old one may exist; one
   live checkout holds a cart; its totals are Django's checkout quote,
   and its order is placed only at the total it showed.

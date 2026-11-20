@@ -429,6 +429,9 @@ type Order struct {
 	TrackingDetails     *TrackingDetails `json:"trackingDetails"`
 	PricingBreakdown    PricingBreakdown `json:"pricingBreakdown"`
 	CreatedAt           string           `json:"createdAt"`
+	// AgentCheckout is the checkout session that placed the order (its
+	// OrderCreate.AgentCheckout), null as "" for any other order.
+	AgentCheckout string `json:"agentCheckout" contract:"nullable"`
 }
 
 // HoldExpiresAt is PaymentHoldExpiresAt as a time, zero for none.
