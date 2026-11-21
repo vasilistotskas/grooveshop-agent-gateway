@@ -22,6 +22,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
@@ -260,7 +261,7 @@ func TestCheckoutStoreOutageIsUnavailable(t *testing.T) {
 func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
 	dj, _ := ucpDjango(t)
 	h := ucpHandlers(t, dj)
-	ctx := tenant.NewContext(t.Context(), cartTenant())
+	base := tenant.NewContext(t.Context(), cartTenant())
 
 	// An id no session can have is known to be missing without the store
 	// being asked, by the tools that lock the session too: these handlers'
@@ -272,6 +273,10 @@ func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
 		// Another spelling of a UUID: sessions are stored under one.
 		"6F1C2A52-3D8E-4C55-9A0F-0C6A2B9E1D11",
 	} {
+		// Every call names a platform of its own (ucpMeta), each fetched
+		// once: their caller is this id's, within one caller's share of
+		// the discovery budget.
+		ctx := httpmw.WithClient(base, id)
 		type answer = func() (CheckoutResult, error)
 		for name, call := range map[string]answer{
 			"get_checkout": func() (CheckoutResult, error) {

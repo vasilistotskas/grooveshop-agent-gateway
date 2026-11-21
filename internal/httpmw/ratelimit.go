@@ -1,6 +1,7 @@
 package httpmw
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/netip"
@@ -58,7 +59,7 @@ func NewRateLimiter(perMin, burst int, metrics *obs.Metrics) *RateLimiter {
 func (rl *RateLimiter) Middleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !rl.allow(limiterKey(r)) {
+			if !rl.Allow(limiterKey(r)) {
 				if rl.metrics != nil {
 					rl.metrics.RateLimited.Inc()
 				}
@@ -67,12 +68,30 @@ func (rl *RateLimiter) Middleware() func(http.Handler) http.Handler {
 					"rate limited, retry later")
 				return
 			}
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(
+				WithClient(r.Context(), ClientBucket(r))))
 		})
 	}
 }
 
-func (rl *RateLimiter) allow(key string) bool {
+type clientKey struct{}
+
+// WithClient is ctx serving a request of client (ClientFrom).
+func WithClient(ctx context.Context, client string) context.Context {
+	return context.WithValue(ctx, clientKey{}, client)
+}
+
+// ClientFrom is the caller of the request ctx serves, as ClientBucket
+// names it, set by a RateLimiter's Middleware: "" for a context no
+// request through one carries.
+func ClientFrom(ctx context.Context) string {
+	c, _ := ctx.Value(clientKey{}).(string)
+	return c
+}
+
+// Allow takes a token from key's bucket, and reports whether there was
+// one. The buckets are bounded and idle ones evicted, as the middleware's.
+func (rl *RateLimiter) Allow(key string) bool {
 	now := time.Now()
 	rl.mu.Lock()
 	defer rl.mu.Unlock()

@@ -3,6 +3,7 @@ package ucp
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 )
 
 // platformProfile is the recorded platform profile fixture — minimal and
@@ -195,6 +198,34 @@ func TestResolveBudgetExhaustionIsNotCached(t *testing.T) {
 	r.limiter = rate.NewLimiter(rate.Inf, 1)
 	_, err = r.Resolve(t.Context(), srv.URL)
 	assert.NoError(t, err, "the busy answer was not remembered")
+}
+
+// One caller fetches at most its share of the discovery budget: past its
+// burst, a profile it names is busy for it and spends none of the shared
+// budget, while another caller still fetches; one it fetched is served
+// from the cache whatever its share.
+func TestACallerFetchesOnlyItsShareOfTheBudget(t *testing.T) {
+	body := platformProfileJSON(t, "https://p.example/hooks")
+	srv := serveProfile(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	})
+	r := newTestResolver(t)
+	flooding := httpmw.WithClient(t.Context(), "198.51.100.7")
+	for i := range callerFetchBurst {
+		_, err := r.Resolve(flooding, fmt.Sprintf("%s/p%d.json", srv.URL, i))
+		require.NoError(t, err, i)
+	}
+	shared := r.limiter.Tokens()
+	_, err := r.Resolve(flooding, srv.URL+"/one-more.json")
+	require.ErrorIs(t, err, ErrDiscoveryBusy)
+	assert.InDelta(t, shared, r.limiter.Tokens(), 0.5,
+		"the shared budget is not spent on it")
+
+	_, err = r.Resolve(flooding, srv.URL+"/p0.json")
+	require.NoError(t, err, "cached")
+	_, err = r.Resolve(httpmw.WithClient(t.Context(), "2001:db8:1:2::/64"),
+		srv.URL+"/one-more.json")
+	require.NoError(t, err, "another caller")
 }
 
 // A panic in a fetch comes back as an error, without the panic text or

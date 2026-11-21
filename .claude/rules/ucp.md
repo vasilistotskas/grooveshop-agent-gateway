@@ -18,7 +18,9 @@ wins over this page.
 - **Every canonical UCP tool negotiates** (`internal/ucp/negotiate.go`,
   `profiles.go`): the `meta.ucp-agent.profile` is fetched (https, no
   redirects, public addresses, 256 KiB, cached ≥60s, failures backed
-  off, global rate budget), validated against the embedded spec schema
+  off, a global fetch budget with each caller's share of it:
+  `httpmw.ClientFrom`, the caller the per-pod limiter names), validated
+  against the embedded spec schema
   (`internal/ucp/spec/`), version-checked, and intersected with
   `BusinessCapabilities` — the same registry the profile publishes.
   Responses declare the negotiated capabilities; a missing root

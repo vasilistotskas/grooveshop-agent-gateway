@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sync/singleflight"
 	"golang.org/x/time/rate"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
@@ -74,6 +75,19 @@ const (
 	fetchTimeout = 5 * time.Second
 	fetchRate    = 20
 	fetchBurst   = 40
+	// callerFetchesPerMin and callerFetchBurst are each caller's share
+	// of that budget (httpmw.ClientBucket: an IPv4 address, an IPv6
+	// /64), so no one caller spends it for everyone. A platform names one
+	// profile, cached for at least the TTL floor, and fetches it again
+	// at most once a floor when a signature names a key it lacks
+	// (Refresh): two fetches a minute. The share is three times that,
+	// with a burst for a platform that brings a second profile (staging
+	// beside production) and its refresh. Production, 14 days to
+	// 2026-11-21: 276 POSTs to /mcp, at most 12 in any minute from every
+	// caller together, each of which may fetch a profile only when its
+	// cached one has expired.
+	callerFetchesPerMin = 6
+	callerFetchBurst    = 4
 )
 
 // ProfileResolver fetches, validates and caches platform profiles.
@@ -82,8 +96,10 @@ type ProfileResolver struct {
 	allowLocal bool
 	schema     *jsonschema.Schema
 	limiter    *rate.Limiter
-	log        *slog.Logger
-	sf         singleflight.Group
+	// callers is each caller's share of limiter.
+	callers *httpmw.RateLimiter
+	log     *slog.Logger
+	sf      singleflight.Group
 
 	mu    sync.Mutex
 	cache map[string]profileEntry
@@ -119,9 +135,11 @@ func NewProfileResolver(
 		allowLocal: allowLocal,
 		schema:     schema,
 		limiter:    rate.NewLimiter(fetchRate, fetchBurst),
-		log:        log,
-		cache:      map[string]profileEntry{},
-		refreshed:  map[string]time.Time{},
+		callers: httpmw.NewRateLimiter(
+			callerFetchesPerMin, callerFetchBurst, nil),
+		log:       log,
+		cache:     map[string]profileEntry{},
+		refreshed: map[string]time.Time{},
 	}, nil
 }
 
@@ -329,8 +347,10 @@ func (r *ProfileResolver) fetch(
 	ctx context.Context, raw string,
 ) (*PlatformProfile, time.Duration, error) {
 	// Allow, not Wait: queueing for a token would spend the fetch's own
-	// deadline, and a spent budget is answered as retryable instead.
-	if !r.limiter.Allow() {
+	// deadline, and a spent budget is answered as retryable instead. The
+	// caller's share first, so a caller past it spends none of the
+	// shared budget.
+	if !r.callers.Allow(httpmw.ClientFrom(ctx)) || !r.limiter.Allow() {
 		return nil, 0, ErrDiscoveryBusy
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
