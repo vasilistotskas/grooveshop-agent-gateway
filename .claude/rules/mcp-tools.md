@@ -131,5 +131,7 @@ Loads when working on a tool of any of the three MCP servers. The code wins over
   SDK wraps it into exactly that; only a `*jsonrpc.Error` becomes a
   protocol error, so never return one for a business condition. The single exception is UCP discovery: a platform
   profile that cannot be fetched, validated or version-matched is the
-  spec's transport error `-32001`, and a spent discovery budget is its
-  retryable `-32000` (`mcpsrv.negotiate`).
+  spec's transport error `-32001`, and a spent discovery budget (the
+  shared one or the caller's share) is its retryable `-32000`, with
+  `retry_after` the seconds until that budget has a token again
+  (`ucp.DiscoveryRetryAfter`, `mcpsrv.negotiate`).

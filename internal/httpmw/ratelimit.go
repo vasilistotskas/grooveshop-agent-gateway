@@ -14,7 +14,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
-// maxLimiterEntries bounds the per-(tenant, IP) bucket map; agent-platform
+// maxLimiterEntries bounds a RateLimiter's bucket map; agent-platform
 // egress IPs are few, so the bound only guards against spoofed-source
 // floods.
 const maxLimiterEntries = 10_000
@@ -27,8 +27,10 @@ type limiterEntry struct {
 	lastSeen time.Time
 }
 
-// RateLimiter is a per-(tenant host, IP) token bucket. Keying on the
-// request Host gives tenant fairness for free: agent platforms share
+// RateLimiter is a token bucket per key. Its middleware keys a request
+// by (tenant host, IP) (limiterKey); Reserve takes any key, as a budget
+// kept per caller further in does (ClientFrom). Keying on the request
+// Host gives tenant fairness for free: agent platforms share
 // egress IPs, and with an IP-only key one tenant's hot integration
 // drained every other tenant's budget from the same address. Each
 // tenant's traffic arrives on its own domain, so host+IP partitions the
@@ -59,7 +61,7 @@ func NewRateLimiter(perMin, burst int, metrics *obs.Metrics) *RateLimiter {
 func (rl *RateLimiter) Middleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !rl.Allow(limiterKey(r)) {
+			if !rl.allow(limiterKey(r)) {
 				if rl.metrics != nil {
 					rl.metrics.RateLimited.Inc()
 				}
@@ -89,9 +91,19 @@ func ClientFrom(ctx context.Context) string {
 	return c
 }
 
-// Allow takes a token from key's bucket, and reports whether there was
-// one. The buckets are bounded and idle ones evicted, as the middleware's.
-func (rl *RateLimiter) Allow(key string) bool {
+// Reserve takes a token from key's bucket: its Delay is how long until
+// the token is there, zero when it was, and Cancel gives it back. The
+// buckets are bounded and idle ones evicted, as the middleware's.
+func (rl *RateLimiter) Reserve(key string) *rate.Reservation {
+	return rl.bucket(key).Reserve()
+}
+
+func (rl *RateLimiter) allow(key string) bool {
+	return rl.bucket(key).Allow()
+}
+
+// bucket is key's limiter, made on first use.
+func (rl *RateLimiter) bucket(key string) *rate.Limiter {
 	now := time.Now()
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
@@ -109,7 +121,7 @@ func (rl *RateLimiter) Allow(key string) bool {
 		rl.entries[key] = e
 	}
 	e.lastSeen = now
-	return e.lim.Allow()
+	return e.lim
 }
 
 func (rl *RateLimiter) evictLocked(now time.Time) {

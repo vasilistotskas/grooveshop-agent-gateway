@@ -18,9 +18,8 @@ wins over this page.
 - **Every canonical UCP tool negotiates** (`internal/ucp/negotiate.go`,
   `profiles.go`): the `meta.ucp-agent.profile` is fetched (https, no
   redirects, public addresses, 256 KiB, cached ≥60s, failures backed
-  off, a global fetch budget with each caller's share of it:
-  `httpmw.ClientFrom`, the caller the per-pod limiter names), validated
-  against the embedded spec schema
+  off, a global fetch budget with each caller's share of it, see
+  below), validated against the embedded spec schema
   (`internal/ucp/spec/`), version-checked, and intersected with
   `BusinessCapabilities` — the same registry the profile publishes.
   Responses declare the negotiated capabilities; a missing root
@@ -40,6 +39,26 @@ wins over this page.
   the signature proved (Identity Binding: `checkSigner` in `negotiate`,
   and `VerifyPlatformSignature` before the handler), else
   `signature_invalid`.
+- **The discovery budget** (`internal/ucp/profiles.go`, `join` and
+  `spend`): a fetch costs one token from the pod's shared budget
+  (`fetchRate`, `fetchBurst`) and one from its caller's share
+  (`callerFetchesPerMin`, `callerFetchBurst`, whose comment says why),
+  or neither, charged before anything is fetched. Resolve shares one
+  fetch per URL: the caller that starts it pays for it, each other
+  caller that waits on it pays its own share once (so a fetch under way
+  never answers for a caller past its share), and a caller's concurrent
+  calls for one profile cost it one token. A refresh pays as a fetch. A spent one
+  is `ErrDiscoveryBusy`, -32000 with `retry_after` that budget's delay
+  (`DiscoveryRetryAfter`). A cached profile is served whatever is left.
+  The caller is `httpmw.ClientFrom`: `ClientBucket` alone (an IPv4
+  address, an IPv6 /64), not the per-pod limiter's (store host, caller)
+  key, so platforms behind one egress address or /64 share one share
+  across every store. That is enough at today's volume (production,
+  14 days to 2026-11-21: 276 POSTs to /mcp, at most 12 a minute from
+  every caller together) and keeps a caller from multiplying its share
+  by the number of stores. A context that names no caller fetches
+  nothing (`errNoCaller`): every route that resolves a profile sits
+  behind the limiter's middleware.
 - **A platform's RFC 9421 signature** (`signatures.md`, MCP Transport)
   is verified on every UCP request to `/mcp` that carries one (it names
   its platform in `UCP-Agent`, or calls `get_order`; another request's
