@@ -30,6 +30,14 @@ Loads when working on a tool of any of the three MCP servers. The code wins over
     keeps it.
   - An unknown tool, and arguments that fail the input schema, are
     refused by the SDK before the handler, neither logged nor counted.
+  - A POST to /mcp or /mcp/admin is read once by `mcptool.ReadBody`
+    (bounded as the SDK bounds it) before anything decodes it. A
+    JSON-RPC batch is refused there with a 400 when the request's
+    `Mcp-Protocol-Version` is 2025-06-18 or later, which removed
+    batching (the SDK refuses one too, but only after decoding it), and
+    where the protocol still has batches (2025-03-26, 2024-11-05, or no
+    header, read as 2025-03-26) when it holds more than
+    `MaxBatchMessages` (8, why in its comment).
   - A handler panic is recovered there (`.claude/rules/httpmw-obs.md`).
   - Each handler's context ends at the server's shutdown cut, with
     `httpmw.ErrShuttingDown`, on any protocol (`.claude/rules/shutdown.md`).

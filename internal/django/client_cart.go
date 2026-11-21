@@ -10,8 +10,12 @@ import (
 )
 
 // cartHeaders builds the per-call header set for cart operations. The
-// X-Cart-Id UUID is the cart's identity; X-Internal-Gateway lets Django's
-// anon cart throttle key on the cart instead of the gateway pod IP.
+// X-Cart-Id UUID is the cart's identity. X-Internal-Gateway, Django's
+// proof that the gateway calls, keys its throttles on the cart a call
+// names (cart writes, the quote, order creation, coupons), or on the
+// order for the payment calls, instead of on the relayed visitor, whom
+// every buyer of one AI platform shares (core/api/throttling.py,
+// GatewayIdentMixin).
 func (c *Client) cartHeaders(cartID string) map[string]string {
 	h := map[string]string{"X-Internal-Gateway": c.internalSecret}
 	if cartID != "" {
