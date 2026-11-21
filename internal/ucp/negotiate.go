@@ -23,6 +23,11 @@ const (
 // `discounts` member, codes in and applied discounts out.
 const CapabilityDiscount = "dev.ucp.shopping.discount"
 
+// CapabilityFulfillment is the spec's fulfillment extension of checkout:
+// the `fulfillment` member, where a platform writes the shipping address
+// and selects the delivery option.
+const CapabilityFulfillment = "dev.ucp.shopping.fulfillment"
+
 // PlatformProfile is the part of a platform's UCP profile negotiation
 // and signature verification read. The full document is validated
 // against the spec's platform_schema before it is decoded into this.
@@ -78,6 +83,14 @@ func BusinessCapabilities(t *tenant.Tenant) map[string][]Capability {
 			Schema:  specBase + "/schemas/shopping/order.json",
 		}},
 	}
+	// The store ships what it sells: every checkout needs a delivery,
+	// which a platform can give only in this extension.
+	caps[CapabilityFulfillment] = []Capability{{
+		Version: Version,
+		Spec:    specBase + "/specification/shopping/extensions/fulfillment/",
+		Schema:  specBase + "/schemas/shopping/fulfillment.json",
+		Extends: CapabilityCheckout,
+	}}
 	// A store with promotions off takes no code, so it declares no
 	// discount extension, as ACP declares none: a code sent anyway is a
 	// member of an extension that was not negotiated, and is ignored.

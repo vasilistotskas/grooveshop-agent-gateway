@@ -525,7 +525,7 @@ func TestCheckoutRefusalsCarryACode(t *testing.T) {
 		"not ready": {
 			completeErr(notReady, checkout.ErrNotReady),
 			mcptool.CodeMissing,
-			[]string{"not ready to complete", "buyer (firstName",
+			[]string{"not ready to complete", checkout.NeedBuyer.String(),
 				"update_checkout"}},
 		"no payment method": {
 			errNoPaymentMethod, mcptool.CodeMissing,

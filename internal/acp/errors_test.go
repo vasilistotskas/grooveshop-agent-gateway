@@ -437,6 +437,16 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 		})
 	}
 
+	t.Run("a refused street line names line_one", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		h.completeError(rec, req, session, fmt.Errorf("wrapped: %w",
+			&django.StreetRefusedError{Code: django.CodeStreetNumberIsPostcode}))
+		body := specError(t, rec, http.StatusBadRequest, "invalid")
+		assert.Equal(t, "$.fulfillment_details.address.line_one",
+			body["param"])
+		assert.Contains(t, body["message"], "postal code")
+	})
+
 	t.Run("a stock shortfall names the lines", func(t *testing.T) {
 		shortfall := &django.StockShortfall{}
 		shortfall.FailedItems = append(shortfall.FailedItems, struct {

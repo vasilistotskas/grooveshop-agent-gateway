@@ -74,7 +74,7 @@ func TestAdmitNamesARefusedChoiceBeforeTheShownTotal(t *testing.T) {
 		s := readySession()
 		s.Buyer = completeBuyer()
 		s.Fulfillment.City, s.Fulfillment.Zipcode = "Αθήνα", "10431"
-		s.Fulfillment.Street, s.Fulfillment.StreetNumber = "Ερμού", "12"
+		s.Fulfillment.Street = "Ερμού 12"
 		s.Recompute()
 		return s
 	}

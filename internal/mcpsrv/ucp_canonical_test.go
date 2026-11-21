@@ -144,36 +144,176 @@ func TestUpdateReplacesTheDiscountCodes(t *testing.T) {
 	assert.False(t, present)
 }
 
-// Update replaces the checkout, so the buyer is what the request carries.
-// The gateway's own fulfillment member is not in the response a platform
-// sends back, so one the request omits keeps the stored delivery, and so
-// does the spec's fulfillment member, which is not negotiated.
-func TestCheckoutInApplyToReplacesTheBuyer(t *testing.T) {
-	s := &checkout.Session{
-		Buyer:       checkout.Buyer{FirstName: "Μαρία", Email: "m@e.test"},
-		Fulfillment: checkout.Fulfillment{Kind: "home_delivery"},
-		PayWayID:    3,
+// Update replaces the checkout, so the buyer is what the request carries,
+// and with the fulfillment extension negotiated so is the delivery: its
+// shipping destination and the option its group selects. Without the
+// extension the member is ignored and the stored delivery kept.
+func TestCheckoutInApplyToReplacesTheBuyerAndTheDelivery(t *testing.T) {
+	held := checkout.Fulfillment{
+		Kind: checkout.FulfillmentHomeDelivery, ProviderCode: "acs",
+		CountryCode: "GR", City: "Αθήνα", Zipcode: "10431",
+		Street: "Ερμού 12", RegionID: "GR-14",
 	}
-	(&UCPCheckoutIn{Buyer: &UCPBuyerReqIn{
-		FirstName: "Άννα", PhoneNumber: "+30691",
-	}}).applyTo(s)
-	assert.Equal(t, checkout.Buyer{FirstName: "Άννα", Phone: "+30691"},
-		s.Buyer)
-	assert.Equal(t, "home_delivery", s.Fulfillment.Kind)
-	assert.EqualValues(t, 3, s.PayWayID)
+	session := func() *checkout.Session {
+		return &checkout.Session{
+			Buyer:       checkout.Buyer{FirstName: "Μαρία", Email: "m@e.test"},
+			Fulfillment: held, PayWayID: 3,
+		}
+	}
+	decode := func(t *testing.T, raw string) *UCPCheckoutIn {
+		t.Helper()
+		var in UCPCheckoutIn
+		require.NoError(t, json.Unmarshal([]byte(raw), &in))
+		return &in
+	}
+	written := `{"buyer":{"first_name":"Άννα","phone_number":"+30691"},` +
+		`"fulfillment":{"methods":[{"id":"shipping","type":"shipping",` +
+		`"line_item_ids":["410"],"selected_destination_id":"home",` +
+		`"destinations":[{"id":"home","street_address":" Πατησίων 5 ",` +
+		`"extended_address":"2ος όροφος","address_locality":"Αθήνα",` +
+		`"address_region":"Αττική","postal_code":"10434",` +
+		`"address_country":"GR","first_name":"not read"}],` +
+		`"groups":[{"id":"parcel","selected_option_id":"elta"}]}]}}`
 
-	var spec UCPCheckoutIn
-	require.NoError(t, json.Unmarshal([]byte(`{"fulfillment":{"methods":[`+
-		`{"type":"shipping","destinations":[{"postal_code":"10431"}]}]}}`),
-		&spec))
-	spec.applyTo(s)
-	assert.Equal(t, checkout.Buyer{}, s.Buyer)
-	assert.Equal(t, "home_delivery", s.Fulfillment.Kind)
+	t.Run("not negotiated: the stored delivery is kept", func(t *testing.T) {
+		s := session()
+		delivered, err := decode(t, written).applyTo(s,
+			fulfillmentNegotiated(t, false))
+		require.NoError(t, err)
+		assert.False(t, delivered)
+		assert.Equal(t, checkout.Buyer{FirstName: "Άννα", Phone: "+30691"},
+			s.Buyer)
+		assert.Equal(t, held, s.Fulfillment)
+		assert.EqualValues(t, 3, s.PayWayID)
+	})
 
-	(&UCPCheckoutIn{Fulfillment: &checkout.Fulfillment{
-		Kind: "pickup_point", ProviderCode: "boxnow",
-	}}).applyTo(s)
-	assert.Equal(t, "pickup_point", s.Fulfillment.Kind)
+	neg := fulfillmentNegotiated(t, true)
+	for name, tc := range map[string]struct {
+		raw  string
+		want checkout.Fulfillment
+	}{
+		"a destination and an option": {written, checkout.Fulfillment{
+			Kind: checkout.FulfillmentHomeDelivery, ProviderCode: "elta",
+			CountryCode: "GR", City: "Αθήνα", Zipcode: "10434",
+			Street: "Πατησίων 5", AddressLine2: "2ος όροφος",
+			RegionID: "Αττική",
+		}},
+		"omitted: no delivery": {`{}`, checkout.Fulfillment{}},
+		"no option selected": {`{"fulfillment":{"methods":[{"type":` +
+			`"shipping","destinations":[{"street_address":"Πατησίων 5",` +
+			`"address_locality":"Αθήνα","postal_code":"10434",` +
+			`"address_country":"GR"}],"groups":[{"id":"parcel",` +
+			`"selected_option_id":null}]}]}}`, checkout.Fulfillment{
+			CountryCode: "GR", City: "Αθήνα", Zipcode: "10434",
+			Street: "Πατησίων 5",
+		}},
+		"the destination given, by its id": {`{"fulfillment":{"methods":` +
+			`[{"type":"shipping","selected_destination_id":` +
+			`"shipping_address","groups":[{"id":"parcel",` +
+			`"selected_option_id":"elta"}]}]}}`, withCarrier(held, "elta")},
+		"the destination given, no option": {`{"fulfillment":{"methods":` +
+			`[{"type":"shipping","selected_destination_id":` +
+			`"shipping_address"}]}}`, withCarrier(held, "")},
+		// An update may name the method by the id the business gave it
+		// instead of its type.
+		"the method named by its id": {`{"fulfillment":{"methods":` +
+			`[{"id":"shipping","line_item_ids":["410"],` +
+			`"selected_destination_id":"shipping_address","groups":` +
+			`[{"id":"parcel","selected_option_id":"elta"}]}]}}`,
+			withCarrier(held, "elta")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := session()
+			delivered, err := decode(t, tc.raw).applyTo(s, neg)
+			require.NoError(t, err)
+			assert.True(t, delivered)
+			assert.Equal(t, tc.want, s.Fulfillment)
+		})
+	}
+
+	for name, raw := range map[string]string{
+		"a pickup method": `{"fulfillment":{"methods":[{"type":"pickup",` +
+			`"selected_destination_id":"locker-4"}]}}`,
+		"two shipping methods": `{"fulfillment":{"methods":[` +
+			`{"type":"shipping"},{"type":"shipping"}]}}`,
+		"two destinations": `{"fulfillment":{"methods":[{"type":` +
+			`"shipping","destinations":[{"postal_code":"1"},` +
+			`{"postal_code":"2"}]}]}}`,
+		"a destination id it never gave": `{"fulfillment":{"methods":` +
+			`[{"type":"shipping","selected_destination_id":"saved-7"}]}}`,
+		"another destination than the one written": `{"fulfillment":` +
+			`{"methods":[{"type":"shipping","selected_destination_id":` +
+			`"a","destinations":[{"id":"b","postal_code":"1"}]}]}}`,
+		"two groups": `{"fulfillment":{"methods":[{"type":"shipping",` +
+			`"groups":[{"id":"parcel"},{"id":"other"}]}]}}`,
+		"a method id it never gave": `{"fulfillment":{"methods":` +
+			`[{"id":"express","line_item_ids":["410"]}]}}`,
+		"a method named by neither": `{"fulfillment":{"methods":` +
+			`[{"line_item_ids":["410"]}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := session()
+			_, err := decode(t, raw).applyTo(s, neg)
+			te, ok := errors.AsType[*mcptool.ToolError](err)
+			require.True(t, ok, "%v", err)
+			assert.Equal(t, mcptool.CodeInvalid, te.Code)
+			assert.Equal(t, session(), s, "nothing applied")
+		})
+	}
+}
+
+// withCarrier is f delivered home by carrier, or with no carrier chosen.
+func withCarrier(f checkout.Fulfillment, carrier string) checkout.Fulfillment {
+	f.Kind, f.ProviderCode = "", ""
+	if carrier != "" {
+		f.Kind, f.ProviderCode = checkout.FulfillmentHomeDelivery, carrier
+	}
+	return f
+}
+
+// A delivery to another address than the one whose street line the store
+// refused clears the refusal; the same address keeps it.
+func TestCheckoutInApplyToClearsARefusedStreetOnlyForANewAddress(
+	t *testing.T,
+) {
+	neg := fulfillmentNegotiated(t, true)
+	line := func(street string) *UCPCheckoutIn {
+		return &UCPCheckoutIn{Fulfillment: &UCPFulfillmentIn{
+			Methods: []UCPFulfillmentMethodIn{{Type: "shipping",
+				Destinations: []UCPShippingDestinationIn{{
+					StreetAddress: street, AddressLocality: "Αθήνα",
+					PostalCode: "10431", AddressCountry: "GR",
+				}}}}}}
+	}
+	s := &checkout.Session{}
+	_, err := line("Ερμού").applyTo(s, neg)
+	require.NoError(t, err)
+	s.StreetRefused = &checkout.Refusal{Code: "street_number_missing"}
+
+	_, err = line("Ερμού").applyTo(s, neg)
+	require.NoError(t, err)
+	assert.NotNil(t, s.StreetRefused)
+	_, err = line("Ερμού 12").applyTo(s, neg)
+	require.NoError(t, err)
+	assert.Nil(t, s.StreetRefused)
+}
+
+// fulfillmentNegotiated intersects a store with a platform that declares
+// checkout, and the fulfillment extension when asked.
+func fulfillmentNegotiated(t *testing.T, platformDeclares bool) ucp.Negotiated {
+	t.Helper()
+	caps := `"dev.ucp.shopping.checkout":[{"version":"` + ucp.Version +
+		`","schema":"https://ucp.dev/schemas/shopping/checkout.json"}]`
+	if platformDeclares {
+		caps += `,"` + ucp.CapabilityFulfillment + `":[{"version":"` +
+			ucp.Version + `","schema":` +
+			`"https://ucp.dev/schemas/shopping/fulfillment.json",` +
+			`"extends":"dev.ucp.shopping.checkout"}]`
+	}
+	var p ucp.PlatformProfile
+	require.NoError(t, json.Unmarshal([]byte(`{"ucp":{"version":"`+
+		ucp.Version+`","capabilities":{`+caps+`}}}`), &p))
+	return ucp.Negotiate(ucp.BusinessCapabilities(&tenant.Tenant{}), &p)
 }
 
 // discountNegotiated intersects a store with promotions on with a platform
@@ -333,9 +473,9 @@ func carrierPayWays(t *testing.T) *django.Client {
 		"9": payWay("9", "viva_wallet", django.SettlementOnline),
 	}
 	offered := map[string][]string{
-		"":                            {"5", "7", "9"},
-		django.ShippingProviderACS:    {"5", "9"},
-		django.ShippingProviderBoxNow: {"7"},
+		"":                         {"5", "7", "9"},
+		django.ShippingProviderACS: {"5", "9"},
+		"elta":                     {"7"},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/pay_way",
@@ -372,11 +512,7 @@ func deliveryBy(provider string) checkout.Fulfillment {
 	f := checkout.Fulfillment{
 		Kind: checkout.FulfillmentHomeDelivery, ProviderCode: provider,
 		CountryCode: "GR", City: "Athens", Zipcode: "10431",
-		Street: "Patision", StreetNumber: "1",
-	}
-	if provider == django.ShippingProviderBoxNow {
-		f.Kind = checkout.FulfillmentPickupPoint
-		f.BoxnowLockerID = "42"
+		Street: "Patision 1",
 	}
 	return f
 }
@@ -396,7 +532,7 @@ func TestResolvePayWayKeepsTheHeldMethodOfTheInstrument(t *testing.T) {
 		{"the held one settles it", checkout.Fulfillment{}, 7, 7},
 		{"the held one is online", checkout.Fulfillment{}, 9, 5},
 		{"the delivery does not offer the held one",
-			deliveryBy(django.ShippingProviderBoxNow), 5, 7},
+			deliveryBy("elta"), 5, 7},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			id, err := resolvePayWay(t.Context(),
@@ -418,13 +554,13 @@ func TestPayWayForDeliveryFollowsTheDelivery(t *testing.T) {
 		held     int64
 		want     int64
 	}{
-		{"nothing held", deliveryBy(django.ShippingProviderBoxNow), 0, 0},
+		{"nothing held", deliveryBy("elta"), 0, 0},
 		{"offered for the delivery",
 			deliveryBy(django.ShippingProviderACS), 5, 5},
 		{"another carrier's method of the instrument",
-			deliveryBy(django.ShippingProviderBoxNow), 5, 7},
+			deliveryBy("elta"), 5, 7},
 		{"an online method the delivery is not offered",
-			deliveryBy(django.ShippingProviderBoxNow), 9, 0},
+			deliveryBy("elta"), 9, 0},
 		{"a method the store no longer has",
 			deliveryBy(django.ShippingProviderACS), 404, 0},
 		{"no delivery yet: every method is offered",

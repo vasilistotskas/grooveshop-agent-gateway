@@ -181,8 +181,8 @@ is read; read the one for an area before changing it from elsewhere.
   published, and their save drops it; v5 pods know nothing of the total
   a session showed, which its order is placed at; v6 pods send an order
   without its checkout's id, so a resume of their session would order
-  again; v7 pods know nothing of the cart digest a session showed, and
-  their save drops it),
+  again; v7 pods know nothing of the cart digest a session showed or of
+  a delivery's address line 2, and their save drops them),
   so the two never share a session; a session under an older key is not
   found. `TestSessionKeyIsVersioned` pins it. The session that holds a
   cart is named in `ag:{schema}:checkoutcart:{cartId}` (`cartKey`), a

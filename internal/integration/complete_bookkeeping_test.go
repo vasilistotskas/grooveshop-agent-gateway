@@ -290,12 +290,7 @@ func completionSurfaces(t *testing.T, stack ucpStack) []completionSurface {
 				"email":        "maria@example.test",
 				"phone_number": "+306912345678",
 			},
-			"fulfillment": map[string]any{
-				"kind": "home_delivery", "providerCode": "acs",
-				"countryCode": "GR", "city": "Αθήνα",
-				"zipcode": "10431", "street": "Πανεπιστημίου",
-				"streetNumber": "12", "regionId": "GR-14",
-			},
+			"fulfillment": homeDelivery(),
 		}
 		maps.Copy(submit, pay)
 		res := callTool(t, session, "create_checkout", map[string]any{

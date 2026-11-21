@@ -211,6 +211,63 @@ func TestCreateOrderNamesTheUnpaidCartRefusal(t *testing.T) {
 	assert.NotErrorIs(t, err, ErrCartHasUnpaidOrder)
 }
 
+// The order carries one street line and no street number: Django splits
+// the line, and a line it cannot split is its own refusal, read from the
+// field it names whatever the body's own code is.
+func TestCreateOrderSendsOneStreetLineAndNamesItsRefusal(t *testing.T) {
+	var got map[string]any
+	var answer []byte
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			got = nil
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write(answer)
+		}))
+	defer srv.Close()
+	create := func() error {
+		_, err := newTestClient(t, srv.URL).CreateOrder(
+			t.Context(), "shop.example.test", "el", "cart-uuid",
+			OrderCreate{PayWayID: 1, Street: "Ερμού 12",
+				AddressLine2: "3ος όροφος"})
+		return err
+	}
+
+	answer = fixture(t, "order_street_number_missing.json")
+	err := create()
+	assert.Equal(t, "Ερμού 12", got["street"])
+	assert.Equal(t, "3ος όροφος", got["addressLine2"])
+	assert.NotContains(t, got, "streetNumber")
+	refused, ok := errors.AsType[*StreetRefusedError](err)
+	require.True(t, ok, "%v", err)
+	assert.Equal(t, CodeStreetNumberMissing, refused.Code)
+	assert.Contains(t, refused.Message, "Ermou 12")
+	require.ErrorIs(t, err, ErrValidation)
+
+	// Another field refused beside it: the body's code is invalid.
+	answer = []byte(`{"street": ["x"], "phone": ["y"], "code": "invalid", ` +
+		`"fields": {"phone": [{"message": "y", "code": "invalid"}], ` +
+		`"street": [{"message": "x", "code": "street_number_is_postcode"}]}}`)
+	refused, ok = errors.AsType[*StreetRefusedError](create())
+	require.True(t, ok)
+	assert.Equal(t, CodeStreetNumberIsPostcode, refused.Code)
+
+	// Any other refusal of the line is the line's, with Django's code.
+	answer = []byte(`{"street": ["x"], "code": "invalid", "fields": ` +
+		`{"street": [{"message": "x", "code": "street_name_missing"}]}}`)
+	refused, ok = errors.AsType[*StreetRefusedError](create())
+	require.True(t, ok)
+	assert.Equal(t, "street_name_missing", refused.Code)
+
+	answer = []byte(`{"street": ["x"], "code": "blank", ` +
+		`"fields": {"street": [{"message": "x", "code": "blank"}]}}`)
+	err = create()
+	require.ErrorIs(t, err, ErrValidation)
+	assert.NotErrorAs(t, err, new(*StreetRefusedError),
+		"a blank street is not a line it could not split")
+}
+
 func TestLocalized(t *testing.T) {
 	tr := map[string]Translation{
 		"en": {Name: "Mug"}, "el": {Name: "Κούπα"}, "de": {Name: "Tasse"},

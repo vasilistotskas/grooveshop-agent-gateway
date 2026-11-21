@@ -56,6 +56,16 @@ const CodeCartHasUnpaidOrder = "cart_has_unpaid_order"
 // ErrTotalChanged.
 const CodeTotalChanged = "total_changed"
 
+// CodeStreetNumberMissing and CodeStreetNumberIsPostcode are two codes of
+// Django's refusal of an order's street line, on `street`, that the
+// gateway words for itself: no house number can be split from it, or the
+// number split is a postcode (core/validators/address.py). CreateOrder
+// reports every refusal on `street` as a *StreetRefusedError.
+const (
+	CodeStreetNumberMissing    = "street_number_missing"
+	CodeStreetNumberIsPostcode = "street_number_is_postcode"
+)
+
 // CodeCartChanged is the `code` of Django's 409 refusing an order whose
 // expectedCartDigest is not the digest of the cart it would be made of
 // now (order/enum/create_error.py). CreateOrder reports it as

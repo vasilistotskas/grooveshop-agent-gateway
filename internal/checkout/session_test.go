@@ -20,7 +20,7 @@ func homeDelivery() Fulfillment {
 	return Fulfillment{
 		Kind: FulfillmentHomeDelivery, ProviderCode: "acs",
 		CountryCode: "GR", City: "Αθήνα", Zipcode: "10431",
-		Street: "Πανεπιστημίου", StreetNumber: "12",
+		Street: "Πανεπιστημίου 12",
 	}
 }
 
@@ -49,7 +49,7 @@ func TestFulfillmentComplete(t *testing.T) {
 		assert.True(t, homeDelivery().Complete())
 	})
 
-	t.Run("address is required for every kind", func(t *testing.T) {
+	t.Run("the address is required", func(t *testing.T) {
 		for _, tc := range []struct {
 			name   string
 			mutate func(*Fulfillment)
@@ -58,42 +58,44 @@ func TestFulfillmentComplete(t *testing.T) {
 			{"city", func(f *Fulfillment) { f.City = "" }},
 			{"zipcode", func(f *Fulfillment) { f.Zipcode = "" }},
 			{"street", func(f *Fulfillment) { f.Street = "" }},
-			{"street number", func(f *Fulfillment) { f.StreetNumber = "" }},
 		} {
 			f := homeDelivery()
 			tc.mutate(&f)
 			assert.False(t, f.Complete(), "missing %s", tc.name)
+			assert.False(t, f.HasAddress(), "missing %s", tc.name)
 		}
 	})
 
-	t.Run("acs pickup needs station external id and branch", func(t *testing.T) {
+	t.Run("and a home delivery", func(t *testing.T) {
 		f := homeDelivery()
-		f.Kind = FulfillmentPickupPoint
-		f.ProviderCode = "acs"
+		f.Kind = ""
+		assert.True(t, f.HasAddress())
 		assert.False(t, f.Complete())
-		f.AcsStationExternalID = "SP123"
-		assert.False(t, f.Complete())
-		f.AcsStationBranch = "12"
-		assert.True(t, f.Complete())
 	})
+}
 
-	t.Run("boxnow pickup needs locker id", func(t *testing.T) {
-		f := homeDelivery()
-		f.Kind = FulfillmentPickupPoint
-		f.ProviderCode = "boxnow"
-		assert.False(t, f.Complete())
-		f.BoxnowLockerID = "842"
-		assert.True(t, f.Complete())
-	})
+// A street line the store refused keeps the checkout from being ready
+// until the address changes; a delivery to the same address keeps the
+// refusal.
+func TestARefusedStreetHoldsUntilTheAddressChanges(t *testing.T) {
+	s := NewSession("public", "shop.test", ProtocolUCP, "cart-1")
+	s.Buyer, s.PayWayID = completeBuyer(), 1
+	s.Deliver(homeDelivery())
+	s.StreetRefused = &Refusal{Code: django.CodeStreetNumberMissing}
+	s.Recompute()
+	assert.Equal(t, StatusIncomplete, s.Status)
+	assert.Equal(t, []Need{NeedStreet}, s.Missing())
 
-	t.Run("unknown pickup provider or kind is incomplete", func(t *testing.T) {
-		f := homeDelivery()
-		f.Kind = FulfillmentPickupPoint
-		f.ProviderCode = "carrier_pigeon"
-		assert.False(t, f.Complete())
-		f.Kind = "teleport"
-		assert.False(t, f.Complete())
-	})
+	other := homeDelivery()
+	other.ProviderCode = "elta"
+	s.Deliver(other)
+	assert.NotNil(t, s.StreetRefused, "another carrier, the same address")
+
+	other.Street = "Πανεπιστημίου 12Α"
+	s.Deliver(other)
+	assert.Nil(t, s.StreetRefused)
+	s.Recompute()
+	assert.Equal(t, StatusReadyForComplete, s.Status)
 }
 
 func TestRecompute(t *testing.T) {
@@ -101,7 +103,8 @@ func TestRecompute(t *testing.T) {
 		s := NewSession("public", "shop.test", "ucp", "cart-1")
 		s.Recompute()
 		assert.Equal(t, StatusIncomplete, s.Status)
-		assert.Len(t, s.Missing(), 3)
+		assert.Equal(t, []Need{NeedBuyer, NeedAddress, NeedDelivery,
+			NeedPayment}, s.Missing())
 	})
 
 	t.Run("all inputs present becomes ready", func(t *testing.T) {
@@ -123,7 +126,7 @@ func TestRecompute(t *testing.T) {
 		s.Buyer.Email = ""
 		s.Recompute()
 		assert.Equal(t, StatusIncomplete, s.Status)
-		assert.Contains(t, s.Missing()[0], "buyer")
+		assert.Equal(t, []Need{NeedBuyer}, s.Missing())
 	})
 
 	t.Run("acp sessions are ready without a pay way", func(t *testing.T) {
