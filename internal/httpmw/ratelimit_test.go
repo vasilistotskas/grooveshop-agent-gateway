@@ -123,3 +123,19 @@ func TestRateLimiterBucketsIPv6By64(t *testing.T) {
 	assert.Equal(t, http.StatusTooManyRequests, do("2001:db8:1:2::2"))
 	assert.Equal(t, http.StatusNoContent, do("2001:db8:1:3::1"))
 }
+
+// The limiter names the caller it counted in the request's context, for
+// the budgets kept per caller further in.
+func TestRateLimiterNamesTheCallerInTheContext(t *testing.T) {
+	var seen string
+	h := NewRateLimiter(60, 1, nil).Middleware()(http.HandlerFunc(
+		func(_ http.ResponseWriter, r *http.Request) {
+			seen = ClientFrom(r.Context())
+		}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Forwarded-For", "2001:db8:1:2::1")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.Equal(t, "2001:db8:1:2::/64", seen)
+	assert.Empty(t, ClientFrom(t.Context()))
+}

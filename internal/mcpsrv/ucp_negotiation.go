@@ -136,14 +136,15 @@ func checkSigner(ctx context.Context, meta *MetaIn) error {
 // discoveryFailure is the spec's JSON-RPC error, and the HTTP status of
 // the REST binding, for a platform profile that could not be had: nil
 // for an error that is not one.
-//   - The gateway's discovery budget spent (ucp.ErrDiscoveryBusy): the
-//     retryable 503, -32000 with data.retry_after.
+//   - The gateway's discovery budget spent, the shared one or the
+//     caller's share (ucp.ErrDiscoveryBusy): the retryable 503, -32000
+//     with data.retry_after (ucp.DiscoveryRetryAfter).
 //   - A *ucp.DiscoveryError: -32001 (overview, Negotiation Errors) with
 //     its code and content, and continueURL, the web handoff.
 func discoveryFailure(err error, continueURL string) (*jsonrpc.Error, int) {
 	if errors.Is(err, ucp.ErrDiscoveryBusy) {
 		data, _ := json.Marshal(map[string]int{
-			"retry_after": ucp.DiscoveryRetryAfter,
+			"retry_after": ucp.DiscoveryRetryAfter(err),
 		})
 		return &jsonrpc.Error{
 			Code: -32000, Message: "Service temporarily unavailable",
