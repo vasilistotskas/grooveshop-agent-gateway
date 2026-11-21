@@ -192,7 +192,8 @@ func refuseSigned(
 		status = http.StatusInternalServerError
 	}
 	if status == http.StatusServiceUnavailable {
-		w.Header().Set("Retry-After", strconv.Itoa(ucp.DiscoveryRetryAfter))
+		w.Header().Set("Retry-After",
+			strconv.Itoa(ucp.DiscoveryRetryAfter(err)))
 	}
 	writeRPCError(w, status, id, rpcErr)
 }
