@@ -1,6 +1,7 @@
 package httpmw
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/netip"
@@ -13,7 +14,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
-// maxLimiterEntries bounds the per-(tenant, IP) bucket map; agent-platform
+// maxLimiterEntries bounds a RateLimiter's bucket map; agent-platform
 // egress IPs are few, so the bound only guards against spoofed-source
 // floods.
 const maxLimiterEntries = 10_000
@@ -26,8 +27,10 @@ type limiterEntry struct {
 	lastSeen time.Time
 }
 
-// RateLimiter is a per-(tenant host, IP) token bucket. Keying on the
-// request Host gives tenant fairness for free: agent platforms share
+// RateLimiter is a token bucket per key. Its middleware keys a request
+// by (tenant host, IP) (limiterKey); Reserve takes any key, as a budget
+// kept per caller further in does (ClientFrom). Keying on the request
+// Host gives tenant fairness for free: agent platforms share
 // egress IPs, and with an IP-only key one tenant's hot integration
 // drained every other tenant's budget from the same address. Each
 // tenant's traffic arrives on its own domain, so host+IP partitions the
@@ -67,12 +70,41 @@ func (rl *RateLimiter) Middleware() func(http.Handler) http.Handler {
 					"rate limited, retry later")
 				return
 			}
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(
+				WithClient(r.Context(), ClientBucket(r))))
 		})
 	}
 }
 
+type clientKey struct{}
+
+// WithClient is ctx serving a request of client (ClientFrom).
+func WithClient(ctx context.Context, client string) context.Context {
+	return context.WithValue(ctx, clientKey{}, client)
+}
+
+// ClientFrom is the caller of the request ctx serves, as ClientBucket
+// names it, set by a RateLimiter's Middleware: "" for a context no
+// request through one carries.
+func ClientFrom(ctx context.Context) string {
+	c, _ := ctx.Value(clientKey{}).(string)
+	return c
+}
+
+// Reserve takes a token from key's bucket at t: its DelayFrom(t) is how
+// long until the token is there, zero when it was, and CancelAt(t) gives
+// back one not yet due. The buckets are bounded and idle ones evicted, as
+// the middleware's.
+func (rl *RateLimiter) Reserve(key string, t time.Time) *rate.Reservation {
+	return rl.bucket(key).ReserveN(t, 1)
+}
+
 func (rl *RateLimiter) allow(key string) bool {
+	return rl.bucket(key).Allow()
+}
+
+// bucket is key's limiter, made on first use.
+func (rl *RateLimiter) bucket(key string) *rate.Limiter {
 	now := time.Now()
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
@@ -90,7 +122,7 @@ func (rl *RateLimiter) allow(key string) bool {
 		rl.entries[key] = e
 	}
 	e.lastSeen = now
-	return e.lim.Allow()
+	return e.lim
 }
 
 func (rl *RateLimiter) evictLocked(now time.Time) {

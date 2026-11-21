@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/sync/singleflight"
 	"golang.org/x/time/rate"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
@@ -41,13 +43,37 @@ func (e *DiscoveryError) Error() string {
 	return "ucp: " + e.Code + ": " + e.Content
 }
 
-// ErrDiscoveryBusy is the gateway's own discovery budget running out —
-// not a fault of the profile, so it is never cached against the URL. The
-// spec's answer is a retryable 503 (-32000 with retry_after on MCP).
+// ErrDiscoveryBusy is a fetch the gateway's own budget refused, the
+// shared one or the caller's share of it: not a fault of the profile, so
+// it is never cached against the URL. The spec's answer is a retryable
+// 503 (-32000 with retry_after on MCP), after DiscoveryRetryAfter.
 var ErrDiscoveryBusy = errors.New("ucp: profile discovery is busy")
 
-// DiscoveryRetryAfter is the retry hint, in seconds, for ErrDiscoveryBusy.
-const DiscoveryRetryAfter = 1
+// errNoCaller is a fetch for a context that names no caller
+// (httpmw.ClientFrom): a request that did not pass the rate limiter's
+// middleware, which every route that resolves a profile does.
+var errNoCaller = errors.New(
+	"ucp: profile fetch for a request that names no caller")
+
+// busyError is ErrDiscoveryBusy with how long until the budget that
+// refused the fetch has a token again.
+type busyError struct{ wait time.Duration }
+
+func (*busyError) Error() string { return ErrDiscoveryBusy.Error() }
+
+func (*busyError) Is(target error) bool { return target == ErrDiscoveryBusy }
+
+// DiscoveryRetryAfter is the retry hint, in whole seconds and at least
+// one, for an ErrDiscoveryBusy: when the budget that refused it has a
+// token again, never more than the TTL floor (a budget that does not
+// refill, which only a test builds, says the floor).
+func DiscoveryRetryAfter(err error) int {
+	wait := profileTTLFloor
+	if b, ok := errors.AsType[*busyError](err); ok {
+		wait = min(b.wait, profileTTLFloor)
+	}
+	return max(1, int(math.Ceil(wait.Seconds())))
+}
 
 func discoveryErr(code, format string, args ...any) *DiscoveryError {
 	return &DiscoveryError{Code: code, Content: fmt.Sprintf(format, args...)}
@@ -74,6 +100,19 @@ const (
 	fetchTimeout = 5 * time.Second
 	fetchRate    = 20
 	fetchBurst   = 40
+	// callerFetchesPerMin and callerFetchBurst are each caller's share
+	// of that budget (httpmw.ClientBucket: an IPv4 address, an IPv6
+	// /64), so no one caller spends it for everyone. A platform names one
+	// profile, cached for at least the TTL floor, and fetches it again
+	// at most once a floor when a signature names a key it lacks
+	// (Refresh): two fetches a minute. The share is three times that,
+	// with a burst for a platform that brings a second profile (staging
+	// beside production) and its refresh. Production, 14 days to
+	// 2026-11-21: 276 POSTs to /mcp, at most 12 in any minute from every
+	// caller together, each of which may fetch a profile only when its
+	// cached one has expired.
+	callerFetchesPerMin = 6
+	callerFetchBurst    = 4
 )
 
 // ProfileResolver fetches, validates and caches platform profiles.
@@ -82,8 +121,14 @@ type ProfileResolver struct {
 	allowLocal bool
 	schema     *jsonschema.Schema
 	limiter    *rate.Limiter
-	log        *slog.Logger
-	sf         singleflight.Group
+	// callers is each caller's share of limiter. budgetMu guards both
+	// and flights: the callers that paid for each fetch under way, by URL
+	// (join).
+	callers  *httpmw.RateLimiter
+	budgetMu sync.Mutex
+	flights  map[string]map[string]bool
+	log      *slog.Logger
+	sf       singleflight.Group
 
 	mu    sync.Mutex
 	cache map[string]profileEntry
@@ -119,9 +164,12 @@ func NewProfileResolver(
 		allowLocal: allowLocal,
 		schema:     schema,
 		limiter:    rate.NewLimiter(fetchRate, fetchBurst),
-		log:        log,
-		cache:      map[string]profileEntry{},
-		refreshed:  map[string]time.Time{},
+		callers: httpmw.NewRateLimiter(
+			callerFetchesPerMin, callerFetchBurst, nil),
+		log:       log,
+		cache:     map[string]profileEntry{},
+		refreshed: map[string]time.Time{},
+		flights:   map[string]map[string]bool{},
 	}, nil
 }
 
@@ -133,8 +181,8 @@ func NewProfileResolver(
 // cache is: when it is full of origins refreshed within the floor, no
 // other origin is refreshed until one ages out. The cached profile is
 // replaced only by one fetched: a refresh that fails keeps it, and one
-// whose fetch never reached the origin (the discovery budget spent) does
-// not count against the floor. A caller that leaves gets its context's
+// whose fetch never reached the origin (the discovery budget spent, spend)
+// does not count against the floor. A caller that leaves gets its context's
 // error, and the refresh goes on without it.
 func (r *ProfileResolver) Refresh(
 	ctx context.Context, raw string,
@@ -171,6 +219,22 @@ func (r *ProfileResolver) Refresh(
 	}
 	r.refreshed[origin] = now
 	r.mu.Unlock()
+	// The record of a refresh whose origin was never asked is put back.
+	unspend := func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.refreshed[origin].Equal(now) {
+			if held {
+				r.refreshed[origin] = last
+			} else {
+				delete(r.refreshed, origin)
+			}
+		}
+	}
+	if err := r.spend(ctx); err != nil {
+		unspend()
+		return nil, err
+	}
 
 	// Detached from the caller, as Resolve's fetch is, and bounded by the
 	// fetch's own timeout: a caller that leaves neither wastes the refresh
@@ -181,17 +245,9 @@ func (r *ProfileResolver) Refresh(
 		p, err := r.refetch(context.WithoutCancel(ctx), raw)
 		if _, answered := errors.AsType[*DiscoveryError](err); err != nil &&
 			!answered {
-			// The origin was never asked (the discovery budget was
-			// spent): its refresh is not spent.
-			r.mu.Lock()
-			if r.refreshed[origin].Equal(now) {
-				if held {
-					r.refreshed[origin] = last
-				} else {
-					delete(r.refreshed, origin)
-				}
-			}
-			r.mu.Unlock()
+			// Not the origin's answer (a recovered panic): its refresh
+			// is not spent.
+			unspend()
 		}
 		done <- refreshResult{profile: p, err: err}
 	}()
@@ -239,31 +295,13 @@ func (r *ProfileResolver) Resolve(
 	if p, err, ok := r.cached(raw); ok {
 		return p, err
 	}
-	// One fetch per URL however many requests wait on it, detached from
-	// the first caller so its disconnect cannot fail the others; each
-	// caller still stops waiting on its own context. A panic is logged
-	// and returned as an error (obs.Recover).
-	ch := r.sf.DoChan(raw, func() (_ any, err error) {
-		fetchCtx, cancel := context.WithTimeout(
-			context.WithoutCancel(ctx), fetchTimeout)
-		defer cancel()
-		defer obs.Recover(fetchCtx, r.log, "ucp: profile fetch", &err)
-		p, ttl, derr := r.fetch(fetchCtx, raw)
-		if derr != nil {
-			// Only the origin's own failures are backed off: a spent
-			// budget (ErrDiscoveryBusy) says nothing about this URL.
-			if origin, ok := errors.AsType[*DiscoveryError](derr); ok {
-				r.remember(raw, profileEntry{
-					err: origin, expires: time.Now().Add(failureBackoff),
-				})
-			}
-			return nil, derr
-		}
-		r.remember(raw, profileEntry{
-			profile: p, expires: time.Now().Add(ttl),
-		})
-		return p, nil
-	})
+	// One fetch per URL however many requests wait on it (join), detached
+	// from the first caller so its disconnect cannot fail the others; each
+	// caller still stops waiting on its own context.
+	ch, err := r.join(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
 	select {
 	case res := <-ch:
 		if res.Err != nil {
@@ -273,6 +311,33 @@ func (r *ProfileResolver) Resolve(
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// fly fetches raw, detached from ctx and bounded by the fetch's own
+// timeout, and caches what it learns: the profile, or the origin's own
+// failure, backed off. A panic is logged and returned as an error
+// (obs.Recover).
+func (r *ProfileResolver) fly(
+	ctx context.Context, raw string,
+) (_ any, err error) {
+	fetchCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), fetchTimeout)
+	defer cancel()
+	defer obs.Recover(fetchCtx, r.log, "ucp: profile fetch", &err)
+	p, ttl, err := r.fetch(fetchCtx, raw)
+	if err != nil {
+		// Only the origin's own failures are backed off.
+		if origin, ok := errors.AsType[*DiscoveryError](err); ok {
+			r.remember(raw, profileEntry{
+				err: origin, expires: time.Now().Add(failureBackoff),
+			})
+		}
+		return nil, err
+	}
+	r.remember(raw, profileEntry{
+		profile: p, expires: time.Now().Add(ttl),
+	})
+	return p, nil
 }
 
 func (r *ProfileResolver) cached(raw string) (*PlatformProfile, error, bool) {
@@ -320,7 +385,113 @@ func (r *ProfileResolver) evictLocked() {
 	delete(r.cache, victim)
 }
 
-// fetch returns a *DiscoveryError, or ErrDiscoveryBusy.
+// The discovery budget: a fetch costs a token from the shared budget
+// (limiter) and one from its caller's share of it (callers), or neither,
+// all under budgetMu, the one place either is spent. A caller past its
+// share spends none of the shared budget, and a spent shared budget none
+// of a caller's share. A token once taken cannot be given back
+// (rate.Reservation.Cancel restores only one not yet due), so the shared
+// budget is read first and taken last. Never a wait: queueing for a token
+// would spend the fetch's own deadline, and a spent budget is answered as
+// retryable instead, after that budget's delay (busyError).
+//
+// Resolve shares one fetch per URL among its callers (join): the caller
+// that starts it pays for the fetch, and each other caller that waits on
+// it pays its own share once, so a fetch under way never answers for a
+// caller past its share, and a caller's concurrent calls for one profile
+// cost it one token. A context no rate limiter's middleware named the
+// caller of is errNoCaller: every fetch is a caller's, never a bucket
+// shared by every unnamed one.
+
+// spend charges a refresh, which fetches on its own: a token from both
+// budgets, or neither.
+func (r *ProfileResolver) spend(ctx context.Context) error {
+	caller := httpmw.ClientFrom(ctx)
+	if caller == "" {
+		return errNoCaller
+	}
+	r.budgetMu.Lock()
+	defer r.budgetMu.Unlock()
+	return r.spendLocked(caller, time.Now())
+}
+
+// spendLocked takes a token from the shared budget and one from caller's
+// share at now, or neither. Every step reads the budgets at the one
+// instant now: a reservation read as not yet due is given back whole at
+// that instant, and its delay is from it, so a refusal never spends a
+// token that fell due between two reads of the clock.
+func (r *ProfileResolver) spendLocked(caller string, now time.Time) error {
+	if r.limiter.TokensAt(now) < 1 {
+		shared := r.limiter.ReserveN(now, 1)
+		shared.CancelAt(now)
+		return &busyError{wait: shared.DelayFrom(now)}
+	}
+	if err := r.spendShareLocked(caller, now); err != nil {
+		return err
+	}
+	r.limiter.AllowN(now, 1)
+	return nil
+}
+
+// spendShareLocked takes a token from caller's share alone at now.
+func (r *ProfileResolver) spendShareLocked(
+	caller string, now time.Time,
+) error {
+	own := r.callers.Reserve(caller, now)
+	if wait := own.DelayFrom(now); wait > 0 {
+		own.CancelAt(now)
+		return &busyError{wait: wait}
+	}
+	return nil
+}
+
+// join charges ctx's caller for raw's fetch and returns the channel its
+// result arrives on: a new fetch, run by fly on ctx detached, or the one
+// under way, which charges the caller its share only if it has not paid
+// for this fetch already. The fetch's record (flights) and singleflight's
+// both end at once, under budgetMu (land), so a caller that comes after
+// starts, and pays for, a fetch of its own.
+func (r *ProfileResolver) join(
+	ctx context.Context, raw string,
+) (<-chan singleflight.Result, error) {
+	caller := httpmw.ClientFrom(ctx)
+	if caller == "" {
+		return nil, errNoCaller
+	}
+	now := time.Now()
+	r.budgetMu.Lock()
+	defer r.budgetMu.Unlock()
+	paid, flying := r.flights[raw]
+	switch {
+	case flying && paid[caller]:
+	case flying:
+		if err := r.spendShareLocked(caller, now); err != nil {
+			return nil, err
+		}
+		paid[caller] = true
+	default:
+		if err := r.spendLocked(caller, now); err != nil {
+			return nil, err
+		}
+		r.flights[raw] = map[string]bool{caller: true}
+	}
+	return r.sf.DoChan(raw, func() (any, error) {
+		defer r.land(raw)
+		return r.fly(ctx, raw)
+	}), nil
+}
+
+// land ends raw's fetch: its record, and singleflight's, so the next
+// caller starts a fetch instead of joining one that has answered.
+func (r *ProfileResolver) land(raw string) {
+	r.budgetMu.Lock()
+	defer r.budgetMu.Unlock()
+	delete(r.flights, raw)
+	r.sf.Forget(raw)
+}
+
+// fetch returns a *DiscoveryError. Its caller has paid for it (join,
+// spend).
 //
 // Error content reaches anonymous callers, so it never carries a
 // transport error's text: that would name the addresses internal hostnames
@@ -328,11 +499,6 @@ func (r *ProfileResolver) evictLocked() {
 func (r *ProfileResolver) fetch(
 	ctx context.Context, raw string,
 ) (*PlatformProfile, time.Duration, error) {
-	// Allow, not Wait: queueing for a token would spend the fetch's own
-	// deadline, and a spent budget is answered as retryable instead.
-	if !r.limiter.Allow() {
-		return nil, 0, ErrDiscoveryBusy
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
 		return nil, 0, discoveryErr(CodeInvalidProfileURL,

@@ -1,8 +1,10 @@
 package ucp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +20,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 )
 
 // platformProfile is the recorded platform profile fixture — minimal and
@@ -67,6 +72,18 @@ func serveProfile(
 	return s
 }
 
+// callers names a new caller for each context caller makes.
+var callers atomic.Int64
+
+// caller is the test's context, as the rate limiter's middleware leaves
+// it for a request (httpmw.ClientFrom), from a caller of its own: a test
+// of anything but the caller's share fetches within that share.
+func caller(t *testing.T) context.Context {
+	t.Helper()
+	return httpmw.WithClient(t.Context(),
+		fmt.Sprintf("caller-%d", callers.Add(1)))
+}
+
 func newTestResolver(t *testing.T) *ProfileResolver {
 	t.Helper()
 	r, err := NewProfileResolver(true, slog.New(slog.DiscardHandler))
@@ -88,7 +105,7 @@ func TestResolveValidatesAndCachesTheProfile(t *testing.T) {
 		_, _ = w.Write([]byte(body))
 	})
 	r := newTestResolver(t)
-	ctx := t.Context()
+	ctx := caller(t)
 
 	p, err := r.Resolve(ctx, srv.URL+"/profile.json")
 	require.NoError(t, err)
@@ -110,7 +127,7 @@ func TestResolveBacksOffAFailingProfile(t *testing.T) {
 	})
 	r := newTestResolver(t)
 	for range 3 {
-		_, err := r.Resolve(t.Context(), srv.URL)
+		_, err := r.Resolve(caller(t), srv.URL)
 		assert.Equal(t, CodeProfileUnreachable, discoveryCode(t, err))
 	}
 	assert.EqualValues(t, 1, srv.hits.Load())
@@ -138,7 +155,7 @@ func TestResolveRejectsWhatTheSpecRejects(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			srv := serveProfile(t, tc.handler)
-			_, err := newTestResolver(t).Resolve(t.Context(), srv.URL)
+			_, err := newTestResolver(t).Resolve(caller(t), srv.URL)
 			assert.Equal(t, tc.code, discoveryCode(t, err))
 		})
 	}
@@ -154,7 +171,7 @@ func TestResolveRefusesUnsafeProfileURLs(t *testing.T) {
 		"https://ucp.dev@evil.example/profile.json",
 		"",
 	} {
-		_, err := r.Resolve(t.Context(), raw)
+		_, err := r.Resolve(caller(t), raw)
 		assert.Equal(t, CodeInvalidProfileURL, discoveryCode(t, err), raw)
 	}
 }
@@ -189,12 +206,205 @@ func TestResolveBudgetExhaustionIsNotCached(t *testing.T) {
 	})
 	r := newTestResolver(t)
 	r.limiter = rate.NewLimiter(0, 0)
-	_, err := r.Resolve(t.Context(), srv.URL)
+	_, err := r.Resolve(caller(t), srv.URL)
 	require.ErrorIs(t, err, ErrDiscoveryBusy)
 
 	r.limiter = rate.NewLimiter(rate.Inf, 1)
-	_, err = r.Resolve(t.Context(), srv.URL)
+	_, err = r.Resolve(caller(t), srv.URL)
 	assert.NoError(t, err, "the busy answer was not remembered")
+}
+
+// One caller fetches at most its share of the discovery budget: past its
+// burst, a profile it names is busy for it, told to come back when its
+// share has a token again, and spends none of the shared budget, while
+// another caller still fetches; one it fetched is served from the cache
+// whatever its share.
+func TestACallerFetchesOnlyItsShareOfTheBudget(t *testing.T) {
+	body := platformProfileJSON(t, "https://p.example/hooks")
+	srv := serveProfile(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	})
+	r := newTestResolver(t)
+	// A shared budget that does not refill, so what it holds is exact.
+	r.limiter = rate.NewLimiter(0, fetchBurst)
+	flooding := httpmw.WithClient(t.Context(), "198.51.100.7")
+	for i := range callerFetchBurst {
+		_, err := r.Resolve(flooding, fmt.Sprintf("%s/p%d.json", srv.URL, i))
+		require.NoError(t, err, i)
+	}
+	shared := r.limiter.Tokens()
+	require.InDelta(t, float64(fetchBurst-callerFetchBurst), shared, 1e-9)
+	_, err := r.Resolve(flooding, srv.URL+"/one-more.json")
+	require.ErrorIs(t, err, ErrDiscoveryBusy)
+	assert.InDelta(t, shared, r.limiter.Tokens(), 1e-9,
+		"the shared budget is not spent on it")
+	// The share refills one fetch every 60/callerFetchesPerMin seconds.
+	assert.Equal(t, 60/callerFetchesPerMin, DiscoveryRetryAfter(err))
+
+	_, err = r.Resolve(flooding, srv.URL+"/p0.json")
+	require.NoError(t, err, "cached")
+	_, err = r.Resolve(httpmw.WithClient(t.Context(), "2001:db8:1:2::/64"),
+		srv.URL+"/one-more.json")
+	require.NoError(t, err, "another caller")
+}
+
+// A spent shared budget spends none of a caller's share: once it refills,
+// the caller fetches its whole burst.
+func TestASpentSharedBudgetSpendsNoCallersShare(t *testing.T) {
+	body := platformProfileJSON(t, "https://p.example/hooks")
+	srv := serveProfile(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	})
+	r := newTestResolver(t)
+	r.limiter = rate.NewLimiter(fetchRate, fetchBurst)
+	require.True(t, r.limiter.AllowN(time.Now(), fetchBurst))
+	caller := httpmw.WithClient(t.Context(), "198.51.100.7")
+	for i := range 2 * callerFetchBurst {
+		_, err := r.Resolve(caller, fmt.Sprintf("%s/busy%d.json", srv.URL, i))
+		require.ErrorIs(t, err, ErrDiscoveryBusy, i)
+		assert.Equal(t, 1, DiscoveryRetryAfter(err),
+			"the shared budget refills within a second")
+	}
+
+	r.limiter = rate.NewLimiter(rate.Inf, 1)
+	for i := range callerFetchBurst {
+		_, err := r.Resolve(caller, fmt.Sprintf("%s/p%d.json", srv.URL, i))
+		require.NoError(t, err, "the share is whole: %d", i)
+	}
+}
+
+// Every caller is charged its own share before it fetches or waits on a
+// fetch of the same URL: a caller past its share is refused even while
+// another caller's fetch of that URL is under way, a caller with share
+// left that joins one gets the profile, charged for it, and the caller
+// that started it waits on it again for nothing.
+func TestEachCallerOfOneFetchIsChargedItsOwnShare(t *testing.T) {
+	body := platformProfileJSON(t, "https://p.example/hooks")
+	release := make(chan struct{})
+	asked := make(chan struct{}, 8)
+	srv := serveProfile(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/held.json" {
+			asked <- struct{}{}
+			<-release
+		}
+		_, _ = w.Write([]byte(body))
+	})
+	// Released at the latest when the test ends, before the server
+	// closes, so a failing test does not hang on the held fetch.
+	var once sync.Once
+	unhold := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unhold)
+	r := newTestResolver(t)
+	spent := httpmw.WithClient(t.Context(), "198.51.100.7")
+	for i := range callerFetchBurst {
+		_, err := r.Resolve(spent, fmt.Sprintf("%s/p%d.json", srv.URL, i))
+		require.NoError(t, err, i)
+	}
+	leader := httpmw.WithClient(t.Context(), "198.51.100.8")
+	joiner := httpmw.WithClient(t.Context(), "198.51.100.9")
+	type result struct {
+		p   *PlatformProfile
+		err error
+	}
+	resolve := func(ctx context.Context) <-chan result {
+		out := make(chan result, 1)
+		go func() {
+			p, err := r.Resolve(ctx, srv.URL+"/held.json")
+			out <- result{p, err}
+		}()
+		return out
+	}
+	led := resolve(leader)
+	<-asked
+
+	select {
+	case res := <-resolve(spent):
+		require.ErrorIs(t, res.err, ErrDiscoveryBusy,
+			"refused, not carried by the fetch under way")
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "a caller past its share joined the fetch")
+	}
+	joined := resolve(joiner)
+	// The joiner is waiting on the fetch, charged, before it lands.
+	require.Eventually(t, func() bool {
+		r.budgetMu.Lock()
+		defer r.budgetMu.Unlock()
+		return r.flights[srv.URL+"/held.json"]["198.51.100.9"]
+	}, 5*time.Second, time.Millisecond)
+	// The leader asks again while its fetch is under way: it waits on it,
+	// or, if that has landed, is served from the cache; neither costs it
+	// a token (that the wait is free is what lets a platform's concurrent
+	// calls at a cold cache through: the integration suite's
+	// TestConcurrentCreatesOnOneCartLeaveOneLiveCheckout).
+	again := resolve(leader)
+	unhold()
+	for _, out := range []<-chan result{led, joined, again} {
+		res := <-out
+		require.NoError(t, res.err)
+		assert.NotNil(t, res.p)
+	}
+	assert.EqualValues(t, callerFetchBurst+1, srv.hits.Load(), "one fetch")
+
+	// Each paid one token for the fetch: burst-1 fetches are left.
+	for name, ctx := range map[string]context.Context{
+		"joiner": joiner, "leader": leader,
+	} {
+		for i := range callerFetchBurst - 1 {
+			_, err := r.Resolve(ctx,
+				fmt.Sprintf("%s/%s%d.json", srv.URL, name, i))
+			require.NoError(t, err, "%s %d", name, i)
+		}
+		_, err := r.Resolve(ctx, srv.URL+"/"+name+"-last.json")
+		require.ErrorIs(t, err, ErrDiscoveryBusy, name)
+	}
+}
+
+// A refusal reads both budgets at one instant: a reservation read as not
+// yet due is given back whole even when it falls due a moment later, so
+// the refusal spends no token and its delay is the one it was refused
+// with.
+func TestARefusalAtTheBoundarySpendsNoToken(t *testing.T) {
+	r := newTestResolver(t)
+	t0 := time.Now()
+	const caller = "198.51.100.7"
+	for i := range callerFetchBurst {
+		require.NoError(t, r.spendLocked(caller, t0), i)
+	}
+	refill := time.Minute / callerFetchesPerMin
+	due := t0.Add(refill)
+
+	err := r.spendLocked(caller, due.Add(-time.Millisecond))
+	b, ok := errors.AsType[*busyError](err)
+	require.True(t, ok, "%v", err)
+	assert.InDelta(t, time.Millisecond, b.wait, float64(time.Microsecond))
+	// The token that fell due a moment later is still there.
+	require.NoError(t, r.spendLocked(caller, due))
+	require.ErrorIs(t, r.spendLocked(caller, due), ErrDiscoveryBusy)
+
+	// So for the shared budget: refused at one instant, it keeps the
+	// token that falls due at the next.
+	r.limiter = rate.NewLimiter(1, 1)
+	require.True(t, r.limiter.AllowN(t0, 1))
+	err = r.spendLocked("198.51.100.8", t0.Add(time.Second-time.Millisecond))
+	b, ok = errors.AsType[*busyError](err)
+	require.True(t, ok, "%v", err)
+	assert.InDelta(t, time.Millisecond, b.wait, float64(time.Microsecond))
+	require.NoError(t, r.spendLocked("198.51.100.8", t0.Add(time.Second)))
+}
+
+// A context no rate limiter named the caller of fetches nothing: every
+// fetch is a caller's, never a bucket shared by every unnamed one.
+func TestAFetchNeedsANamedCaller(t *testing.T) {
+	srv := serveProfile(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(platformProfileJSON(t, "https://p.example/h")))
+	})
+	r := newTestResolver(t)
+	_, err := r.Resolve(t.Context(), srv.URL+"/profile.json")
+	require.ErrorIs(t, err, errNoCaller)
+	require.NotErrorIs(t, err, ErrDiscoveryBusy)
+	_, err = r.Refresh(t.Context(), srv.URL+"/profile.json")
+	require.ErrorIs(t, err, errNoCaller)
+	assert.Zero(t, srv.hits.Load())
 }
 
 // A panic in a fetch comes back as an error, without the panic text or
@@ -202,8 +412,8 @@ func TestResolveBudgetExhaustionIsNotCached(t *testing.T) {
 // the process from singleflight's own goroutine.
 func TestResolveReturnsPanicAsError(t *testing.T) {
 	r := newTestResolver(t)
-	r.limiter = nil // taking a token panics
-	_, err := r.Resolve(t.Context(),
+	r.hc = nil // sending the request panics
+	_, err := r.Resolve(caller(t),
 		"http://127.0.0.1:1/profile.json")
 	require.EqualError(t, err, "ucp: profile fetch: panicked")
 }
@@ -215,7 +425,7 @@ func TestResolveHidesTransportErrorDetail(t *testing.T) {
 	require.NoError(t, err)
 	r.hc = platformClient(false, time.Second)
 	// A public-looking name that resolves nowhere public in tests.
-	_, err = r.Resolve(t.Context(),
+	_, err = r.Resolve(caller(t),
 		"https://profile.invalid/profile.json")
 	derr, ok := errors.AsType[*DiscoveryError](err)
 	require.True(t, ok, "got %v", err)

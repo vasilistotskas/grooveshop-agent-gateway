@@ -134,12 +134,12 @@ func TestAKeyThatDoesNotDecodeLeavesTheProfileUsable(t *testing.T) {
 	})
 	r := newTestResolver(t)
 
-	p, err := r.Resolve(t.Context(), srv.URL+"/profile.json")
+	p, err := r.Resolve(caller(t), srv.URL+"/profile.json")
 	require.NoError(t, err)
 	assert.True(t, Negotiate(BusinessCapabilities(testTenant()), p).
 		Has(CapabilityCheckout))
 	req, raw := signedRequest(t, key, srv.URL+"/profile.json")
-	_, err = r.VerifyRequest(t.Context(), req, raw, testWindow, time.Now())
+	_, err = r.VerifyRequest(caller(t), req, raw, testWindow, time.Now())
 	require.NoError(t, err)
 }
 
@@ -195,7 +195,7 @@ func TestRefreshIsOncePerOriginPerTTLFloor(t *testing.T) {
 		_, _ = w.Write([]byte(body))
 	})
 	r := newTestResolver(t)
-	ctx := t.Context()
+	ctx := caller(t)
 
 	_, err := r.Resolve(ctx, srv.URL+"/a.json")
 	require.NoError(t, err)
@@ -243,7 +243,7 @@ func TestVerifyRequestNamesTheSigner(t *testing.T) {
 		_, _ = w.Write([]byte(body.Load().(string)))
 	})
 	r := newTestResolver(t)
-	ctx := t.Context()
+	ctx := caller(t)
 	profileURL := strings.Replace(srv.URL, "http://", "HTTP://", 1) +
 		"/profile.json"
 
@@ -275,7 +275,7 @@ func TestVerifyRequestNamesTheSigner(t *testing.T) {
 func TestVerifyRequestRefusesWhatNamesNoSigner(t *testing.T) {
 	key := testSigningKey(t)
 	r := newTestResolver(t)
-	ctx := t.Context()
+	ctx := caller(t)
 
 	req, raw := signedRequest(t, key, "https://platform.example/ucp")
 	req.Header.Del("UCP-Agent")
@@ -306,23 +306,23 @@ func TestRefreshKeepsTheCachedProfileUntilItHasAnother(t *testing.T) {
 	})
 	r := newTestResolver(t)
 	url := srv.URL + "/profile.json"
-	_, err := r.Resolve(t.Context(), url)
+	_, err := r.Resolve(caller(t), url)
 	require.NoError(t, err)
 
 	r.limiter = rate.NewLimiter(0, 0)
-	_, err = r.Refresh(t.Context(), url)
+	_, err = r.Refresh(caller(t), url)
 	require.ErrorIs(t, err, ErrDiscoveryBusy)
 	r.limiter = rate.NewLimiter(rate.Inf, 1)
-	_, err = r.Resolve(t.Context(), url)
+	_, err = r.Resolve(caller(t), url)
 	require.NoError(t, err, "a busy refresh keeps the cached profile")
 
 	broken.Store(true)
-	_, err = r.Refresh(t.Context(), url)
+	_, err = r.Refresh(caller(t), url)
 	assert.Equal(t, CodeProfileUnreachable, discoveryCode(t, err),
 		"the busy refresh did not spend the origin's floor")
-	_, err = r.Resolve(t.Context(), url)
+	_, err = r.Resolve(caller(t), url)
 	require.NoError(t, err, "a failed refresh keeps the cached profile")
-	_, err = r.Refresh(t.Context(), url)
+	_, err = r.Refresh(caller(t), url)
 	require.ErrorIs(t, err, errRefreshSpent)
 }
 
@@ -334,7 +334,7 @@ func TestRefreshFloorIsTheNormalizedOrigin(t *testing.T) {
 		"https://platform.example:443/ucp",
 		"HTTPS://Platform.Example/other",
 	} {
-		_, err := r.Refresh(t.Context(), raw)
+		_, err := r.Refresh(caller(t), raw)
 		require.ErrorIs(t, err, errRefreshSpent, raw)
 	}
 }
@@ -354,12 +354,12 @@ func TestVerifyRequestAnswersAProfileThatCannotBeRefetched(t *testing.T) {
 		_, _ = w.Write([]byte(body))
 	})
 	r := newTestResolver(t)
-	_, err := r.Resolve(t.Context(), srv.URL+"/profile.json")
+	_, err := r.Resolve(caller(t), srv.URL+"/profile.json")
 	require.NoError(t, err)
 
 	broken.Store(true)
 	req, raw := signedRequest(t, testSigningKey(t), srv.URL+"/profile.json")
-	_, err = r.VerifyRequest(t.Context(), req, raw, testWindow, time.Now())
+	_, err = r.VerifyRequest(caller(t), req, raw, testWindow, time.Now())
 	assert.Equal(t, CodeProfileUnreachable, discoveryCode(t, err))
 }
 
@@ -391,7 +391,7 @@ func TestSignRequestCoversWhatTheRequestCarries(t *testing.T) {
 		`"idempotency-key"`} {
 		assert.Contains(t, req.Header.Get("Signature-Input"), c)
 	}
-	_, err := r.VerifyRequest(t.Context(), req, raw, testWindow, time.Now())
+	_, err := r.VerifyRequest(caller(t), req, raw, testWindow, time.Now())
 	require.NoError(t, err)
 }
 
@@ -420,11 +420,11 @@ func TestARefreshOutlivesItsCaller(t *testing.T) {
 	t.Cleanup(func() { released.Do(func() { close(release) }) })
 	r := newTestResolver(t)
 	url := srv.URL + "/profile.json"
-	_, err := r.Resolve(t.Context(), url)
+	_, err := r.Resolve(caller(t), url)
 	require.NoError(t, err)
 
 	hold.Store(true)
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(caller(t))
 	req, raw := signedRequest(t, rotated, url)
 	verified := make(chan error, 1)
 	go func() {
@@ -444,6 +444,6 @@ func TestARefreshOutlivesItsCaller(t *testing.T) {
 		_, published := p.key(rotated.KID)
 		return published
 	}, 5*time.Second, 10*time.Millisecond, "the refresh was cached")
-	_, err = r.Refresh(t.Context(), url)
+	_, err = r.Refresh(caller(t), url)
 	require.ErrorIs(t, err, errRefreshSpent)
 }

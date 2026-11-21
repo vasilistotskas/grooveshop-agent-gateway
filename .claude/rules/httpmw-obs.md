@@ -10,7 +10,10 @@ paths:
 Loads when working on the global middleware chain, logging, metrics or health. The code wins over this page.
 
 - `internal/httpmw` — request-id, access log, rate limit, RED metrics,
-  recover, outermost first (`server.withGlobalChain`), inside the
+  recover, outermost first (`server.withGlobalChain`). The rate
+  limiter's middleware names the request's caller in its context
+  (`ClientFrom`, as `ClientBucket` names it), which the budgets kept per
+  caller further in read (UCP discovery's share). The chain sits inside the
   server's `surfaceErrors` ("ACP errors are the spec's",
   `.claude/rules/acp.md`). Recover wraps
   the mux (through `server.unrouted`), so a handler panic is logged and still gets its access
