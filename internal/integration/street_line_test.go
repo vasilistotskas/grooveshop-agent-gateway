@@ -37,10 +37,11 @@ func TestUCPSendsOneStreetLineAndNamesARefusedOne(t *testing.T) {
 	platform := httptest.NewServer(newWebhookSink().handler())
 	t.Cleanup(platform.Close)
 	session := connectMCP(t, stack.gw.URL)
+	// One platform, one profile, named by every call, as a platform's
+	// calls name theirs.
+	profile := servePlatformProfile(t, platform.URL+"/ucp/orders", nil)
 	meta := func(key string) map[string]any {
-		m := map[string]any{"ucp-agent": map[string]any{
-			"profile": servePlatformProfile(t, platform.URL+"/ucp/orders", nil),
-		}}
+		m := map[string]any{"ucp-agent": map[string]any{"profile": profile}}
 		if key != "" {
 			m["idempotency-key"] = key
 		}
