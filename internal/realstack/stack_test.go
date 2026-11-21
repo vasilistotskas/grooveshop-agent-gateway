@@ -443,8 +443,11 @@ with schema_context("demostore"):
 			"RATE_LIMIT_BURST":   "1000",
 		}),
 		testcontainers.WithExposedPorts("8080/tcp"),
+		// Ready, not listening: the image has no shell, so a port wait
+		// checks only the host's mapped port, which accepts connections
+		// before the gateway does, and the first test was reset.
 		testcontainers.WithWaitStrategyAndDeadline(startupDeadline,
-			wait.ForListeningPort("8080/tcp")),
+			wait.ForHTTP("/readyz").WithPort("8080/tcp")),
 	)
 	if err != nil {
 		return nil, cleanup, err
