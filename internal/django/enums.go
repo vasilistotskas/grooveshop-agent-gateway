@@ -56,11 +56,11 @@ const CodeCartHasUnpaidOrder = "cart_has_unpaid_order"
 // ErrTotalChanged.
 const CodeTotalChanged = "total_changed"
 
-// CodeStreetNumberMissing and CodeStreetNumberIsPostcode are the codes of
-// Django's refusal of an order's street line, on `street`: no house
-// number can be split from it, or the number split is a postcode
-// (core/validators/address.py). CreateOrder reports them as a
-// *StreetRefusedError.
+// CodeStreetNumberMissing and CodeStreetNumberIsPostcode are two codes of
+// Django's refusal of an order's street line, on `street`, that the
+// gateway words for itself: no house number can be split from it, or the
+// number split is a postcode (core/validators/address.py). CreateOrder
+// reports every refusal on `street` as a *StreetRefusedError.
 const (
 	CodeStreetNumberMissing    = "street_number_missing"
 	CodeStreetNumberIsPostcode = "street_number_is_postcode"

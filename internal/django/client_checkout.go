@@ -101,8 +101,9 @@ type OrderCreate struct {
 	ExpectedTotal ExpectedTotal `json:"expectedTotal"`
 	// ExpectedCartDigest is the CartDigest of the quote whose total the
 	// buyer was shown: Django creates the order only from exactly the
-	// cart that quote priced (its lines, promotions, delivery with its
-	// pickup point, and pay way), else answers 409 cart_changed. It
+	// cart that quote priced (its lines, promotions and delivery, with
+	// the pickup point of a pickup; not the pay way), else answers 409
+	// cart_changed. It
 	// catches what the total cannot: a line swapped for one at the same
 	// price.
 	ExpectedCartDigest string `json:"expectedCartDigest"`
@@ -177,9 +178,13 @@ func (c *Client) CreateOrder(
 }
 
 // StreetRefusedError is Django's refusal of an order's street line (400,
-// on `street`): a line it cannot split into the street and its house
-// number (CodeStreetNumberMissing), or whose number is a postcode
-// (CodeStreetNumberIsPostcode). Nothing was created. Message is the
+// on `street`), whatever its code: among them a line it cannot split
+// into the street and its house number (CodeStreetNumberMissing), one
+// whose number is a postcode (CodeStreetNumberIsPostcode), and a street
+// or a number the address rules refuse (street_name_missing, the number
+// field's own checks). The gateway sends the one line only, so any
+// refusal on `street` is the line's, except a street not sent at all
+// (blank, required), which is a missing field. Nothing was created. Message is the
 // store's own sentence. It unwraps to Django's *APIError, so it is
 // ErrValidation too.
 type StreetRefusedError struct {
@@ -218,7 +223,9 @@ func streetRefusal(apiErr *APIError) *StreetRefusedError {
 	_ = json.Unmarshal(apiErr.Body, &body)
 	for _, f := range body.Fields.Street {
 		switch f.Code {
-		case CodeStreetNumberMissing, CodeStreetNumberIsPostcode:
+		// A street not sent is a missing field, not a refused line.
+		case "blank", "required", "null":
+		default:
 			return &StreetRefusedError{
 				Code: f.Code, Message: f.Message, err: apiErr}
 		}

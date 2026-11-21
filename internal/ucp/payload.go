@@ -567,15 +567,21 @@ func missing(s *checkout.Session, fulfills bool) []Message {
 // StreetRefusedText says why the store refused the destination's street
 // line, by Django's code.
 func StreetRefusedText(code string) string {
-	if code == django.CodeStreetNumberIsPostcode {
+	switch code {
+	case django.CodeStreetNumberIsPostcode:
 		return "The number at the end of street_address reads as a " +
 			"postal code. Send the street with its house number in " +
 			"street_address (e.g. \"Ermou 12\"), and the postal code in " +
 			"postal_code."
+	case django.CodeStreetNumberMissing:
+		return "The store could not read a house number at the end of " +
+			"street_address. Send the street followed by its house " +
+			"number (e.g. \"Ermou 12\"), and a floor or flat in " +
+			"extended_address."
 	}
-	return "The store could not read a house number at the end of " +
-		"street_address. Send the street followed by its house number " +
-		"(e.g. \"Ermou 12\"), and a floor or flat in extended_address."
+	return "The store refused the street in street_address. Send the " +
+		"street's name followed by its house number (e.g. \"Ermou 12\"), " +
+		"and a floor or flat in extended_address."
 }
 
 // refusedChoices are the recoverable errors of the checkout's choices the

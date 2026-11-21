@@ -183,19 +183,23 @@ wins over this page.
     once the destination's country is known; `selected_option_id`
     chooses one (`Fulfillment.Kind` and `ProviderCode`), null until then.
     A placed order lists no options.
-  - Refused, and nothing applied: another method type than `shipping`
-    (pickup waits for step C, after Django #642), a second method,
-    destination or group, a `selected_destination_id` the business never
-    gave or that is not the destination written.
+  - An update may name the method by its `id` (`shipping`) instead of
+    its `type`, which the spec makes optional there.
+  - Refused, and nothing applied (the buyer included): another method
+    type than `shipping` (pickup waits for step C, after Django #642), a
+    method `id` the business never gave, a method named by neither, a
+    second method, destination or group, a `selected_destination_id` the
+    business never gave or that is not the destination written.
   - What a checkout still needs is an `error` message, `recoverable`,
     code `missing`, at its path (`ucp.missing`: `$.buyer`,
     `…destinations`, `…destinations[0].address_region`,
     `…groups[0].selected_option_id`, `$.payment`), and a refused
     delivery is the quote's code at the option.
   - **A street line Django refuses** at order creation
-    (`django.StreetRefusedError`: `street_number_missing`,
-    `street_number_is_postcode`, read from `fields.street`, whatever the
-    body's own code) is stored on the session (`Session.StreetRefused`)
+    (`django.StreetRefusedError`: any refusal on `fields.street`, whatever
+    the body's own code, but a street not sent; `street_number_missing`
+    and `street_number_is_postcode` get the gateway's own words) is
+    stored on the session (`Session.StreetRefused`)
     until the address changes (`Session.Deliver`): the checkout reads
     `incomplete` with that code at
     `…destinations[0].street_address`, and the complete that met it is

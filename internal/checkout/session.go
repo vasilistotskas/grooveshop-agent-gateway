@@ -8,6 +8,7 @@ package checkout
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
@@ -403,9 +404,14 @@ func (s *Session) Recompute() {
 	s.Status = StatusIncomplete
 }
 
-// Deliver sets the checkout's delivery. A street line the store refused
-// is refused no longer once the address changes.
+// Deliver sets the checkout's delivery, the one way every surface sets
+// it. Django knows a country only by its upper-case code (in any other
+// case it has no regions, and refuses the order at the end), so the
+// country is stored so, and compared so: a street line the store refused
+// is refused no longer once the address changes, and the same address in
+// another case is not another.
 func (s *Session) Deliver(f Fulfillment) {
+	f.CountryCode = strings.ToUpper(strings.TrimSpace(f.CountryCode))
 	if !s.Fulfillment.sameAddress(f) {
 		s.StreetRefused = nil
 	}

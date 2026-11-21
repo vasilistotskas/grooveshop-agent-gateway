@@ -131,9 +131,12 @@ type UCPFulfillmentIn struct {
 }
 
 // UCPFulfillmentMethodIn is one method of a request. The business
-// fulfils the whole cart one way, so a method's `id` and `line_item_ids`
-// are not read.
+// fulfils the whole cart one way, so a method's `line_item_ids` are not
+// read. An update may name the method by the `id` the business gave it
+// instead of its `type` (the spec's update omits nothing but requires
+// only the lines): methodType reads either.
 type UCPFulfillmentMethodIn struct {
+	ID   string `json:"id"`
 	Type string `json:"type"`
 	// Destinations is the shipping address the platform writes, under a
 	// shipping method.
@@ -236,7 +239,14 @@ func (c *UCPCheckoutIn) delivery(
 	for i := range c.Fulfillment.Methods {
 		m := &c.Fulfillment.Methods[i]
 		switch {
-		case m.Type != ucp.FulfillmentMethodType:
+		case m.ID != "" && m.ID != ucp.FulfillmentMethodID:
+			return nil, invalidInput("checkout.fulfillment.methods[%d].id "+
+				"%q names no method of this checkout: its method is %q",
+				i, m.ID, ucp.FulfillmentMethodID)
+		case m.Type == "" && m.ID == "":
+			return nil, invalidInput("checkout.fulfillment.methods[%d]: "+
+				"name the method by its type or its id", i)
+		case m.Type != "" && m.Type != ucp.FulfillmentMethodType:
 			return nil, invalidInput("checkout.fulfillment.methods[%d]."+
 				"type %q is not offered: this store delivers by %q only, "+
 				"to one address", i, m.Type, ucp.FulfillmentMethodType)
@@ -433,10 +443,14 @@ func (c *UCPCheckoutIn) replacedDiscountCodes(
 func (c *UCPCheckoutIn) applyTo(
 	s *checkout.Session, neg ucp.Negotiated,
 ) (bool, error) {
-	s.Buyer = c.buyer()
+	// Decoded first, so a refused request applies nothing.
 	f, err := c.delivery(neg, s.Fulfillment)
-	if err != nil || f == nil {
+	if err != nil {
 		return false, err
+	}
+	s.Buyer = c.buyer()
+	if f == nil {
+		return false, nil
 	}
 	s.Deliver(*f)
 	return true, nil

@@ -786,14 +786,19 @@ func applyFulfillment(
 
 // streetRefusedText says why the store refused line_one, by Django's code.
 func streetRefusedText(r *checkout.Refusal) string {
-	if r.Code == django.CodeStreetNumberIsPostcode {
+	switch r.Code {
+	case django.CodeStreetNumberIsPostcode:
 		return "The number at the end of line_one reads as a postal " +
 			"code. Send the street with its house number in line_one " +
 			"(e.g. \"Ermou 12\") and the postal code in postal_code."
+	case django.CodeStreetNumberMissing:
+		return "The store could not read a house number at the end of " +
+			"line_one. Send the street followed by its house number " +
+			"(e.g. \"Ermou 12\"), and a floor or flat in line_two."
 	}
-	return "The store could not read a house number at the end of " +
-		"line_one. Send the street followed by its house number (e.g. " +
-		"\"Ermou 12\"), and a floor or flat in line_two."
+	return "The store refused the street in line_one. Send the street's " +
+		"name followed by its house number (e.g. \"Ermou 12\"), and a " +
+		"floor or flat in line_two."
 }
 
 // cartLines maps ACP item refs onto product lines.

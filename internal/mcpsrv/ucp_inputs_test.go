@@ -143,7 +143,8 @@ func TestCheckoutToolsDescribeTheBusinessesOwnMembers(t *testing.T) {
 
 // A delivery is checked as the fulfillment extension's request schema
 // has it: a destination of a shipping method is a postal address, a
-// method needs its type, and a pickup method writes no destination.
+// method needs its line items, and an update may name a method by the
+// id the business gave it instead of its type.
 func TestFulfillmentIsCheckedAsTheExtensionHasIt(t *testing.T) {
 	session := ucpSession(t)
 	call := func(fulfillment string) (bool, string) {
@@ -168,6 +169,10 @@ func TestFulfillmentIsCheckedAsTheExtensionHasIt(t *testing.T) {
 		"a method without its line items": {`{"methods":[{"type":` +
 			`"shipping"}]}`, false},
 		"no methods": {`{}`, true},
+		"a method named by its id, without its type": {`{"methods":[` +
+			`{"id":"shipping","line_item_ids":["410"],` +
+			`"selected_destination_id":"shipping_address","groups":[` +
+			`{"id":"parcel","selected_option_id":"acs"}]}]}`, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ok, text := call(tc.fulfillment)
@@ -335,15 +340,25 @@ func TestRequestStructsDecodeWhatTheSchemasAccept(t *testing.T) {
 		{"get_order", getOrderInput, reflect.TypeFor[GetOrderIn]()},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
-			c := structCheck{t: t, instrument: &instrument}
+			c := structCheck{t: t, instrument: &instrument,
+				omitted: omittedBy[tc.tool]}
 			c.object("", tc.in, tc.schema)
 		})
 	}
 }
 
+// omittedBy is, per tool, the members a struct shares with another tool
+// that this tool's schema omits (ucp_request "omit"): a method's id, which
+// the business gives, is named on an update only. delivery refuses any id
+// but the business's, whichever tool decodes it.
+var omittedBy = map[string]map[string]bool{
+	"create_checkout": {"checkout.fulfillment.methods[].id": true},
+}
+
 type structCheck struct {
 	t          *testing.T
 	instrument *jsonschema.Schema
+	omitted    map[string]bool
 }
 
 // branches is s and every schema it is the allOf of, and the then of
@@ -388,6 +403,10 @@ func (c structCheck) object(path string, typ reflect.Type, s *jsonschema.Schema)
 				prop = p
 				break
 			}
+		}
+		if c.omitted[member] {
+			assert.Nil(c.t, prop, "%s is in the schema now", member)
+			continue
 		}
 		if !assert.NotNil(c.t, prop,
 			"%s is not in the schema, so the schema takes any value", member) {
