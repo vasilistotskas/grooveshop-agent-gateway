@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 )
@@ -97,9 +96,12 @@ func (p *post) replyID() any {
 //   - a JSON array is a batch of messages, anything else one message
 //     (the SDK's readBatch);
 //   - each message is decoded by the SDK's own jsonrpc.DecodeMessage;
-//   - a tools/call's params are decoded into the SDK's CallToolParamsRaw
-//     with the decoder and options the SDK uses: segmentio/encoding with
-//     case-sensitive field names, so `Name` is not `name`.
+//   - a tools/call's params are decoded, with the decoder and options
+//     the SDK uses (segmentio/encoding with case-sensitive field names,
+//     so `Name` is not `name`), into the two members of the SDK's
+//     CallToolParamsRaw read here (toolCallParams). The rest, `_meta`
+//     among it, is skipped: any params the SDK decodes are decoded here,
+//     so no call it runs goes unseen.
 //
 // The SDK refuses a batch on protocol 2025-06-18 and later; such a body
 // is still read here, and refusing one the SDK would refuse costs
@@ -121,7 +123,7 @@ func readToolCalls(body []byte) []calledTool {
 		if !ok || req.Method != "tools/call" || req.Params == nil {
 			continue
 		}
-		var params mcp.CallToolParamsRaw
+		var params toolCallParams
 		if decodeAsSDK(req.Params, &params) == nil {
 			calls = append(calls, calledTool{
 				name: params.Name, args: params.Arguments,
@@ -129,6 +131,14 @@ func readToolCalls(body []byte) []calledTool {
 		}
 	}
 	return calls
+}
+
+// toolCallParams is what readToolCalls reads of a tools/call's params:
+// the members of the SDK's CallToolParamsRaw by the same names, and none
+// of its others.
+type toolCallParams struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
 // calledTools names the tools a request body calls (readToolCalls).
