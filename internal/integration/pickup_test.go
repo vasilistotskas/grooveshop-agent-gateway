@@ -123,4 +123,29 @@ func TestUCPPickupOrdersGoToThePoint(t *testing.T) {
 	assert.Equal(t, "GR", (*order)["countryId"])
 	assert.NotContains(t, *order, "street")
 	assert.NotContains(t, *order, "regionId")
+
+	// A point Django holds in another country than the one its id names
+	// is refused as no resync could change: the same answer, its own
+	// code, nothing placed.
+	res = callTool(t, session, "create_checkout", map[string]any{
+		"meta": meta(""), "cart_id": stack.faults.carts.mint(),
+		"checkout": map[string]any{
+			"buyer": buyer, "fulfillment": pickupAt("boxnow:CY:25"),
+			"payment": codPayment(),
+		},
+	})
+	require.False(t, res.IsError, "%v", res.Content[0].(*mcp.TextContent).Text)
+	placed = stack.faults.ordersPlaced.Load()
+	answer = complete(structured(t, res)["id"].(string))
+	assert.Equal(t, "incomplete", answer["status"])
+	assert.Equal(t, placed, stack.faults.ordersPlaced.Load())
+	refused = nil
+	for _, m := range answer["messages"].([]any) {
+		if msg := m.(map[string]any); msg["path"] ==
+			"$.fulfillment.methods[1].selected_destination_id" {
+			refused = msg
+		}
+	}
+	require.NotNil(t, refused, "%v", answer["messages"])
+	assert.Equal(t, "pickup_point_in_another_country", refused["code"])
 }

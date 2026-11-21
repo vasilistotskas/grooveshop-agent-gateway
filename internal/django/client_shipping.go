@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // ShippingQuery maps to /shipping/options query parameters.
@@ -105,39 +106,55 @@ func (c *Client) AcsNearestStations(
 	return out, nil
 }
 
-// catalogueSearchSize is the page a catalogue search by id reads: the
-// search matches the id as a substring, so a short one can match others
-// beside it.
-const catalogueSearchSize = "50"
+// cataloguePageSize is the page a catalogue search reads, the
+// paginator's largest.
+const cataloguePageSize = 100
+
+// A catalogue search matches its term as a substring of several columns,
+// and an ACS area code is shared by every point of its area, so the row
+// asked for may be on any page: a caller reads them all until it finds
+// it (lastPage).
+// lastPage reports whether page, which held read rows, was the last of a
+// search counting count.
+func lastPage(page, read int, count int64) bool {
+	return read == 0 || int64(page*cataloguePageSize) >= count
+}
 
 // AcsStationByID reads one ACS station from the store's catalogue by its
 // external id and branch (the pair a station is, and an order names),
-// ErrNotFound when the catalogue holds none: not synced yet, or a store
-// without ACS (whose station routes answer 404).
+// ErrNotFound when the catalogue holds none active: not synced yet,
+// withdrawn, or a store without ACS (whose station routes answer 404).
+// The list holds the store's locker kinds only.
 func (c *Client) AcsStationByID(
 	ctx context.Context, host, lang, externalID, branch string,
 ) (*AcsStation, error) {
-	var out Page[AcsStation]
-	err := c.get(ctx, request{
-		path:     "/shipping/acs/stations",
-		host:     host,
-		language: lang,
-		query: url.Values{
-			"search": {externalID}, "pageSize": {catalogueSearchSize},
-		},
-		out: &out,
-	})
-	if err != nil {
-		return nil, err
-	}
-	for i := range out.Results {
-		st := &out.Results[i]
-		if st.ExternalID == externalID && st.BranchCode == branch {
-			return st, nil
+	for page := 1; ; page++ {
+		var out Page[AcsStation]
+		err := c.get(ctx, request{
+			path:     "/shipping/acs/stations",
+			host:     host,
+			language: lang,
+			query: url.Values{
+				"search":   {externalID},
+				"page":     {strconv.Itoa(page)},
+				"pageSize": {strconv.Itoa(cataloguePageSize)},
+			},
+			out: &out,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for i := range out.Results {
+			st := &out.Results[i]
+			if st.ExternalID == externalID && st.BranchCode == branch {
+				return st, nil
+			}
+		}
+		if lastPage(page, len(out.Results), out.Count) {
+			return nil, fmt.Errorf("%w: acs station %s/%s", ErrNotFound,
+				externalID, branch)
 		}
 	}
-	return nil, fmt.Errorf("%w: acs station %s/%s", ErrNotFound,
-		externalID, branch)
 }
 
 // BoxNowCatalogueLocker is a BOX NOW locker as the store's catalogue
@@ -153,30 +170,36 @@ type BoxNowCatalogueLocker struct {
 }
 
 // BoxNowLockerByID reads one BOX NOW locker from the store's catalogue by
-// its id, ErrNotFound when the catalogue holds none (it syncs daily, and
-// BOX NOW's own lookup is live).
+// its id, ErrNotFound when the catalogue holds none active (it syncs
+// daily, and BOX NOW's own lookup is live).
 func (c *Client) BoxNowLockerByID(
 	ctx context.Context, host, lang, id string,
 ) (*BoxNowCatalogueLocker, error) {
-	var out Page[BoxNowCatalogueLocker]
-	err := c.get(ctx, request{
-		path:     "/shipping/boxnow/lockers",
-		host:     host,
-		language: lang,
-		query: url.Values{
-			"search": {id}, "pageSize": {catalogueSearchSize},
-		},
-		out: &out,
-	})
-	if err != nil {
-		return nil, err
-	}
-	for i := range out.Results {
-		if out.Results[i].ExternalID == id {
-			return &out.Results[i], nil
+	for page := 1; ; page++ {
+		var out Page[BoxNowCatalogueLocker]
+		err := c.get(ctx, request{
+			path:     "/shipping/boxnow/lockers",
+			host:     host,
+			language: lang,
+			query: url.Values{
+				"search":   {id},
+				"page":     {strconv.Itoa(page)},
+				"pageSize": {strconv.Itoa(cataloguePageSize)},
+			},
+			out: &out,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for i := range out.Results {
+			if out.Results[i].ExternalID == id {
+				return &out.Results[i], nil
+			}
+		}
+		if lastPage(page, len(out.Results), out.Count) {
+			return nil, fmt.Errorf("%w: boxnow locker %s", ErrNotFound, id)
 		}
 	}
-	return nil, fmt.Errorf("%w: boxnow locker %s", ErrNotFound, id)
 }
 
 // BoxNowNearestRequest mirrors the lockers/nearest proxy body.

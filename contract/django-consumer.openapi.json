@@ -4208,6 +4208,14 @@
           },
           {
             "in": "query",
+            "name": "page",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
             "name": "pageSize",
             "required": true,
             "schema": {
@@ -4274,6 +4282,14 @@
           {
             "in": "query",
             "name": "search",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
             "required": true,
             "schema": {
               "type": "string"

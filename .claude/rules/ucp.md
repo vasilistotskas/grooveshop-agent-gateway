@@ -181,7 +181,10 @@ wins over this page.
     `AcsNearestStations` call per render, a failed one a `warning`
     `pickup_points_unlisted`), and the selected point, by the name and
     address the store's catalogue gave when it was chosen
-    (`handlers.applyPoint`: `AcsStationByID`, `BoxNowLockerByID`; one
+    (`handlers.applyPoint`: `AcsStationByID`, `BoxNowLockerByID`, the
+    catalogue lists Django already serves, `GET /shipping/acs/stations`
+    and `GET /shipping/boxnow/lockers` with `search`, read page by page
+    for the exact id and branch; one
     the catalogue does not hold is taken and named by its carrier and
     id, and Django decides at the order). BOX NOW lockers are found only
     from a street, so only `find_pickup_points` lists them. No group
@@ -202,7 +205,8 @@ wins over this page.
   - **A destination Django refuses** at order creation
     (`django.DestinationRefusedError`: `street_number_missing`,
     `street_number_is_postcode` on `street`, `pickup_point_unknown`,
-    `pickup_point_required` on the carrier's location field, read from
+    `pickup_point_in_another_country`, `pickup_point_required` on the
+    carrier's location field, read from
     `fields` whatever the body's own code) is stored on the session
     (`Session.DestinationRefused`) until the destination changes
     (`Session.Deliver`): the checkout reads `incomplete` with that code

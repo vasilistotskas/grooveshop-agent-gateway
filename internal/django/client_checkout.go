@@ -185,8 +185,10 @@ func (c *Client) CreateOrder(
 // (400, on one field): a street line it cannot split into the street and
 // its house number (CodeStreetNumberMissing) or whose number is a
 // postcode (CodeStreetNumberIsPostcode), on `street`; a pickup point its
-// carrier's catalogue does not hold (CodePickupPointUnknown) or none
-// named (CodePickupPointRequired), on the carrier's location field.
+// carrier's catalogue does not hold active (CodePickupPointUnknown), one
+// in another country than the order's (CodePickupPointInAnotherCountry)
+// or none named (CodePickupPointRequired), on the carrier's location
+// field.
 // Nothing was created. Message is the store's own sentence. It unwraps
 // to Django's *APIError, so it is ErrValidation too.
 type DestinationRefusedError struct {
@@ -213,9 +215,9 @@ func (e *DestinationRefusedError) Unwrap() error {
 var destinationFields = map[string][]string{
 	"street": {CodeStreetNumberMissing, CodeStreetNumberIsPostcode},
 	"boxnowLockerId": {CodePickupPointUnknown,
-		CodePickupPointRequired},
+		CodePickupPointInAnotherCountry, CodePickupPointRequired},
 	"acsStationExternalId": {CodePickupPointUnknown,
-		CodePickupPointRequired},
+		CodePickupPointInAnotherCountry, CodePickupPointRequired},
 	"shippingProviderCode": {CodePickupPointRequired},
 }
 

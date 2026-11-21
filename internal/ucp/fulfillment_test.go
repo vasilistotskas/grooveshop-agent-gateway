@@ -125,11 +125,15 @@ func TestMissingAPickupPointIsAnErrorAtTheSelection(t *testing.T) {
 		Kind: checkout.FulfillmentPickupPoint, ProviderCode: "boxnow",
 		CountryCode: "GR", BoxnowLockerID: "999",
 	})
-	s.DestinationRefused = &checkout.Refusal{
-		Code: django.CodePickupPointUnknown}
-	assert.Equal(t, []Message{{Type: "error",
-		Code: django.CodePickupPointUnknown, Path: pathPoint,
-		Severity: "recoverable",
-		Text:     DestinationRefusedText(django.CodePickupPointUnknown),
-	}}, missing(s, true))
+	for _, code := range []string{django.CodePickupPointUnknown,
+		django.CodePickupPointInAnotherCountry} {
+		s.DestinationRefused = &checkout.Refusal{Code: code}
+		assert.Equal(t, []Message{{Type: "error", Code: code,
+			Path: pathPoint, Severity: "recoverable",
+			Text: DestinationRefusedText(code),
+		}}, missing(s, true), code)
+	}
+	assert.Contains(t,
+		DestinationRefusedText(django.CodePickupPointInAnotherCountry),
+		"another country")
 }

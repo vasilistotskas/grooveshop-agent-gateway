@@ -59,16 +59,19 @@ const CodeTotalChanged = "total_changed"
 // CodeStreetNumberMissing and CodeStreetNumberIsPostcode are the codes of
 // Django's refusal of an order's street line, on `street`: no house
 // number can be split from it, or the number split is a postcode
-// (core/validators/address.py). CodePickupPointUnknown and
-// CodePickupPointRequired refuse a pickup-point order's point, on the
-// carrier's location field: one its catalogue does not hold, even once
-// resynced, or none (order/serializers/order.py). CreateOrder reports
-// each as a *DestinationRefusedError.
+// (core/validators/address.py). CodePickupPointUnknown,
+// CodePickupPointInAnotherCountry and CodePickupPointRequired refuse a
+// pickup-point order's point, on the carrier's location field: one its
+// catalogue does not hold active, even once resynced; one in another
+// country than the order's; none (order/serializers/order.py,
+// shipping.services.deliverable_pickup_point). CreateOrder reports each
+// as a *DestinationRefusedError.
 const (
-	CodeStreetNumberMissing    = "street_number_missing"
-	CodeStreetNumberIsPostcode = "street_number_is_postcode"
-	CodePickupPointUnknown     = "pickup_point_unknown"
-	CodePickupPointRequired    = "pickup_point_required"
+	CodeStreetNumberMissing         = "street_number_missing"
+	CodeStreetNumberIsPostcode      = "street_number_is_postcode"
+	CodePickupPointUnknown          = "pickup_point_unknown"
+	CodePickupPointInAnotherCountry = "pickup_point_in_another_country"
+	CodePickupPointRequired         = "pickup_point_required"
 )
 
 // CodeCartChanged is the `code` of Django's 409 refusing an order whose

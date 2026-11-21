@@ -335,9 +335,9 @@ func endsInHouseNumber(line string) bool {
 }
 
 // knownPickupPoints are the points the fake's catalogue holds, by
-// pickupPointOf.
-var knownPickupPoints = map[string]bool{
-	"boxnow 25": true, "acs AAT 502": true,
+// pickupPointOf, and the country each is in.
+var knownPickupPoints = map[string]string{
+	"boxnow 25": "GR", "acs AAT 502": "GR",
 }
 
 // pickupPointOf names an order's pickup point by its carrier's fields.
@@ -811,9 +811,15 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				for _, field := range []string{"street", "city", "zipcode"} {
 					assert.NotContains(t, body, field)
 				}
-				if !knownPickupPoints[pickupPointOf(body)] {
-					raw, err := os.ReadFile(
-						fixturePath("order_pickup_point_unknown.json"))
+				refusal := ""
+				switch country, known := knownPickupPoints[pickupPointOf(body)]; {
+				case !known:
+					refusal = "order_pickup_point_unknown.json"
+				case country != body["countryId"]:
+					refusal = "order_pickup_point_in_another_country.json"
+				}
+				if refusal != "" {
+					raw, err := os.ReadFile(fixturePath(refusal))
 					if !assert.NoError(t, err) {
 						w.WriteHeader(http.StatusInternalServerError)
 						return

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -294,6 +295,29 @@ func TestCreateOrderSendsThePickupPointAndNamesItsRefusal(t *testing.T) {
 	assert.Equal(t, CodePickupPointUnknown, refused.Code)
 }
 
+// A point in another country than the order's is a refusal of the
+// destination too, under its own code.
+func TestCreateOrderNamesAPointInAnotherCountry(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write(fixture(t,
+				"order_pickup_point_in_another_country.json"))
+		}))
+	defer srv.Close()
+	_, err := newTestClient(t, srv.URL).CreateOrder(t.Context(),
+		"shop.example.test", "el", "cart-uuid", OrderCreate{
+			PayWayID: 1, CountryID: "CY", ShippingKind: "pickup_point",
+			ShippingProviderCode: ShippingProviderBoxNow,
+			BoxnowLockerID:       "25",
+		})
+	refused, ok := errors.AsType[*DestinationRefusedError](err)
+	require.True(t, ok, "%v", err)
+	assert.Equal(t, CodePickupPointInAnotherCountry, refused.Code)
+	assert.Equal(t, "boxnowLockerId", refused.Field)
+}
+
 // A catalogue search by id matches it as a substring: the one point
 // whose id (and ACS branch) is exactly the one asked is read, and none
 // is ErrNotFound.
@@ -331,11 +355,49 @@ func TestPickupPointsAreReadFromTheCatalogueByID(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotFound)
 
 	assert.Equal(t, []string{
-		"/api/v1/shipping/acs/stations?pageSize=50&search=AAT",
-		"/api/v1/shipping/acs/stations?pageSize=50&search=AAT",
-		"/api/v1/shipping/boxnow/lockers?pageSize=50&search=25",
-		"/api/v1/shipping/boxnow/lockers?pageSize=50&search=2",
+		"/api/v1/shipping/acs/stations?page=1&pageSize=100&search=AAT",
+		"/api/v1/shipping/acs/stations?page=1&pageSize=100&search=AAT",
+		"/api/v1/shipping/boxnow/lockers?page=1&pageSize=100&search=25",
+		"/api/v1/shipping/boxnow/lockers?page=1&pageSize=100&search=2",
 	}, queries)
+}
+
+// An ACS area code is shared by every point of its area, so the point
+// asked for can be past the first page: the pages are read until it is
+// found, or the search's count is reached.
+func TestACatalogueSearchReadsEveryPage(t *testing.T) {
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			page := r.URL.Query().Get("page")
+			pages = append(pages, page)
+			w.Header().Set("Content-Type", "application/json")
+			row := `{"externalId":"AAT","branchCode":"%s","name":"%s",` +
+				`"addressLine1":"","city":"","postalCode":"","countryCode":` +
+				`"GR","lat":null,"lng":null,"maxWeightKg":"","workingHours":` +
+				`"","isActive":true}`
+			if page == "1" {
+				_, _ = fmt.Fprintf(w, `{"count":101,"results":[`+row+`]}`,
+					"1", "first")
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"count":101,"results":[`+row+`]}`,
+				"777", "on page two")
+		}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL)
+
+	st, err := c.AcsStationByID(t.Context(), "shop.example.test", "el",
+		"AAT", "777")
+	require.NoError(t, err)
+	assert.Equal(t, "on page two", st.Name)
+	assert.Equal(t, []string{"1", "2"}, pages)
+
+	pages = nil
+	_, err = c.AcsStationByID(t.Context(), "shop.example.test", "el",
+		"AAT", "000")
+	require.ErrorIs(t, err, ErrNotFound)
+	assert.Equal(t, []string{"1", "2"}, pages, "not past its count")
 }
 
 func TestLocalized(t *testing.T) {

@@ -448,10 +448,15 @@ func DestinationRefusedText(code string) string {
 			"postal code. Send the street with its house number in " +
 			"street_address (e.g. \"Ermou 12\"), and the postal code in " +
 			"postal_code."
+	case django.CodePickupPointInAnotherCountry:
+		return "This pickup point is in another country than the one " +
+			"its id names. Select a point in the delivery country: one " +
+			"of the pickup method's destinations, or a destinationId " +
+			"from find_pickup_points for that country."
 	case django.CodePickupPointUnknown, django.CodePickupPointRequired:
-		return "The store does not know this pickup point. Select " +
-			"another: one of the pickup method's destinations, or a " +
-			"destinationId from find_pickup_points."
+		return "The store does not know this pickup point, or no longer " +
+			"delivers to it. Select another: one of the pickup method's " +
+			"destinations, or a destinationId from find_pickup_points."
 	}
 	return "The store could not read a house number at the end of " +
 		"street_address. Send the street followed by its house number " +
