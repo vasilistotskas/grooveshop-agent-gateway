@@ -91,11 +91,12 @@ func ClientFrom(ctx context.Context) string {
 	return c
 }
 
-// Reserve takes a token from key's bucket: its Delay is how long until
-// the token is there, zero when it was, and Cancel gives it back. The
-// buckets are bounded and idle ones evicted, as the middleware's.
-func (rl *RateLimiter) Reserve(key string) *rate.Reservation {
-	return rl.bucket(key).Reserve()
+// Reserve takes a token from key's bucket at t: its DelayFrom(t) is how
+// long until the token is there, zero when it was, and CancelAt(t) gives
+// back one not yet due. The buckets are bounded and idle ones evicted, as
+// the middleware's.
+func (rl *RateLimiter) Reserve(key string, t time.Time) *rate.Reservation {
+	return rl.bucket(key).ReserveN(t, 1)
 }
 
 func (rl *RateLimiter) allow(key string) bool {

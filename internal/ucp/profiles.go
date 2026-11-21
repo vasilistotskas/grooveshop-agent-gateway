@@ -412,30 +412,35 @@ func (r *ProfileResolver) spend(ctx context.Context) error {
 	}
 	r.budgetMu.Lock()
 	defer r.budgetMu.Unlock()
-	return r.spendLocked(caller)
+	return r.spendLocked(caller, time.Now())
 }
 
 // spendLocked takes a token from the shared budget and one from caller's
-// share, or neither.
-func (r *ProfileResolver) spendLocked(caller string) error {
-	if r.limiter.Tokens() < 1 {
-		// A reservation not yet due is given back whole.
-		shared := r.limiter.Reserve()
-		shared.Cancel()
-		return &busyError{wait: shared.Delay()}
+// share at now, or neither. Every step reads the budgets at the one
+// instant now: a reservation read as not yet due is given back whole at
+// that instant, and its delay is from it, so a refusal never spends a
+// token that fell due between two reads of the clock.
+func (r *ProfileResolver) spendLocked(caller string, now time.Time) error {
+	if r.limiter.TokensAt(now) < 1 {
+		shared := r.limiter.ReserveN(now, 1)
+		shared.CancelAt(now)
+		return &busyError{wait: shared.DelayFrom(now)}
 	}
-	if err := r.spendShareLocked(caller); err != nil {
+	if err := r.spendShareLocked(caller, now); err != nil {
 		return err
 	}
-	r.limiter.Allow()
+	r.limiter.AllowN(now, 1)
 	return nil
 }
 
-// spendShareLocked takes a token from caller's share alone.
-func (r *ProfileResolver) spendShareLocked(caller string) error {
-	if own := r.callers.Reserve(caller); own.Delay() > 0 {
-		own.Cancel()
-		return &busyError{wait: own.Delay()}
+// spendShareLocked takes a token from caller's share alone at now.
+func (r *ProfileResolver) spendShareLocked(
+	caller string, now time.Time,
+) error {
+	own := r.callers.Reserve(caller, now)
+	if wait := own.DelayFrom(now); wait > 0 {
+		own.CancelAt(now)
+		return &busyError{wait: wait}
 	}
 	return nil
 }
@@ -453,18 +458,19 @@ func (r *ProfileResolver) join(
 	if caller == "" {
 		return nil, errNoCaller
 	}
+	now := time.Now()
 	r.budgetMu.Lock()
 	defer r.budgetMu.Unlock()
 	paid, flying := r.flights[raw]
 	switch {
 	case flying && paid[caller]:
 	case flying:
-		if err := r.spendShareLocked(caller); err != nil {
+		if err := r.spendShareLocked(caller, now); err != nil {
 			return nil, err
 		}
 		paid[caller] = true
 	default:
-		if err := r.spendLocked(caller); err != nil {
+		if err := r.spendLocked(caller, now); err != nil {
 			return nil, err
 		}
 		r.flights[raw] = map[string]bool{caller: true}

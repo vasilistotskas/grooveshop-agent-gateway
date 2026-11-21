@@ -325,6 +325,17 @@ func TestEachCallerOfOneFetchIsChargedItsOwnShare(t *testing.T) {
 		require.Fail(t, "a caller past its share joined the fetch")
 	}
 	joined := resolve(joiner)
+	// The joiner is waiting on the fetch, charged, before it lands.
+	require.Eventually(t, func() bool {
+		r.budgetMu.Lock()
+		defer r.budgetMu.Unlock()
+		return r.flights[srv.URL+"/held.json"]["198.51.100.9"]
+	}, 5*time.Second, time.Millisecond)
+	// The leader asks again while its fetch is under way: it waits on it,
+	// or, if that has landed, is served from the cache; neither costs it
+	// a token (that the wait is free is what lets a platform's concurrent
+	// calls at a cold cache through: the integration suite's
+	// TestConcurrentCreatesOnOneCartLeaveOneLiveCheckout).
 	again := resolve(leader)
 	unhold()
 	for _, out := range []<-chan result{led, joined, again} {
@@ -346,6 +357,39 @@ func TestEachCallerOfOneFetchIsChargedItsOwnShare(t *testing.T) {
 		_, err := r.Resolve(ctx, srv.URL+"/"+name+"-last.json")
 		require.ErrorIs(t, err, ErrDiscoveryBusy, name)
 	}
+}
+
+// A refusal reads both budgets at one instant: a reservation read as not
+// yet due is given back whole even when it falls due a moment later, so
+// the refusal spends no token and its delay is the one it was refused
+// with.
+func TestARefusalAtTheBoundarySpendsNoToken(t *testing.T) {
+	r := newTestResolver(t)
+	t0 := time.Now()
+	const caller = "198.51.100.7"
+	for i := range callerFetchBurst {
+		require.NoError(t, r.spendLocked(caller, t0), i)
+	}
+	refill := time.Minute / callerFetchesPerMin
+	due := t0.Add(refill)
+
+	err := r.spendLocked(caller, due.Add(-time.Millisecond))
+	b, ok := errors.AsType[*busyError](err)
+	require.True(t, ok, "%v", err)
+	assert.InDelta(t, time.Millisecond, b.wait, float64(time.Microsecond))
+	// The token that fell due a moment later is still there.
+	require.NoError(t, r.spendLocked(caller, due))
+	require.ErrorIs(t, r.spendLocked(caller, due), ErrDiscoveryBusy)
+
+	// So for the shared budget: refused at one instant, it keeps the
+	// token that falls due at the next.
+	r.limiter = rate.NewLimiter(1, 1)
+	require.True(t, r.limiter.AllowN(t0, 1))
+	err = r.spendLocked("198.51.100.8", t0.Add(time.Second-time.Millisecond))
+	b, ok = errors.AsType[*busyError](err)
+	require.True(t, ok, "%v", err)
+	assert.InDelta(t, time.Millisecond, b.wait, float64(time.Microsecond))
+	require.NoError(t, r.spendLocked("198.51.100.8", t0.Add(time.Second)))
 }
 
 // A context no rate limiter named the caller of fetches nothing: every
