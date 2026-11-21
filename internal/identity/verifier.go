@@ -87,10 +87,7 @@ func (v *Verifier[P]) Verify(
 	// rejected at A was treated as invalid at its own store for the rest
 	// of the TTL. Every tenant's ingress targets this same pod pool, so
 	// both directions are reachable from outside.
-	sum := sha256.Sum256(
-		append(append([]byte(t.SchemaName), 0), token...),
-	)
-	key := hex.EncodeToString(sum[:])
+	key := cacheKey(t, token)
 
 	var zero P
 	entry, err := v.entry(ctx, key, t, token)
@@ -101,6 +98,14 @@ func (v *Verifier[P]) Verify(
 		return zero, ErrInvalidToken
 	}
 	return entry.profile, nil
+}
+
+// cacheKey is the cache's key for token at t (Verify says why it is so).
+func cacheKey(t *tenant.Tenant, token string) string {
+	sum := sha256.Sum256(
+		append(append([]byte(t.SchemaName), 0), token...),
+	)
+	return hex.EncodeToString(sum[:])
 }
 
 // entry is the cached verdict for key, probed when it has none or it has

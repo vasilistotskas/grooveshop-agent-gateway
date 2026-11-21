@@ -99,23 +99,50 @@ func TestVerifierIsBoundedAndKeepsTheBearersInUse(t *testing.T) {
 	assert.Len(t, v.cache, cacheMax)
 	assert.EqualValues(t, cacheMax+2, calls.Load(),
 		"the bearer in use was probed once")
-
-	// With some verdicts expired, those go, and none in use.
+	// The two verdicts past the cap pushed out the two least recently
+	// used, "0" and "1", and no other: an arbitrary victim would not be
+	// those two.
+	acme := store("acme")
 	v.mu.Lock()
-	expired := 0
-	for k, e := range v.cache {
-		if expired == 10 {
-			break
-		}
-		e.expires = time.Now().Add(-time.Second)
-		v.cache[k] = e
-		expired++
+	assert.NotContains(t, v.cache, cacheKey(acme, "0"))
+	assert.NotContains(t, v.cache, cacheKey(acme, "1"))
+	for _, kept := range []string{"2", strconv.Itoa(cacheMax), "in use"} {
+		assert.Contains(t, v.cache, cacheKey(acme, kept), kept)
 	}
 	v.mu.Unlock()
+
+	// With some verdicts expired, exactly those go: every other one,
+	// the bearer in use's among them, stays.
+	inUse := cacheKey(acme, "in use")
+	v.mu.Lock()
+	expired := map[string]bool{}
+	var kept []string
+	for k, e := range v.cache {
+		if len(expired) < 10 && k != inUse {
+			e.expires = time.Now().Add(-time.Second)
+			v.cache[k] = e
+			expired[k] = true
+			continue
+		}
+		kept = append(kept, k)
+	}
+	v.mu.Unlock()
+	require.Len(t, expired, 10)
 	before := calls.Load()
 	verify("new")
-	assert.Len(t, v.cache, cacheMax-expired+1)
 	assert.Equal(t, before+1, calls.Load())
+	v.mu.Lock()
+	for k := range expired {
+		assert.NotContains(t, v.cache, k, "expired")
+	}
+	for _, k := range kept {
+		assert.Contains(t, v.cache, k, "not expired")
+	}
+	assert.Contains(t, v.cache, cacheKey(acme, "new"))
+	assert.Len(t, v.cache, cacheMax-len(expired)+1)
+	v.mu.Unlock()
+	verify("in use")
+	assert.Equal(t, before+1, calls.Load(), "the bearer in use kept its own")
 }
 
 // heldProbe holds every probe until release is closed, counting them and
