@@ -78,15 +78,44 @@ func TestVerifierVerdictExpires(t *testing.T) {
 	})
 }
 
-// The cache never holds more than cacheMax verdicts.
-func TestVerifierIsBounded(t *testing.T) {
+// The cache never holds more than cacheMax verdicts. A full cache drops
+// the verdicts that expired, else the one least recently used, never
+// every verdict: a bearer in use keeps its own however many others are
+// probed, and is not asked again.
+func TestVerifierIsBoundedAndKeepsTheBearersInUse(t *testing.T) {
 	var calls atomic.Int32
 	v := NewVerifier(countingProbe(&calls), testLogger())
-	for i := range cacheMax + 1 {
-		_, err := v.Verify(t.Context(), store("acme"), strconv.Itoa(i))
+	verify := func(token string) {
+		t.Helper()
+		_, err := v.Verify(t.Context(), store("acme"), token)
 		require.NoError(t, err)
 		require.LessOrEqual(t, len(v.cache), cacheMax)
 	}
+	verify("in use")
+	for i := range cacheMax + 1 {
+		verify(strconv.Itoa(i))
+		verify("in use")
+	}
+	assert.Len(t, v.cache, cacheMax)
+	assert.EqualValues(t, cacheMax+2, calls.Load(),
+		"the bearer in use was probed once")
+
+	// With some verdicts expired, those go, and none in use.
+	v.mu.Lock()
+	expired := 0
+	for k, e := range v.cache {
+		if expired == 10 {
+			break
+		}
+		e.expires = time.Now().Add(-time.Second)
+		v.cache[k] = e
+		expired++
+	}
+	v.mu.Unlock()
+	before := calls.Load()
+	verify("new")
+	assert.Len(t, v.cache, cacheMax-expired+1)
+	assert.Equal(t, before+1, calls.Load())
 }
 
 // heldProbe holds every probe until release is closed, counting them and
