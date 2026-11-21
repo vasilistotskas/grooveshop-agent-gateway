@@ -52,6 +52,12 @@ var (
 	// (CodeTotalChanged, 409). Nothing was created. The error also
 	// carries Django's *APIError, so it is ErrConflict too.
 	ErrTotalChanged = errors.New("django: the order total has changed")
+	// ErrCartChanged: Django refused an order because the cart is no
+	// longer the one the quote the caller expected priced
+	// (CodeCartChanged, 409), though its total may be the same. Nothing
+	// was created. The error also carries Django's *APIError, so it is
+	// ErrConflict too.
+	ErrCartChanged = errors.New("django: the cart has changed")
 )
 
 // APIError is a Django error response (docs/error-contract.md in the

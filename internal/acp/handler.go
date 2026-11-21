@@ -1626,6 +1626,15 @@ func (h *Handler) completeError(
 				"confirm the total with the buyer, then complete with a new " +
 				"Idempotency-Key.",
 		})
+	// As total_changed: the cart changed, at the same total or not.
+	case errors.Is(err, django.ErrCartChanged):
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: django.CodeCartChanged,
+			Message: "This session's cart is no longer the one it showed " +
+				"(its items, discounts or delivery changed), so no order " +
+				"was placed. Read the session, confirm it with the buyer, " +
+				"then complete with a new Idempotency-Key.",
+		})
 	// Django names no order, and neither does the answer. The session
 	// stays ready: once that order is canceled unpaid it can be completed.
 	case errors.Is(err, django.ErrCartHasUnpaidOrder):
@@ -1680,10 +1689,10 @@ func (h *Handler) renderBody(
 	s *checkout.Session,
 ) ([]byte, bool) {
 	// ACP names no language: the store's default.
-	shown := s.ShownTotal
+	shown := s.Shown
 	payload, err := Render(r.Context(), h.dj, t,
 		h.site.Links(t.Domain, t.DefaultLocale), s)
-	if err == nil && s.ShownTotal != shown && s.Revision != "" {
+	if err == nil && s.Shown != shown && s.Revision != "" {
 		// A total that is not stored is not published: its order would
 		// be placed at the one stored before.
 		if err := h.storeShown(r, s); err != nil {

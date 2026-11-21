@@ -490,6 +490,7 @@ Two limits. The record can be lost while its session lives (a flush or a restore
 | Update a completed or cancelled ACP session | 405 `conflict`, `Allow: GET, HEAD` |
 | An update, complete or cancel that outlived its lock, when another request stored the session meanwhile (a complete that placed the order, a payment event) | Answered by what is stored now, never from what the call loaded and never with what Django said about the cart (it is empty, a line is gone, the stock is short: the other request's doing). A complete gets the placed session; an update or cancel the refusal that names the order; a session still open "changed by another request" (ACP 409, UCP `conflict`); one no longer stored the missing-session answer; one that cannot be read "unavailable". `checkout_snapshot_test.go`, `checkout_truth_test.go`, `checkout_after_order_test.go` |
 | An update that outlived its lock before its first cart write, when the session was stored meanwhile | It writes nothing to the cart, and is answered as in the row above. `checkout_snapshot_test.go` |
+| A complete whose cart changed since the checkout showed it (an update that outlived its lock wrote it under the completion, a line swapped at the same price) | Nothing is placed: Django refuses the order's `expectedCartDigest`. UCP: the tool error `cart_changed`; ACP: 400 `cart_changed`. The checkout stays ready, and a read shows the cart now; complete after it. `checkout_quote_test.go` |
 | A complete whose session could not be marked in progress (Redis) | No order is sent. UCP: `unavailable`, "the store's checkout records are temporarily unavailable". ACP: 503 `unavailable`. The key is free for the same call |
 | ACP create whose idempotency record could not be written | 503 `unavailable`, and the session is not handed out. The same key replays it if the record was written after all, and creates anew once the claim ends if not |
 
@@ -591,7 +592,7 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 
 ## 10. Before deploying a release that moves the checkout session key
 
-**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Six have so far:
+**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Seven have so far:
 
 | Release | Key | Why an older pod must not share a session |
 |---|---|---|
@@ -601,6 +602,7 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 | The one that publishes `expires_at` (gateway #108) | `cs:v4` to `cs:v5` | It knows nothing of the expiry a session published: its save would drop it, and a later answer could give an earlier one |
 | The one that prices from Django's quote (gateway #107) | `cs:v5` to `cs:v6` | It knows nothing of the total a session showed: its save would drop it, and the session would then place no order until it is read again |
 | The one that resumes an unanswered order (gateway #83) | `cs:v6` to `cs:v7` | It sends an order without its checkout's id, so Django cannot answer a repeat with it: a new pod resuming that session would place a second order |
+| The one that sends the cart digest a checkout showed (gateway #142) | `cs:v7` to `cs:v8` | It knows nothing of the cart digest a session showed: its save would drop it, and the session would then place no order until it is read again |
 
 **The pods it replaces must already answer a missing session truthfully.** Since the release with gateway #138, a checkout no session is stored for is answered "an order may exist, check before starting another", never only "start a new one". While a key-moving release rolls out, a pod of either kind then answers truthfully for a session it cannot see. Do not deploy one onto pods older than that.
 
@@ -684,7 +686,7 @@ Callers are told "in progress" for three upstream timeouts after the mark. After
 
 2. Decide whether an order exists. Only the checkout's id names an order as this checkout's: an order found by the buyer's email, the products or the total may be another of the buyer's orders, and is not this checkout's on that alone.
    - `$key:order` exists, or the session has an `orderUuid`: it does. Leave the session; give the platform or the buyer the order.
-   - Otherwise ask Django for the order that names the checkout (`agentCheckout`, on every order a `cs:v7` session sends; Django #759). `<schema>` and `<session id>` are the key's second and last parts:
+   - Otherwise ask Django for the order that names the checkout (`agentCheckout`, on every order a `cs:v7` or later session sends; Django #759). `<schema>` and `<session id>` are the key's second and last parts:
 
      ```bash
      kubectl --context grooveshop -n <namespace> exec deploy/backend -c backend -- \

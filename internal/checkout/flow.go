@@ -420,14 +420,11 @@ func (f *Flow) admit(
 	default:
 		return fmt.Errorf("%w: missing %v", ErrNotReady, s.Missing())
 	}
-	// The order is placed at the total the checkout showed, and a
-	// checkout whose render was never stored has shown none.
-	if s.ShownTotal == nil {
-		return ErrTotalNotShown
-	}
 	// A choice the store refuses now (the cart outgrew the carrier, the
 	// pay way is no longer offered) leaves the shown total without its
 	// row: the checkout is not ready, whatever its stored status says.
+	// It is named first: a checkout that showed a refused choice showed
+	// no order's total either, and the refusal says what to change.
 	pricing, _, err := ComputePricing(ctx, f.dj, t, s)
 	if err != nil {
 		return err
@@ -435,6 +432,13 @@ func (f *Flow) admit(
 	if r := pricing.Refused(); r != nil {
 		return fmt.Errorf("%w: %s (%s)", ErrChoiceRefused, r.Detail,
 			r.Code)
+	}
+	// The order is placed at the total the checkout showed, from the
+	// cart it was quoted for: a checkout whose render was never stored
+	// has shown none, and one stored before its delivery and pay way were
+	// both priced has shown no order's.
+	if !s.Shown.OfAnOrder() {
+		return ErrTotalNotShown
 	}
 
 	// Checked against the FINAL delivery: a method selected before the
@@ -519,9 +523,7 @@ func (f *Flow) place(
 		RegionID:             s.Fulfillment.RegionID,
 		ShippingProviderCode: s.Fulfillment.ProviderCode,
 		ShippingKind:         s.Fulfillment.Kind,
-		AcsStationExternalID: s.Fulfillment.AcsStationExternalID,
-		AcsStationBranch:     s.Fulfillment.AcsStationBranch,
-		BoxnowLockerID:       s.Fulfillment.BoxnowLockerID,
+		PickupPoint:          s.Fulfillment.PickupPoint(),
 		// Every UCP and ACP checkout response links the store's terms
 		// and privacy policy for the platform to present to the buyer
 		// (storefront.Terms, storefront.Privacy); completing it is the
@@ -530,8 +532,11 @@ func (f *Flow) place(
 		TermsAccepted: true,
 		Attribution:   agentAttribution(s.Protocol),
 		// Django creates the order only at the total the buyer was
-		// shown, and answers another with django.ErrTotalChanged.
-		ExpectedTotal: *s.ShownTotal,
+		// shown, and answers another with django.ErrTotalChanged; only
+		// from the cart that total was quoted for, and answers another
+		// with django.ErrCartChanged.
+		ExpectedTotal:      s.Shown.Total,
+		ExpectedCartDigest: s.Shown.CartDigest,
 		// One order per checkout: a repeat is answered with it.
 		AgentCheckout: s.ID,
 	}, resumed)

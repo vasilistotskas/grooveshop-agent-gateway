@@ -4,10 +4,14 @@ package integration
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 )
 
 // A checkout's order is placed at the total the checkout showed. A
@@ -98,7 +102,8 @@ func TestAChangedPriceIsChargedOnlyOnceShown(t *testing.T) {
 
 // A choice the store refuses for the cart now (cash on delivery is not
 // offered for the checkout's carrier) leaves its total without that row:
-// the checkout renders not ready, and a completion places nothing.
+// the checkout renders not ready, and a completion places nothing and
+// names the refused choice.
 func TestARefusedChoiceIsNotCompleted(t *testing.T) {
 	stack := startUCPGateway(t)
 	for _, surface := range completionSurfaces(t, stack) {
@@ -116,7 +121,19 @@ func TestARefusedChoiceIsNotCompleted(t *testing.T) {
 			assert.Contains(t,
 				[]string{"incomplete", "not_ready_for_payment"}, read.status)
 			assert.Empty(t, refused.status, "no order, no checkout placed")
-			assert.NotEmpty(t, refused.refusal)
+			// The refusal is what the store refuses, never "no total
+			// shown": the read showed the rows without the refused one.
+			switch surface.name {
+			case "ucp":
+				assert.Contains(t, refused.refusal,
+					"refuses one of this checkout's choices")
+			case "acp":
+				// ACP chooses the collect-later method at completion, and
+				// the delivery is offered none.
+				assert.Equal(t, "400 unsupported", refused.refusal)
+			}
+			assert.NotContains(t, refused.refusal+string(refused.errorBody),
+				"shown no total")
 			assert.Equal(t, placed, stack.faults.ordersPlaced.Load())
 			assert.Equal(t, sent, stack.faults.orderCreates.Load(),
 				"the refused choice never reaches the store's order call")
@@ -149,4 +166,109 @@ func TestAQuoteThatCannotBeReadIsUnavailable(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A checkout's order is made of the cart it showed (#142). A cart that
+// changed at the same total since (a line swapped for another product at
+// its price, as an update whose lock lapsed can write under a running
+// completion) is refused by Django: the completion places nothing and
+// says the cart changed, the checkout is ready again, and a read shows
+// the cart now. The next completion places that cart, at the same total.
+func TestACartChangedAtTheSameTotalIsNotOrdered(t *testing.T) {
+	stack := startUCPGateway(t)
+	for _, surface := range completionSurfaces(t, stack) {
+		t.Run(surface.name, func(t *testing.T) {
+			ctx := t.Context()
+			id := surface.ready(t)
+			placed := stack.faults.ordersPlaced.Load()
+
+			stack.faults.lineSwapped.Store(true)
+			defer stack.faults.lineSwapped.Store(false)
+			key := uuid.NewString()
+			refused := surface.answer(ctx, id, key, nil)
+
+			assert.Equal(t, placed, stack.faults.ordersPlaced.Load(),
+				"nothing is placed from a cart the checkout did not show")
+			assert.Empty(t, refused.status, "no checkout is shown")
+			switch surface.name {
+			case "ucp":
+				assert.Contains(t, refused.refusal, "cart_changed")
+			case "acp":
+				assert.Equal(t, "400 cart_changed", refused.refusal)
+			}
+			// A retry under the same key, its answer lost, sends the cart
+			// stored before: still refused, nothing placed.
+			again := surface.answer(ctx, id, key, nil)
+			assert.Empty(t, again.status)
+			assert.Equal(t, placed, stack.faults.ordersPlaced.Load())
+
+			read := surface.read(ctx, id)
+			assert.Contains(t,
+				[]string{"ready_for_complete", "ready_for_payment"},
+				read.status, "the checkout is ready again")
+			assert.Equal(t, "completed",
+				surface.complete(ctx, id, uuid.NewString(), nil))
+			order := stack.faults.lastOrder.Load()
+			require.NotNil(t, order)
+			assert.Equal(t, map[string]any{
+				"amount":   float64(fixtureShownTotal.Amount),
+				"currency": fixtureShownTotal.Currency,
+			}, (*order)["expectedTotal"], "at the same total")
+		})
+	}
+}
+
+// A pickup order is made of the point its checkout's quote priced: the
+// quote names the locker the order is sent to, so the cart digest the
+// checkout showed is the order's. An order sent to another point than
+// the one shown is refused, and nothing is placed.
+func TestAPickupOrderIsSentToThePointItsCheckoutShowed(t *testing.T) {
+	f := startFlow(t, 5*time.Second)
+	pickup := func(t *testing.T, shownAt, orderedAt string) *checkout.Session {
+		t.Helper()
+		s := checkout.NewSession(f.tenant.SchemaName, f.tenant.Domain,
+			checkout.ProtocolUCP, f.faults.carts.mint())
+		s.Buyer = checkout.Buyer{
+			FirstName: "Μαρία", LastName: "Παπαδοπούλου",
+			Email: "maria@example.test", Phone: "+306912345678",
+		}
+		s.Fulfillment = checkout.Fulfillment{
+			Kind:         checkout.FulfillmentPickupPoint,
+			ProviderCode: django.ShippingProviderBoxNow,
+			CountryCode:  "GR", City: "Αθήνα", Zipcode: "10431",
+			Street: "Πανεπιστημίου", StreetNumber: "12", RegionID: "GR-14",
+			BoxnowLockerID: shownAt,
+		}
+		s.PayWayID = 1
+		s.Recompute()
+		require.Equal(t, checkout.StatusReadyForComplete, s.Status)
+		p, _, err := checkout.ComputePricing(t.Context(), f.dj, f.tenant, s)
+		require.NoError(t, err)
+		require.True(t, s.Show(p))
+		s.Fulfillment.BoxnowLockerID = orderedAt
+		require.NoError(t, f.store.Create(t.Context(), s,
+			checkout.CartHolder{}))
+		return s
+	}
+
+	t.Run("the point shown", func(t *testing.T) {
+		s := pickup(t, "4", "4")
+		_, err := f.flow.Complete(t.Context(), f.tenant, s)
+		require.NoError(t, err)
+		order := f.faults.lastOrder.Load()
+		require.NotNil(t, order)
+		assert.Equal(t, "4", (*order)["boxnowLockerId"])
+		assert.Equal(t, s.Shown.CartDigest, (*order)["expectedCartDigest"])
+		assert.Equal(t, checkout.StatusCompleted, f.stored(t, s).Status)
+	})
+
+	t.Run("another point", func(t *testing.T) {
+		placed := f.faults.ordersPlaced.Load()
+		s := pickup(t, "4", "5")
+		_, err := f.flow.Complete(t.Context(), f.tenant, s)
+		require.ErrorIs(t, err, django.ErrCartChanged)
+		assert.Equal(t, placed, f.faults.ordersPlaced.Load())
+		assert.Equal(t, checkout.StatusReadyForComplete,
+			f.stored(t, s).Status)
+	})
 }
