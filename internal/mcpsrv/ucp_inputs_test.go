@@ -143,7 +143,8 @@ func TestCheckoutToolsDescribeTheBusinessesOwnMembers(t *testing.T) {
 
 // A delivery is checked as the fulfillment extension's request schema
 // has it: a destination of a shipping method is a postal address, a
-// method needs its type, and a pickup method writes no destination.
+// method needs its line items, and an update may name a method by the
+// id the business gave it instead of its type.
 func TestFulfillmentIsCheckedAsTheExtensionHasIt(t *testing.T) {
 	session := ucpSession(t)
 	call := func(fulfillment string) (bool, string) {
@@ -168,6 +169,10 @@ func TestFulfillmentIsCheckedAsTheExtensionHasIt(t *testing.T) {
 		"a method without its line items": {`{"methods":[{"type":` +
 			`"shipping"}]}`, false},
 		"no methods": {`{}`, true},
+		"a method named by its id, without its type": {`{"methods":[` +
+			`{"id":"shipping","line_item_ids":["410"],` +
+			`"selected_destination_id":"shipping_address","groups":[` +
+			`{"id":"parcel","selected_option_id":"acs"}]}]}`, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ok, text := call(tc.fulfillment)
@@ -335,24 +340,30 @@ func TestRequestStructsDecodeWhatTheSchemasAccept(t *testing.T) {
 		{"get_order", getOrderInput, reflect.TypeFor[GetOrderIn]()},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
-			c := structCheck{t: t, instrument: &instrument}
-			if tc.tool == "create_checkout" {
-				// The spec omits a method's line items from a create:
-				// a create names one method, which is the chosen one.
-				c.omitted = map[string]bool{
-					"checkout.fulfillment.methods[].line_item_ids": true,
-				}
-			}
+			c := structCheck{t: t, instrument: &instrument,
+				omitted: omittedBy[tc.tool]}
 			c.object("", tc.in, tc.schema)
 		})
 	}
+}
+
+// omittedBy is, per tool, the members a struct shares with another tool
+// that this tool's schema omits (ucp_request "omit"). A create names one
+// method, which is the chosen one, so it omits the method's line items
+// and its id, which the business gives: delivery refuses any id but the
+// business's, whichever tool decodes it.
+var omittedBy = map[string]map[string]bool{
+	"create_checkout": {
+		"checkout.fulfillment.methods[].id":            true,
+		"checkout.fulfillment.methods[].line_item_ids": true,
+	},
 }
 
 type structCheck struct {
 	t          *testing.T
 	instrument *jsonschema.Schema
 	// omitted are members the operation's schema leaves out that its
-	// struct shares with another operation's.
+	// struct shares with another operation's (omittedBy).
 	omitted map[string]bool
 }
 
@@ -399,7 +410,8 @@ func (c structCheck) object(path string, typ reflect.Type, s *jsonschema.Schema)
 				break
 			}
 		}
-		if prop == nil && c.omitted[member] {
+		if c.omitted[member] {
+			assert.Nil(c.t, prop, "%s is in the schema now", member)
 			continue
 		}
 		if !assert.NotNil(c.t, prop,

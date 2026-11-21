@@ -34,10 +34,8 @@ func ResolveRegion(
 ) error {
 	s.Fulfillment.RegionID = ""
 	s.RegionOptions = nil
-	// Django knows a country only by its upper-case code: in any other case
-	// it has no regions, and refuses the order at the end.
-	s.Fulfillment.CountryCode = strings.ToUpper(s.Fulfillment.CountryCode)
-	// A pickup order is delivered to the point, and takes no region.
+	// The country is upper-case: Deliver stores it so. A pickup order is
+	// delivered to the point, and takes no region.
 	if s.Fulfillment.CountryCode == "" || s.Fulfillment.Pickup() {
 		return nil
 	}

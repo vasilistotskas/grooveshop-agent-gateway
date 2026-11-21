@@ -253,6 +253,13 @@ func TestCreateOrderSendsOneStreetLineAndNamesItsRefusal(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, CodeStreetNumberIsPostcode, refused.Code)
 
+	// Any other refusal of the line is the line's, with Django's code.
+	answer = []byte(`{"street": ["x"], "code": "invalid", "fields": ` +
+		`{"street": [{"message": "x", "code": "street_name_missing"}]}}`)
+	refused, ok = errors.AsType[*DestinationRefusedError](create())
+	require.True(t, ok)
+	assert.Equal(t, "street_name_missing", refused.Code)
+
 	answer = []byte(`{"street": ["x"], "code": "blank", ` +
 		`"fields": {"street": [{"message": "x", "code": "blank"}]}}`)
 	err = create()

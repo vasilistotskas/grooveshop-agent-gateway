@@ -210,7 +210,17 @@ func TestCheckoutInApplyToReplacesTheBuyerAndTheDelivery(t *testing.T) {
 		"the destination given, by its id": {`{"fulfillment":{"methods":` +
 			`[{"type":"shipping","selected_destination_id":` +
 			`"shipping_address","groups":[{"id":"parcel",` +
-			`"selected_option_id":"acs"}]}]}}`, held},
+			`"selected_option_id":"elta"}]}]}}`, withCarrier(held, "elta")},
+		"the destination given, no option": {`{"fulfillment":{"methods":` +
+			`[{"type":"shipping","selected_destination_id":` +
+			`"shipping_address"}]}}`, withCarrier(held, "")},
+		// An update may name the method by the id the business gave it
+		// instead of its type.
+		"the method named by its id": {`{"fulfillment":{"methods":` +
+			`[{"id":"shipping","line_item_ids":["410"],` +
+			`"selected_destination_id":"shipping_address","groups":` +
+			`[{"id":"parcel","selected_option_id":"elta"}]}]}}`,
+			withCarrier(held, "elta")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := session()
@@ -234,6 +244,10 @@ func TestCheckoutInApplyToReplacesTheBuyerAndTheDelivery(t *testing.T) {
 			`"a","destinations":[{"id":"b","postal_code":"1"}]}]}}`,
 		"two groups": `{"fulfillment":{"methods":[{"type":"shipping",` +
 			`"groups":[{"id":"parcel"},{"id":"other"}]}]}}`,
+		"a method id it never gave": `{"fulfillment":{"methods":` +
+			`[{"id":"express","line_item_ids":["410"]}]}}`,
+		"a method named by neither": `{"fulfillment":{"methods":` +
+			`[{"line_item_ids":["410"]}]}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := session()
@@ -241,9 +255,18 @@ func TestCheckoutInApplyToReplacesTheBuyerAndTheDelivery(t *testing.T) {
 			te, ok := errors.AsType[*mcptool.ToolError](err)
 			require.True(t, ok, "%v", err)
 			assert.Equal(t, mcptool.CodeInvalid, te.Code)
-			assert.Equal(t, held, s.Fulfillment, "nothing applied")
+			assert.Equal(t, session(), s, "nothing applied")
 		})
 	}
+}
+
+// withCarrier is f delivered home by carrier, or with no carrier chosen.
+func withCarrier(f checkout.Fulfillment, carrier string) checkout.Fulfillment {
+	f.Kind, f.ProviderCode = "", ""
+	if carrier != "" {
+		f.Kind, f.ProviderCode = checkout.FulfillmentHomeDelivery, carrier
+	}
+	return f
 }
 
 // A pickup method is chosen when it is the request's only method, or the
@@ -280,6 +303,9 @@ func TestCheckoutInApplyToChoosesThePickupMethod(t *testing.T) {
 		}},
 		"no point yet": {`{"fulfillment":{"methods":[{"type":"pickup"}]}}`,
 			checkout.Fulfillment{Kind: checkout.FulfillmentPickupPoint}},
+		"named by its id": {`{"fulfillment":{"methods":[{"id":"pickup",` +
+			`"line_item_ids":["410"],"selected_destination_id":` +
+			`"boxnow:GR:25"}]}}`, locker},
 		"neither naming the lines": {`{"fulfillment":{"methods":[` +
 			`{"type":"shipping","line_item_ids":[]},{"type":"pickup",` +
 			`"line_item_ids":[]}]}}`, checkout.Fulfillment{}},
@@ -324,6 +350,8 @@ func TestCheckoutInApplyToChoosesThePickupMethod(t *testing.T) {
 		"two pickup methods": `{"fulfillment":{"methods":[{"type":` +
 			`"pickup"},{"type":"pickup"}]}}`,
 		"another type": `{"fulfillment":{"methods":[{"type":"curbside"}]}}`,
+		"an id against its type": `{"fulfillment":{"methods":[{"id":` +
+			`"pickup","type":"shipping","line_item_ids":["410"]}]}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := decode(t, raw).applyTo(&checkout.Session{}, neg)

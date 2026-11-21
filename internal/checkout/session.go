@@ -8,6 +8,7 @@ package checkout
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
@@ -271,8 +272,10 @@ func (s *Session) creator() Caller {
 // Shown is what a render of an open checkout published, which its order
 // is placed at: the total, and the quote's digest of what the order would
 // be made of (Pricing.CartDigest), empty while the checkout has no
-// delivery priced. The digest holds no pay way, so a checkout that names
-// its method only at completion is placed from the cart it showed.
+// delivery priced and for a render that named a choice the store refused
+// (it showed rows, not an order's total). The digest holds no pay way, so
+// a checkout that names its method only at completion is placed from the
+// cart it showed.
 type Shown struct {
 	Total      django.ExpectedTotal `json:"total"`
 	CartDigest string               `json:"cartDigest,omitempty"`
@@ -294,8 +297,10 @@ func (s *Session) Show(p *Pricing) bool {
 		return false
 	}
 	shown := &Shown{
-		Total:      django.ExpectedTotal{Amount: p.Total, Currency: p.Currency},
-		CartDigest: p.CartDigest,
+		Total: django.ExpectedTotal{Amount: p.Total, Currency: p.Currency},
+	}
+	if p.Refused() == nil {
+		shown.CartDigest = p.CartDigest
 	}
 	if s.Shown != nil && *s.Shown == *shown {
 		return false
@@ -467,9 +472,14 @@ type Locality struct {
 	PostalCode  string `json:"postalCode,omitempty"`
 }
 
-// Deliver sets the checkout's delivery. A destination the store refused
-// is refused no longer once the destination changes.
+// Deliver sets the checkout's delivery, the one way every surface sets
+// it. Django knows a country only by its upper-case code (in any other
+// case it has no regions, and refuses the order at the end), so the
+// country is stored so, and compared so: a destination the store refused
+// is refused no longer once the destination changes, and the same one
+// in another case is not another.
 func (s *Session) Deliver(f Fulfillment) {
+	f.CountryCode = strings.ToUpper(strings.TrimSpace(f.CountryCode))
 	if !s.Fulfillment.sameDestination(f) {
 		s.DestinationRefused = nil
 	}

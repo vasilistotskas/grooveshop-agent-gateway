@@ -56,10 +56,11 @@ const CodeCartHasUnpaidOrder = "cart_has_unpaid_order"
 // ErrTotalChanged.
 const CodeTotalChanged = "total_changed"
 
-// CodeStreetNumberMissing and CodeStreetNumberIsPostcode are the codes of
-// Django's refusal of an order's street line, on `street`: no house
-// number can be split from it, or the number split is a postcode
-// (core/validators/address.py). CodePickupPointUnknown,
+// CodeStreetNumberMissing and CodeStreetNumberIsPostcode are two codes of
+// Django's refusal of an order's street line, on `street`, that the
+// gateway words for itself: no house number can be split from it, or the
+// number split is a postcode (core/validators/address.py); every refusal
+// on `street` is the line's. CodePickupPointUnknown,
 // CodePickupPointInAnotherCountry and CodePickupPointRequired refuse a
 // pickup-point order's point, on the carrier's location field: one its
 // catalogue does not hold active, even once resynced; one in another

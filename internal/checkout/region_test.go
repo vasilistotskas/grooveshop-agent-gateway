@@ -72,10 +72,18 @@ func TestResolveRegion(t *testing.T) {
 	}
 }
 
-func TestResolveRegionReadsTheCountryInAnyCase(t *testing.T) {
+// A country written in any case is the store's upper-case code (Deliver),
+// which its regions are found by, and the same address in another case is
+// not another: a street line the store refused stays refused.
+func TestACountryIsReadInAnyCase(t *testing.T) {
 	f := homeDelivery()
-	f.CountryCode = "gr"
-	s := &Session{Fulfillment: f}
+	f.CountryCode = " gr "
+	s := &Session{}
+	s.Deliver(f)
+	s.DestinationRefused = &Refusal{Code: django.CodeStreetNumberMissing}
+	f.CountryCode = "Gr"
+	s.Deliver(f)
+	assert.NotNil(t, s.DestinationRefused, "the same address")
 	require.NoError(t, ResolveRegion(
 		t.Context(), regionDjango(t, http.StatusOK),
 		regionTenant(), s, "Αττική"))

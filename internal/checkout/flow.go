@@ -435,8 +435,8 @@ func (f *Flow) admit(
 	}
 	// The order is placed at the total the checkout showed, from the
 	// cart it was quoted for: a checkout whose render was never stored
-	// has shown none, and one stored before its delivery and pay way were
-	// both priced has shown no order's.
+	// has shown none, and one stored before its delivery was priced, or
+	// that named a choice the store refused, has shown no order's.
 	if !s.Shown.OfAnOrder() {
 		return ErrTotalNotShown
 	}

@@ -132,8 +132,11 @@ type UCPFulfillmentIn struct {
 
 // UCPFulfillmentMethodIn is one method of a request. The business
 // fulfils the whole cart one way, so a method's `line_item_ids` only say
-// which method is chosen, and its `id` is not read.
+// which method is chosen. An update may name the method by the `id` the
+// business gave it instead of its `type` (the spec's update requires
+// only the lines): methodType reads either.
 type UCPFulfillmentMethodIn struct {
+	ID          string   `json:"id"`
 	Type        string   `json:"type"`
 	LineItemIDs []string `json:"line_item_ids"`
 	// Destinations is the shipping address the platform writes, under a
@@ -250,19 +253,25 @@ func (c *UCPCheckoutIn) delivery(
 		return &f, nil
 	}
 	byType := map[string]int{}
+	types := make([]string, len(c.Fulfillment.Methods))
 	for i, m := range c.Fulfillment.Methods {
-		switch _, twice := byType[m.Type]; {
-		case m.Type != ucp.FulfillmentMethodType &&
-			m.Type != ucp.PickupMethodType:
+		typ, err := methodType(i, m)
+		if err != nil {
+			return nil, err
+		}
+		types[i] = typ
+		switch _, twice := byType[typ]; {
+		case typ != ucp.FulfillmentMethodType &&
+			typ != ucp.PickupMethodType:
 			return nil, invalidInput("checkout.fulfillment.methods[%d]."+
 				"type %q is not offered: this store delivers by %q or %q",
-				i, m.Type, ucp.FulfillmentMethodType, ucp.PickupMethodType)
+				i, typ, ucp.FulfillmentMethodType, ucp.PickupMethodType)
 		case twice:
 			return nil, invalidInput("checkout.fulfillment.methods[%d]: "+
 				"this store delivers a cart one way, by one %q method",
-				i, m.Type)
+				i, typ)
 		}
-		byType[m.Type] = i
+		byType[typ] = i
 	}
 	chosen := -1
 	switch len(byType) {
@@ -290,7 +299,7 @@ func (c *UCPCheckoutIn) delivery(
 	}
 	m := c.Fulfillment.Methods[chosen]
 	at := fmt.Sprintf("checkout.fulfillment.methods[%d]", chosen)
-	if m.Type == ucp.PickupMethodType {
+	if types[chosen] == ucp.PickupMethodType {
 		return pickupDelivery(m, at, held)
 	}
 	selected := ""
@@ -362,6 +371,32 @@ func pickupDelivery(
 		f.Point = held.Point
 	}
 	return &f, nil
+}
+
+// methodType is the type of the request's method i: its type, or the
+// type of the business's method its id names. An id the business never
+// gave, a type its id contradicts, and neither are refused.
+func methodType(i int, m UCPFulfillmentMethodIn) (string, error) {
+	byID := map[string]string{
+		ucp.FulfillmentMethodID: ucp.FulfillmentMethodType,
+		ucp.PickupMethodID:      ucp.PickupMethodType,
+	}
+	switch named, known := byID[m.ID]; {
+	case m.ID == "" && m.Type == "":
+		return "", invalidInput("checkout.fulfillment.methods[%d]: name "+
+			"the method by its type or its id", i)
+	case m.ID == "":
+		return m.Type, nil
+	case !known:
+		return "", invalidInput("checkout.fulfillment.methods[%d].id %q "+
+			"names no method of this checkout: its methods are %q and %q",
+			i, m.ID, ucp.FulfillmentMethodID, ucp.PickupMethodID)
+	case m.Type != "" && m.Type != named:
+		return "", invalidInput("checkout.fulfillment.methods[%d]: id %q "+
+			"is the %q method, not %q", i, m.ID, named, m.Type)
+	default:
+		return named, nil
+	}
 }
 
 // lines flattens the requested line items into product lines. Item ids
@@ -507,6 +542,11 @@ func (c *UCPCheckoutIn) replacedDiscountCodes(
 func (c *UCPCheckoutIn) applyTo(
 	s *checkout.Session, neg ucp.Negotiated,
 ) (bool, error) {
+	// Decoded first, so a refused request applies nothing.
+	f, err := c.delivery(neg, s.Fulfillment)
+	if err != nil {
+		return false, err
+	}
 	s.Buyer = c.buyer()
 	// The context is not in the response: one the request omits keeps
 	// the locality the checkout holds.
@@ -517,9 +557,8 @@ func (c *UCPCheckoutIn) applyTo(
 			PostalCode: strings.TrimSpace(c.Context.PostalCode),
 		}
 	}
-	f, err := c.delivery(neg, s.Fulfillment)
-	if err != nil || f == nil {
-		return false, err
+	if f == nil {
+		return false, nil
 	}
 	s.Deliver(*f)
 	return true, nil

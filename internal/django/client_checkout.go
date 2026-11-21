@@ -106,8 +106,9 @@ type OrderCreate struct {
 	ExpectedTotal ExpectedTotal `json:"expectedTotal"`
 	// ExpectedCartDigest is the CartDigest of the quote whose total the
 	// buyer was shown: Django creates the order only from exactly the
-	// cart that quote priced (its lines, promotions, delivery with its
-	// pickup point, and pay way), else answers 409 cart_changed. It
+	// cart that quote priced (its lines, promotions and delivery, with
+	// the pickup point of a pickup; not the pay way), else answers 409
+	// cart_changed. It
 	// catches what the total cannot: a line swapped for one at the same
 	// price.
 	ExpectedCartDigest string `json:"expectedCartDigest"`
@@ -182,15 +183,18 @@ func (c *Client) CreateOrder(
 }
 
 // DestinationRefusedError is Django's refusal of an order's destination
-// (400, on one field): a street line it cannot split into the street and
-// its house number (CodeStreetNumberMissing) or whose number is a
-// postcode (CodeStreetNumberIsPostcode), on `street`; a pickup point its
-// carrier's catalogue does not hold active (CodePickupPointUnknown), one
-// in another country than the order's (CodePickupPointInAnotherCountry)
-// or none named (CodePickupPointRequired), on the carrier's location
-// field.
-// Nothing was created. Message is the store's own sentence. It unwraps
-// to Django's *APIError, so it is ErrValidation too.
+// (400, on one field): on `street`, the one street line, whatever its
+// code but a street not sent (blank, required), which is a missing field
+// (among them a line it cannot split into the street and its house
+// number, CodeStreetNumberMissing; one whose number is a postcode,
+// CodeStreetNumberIsPostcode; a street or a number the address rules
+// refuse, street_name_missing or the number field's own checks); on the
+// carrier's location field, a pickup point its catalogue does not hold
+// active (CodePickupPointUnknown), one in another country than the
+// order's (CodePickupPointInAnotherCountry) or none named
+// (CodePickupPointRequired). Nothing was created. Message is the store's
+// own sentence. It unwraps to Django's *APIError, so it is ErrValidation
+// too.
 type DestinationRefusedError struct {
 	Field   string
 	Code    string
@@ -211,14 +215,28 @@ func (e *DestinationRefusedError) Unwrap() error {
 }
 
 // destinationFields are the fields of an order's destination Django
-// refuses one on, by the codes it refuses each with.
+// refuses one on, by the codes it refuses each with: every code on
+// `street` (nil), but a street not sent (refusesDestination).
 var destinationFields = map[string][]string{
-	"street": {CodeStreetNumberMissing, CodeStreetNumberIsPostcode},
+	"street": nil,
 	"boxnowLockerId": {CodePickupPointUnknown,
 		CodePickupPointInAnotherCountry, CodePickupPointRequired},
 	"acsStationExternalId": {CodePickupPointUnknown,
 		CodePickupPointInAnotherCountry, CodePickupPointRequired},
 	"shippingProviderCode": {CodePickupPointRequired},
+}
+
+// refusesDestination reports whether Django's code on field refuses the
+// order's destination: on `street`, any code but a street not sent.
+func refusesDestination(field, code string) bool {
+	if codes := destinationFields[field]; codes != nil {
+		return slices.Contains(codes, code)
+	}
+	switch code {
+	case "blank", "required", "null":
+		return false
+	}
+	return true
 }
 
 // destinationRefusal is the destination's refusal a 400 carries in its
@@ -238,7 +256,7 @@ func destinationRefusal(apiErr *APIError) *DestinationRefusedError {
 	_ = json.Unmarshal(apiErr.Body, &body)
 	for _, field := range slices.Sorted(maps.Keys(destinationFields)) {
 		for _, f := range body.Fields[field] {
-			if slices.Contains(destinationFields[field], f.Code) {
+			if refusesDestination(field, f.Code) {
 				return &DestinationRefusedError{Field: field, Code: f.Code,
 					Message: f.Message, err: apiErr}
 			}

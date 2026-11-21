@@ -215,10 +215,15 @@ wins over this page.
     network as its one option, selected. A pickup order carries no
     address and no region: Django delivers it to the point's address
     (django-api #767).
-  - A placed order lists no options. Refused, and nothing applied:
-    another method type, two of one type, both naming the lines, a
-    second destination or group, a destination id this business never
-    gives or that is not the destination written.
+  - An update may name a method by its `id` (`shipping`, `pickup`)
+    instead of its `type`, which the spec makes optional there
+    (`mcpsrv.methodType`).
+  - A placed order lists no options. Refused, and nothing applied (the
+    buyer included): another method type, a method `id` the business
+    never gave or that contradicts its `type`, a method named by
+    neither, two of one type, both naming the lines, a second
+    destination or group, a destination id this business never gives or
+    that is not the destination written.
   - What a checkout still needs is an `error` message, `recoverable`,
     code `missing`, at its path (`ucp.missing`: `$.buyer`,
     `…methods[0].destinations`, `…destinations[0].address_region`,
@@ -226,8 +231,9 @@ wins over this page.
     `$.payment`), and a refused delivery is the quote's code at the
     option.
   - **A destination Django refuses** at order creation
-    (`django.DestinationRefusedError`: `street_number_missing`,
-    `street_number_is_postcode` on `street`, `pickup_point_unknown`,
+    (`django.DestinationRefusedError`: any code on `street` but a street
+    not sent, `street_number_missing` and `street_number_is_postcode`
+    worded by the gateway; `pickup_point_unknown`,
     `pickup_point_in_another_country`, `pickup_point_required` on the
     carrier's location field, read from
     `fields` whatever the body's own code) is stored on the session

@@ -457,8 +457,13 @@ func DestinationRefusedText(code string) string {
 		return "The store does not know this pickup point, or no longer " +
 			"delivers to it. Select another: one of the pickup method's " +
 			"destinations, or a destinationId from find_pickup_points."
+	case django.CodeStreetNumberMissing:
+		return "The store could not read a house number at the end of " +
+			"street_address. Send the street followed by its house " +
+			"number (e.g. \"Ermou 12\"), and a floor or flat in " +
+			"extended_address."
 	}
-	return "The store could not read a house number at the end of " +
-		"street_address. Send the street followed by its house number " +
-		"(e.g. \"Ermou 12\"), and a floor or flat in extended_address."
+	return "The store refused the street in street_address. Send the " +
+		"street's name followed by its house number (e.g. \"Ermou 12\"), " +
+		"and a floor or flat in extended_address."
 }
