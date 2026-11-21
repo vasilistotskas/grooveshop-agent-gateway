@@ -19,6 +19,8 @@ func TestPickupLocationIDsReadBack(t *testing.T) {
 		{Provider: "boxnow", Country: "GR", ID: "25"},
 		{Provider: "acs", Country: "GR", ID: "AAT", Branch: "502"},
 		{Provider: "acs", Country: "CY", ID: "a:b/c", Branch: "1 2"},
+		// A station the catalogue holds with a blank branch.
+		{Provider: "acs", Country: "GR", ID: "XYZ"},
 	} {
 		id := l.DestinationID()
 		got, err := ParsePickupLocation(id)
@@ -30,10 +32,24 @@ func TestPickupLocationIDsReadBack(t *testing.T) {
 	}.DestinationID())
 	for _, id := range []string{"", "shipping_address", "boxnow:GR",
 		"boxnow:GR:25:9", "acs:GR:AAT", "elta:GR:1", "boxnow::25",
-		"boxnow:GR:%zz"} {
+		"boxnow:GR:%zz", "acs::AAT:502", "acs:GR::502",
+		"boxnow:Greece:25", "boxnow:G1:25"} {
 		_, err := ParsePickupLocation(id)
 		require.ErrorIs(t, err, ErrUnknownLocation, id)
 	}
+}
+
+// A location's name is required: one the catalogue holds blank is named
+// by its carrier and id.
+func TestALocationIsAlwaysNamed(t *testing.T) {
+	l := PickupLocation{Provider: "acs", Country: "GR", ID: "AAT",
+		Branch: "502"}
+	assert.Equal(t, "ACS AAT", locationDestination(l, nil).Name)
+	d := locationDestination(l, &checkout.Point{Name: " ", City: "Αθήνα"})
+	assert.Equal(t, "ACS AAT", d.Name)
+	assert.Equal(t, "Αθήνα", d.Address.AddressLocality)
+	assert.Equal(t, "Σταθμός",
+		locationDestination(l, &checkout.Point{Name: "Σταθμός"}).Name)
 }
 
 // The pickup method, asserted member by member: listed where the store
@@ -63,6 +79,12 @@ func TestBuildCheckoutRendersThePickupMethod(t *testing.T) {
 	assert.Equal(t, "shipping", methods[0].ID)
 	assert.Empty(t, methods[0].LineItemIDs, "the cart goes by pickup")
 	assert.Empty(t, methods[0].Destinations)
+	// Its group lists the carriers to switch to, and holds no line.
+	require.Len(t, methods[0].Groups, 1)
+	for _, g := range methods[0].Groups {
+		assert.Equal(t, FulfillmentGroupID, g.ID)
+		assert.Empty(t, g.LineItemIDs, "the cart goes by pickup")
+	}
 
 	pickup := methods[1]
 	assert.Equal(t, "pickup", pickup.ID)
@@ -83,7 +105,7 @@ func TestBuildCheckoutRendersThePickupMethod(t *testing.T) {
 		"the selected point is listed once")
 	acs := "acs"
 	assert.Equal(t, []FulfillmentGroup{{
-		ID: "parcel", LineItemIDs: []string{"410"},
+		ID: PickupGroupID, LineItemIDs: []string{"410"},
 		Options: []FulfillmentOption{{
 			ID: "acs", Title: "ACS Courier", Carrier: "ACS Courier",
 			Totals: []LineItemTotal{{Type: "total", Amount: 0}},

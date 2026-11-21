@@ -266,7 +266,7 @@ func (h *handlers) findPickupPoints(
 	if carriers[django.ShippingProviderACS] {
 		var stations []django.AcsStation
 		stations, acsErr = h.deps.Django.AcsNearestStations(
-			ctx, t.Domain, lang, in.PostalCode, in.City)
+			ctx, t.Domain, lang, in.PostalCode, in.City, country)
 		for i, s := range stations {
 			if i >= maxAcsPoints {
 				break
@@ -275,9 +275,11 @@ func (h *handlers) findPickupPoints(
 				Provider:   django.ShippingProviderACS,
 				ID:         s.ExternalID,
 				BranchCode: s.BranchCode,
+				// The point's own country, which an order to it names.
 				DestinationID: ucp.PickupLocation{
-					Provider: django.ShippingProviderACS, Country: country,
-					ID: s.ExternalID, Branch: s.BranchCode,
+					Provider: django.ShippingProviderACS,
+					Country:  strings.ToUpper(s.CountryCode),
+					ID:       s.ExternalID, Branch: s.BranchCode,
 				}.DestinationID(),
 				Name:         s.Name,
 				Address:      s.AddressLine1,
@@ -319,7 +321,7 @@ func (h *handlers) findPickupPoints(
 					ID:       l.ID,
 					DestinationID: ucp.PickupLocation{
 						Provider: django.ShippingProviderBoxNow,
-						Country:  country, ID: l.ID,
+						Country:  strings.ToUpper(l.Country), ID: l.ID,
 					}.DestinationID(),
 					Name:       l.Name,
 					Address:    l.AddressLine1,

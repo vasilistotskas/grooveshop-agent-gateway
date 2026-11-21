@@ -95,6 +95,7 @@ const (
 	DestinationType       = "shipping_address"
 	LocationType          = "business_location"
 	FulfillmentGroupID    = "parcel"
+	PickupGroupID         = "pickup_parcel"
 )
 
 // The paths, into a checkout, of what its fulfillment needs. The
@@ -144,11 +145,17 @@ func ParsePickupLocation(id string) (PickupLocation, error) {
 	parts := strings.Split(id, ":")
 	for i, p := range parts {
 		var err error
-		if parts[i], err = url.QueryUnescape(p); err != nil || parts[i] == "" {
+		parts[i], err = url.QueryUnescape(p)
+		// Every part is given but an ACS station's branch, which the
+		// catalogue may hold blank (a station that is one row).
+		blankBranch := i == 3 && parts[0] == django.ShippingProviderACS
+		if err != nil || parts[i] == "" && !blankBranch {
 			return PickupLocation{}, ErrUnknownLocation
 		}
 	}
 	switch {
+	case len(parts) < 2 || !checkout.IsCountryCode(parts[1]):
+		return PickupLocation{}, ErrUnknownLocation
 	case len(parts) == 3 && parts[0] == django.ShippingProviderBoxNow:
 		return PickupLocation{Provider: parts[0], Country: parts[1],
 			ID: parts[2]}, nil
@@ -196,7 +203,8 @@ func (b *Builder) pickupPointsNear(
 		return nil, nil
 	}
 	stations, err := b.dj.AcsNearestStations(ctx, t.Domain,
-		django.Language(ctx, t.TenantConfig), loc.PostalCode, "")
+		django.Language(ctx, t.TenantConfig), loc.PostalCode, "",
+		loc.CountryCode)
 	if err != nil {
 		// The Django client logs the failed call.
 		return nil, &Message{Type: "warning", Code: "pickup_points_unlisted",
@@ -209,9 +217,6 @@ func (b *Builder) pickupPointsNear(
 	for _, st := range stations {
 		if len(out) == maxNearPoints {
 			break
-		}
-		if !strings.EqualFold(st.CountryCode, loc.CountryCode) {
-			continue
 		}
 		l := PickupLocation{Provider: django.ShippingProviderACS,
 			Country: strings.ToUpper(st.CountryCode), ID: st.ExternalID,
@@ -241,12 +246,16 @@ func offersACSPickup(p *checkout.Pricing) bool {
 // id: the spec requires a name, and the order is where Django decides on
 // it.
 func locationDestination(l PickupLocation, pt *checkout.Point) Destination {
-	d := Destination{Type: LocationType, ID: l.DestinationID()}
+	// A location's name is required: a point the catalogue holds without
+	// one is named by its carrier and id, as one it does not hold is.
+	d := Destination{Type: LocationType, ID: l.DestinationID(),
+		Name: carrierTitle(l.Provider) + " " + l.ID}
 	if pt == nil {
-		d.Name = carrierTitle(l.Provider) + " " + l.ID
 		return d
 	}
-	d.Name = pt.Name
+	if name := strings.TrimSpace(pt.Name); name != "" {
+		d.Name = name
+	}
 	d.Address = &PostalAddress{StreetAddress: pt.Street,
 		AddressLocality: pt.City, PostalCode: pt.PostalCode,
 		AddressCountry: l.Country}
@@ -305,9 +314,10 @@ func renderFulfillment(
 		shipping.SelectedDestinationID = DestinationID
 	}
 	if pricing.ShippingOptions != nil {
-		g, err := group(ids, pricing, func(o django.QuoteShippingOption) bool {
-			return o.Kind == checkout.FulfillmentHomeDelivery
-		})
+		g, err := group(FulfillmentGroupID, shipping.LineItemIDs, pricing,
+			func(o django.QuoteShippingOption) bool {
+				return o.Kind == checkout.FulfillmentHomeDelivery
+			})
 		if err != nil {
 			return nil, err
 		}
@@ -336,7 +346,7 @@ func renderFulfillment(
 				locationDestination(l, f.Point)}, near...)
 		}
 		if pricing.ShippingOptions != nil {
-			g, err := group(ids, pricing,
+			g, err := group(PickupGroupID, pickup.LineItemIDs, pricing,
 				func(o django.QuoteShippingOption) bool {
 					return o.Kind == checkout.FulfillmentPickupPoint &&
 						o.ProviderCode == f.ProviderCode
@@ -354,14 +364,15 @@ func renderFulfillment(
 	return &Fulfillment{Methods: append(methods, pickup)}, nil
 }
 
-// group is the one group of the cart's lines, its options the carriers
-// of the options keep takes that the cart fits.
+// group is a method's one group, id, of the lines the method holds (none
+// for the method not chosen), its options the carriers of the options
+// keep takes that the cart fits.
 func group(
-	ids []string, pricing *checkout.Pricing,
+	id string, ids []string, pricing *checkout.Pricing,
 	keep func(django.QuoteShippingOption) bool,
 ) (FulfillmentGroup, error) {
 	g := FulfillmentGroup{
-		ID: FulfillmentGroupID, LineItemIDs: ids,
+		ID: id, LineItemIDs: ids,
 		Options: []FulfillmentOption{},
 	}
 	for _, o := range pricing.ShippingOptions {

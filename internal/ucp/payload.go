@@ -348,7 +348,8 @@ func (b *Builder) BuildCheckout(
 		}
 	}
 
-	if refusals := refusedChoices(pricing); len(refusals) > 0 && s.Open() {
+	if refusals := refusedChoices(s, pricing); len(refusals) > 0 &&
+		s.Open() {
 		// A choice the store no longer takes is left out of the price,
 		// so the checkout cannot be completed until it is chosen again.
 		out.Status = string(checkout.StatusIncomplete)
@@ -396,9 +397,19 @@ func (b *Builder) BuildCheckout(
 
 // refusedChoices are the recoverable errors of the checkout's choices the
 // store refused for this cart, each at its member, in the store's words.
-func refusedChoices(p *checkout.Pricing) []Message {
+func refusedChoices(s *checkout.Session, p *checkout.Pricing) []Message {
 	var out []Message
-	if r := p.DeliveryRefused; r != nil {
+	switch r := p.DeliveryRefused; {
+	case r == nil:
+	case s.Fulfillment.Pickup():
+		// A pickup's one option is its point's network: the remedy is
+		// another point, or the shipping method.
+		out = append(out, Message{Type: "error", Code: r.Code,
+			Severity: "recoverable", Path: pathPoint,
+			Text: strings.TrimSpace(r.Detail + " The delivery is left out " +
+				"of the total: select another pickup point, or the " +
+				"shipping method, with update_checkout.")})
+	default:
 		out = append(out, Message{Type: "error", Code: r.Code,
 			Severity: "recoverable", Path: pathOption,
 			Text: strings.TrimSpace(r.Detail + " The delivery is left out " +

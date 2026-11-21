@@ -421,7 +421,9 @@ var djangoContract = []contractCall{
 	{
 		fn: "AcsNearestStations", method: http.MethodGet,
 		path: "/shipping/acs/stations/nearest", status: http.StatusOK,
-		query: []contractParam{{"postalCode", true}, {"city", false}},
+		query: []contractParam{
+			{"postalCode", true}, {"city", false}, {"countryCode", false},
+		},
 		out:   reflect.TypeFor[[]AcsStation](),
 		names: map[string]string{"AcsStation": "AcsStation"},
 	},

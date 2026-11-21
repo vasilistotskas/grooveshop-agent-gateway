@@ -183,7 +183,8 @@ wins over this page.
     contact members are not read (the order's contact is `buyer`). A
     request that names `selected_destination_id` `shipping_address` and
     writes no destination keeps the stored address. One group
-    (`parcel`): its `options` are the carriers that deliver the cart home
+    (`parcel`, holding the method's lines: none while pickup is chosen):
+    its `options` are the carriers that deliver the cart home
     as Django quotes it (`Pricing.ShippingOptions`, home delivery the
     cart fits), each `id` its provider code with its price as a `total`,
     listed once the country is known; `selected_option_id` chooses one,
@@ -191,16 +192,19 @@ wins over this page.
   - **pickup:** the destinations are business locations
     (`business_location`, a name and an address) the platform selects by
     `selected_destination_id`, never writes. A location's id is opaque
-    (`ucp.PickupLocation.DestinationID`: carrier, country, the carrier's
-    ids, each query-escaped, joined by colons), read back by
-    `ucp.ParsePickupLocation`; one this checkout never listed is taken
+    (`ucp.PickupLocation.DestinationID`: carrier, the point's own
+    country, the carrier's ids, each query-escaped, joined by colons; an
+    ACS station's branch may be blank, the catalogue's row without one),
+    read back by `ucp.ParsePickupLocation`, which refuses a country that
+    is not two letters; one this checkout never listed is taken
     (the spec's "any stable, Business-scoped ID"), for example a
     `destinationId` from `find_pickup_points`. The destinations are the
     ACS points nearest the checkout's locality (`checkout.context`'s
     `address_country` and `postal_code`, `Session.Locality`, kept when
-    omitted since the response does not carry it; at most five, one
-    `AcsNearestStations` call per render, a failed one a `warning`
-    `pickup_points_unlisted`), and the selected point, by the name and
+    omitted since the response does not carry it, a country that is not
+    two letters ignored as the hint the spec makes it; at most five, one
+    `AcsNearestStations` call per render with the country, a failed one
+    a `warning` `pickup_points_unlisted`), and the selected point, by the name and
     address the store's catalogue gave when it was chosen
     (`handlers.applyPoint`: `AcsStationByID`, `BoxNowLockerByID`, one
     call each to the catalogue lists with Django's exact filters,
@@ -210,9 +214,11 @@ wins over this page.
     its area, so the branch is always sent; one
     the catalogue does not hold is taken and named by its carrier and
     id, and Django decides at the order). BOX NOW lockers are found only
-    from a street, so only `find_pickup_points` lists them. No group
-    until a point is selected, then one (`parcel`) with that point's
-    network as its one option, selected. A pickup order carries no
+    from a street, so only `find_pickup_points` lists them. A location
+    is always named: one the catalogue holds without a name, or does not
+    hold, by its carrier and id. No group until a point is selected,
+    then one (`pickup_parcel`) with that point's network as its one
+    option, selected. A pickup order carries no
     address and no region: Django delivers it to the point's address
     (django-api #767).
   - An update may name a method by its `id` (`shipping`, `pickup`)
@@ -229,7 +235,8 @@ wins over this page.
     `…methods[0].destinations`, `…destinations[0].address_region`,
     `…groups[0].selected_option_id`, `…methods[1].selected_destination_id`,
     `$.payment`), and a refused delivery is the quote's code at the
-    option.
+    shipping group's option, or for a pickup at the pickup method's
+    `selected_destination_id` (its remedy another point or shipping).
   - **A destination Django refuses** at order creation
     (`django.DestinationRefusedError`: any code on `street` but a street
     not sent, `street_number_missing` and `street_number_is_postcode`

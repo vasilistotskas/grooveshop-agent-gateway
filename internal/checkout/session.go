@@ -115,7 +115,9 @@ func (f Fulfillment) PickupPoint() django.PickupPoint {
 func (f Fulfillment) HasPoint() bool {
 	switch f.ProviderCode {
 	case django.ShippingProviderACS:
-		return f.AcsStationExternalID != "" && f.AcsStationBranch != ""
+		// A station's branch may be blank: the catalogue's row without
+		// one, which Django names by the blank branch.
+		return f.AcsStationExternalID != ""
 	case django.ShippingProviderBoxNow:
 		return f.BoxnowLockerID != ""
 	}
@@ -464,6 +466,20 @@ func (s *Session) Recompute() {
 		return
 	}
 	s.Status = StatusIncomplete
+}
+
+// IsCountryCode reports whether c is a country as Django names one, two
+// ASCII letters (ISO 3166-1 alpha-2), in either case.
+func IsCountryCode(c string) bool {
+	if len(c) != 2 {
+		return false
+	}
+	for _, r := range c {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+			return false
+		}
+	}
+	return true
 }
 
 // Locality is a coarse place: a country and a postal code.

@@ -135,8 +135,15 @@ func TestUCPPickupOrdersGoToThePoint(t *testing.T) {
 		},
 	})
 	require.False(t, res.IsError, "%v", res.Content[0].(*mcp.TextContent).Text)
+	// The catalogue holds no CY locker 25: the point is named by its
+	// carrier and id, with no address.
+	elsewhere := structured(t, res)
+	point = pickupMethod(elsewhere)["destinations"].([]any)[0].(map[string]any)
+	assert.Equal(t, "boxnow:CY:25", point["id"])
+	assert.Equal(t, "BOX NOW 25", point["name"])
+	assert.NotContains(t, point, "address")
 	placed = stack.faults.ordersPlaced.Load()
-	answer = complete(structured(t, res)["id"].(string))
+	answer = complete(elsewhere["id"].(string))
 	assert.Equal(t, "incomplete", answer["status"])
 	assert.Equal(t, placed, stack.faults.ordersPlaced.Load())
 	refused = nil

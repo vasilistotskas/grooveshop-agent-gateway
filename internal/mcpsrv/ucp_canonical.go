@@ -549,12 +549,17 @@ func (c *UCPCheckoutIn) applyTo(
 	}
 	s.Buyer = c.buyer()
 	// The context is not in the response: one the request omits keeps
-	// the locality the checkout holds.
+	// the locality the checkout holds. It is a hint the business may
+	// ignore (the spec's "provisional, non-binding"): a country that is
+	// not two letters is ignored, never sent to the store as the buyer's.
 	if c != nil && c.Context != nil {
+		country := strings.TrimSpace(c.Context.AddressCountry)
+		if !checkout.IsCountryCode(country) {
+			country = ""
+		}
 		s.Locality = checkout.Locality{
-			CountryCode: strings.ToUpper(
-				strings.TrimSpace(c.Context.AddressCountry)),
-			PostalCode: strings.TrimSpace(c.Context.PostalCode),
+			CountryCode: strings.ToUpper(country),
+			PostalCode:  strings.TrimSpace(c.Context.PostalCode),
 		}
 	}
 	if f == nil {

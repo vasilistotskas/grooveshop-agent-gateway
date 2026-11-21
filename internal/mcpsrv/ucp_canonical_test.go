@@ -339,6 +339,11 @@ func TestCheckoutInApplyToChoosesThePickupMethod(t *testing.T) {
 		_, err = decode(t, `{}`).applyTo(s, neg)
 		require.NoError(t, err)
 		assert.Equal(t, want, s.Locality, "not in the response: kept")
+		// A hint the business may ignore: a country that is not one is.
+		_, err = decode(t, `{"context":{"address_country":"Greece",`+
+			`"postal_code":"10434"}}`).applyTo(s, neg)
+		require.NoError(t, err)
+		assert.Equal(t, checkout.Locality{PostalCode: "10434"}, s.Locality)
 	})
 
 	for name, raw := range map[string]string{

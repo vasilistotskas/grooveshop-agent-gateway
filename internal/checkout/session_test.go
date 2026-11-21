@@ -395,10 +395,13 @@ func TestAPickupDeliveryNeedsItsPoint(t *testing.T) {
 
 	acs := Fulfillment{Kind: FulfillmentPickupPoint,
 		ProviderCode: django.ShippingProviderACS, CountryCode: "GR",
-		AcsStationExternalID: "AAT"}
-	assert.False(t, acs.Complete(), "an ACS station is a pair")
-	acs.AcsStationBranch = "502"
+		AcsStationBranch: "502"}
+	assert.False(t, acs.Complete(), "an ACS station needs its id")
+	acs.AcsStationExternalID = "AAT"
 	assert.True(t, acs.Complete())
+	acs.AcsStationBranch = ""
+	assert.True(t, acs.Complete(),
+		"a station the catalogue holds with a blank branch")
 
 	s.DestinationRefused = &Refusal{Code: django.CodePickupPointUnknown}
 	s.Deliver(locker)

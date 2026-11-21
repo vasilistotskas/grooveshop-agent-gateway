@@ -495,15 +495,20 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			q := r.URL.Query()
 			assert.NotEmpty(t, q.Get("externalId"))
 			assert.NotEmpty(t, q.Get("countryCode"))
-			serveFixture(t, w, "boxnow_lockers_search.json")
+			serveCatalogue(t, w, "boxnow_lockers_search.json",
+				map[string]string{"externalId": q.Get("externalId"),
+					"countryCode": q.Get("countryCode")})
 		})
 	outer.HandleFunc("GET /api/v1/shipping/acs/stations",
 		func(w http.ResponseWriter, r *http.Request) {
 			q := r.URL.Query()
 			assert.NotEmpty(t, q.Get("externalId"))
-			assert.NotEmpty(t, q.Get("branch"))
+			assert.True(t, q.Has("branch"), "the branch, blank or not")
 			assert.NotEmpty(t, q.Get("countryCode"))
-			serveFixture(t, w, "acs_stations_search.json")
+			serveCatalogue(t, w, "acs_stations_search.json",
+				map[string]string{"externalId": q.Get("externalId"),
+					"branchCode":  q.Get("branch"),
+					"countryCode": q.Get("countryCode")})
 		})
 	outer.HandleFunc("POST /api/v1/cart/quote",
 		func(w http.ResponseWriter, r *http.Request) {
