@@ -297,7 +297,7 @@ Loads when working on a checkout session on either surface, its completion, its 
       warn and answered 204, and the session is left as it is: a
       session is never completed without its order. The record
       `Flow.place` writes beside the session (`Store.IndexOrder`:
-      `ag:{schema}:cs:v8:{id}:order`, the order's uuid) is for calls on
+      `ag:{schema}:cs:v9:{id}:order`, the order's uuid) is for calls on
       the session, not events: it can be lost (a flush or a
       restore);
     - the event's order status and payment status set the status
@@ -349,11 +349,10 @@ Loads when working on a checkout session on either surface, its completion, its 
   `checkout.ComputePricing` reads the cart for its lines and
   `POST /cart/quote` (`django.Client.Quote`) for every amount, with the
   very choices the order is placed with (`checkout.QuoteRequest`:
-  delivery, pickup point (`Fulfillment.PickupPoint`, the order's own
-  fields), pay way, region, email). A quote that prices both a delivery
+  delivery, pay way, region, email). A quote that prices both a delivery
   and a pay way also returns `cartDigest` (`Pricing.CartDigest`): Django's
   opaque digest of what the order would be made of (the lines, the
-  promotions, the delivery with its pickup point, the pay way). A quote
+  promotions, the delivery, the pay way). A quote
   with an expected total and no digest is a quote that cannot be read.
   The
   gateway adds nothing up of its own: the free thresholds, the promotion
@@ -418,6 +417,16 @@ Loads when working on a checkout session on either surface, its completion, its 
     The one exception is a UCP complete that names a checkout's first
     payment method, whose digest is its own quote's
     (`.claude/rules/ucp.md`).
+  - **A street line Django refuses is the address's to correct.** The
+    order carries the delivery's one street line (`Fulfillment.Street`,
+    the house number after the street) and its `AddressLine2`, never a
+    street number: Django splits the line. A line it cannot split
+    (`django.StreetRefusedError`) is stored on the session
+    (`Session.StreetRefused`, `NeedStreet` in `Session.Missing`), so the
+    checkout reads not ready, and every surface sets a delivery through
+    `Session.Deliver`, which drops the refusal once the address changes.
+    What a checkout still needs is `Session.Missing`, a list of `Need`
+    each surface words and places itself.
 - **One live checkout holds a cart** (#141). Two sessions on one cart
   could each place an order, because Django keeps the cart of an order
   that awaits its online payment. The store keeps it to one:

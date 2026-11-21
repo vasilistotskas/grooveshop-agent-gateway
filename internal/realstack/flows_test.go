@@ -133,14 +133,21 @@ var buyer = map[string]any{
 	"phone_number": "+306912345678",
 }
 
-// homeDelivery is a complete delivery to an address in country.
+// homeDelivery is the fulfillment extension's member of a complete
+// delivery to an address in country: its one street line, which Django
+// splits, and the store's flat rate selected.
 func homeDelivery(country string) map[string]any {
-	return map[string]any{
-		"kind": "home_delivery", "providerCode": "flat_rate",
-		"countryCode": country, "city": "Αθήνα", "zipcode": "10431",
-		"street": "Πανεπιστημίου", "streetNumber": "12",
-		"regionId": "GR-14",
-	}
+	return map[string]any{"methods": []any{map[string]any{
+		"type": "shipping", "line_item_ids": []any{},
+		"destinations": []any{map[string]any{
+			"street_address": "Πανεπιστημίου 12", "address_locality": "Αθήνα",
+			"postal_code": "10431", "address_country": country,
+			"address_region": "GR-14",
+		}},
+		"groups": []any{map[string]any{
+			"id": "parcel", "selected_option_id": "flat_rate",
+		}},
+	}}}
 }
 
 // placeUCPOrder buys one unit through the canonical tools.

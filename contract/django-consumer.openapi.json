@@ -740,15 +740,6 @@
       },
       "CartQuoteRequestRequest": {
         "properties": {
-          "acsStationBranch": {
-            "type": "string"
-          },
-          "acsStationExternalId": {
-            "type": "string"
-          },
-          "boxnowLockerId": {
-            "type": "string"
-          },
           "countryId": {
             "type": "string"
           },
@@ -1012,10 +1003,7 @@
       },
       "OrderCreateFromCartRequest": {
         "properties": {
-          "acsStationBranch": {
-            "type": "string"
-          },
-          "acsStationExternalId": {
+          "addressLine2": {
             "type": "string"
           },
           "agentCheckout": {
@@ -1024,9 +1012,6 @@
           },
           "attribution": {
             "$ref": "#/components/schemas/OrderAttributionInputRequest"
-          },
-          "boxnowLockerId": {
-            "type": "string"
           },
           "city": {
             "type": "string"
@@ -1074,9 +1059,6 @@
           "street": {
             "type": "string"
           },
-          "streetNumber": {
-            "type": "string"
-          },
           "termsAccepted": {
             "type": "boolean"
           },
@@ -1096,7 +1078,6 @@
           "payWayId",
           "phone",
           "street",
-          "streetNumber",
           "termsAccepted",
           "zipcode"
         ],

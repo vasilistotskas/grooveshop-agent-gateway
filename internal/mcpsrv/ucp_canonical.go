@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
@@ -123,23 +124,53 @@ type UCPDiscountsIn struct {
 	Codes []string `json:"codes"`
 }
 
+// UCPFulfillmentIn is the fulfillment extension's member: the methods
+// the platform chose.
+type UCPFulfillmentIn struct {
+	Methods []UCPFulfillmentMethodIn `json:"methods"`
+}
+
+// UCPFulfillmentMethodIn is one method of a request. The business
+// fulfils the whole cart one way, so a method's `id` and `line_item_ids`
+// are not read.
+type UCPFulfillmentMethodIn struct {
+	Type string `json:"type"`
+	// Destinations is the shipping address the platform writes, under a
+	// shipping method.
+	Destinations          []UCPShippingDestinationIn `json:"destinations"`
+	SelectedDestinationID *string                    `json:"selected_destination_id"`
+	Groups                []UCPFulfillmentGroupIn    `json:"groups"`
+}
+
+// UCPShippingDestinationIn is a shipping address a platform writes. Its
+// contact members (first_name, last_name, phone_number) are not read: the
+// order's contact is the checkout's buyer.
+type UCPShippingDestinationIn struct {
+	ID              string `json:"id"`
+	StreetAddress   string `json:"street_address"`
+	ExtendedAddress string `json:"extended_address"`
+	AddressLocality string `json:"address_locality"`
+	AddressRegion   string `json:"address_region"`
+	AddressCountry  string `json:"address_country"`
+	PostalCode      string `json:"postal_code"`
+}
+
+// UCPFulfillmentGroupIn is the group a platform selects an option of.
+type UCPFulfillmentGroupIn struct {
+	SelectedOptionID *string `json:"selected_option_id"`
+}
+
 // UCPCheckoutIn is the `checkout` of a create or an update, decoded from
 // what the spec's request schema accepts (ucp_inputs.go). Extensions
 // compose FLAT onto the checkout object rather than nesting under their
-// capability names: `discounts` is the discount extension's, read only
-// while that extension is negotiated.
+// capability names: `discounts` is the discount extension's and
+// `fulfillment` the fulfillment extension's, each read only while its
+// extension is negotiated.
 type UCPCheckoutIn struct {
-	LineItems []UCPLineItemReqIn `json:"line_items"`
-	Buyer     *UCPBuyerReqIn     `json:"buyer"`
-	// Fulfillment is the gateway's own delivery shape, not the spec's
-	// fulfillment extension, which this business does not implement yet:
-	// it is accepted, and described in the published schema as the
-	// business's own (ownFulfillment), until that extension replaces it.
-	// It is read only when it names its `kind`; the extension's own
-	// member (`methods`) is ignored, as a member of an extension that
-	// was not negotiated.
-	Fulfillment *checkout.Fulfillment `json:"fulfillment"`
-	Discounts   *UCPDiscountsIn       `json:"discounts"`
+	LineItems   []UCPLineItemReqIn `json:"line_items"`
+	Buyer       *UCPBuyerReqIn     `json:"buyer"`
+	Fulfillment *UCPFulfillmentIn  `json:"fulfillment"`
+	Discounts   *UCPDiscountsIn    `json:"discounts"`
 	UCPPaymentChoice
 }
 
@@ -181,13 +212,82 @@ func (c *UCPCheckoutIn) buyer() checkout.Buyer {
 	}
 }
 
-// fulfillment is the gateway's own delivery member, when the request
-// carries one (see UCPCheckoutIn.Fulfillment).
-func (c *UCPCheckoutIn) fulfillment() *checkout.Fulfillment {
-	if c == nil || c.Fulfillment == nil || c.Fulfillment.Kind == "" {
-		return nil
+// delivery is the checkout's delivery as the request makes it, nil while
+// the fulfillment extension is not negotiated: its member is then
+// ignored, and the stored delivery kept. The request replaces the
+// delivery: without a shipping method, or a destination, or a selected
+// option, it has none. A destination the request does not write, named
+// by the id this business gave it, is held's address.
+//
+// The business fulfils a cart one way, so a request is refused when it
+// asks for more: another method type than shipping, a second method,
+// destination or group, or a destination id it never gave.
+func (c *UCPCheckoutIn) delivery(
+	neg ucp.Negotiated, held checkout.Fulfillment,
+) (*checkout.Fulfillment, error) {
+	if !neg.Has(ucp.CapabilityFulfillment) {
+		return nil, nil
 	}
-	return c.Fulfillment
+	var f checkout.Fulfillment
+	if c == nil || c.Fulfillment == nil {
+		return &f, nil
+	}
+	var shipping *UCPFulfillmentMethodIn
+	for i := range c.Fulfillment.Methods {
+		m := &c.Fulfillment.Methods[i]
+		switch {
+		case m.Type != ucp.FulfillmentMethodType:
+			return nil, invalidInput("checkout.fulfillment.methods[%d]."+
+				"type %q is not offered: this store delivers by %q only, "+
+				"to one address", i, m.Type, ucp.FulfillmentMethodType)
+		case shipping != nil:
+			return nil, invalidInput("checkout.fulfillment.methods[%d]: "+
+				"this store delivers a cart by one %q method, to one "+
+				"address", i, ucp.FulfillmentMethodType)
+		}
+		shipping = m
+	}
+	if shipping == nil {
+		return &f, nil
+	}
+	const at = "checkout.fulfillment.methods[0]"
+	selected := ""
+	if shipping.SelectedDestinationID != nil {
+		selected = *shipping.SelectedDestinationID
+	}
+	switch d := shipping.Destinations; {
+	case len(d) > 1:
+		return nil, invalidInput("%s.destinations: this store delivers "+
+			"a cart to one address", at)
+	case len(d) == 1:
+		if selected != "" && d[0].ID != "" && selected != d[0].ID {
+			return nil, invalidInput("%s.selected_destination_id %q is "+
+				"not the destination written (%q)", at, selected, d[0].ID)
+		}
+		f.Street = strings.TrimSpace(d[0].StreetAddress)
+		f.AddressLine2 = strings.TrimSpace(d[0].ExtendedAddress)
+		f.City = strings.TrimSpace(d[0].AddressLocality)
+		f.Zipcode = strings.TrimSpace(d[0].PostalCode)
+		f.CountryCode = strings.TrimSpace(d[0].AddressCountry)
+		f.RegionID = strings.TrimSpace(d[0].AddressRegion)
+	case selected == ucp.DestinationID && held.HasAddress():
+		f = held
+		f.Kind, f.ProviderCode = "", ""
+	case selected != "":
+		return nil, invalidInput("%s.selected_destination_id %q names no "+
+			"destination of this checkout: write the address in %s."+
+			"destinations", at, selected, at)
+	}
+	switch g := shipping.Groups; {
+	case len(g) > 1:
+		return nil, invalidInput("%s.groups: this store ships a cart in "+
+			"one group", at)
+	case len(g) == 1 && g[0].SelectedOptionID != nil &&
+		*g[0].SelectedOptionID != "":
+		f.Kind = checkout.FulfillmentHomeDelivery
+		f.ProviderCode = *g[0].SelectedOptionID
+	}
+	return &f, nil
 }
 
 // lines flattens the requested line items into product lines. Item ids
@@ -322,20 +422,24 @@ func (c *UCPCheckoutIn) replacedDiscountCodes(
 	return codes, ok
 }
 
-// applyTo copies the submitted buyer and fulfillment onto the session.
-// An update replaces the checkout, so the buyer is what the request
-// carries, none included. The gateway's own fulfillment member is not
-// in the response a platform sends back, so one the request omits keeps
-// the stored delivery.
+// applyTo copies the submitted buyer and delivery onto the session, and
+// reports whether it set the delivery. An update replaces the checkout,
+// so each is what the request carries, none included; the delivery only
+// while the fulfillment extension is negotiated (delivery).
 //
 // Payment is deliberately NOT applied here: resolving an instrument to a
 // pay-way needs the merchant's catalogue, so it happens where a client
 // is available.
-func (c *UCPCheckoutIn) applyTo(s *checkout.Session) {
+func (c *UCPCheckoutIn) applyTo(
+	s *checkout.Session, neg ucp.Negotiated,
+) (bool, error) {
 	s.Buyer = c.buyer()
-	if f := c.fulfillment(); f != nil {
-		s.Fulfillment = *f
+	f, err := c.delivery(neg, s.Fulfillment)
+	if err != nil || f == nil {
+		return false, err
 	}
+	s.Deliver(*f)
+	return true, nil
 }
 
 // namesPayment reports whether the request selects a payment method: an

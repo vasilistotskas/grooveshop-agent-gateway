@@ -92,7 +92,7 @@ func (f flowStack) readySessionPaying(
 		Kind:         checkout.FulfillmentHomeDelivery,
 		ProviderCode: django.ShippingProviderACS,
 		CountryCode:  "GR", City: "Αθήνα", Zipcode: "10431",
-		Street: "Πανεπιστημίου", StreetNumber: "12", RegionID: "GR-14",
+		Street: "Πανεπιστημίου 12", RegionID: "GR-14",
 	}
 	s.PayWayID = payWayID
 	s.Recompute()

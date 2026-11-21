@@ -234,8 +234,11 @@ func (h *handlers) newSession(
 	// The platform that signed the create owns the checkout, and the
 	// order it places; an unsigned create leaves it unowned.
 	s.Platform, _ = signerFrom(ctx)
-	in.applyTo(s)
-	if err := h.applyRegion(ctx, t, s, in); err != nil {
+	delivered, err := in.applyTo(s, neg)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.applyRegion(ctx, t, s, delivered); err != nil {
 		return nil, err
 	}
 	if err := h.applyPayment(ctx, t, s, &in.UCPPaymentChoice, neg); err != nil {
@@ -603,18 +606,18 @@ var (
 			"this call created none; send it again shortly"}
 )
 
-// applyRegion settles the delivery region whenever a fulfillment was
-// submitted: its country decides whether one is needed at all.
+// applyRegion settles the delivery region whenever the request set the
+// delivery: its country decides whether one is needed at all, and the
+// destination's address_region names it.
 func (h *handlers) applyRegion(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
-	in *UCPCheckoutIn,
+	delivered bool,
 ) error {
-	f := in.fulfillment()
-	if f == nil {
+	if !delivered {
 		return nil
 	}
 	if err := checkout.ResolveRegion(
-		ctx, h.deps.Django, t, s, f.RegionID,
+		ctx, h.deps.Django, t, s, s.Fulfillment.RegionID,
 	); err != nil {
 		return upstreamErr(err,
 			"the delivery regions are unavailable; retry shortly")
@@ -814,8 +817,11 @@ func (h *handlers) updateSession(
 	// Every lookup and refusal before the first cart write: a refused
 	// update must leave the cart and the stored session agreeing.
 	// Nothing here is saved until the end.
-	in.Checkout.applyTo(s)
-	if err := h.applyRegion(ctx, t, s, &in.Checkout); err != nil {
+	delivered, err := in.Checkout.applyTo(s, neg)
+	if err != nil {
+		return refusedBy(err)
+	}
+	if err := h.applyRegion(ctx, t, s, delivered); err != nil {
 		return refusedBy(err)
 	}
 	err = h.applyPayment(ctx, t, s, &in.Checkout.UCPPaymentChoice, neg)
@@ -1038,6 +1044,13 @@ func (h *handlers) placed(
 	err error, render toolResult,
 ) sessionAnswer {
 	if placement == checkout.NothingPlaced {
+		// The street line Django refused is the address's to correct:
+		// the answer is the checkout, stored incomplete, with the error
+		// at the destination's street_address ("incomplete for a
+		// recoverable change").
+		if errors.As(err, new(*django.StreetRefusedError)) {
+			return fromSnapshot(render)
+		}
 		// Refused before the order was sent, or by Django for the order
 		// itself: either way nothing of this call exists.
 		return refusedBy(completeErr(s, err))
@@ -1062,6 +1075,17 @@ func (h *handlers) placed(
 		}
 		return render()
 	})
+}
+
+// stillNeeded names what the checkout still needs, as its messages
+// detail it.
+func stillNeeded(s *checkout.Session) string {
+	needs := s.Missing()
+	names := make([]string, 0, len(needs))
+	for _, n := range needs {
+		names = append(names, n.String())
+	}
+	return strings.Join(names, "; ")
 }
 
 // errNoPaymentMethod refuses a complete of a checkout that holds no
@@ -1207,8 +1231,8 @@ func completeErr(s *checkout.Session, err error) error {
 	case errors.Is(err, checkout.ErrNotReady):
 		return &mcptool.ToolError{Code: mcptool.CodeMissing,
 			Hint: "this checkout is not ready to complete; still needed: " +
-				strings.Join(s.Missing(), "; ") + ". Send them with " +
-				"update_checkout, then complete"}
+				stillNeeded(s) + ". Send them with update_checkout, then " +
+				"complete"}
 	case errors.Is(err, checkout.ErrPayWayUnavailable):
 		return &mcptool.ToolError{Code: mcptool.CodeUnsupported,
 			Hint: "the selected payment method is not offered for this " +
@@ -1573,7 +1597,7 @@ func (h *handlers) checkoutResult(
 	case checkout.StatusIncomplete:
 		text = fmt.Sprintf(
 			"Checkout %s is incomplete — still needed: %s.",
-			s.ID, strings.Join(s.Missing(), "; "))
+			s.ID, stillNeeded(s))
 	case checkout.StatusReadyForComplete:
 		text = fmt.Sprintf(
 			"Checkout %s is ready — call complete_checkout to place the "+

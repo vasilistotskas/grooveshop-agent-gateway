@@ -4,14 +4,10 @@ package integration
 
 import (
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 )
 
 // A checkout's order is placed at the total the checkout showed. A
@@ -203,59 +199,4 @@ func TestACartChangedAtTheSameTotalIsNotOrdered(t *testing.T) {
 			}, (*order)["expectedTotal"], "at the same total")
 		})
 	}
-}
-
-// A pickup order is made of the point its checkout's quote priced: the
-// quote names the locker the order is sent to, so the cart digest the
-// checkout showed is the order's. An order sent to another point than
-// the one shown is refused, and nothing is placed.
-func TestAPickupOrderIsSentToThePointItsCheckoutShowed(t *testing.T) {
-	f := startFlow(t, 5*time.Second)
-	pickup := func(t *testing.T, shownAt, orderedAt string) *checkout.Session {
-		t.Helper()
-		s := checkout.NewSession(f.tenant.SchemaName, f.tenant.Domain,
-			checkout.ProtocolUCP, f.faults.carts.mint())
-		s.Buyer = checkout.Buyer{
-			FirstName: "Μαρία", LastName: "Παπαδοπούλου",
-			Email: "maria@example.test", Phone: "+306912345678",
-		}
-		s.Fulfillment = checkout.Fulfillment{
-			Kind:         checkout.FulfillmentPickupPoint,
-			ProviderCode: django.ShippingProviderBoxNow,
-			CountryCode:  "GR", City: "Αθήνα", Zipcode: "10431",
-			Street: "Πανεπιστημίου", StreetNumber: "12", RegionID: "GR-14",
-			BoxnowLockerID: shownAt,
-		}
-		s.PayWayID = 1
-		s.Recompute()
-		require.Equal(t, checkout.StatusReadyForComplete, s.Status)
-		p, _, err := checkout.ComputePricing(t.Context(), f.dj, f.tenant, s)
-		require.NoError(t, err)
-		require.True(t, s.Show(p))
-		s.Fulfillment.BoxnowLockerID = orderedAt
-		require.NoError(t, f.store.Create(t.Context(), s,
-			checkout.CartHolder{}))
-		return s
-	}
-
-	t.Run("the point shown", func(t *testing.T) {
-		s := pickup(t, "4", "4")
-		_, err := f.flow.Complete(t.Context(), f.tenant, s)
-		require.NoError(t, err)
-		order := f.faults.lastOrder.Load()
-		require.NotNil(t, order)
-		assert.Equal(t, "4", (*order)["boxnowLockerId"])
-		assert.Equal(t, s.Shown.CartDigest, (*order)["expectedCartDigest"])
-		assert.Equal(t, checkout.StatusCompleted, f.stored(t, s).Status)
-	})
-
-	t.Run("another point", func(t *testing.T) {
-		placed := f.faults.ordersPlaced.Load()
-		s := pickup(t, "4", "5")
-		_, err := f.flow.Complete(t.Context(), f.tenant, s)
-		require.ErrorIs(t, err, django.ErrCartChanged)
-		assert.Equal(t, placed, f.faults.ordersPlaced.Load())
-		assert.Equal(t, checkout.StatusReadyForComplete,
-			f.stored(t, s).Status)
-	})
 }

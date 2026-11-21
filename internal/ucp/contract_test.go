@@ -25,11 +25,13 @@ import (
 )
 
 // checkoutCaps is the declaration a negotiated checkout response carries,
-// with the discount extension; plainCaps is one without it.
+// with the discount and fulfillment extensions; plainCaps is one without
+// them.
 var (
 	checkoutCaps = map[string][]CapabilityRef{
-		CapabilityCheckout: {{Version: Version}},
-		CapabilityDiscount: {{Version: Version}},
+		CapabilityCheckout:    {{Version: Version}},
+		CapabilityDiscount:    {{Version: Version}},
+		CapabilityFulfillment: {{Version: Version}},
 	}
 	plainCaps = map[string][]CapabilityRef{
 		CapabilityCheckout: {{Version: Version}},
@@ -43,11 +45,29 @@ func compileUCP(t *testing.T, ref string) *jsonschema.Schema {
 	return schema
 }
 
-// checkoutSchema is checkout.json composed with the discount extension,
-// as the extension's own schema composes it.
-func checkoutSchema(t *testing.T) *jsonschema.Schema {
+// composedSchema is checkout.json composed with several extensions: a
+// payload valid against each extension's own composition of it is valid
+// against all of them, as checkout.json is open.
+type composedSchema []*jsonschema.Schema
+
+func (c composedSchema) Validate(v any) error {
+	for _, s := range c {
+		if err := s.Validate(v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkoutSchema is checkout.json composed with the discount and the
+// fulfillment extensions, as each extension's own schema composes it.
+func checkoutSchema(t *testing.T) composedSchema {
 	t.Helper()
-	return compileUCP(t, "shopping/discount.json#/$defs/dev.ucp.shopping.checkout")
+	return composedSchema{
+		compileUCP(t, "shopping/discount.json#/$defs/dev.ucp.shopping.checkout"),
+		compileUCP(t,
+			"shopping/fulfillment.json#/$defs/dev.ucp.shopping.checkout"),
+	}
 }
 
 // roundTrip re-decodes a payload the way a platform receives it.
@@ -698,4 +718,116 @@ func TestOrderLineStatusFollowsTheSchemaDefinition(t *testing.T) {
 	assert.Equal(t, "fulfilled", orderLineStatus(3, 3))
 	assert.Equal(t, "partial", orderLineStatus(3, 1))
 	assert.Equal(t, "processing", orderLineStatus(3, 0))
+}
+
+// A checkout's fulfillment is the extension's shape, asserted member by
+// member (the schemas are open, so validating is not enough): one
+// shipping method for every line, the destination the platform wrote,
+// and once its country is known one group whose options are the carriers
+// that deliver the cart home (ELTA is over its weight cap, BOX NOW
+// delivers to lockers only; ACS is free for this cart), the selected
+// one the checkout's.
+func TestBuildCheckoutRendersTheFulfillmentExtension(t *testing.T) {
+	schema := checkoutSchema(t)
+	tn := testTenant()
+	b := NewBuilder(fixtureDjango(t), "https://{assets_host}/img/{path}.webp",
+		"assets.platform.test", "production", storefront.NewSite("el"))
+	s := checkout.NewSession("public", tn.Domain, "ucp",
+		"29eb4495-e018-45e7-b59c-6646302bd4ef")
+
+	payload, err := b.BuildCheckout(t.Context(), tn, s, checkoutCaps)
+	require.NoError(t, err)
+	require.NoError(t, schema.Validate(roundTrip(t, payload)))
+	require.NotNil(t, payload.Fulfillment)
+	assert.Equal(t, []FulfillmentMethod{{
+		ID: "shipping", Type: "shipping", LineItemIDs: []string{"410"},
+	}}, payload.Fulfillment.Methods, "nothing written yet")
+	paths := map[string]Message{}
+	for _, m := range payload.Messages {
+		paths[m.Path] = m
+	}
+	for _, path := range []string{"$.buyer", pathDestinations, pathOption,
+		"$.payment"} {
+		m, ok := paths[path]
+		if assert.True(t, ok, path) {
+			assert.Equal(t, Message{Type: "error", Code: "missing",
+				Path: path, Severity: "recoverable", Text: m.Text}, m)
+		}
+	}
+
+	s.Deliver(checkout.Fulfillment{
+		Kind: checkout.FulfillmentHomeDelivery, ProviderCode: "acs",
+		CountryCode: "GR", City: "Αθήνα", Zipcode: "10431",
+		Street: "Πανεπιστημίου 12", AddressLine2: "3ος όροφος",
+		RegionID: "GR-14",
+	})
+	payload, err = b.BuildCheckout(t.Context(), tn, s, checkoutCaps)
+	require.NoError(t, err)
+	require.NoError(t, schema.Validate(roundTrip(t, payload)))
+	acs := "acs"
+	assert.Equal(t, []FulfillmentMethod{{
+		ID: "shipping", Type: "shipping", LineItemIDs: []string{"410"},
+		Destinations: []ShippingDestination{{
+			Type: "shipping_address", ID: "shipping_address",
+			StreetAddress: "Πανεπιστημίου 12", ExtendedAddress: "3ος όροφος",
+			AddressLocality: "Αθήνα", AddressRegion: "GR-14",
+			AddressCountry: "GR", PostalCode: "10431",
+		}},
+		SelectedDestinationID: "shipping_address",
+		Groups: []FulfillmentGroup{{
+			ID: "parcel", LineItemIDs: []string{"410"},
+			Options: []FulfillmentOption{{
+				ID: "acs", Title: "ACS Courier", Carrier: "ACS Courier",
+				Totals: []LineItemTotal{{Type: "total", Amount: 0}},
+			}},
+			SelectedOptionID: &acs,
+		}},
+	}}, payload.Fulfillment.Methods)
+
+	// A platform without the extension is not given its member, and is
+	// told where an address is sent.
+	s.Deliver(checkout.Fulfillment{})
+	payload, err = b.BuildCheckout(t.Context(), tn, s, plainCaps)
+	require.NoError(t, err)
+	assert.Nil(t, payload.Fulfillment)
+	found := false
+	for _, m := range payload.Messages {
+		if m.Path == "$.fulfillment" {
+			found = true
+			assert.Contains(t, m.Text, CapabilityFulfillment)
+		}
+	}
+	assert.True(t, found, "%v", payload.Messages)
+}
+
+// A street line the store refused when the order was sent is an error at
+// the destination's street_address, by Django's code, until the address
+// changes.
+func TestBuildCheckoutNamesARefusedStreetLine(t *testing.T) {
+	tn := testTenant()
+	b := NewBuilder(fixtureDjango(t), "https://{assets_host}/img/{path}.webp",
+		"assets.platform.test", "production", storefront.NewSite("el"))
+	s := checkout.NewSession("public", tn.Domain, "ucp",
+		"29eb4495-e018-45e7-b59c-6646302bd4ef")
+	s.Buyer = checkout.Buyer{FirstName: "Μαρία", LastName: "Π",
+		Email: "maria@example.test", Phone: "+306912345678"}
+	s.PayWayID = 1
+	s.Deliver(checkout.Fulfillment{
+		Kind: checkout.FulfillmentHomeDelivery, ProviderCode: "acs",
+		CountryCode: "GR", City: "Αθήνα", Zipcode: "10431",
+		Street: "Πανεπιστημίου 10431",
+	})
+	s.StreetRefused = &checkout.Refusal{
+		Code: django.CodeStreetNumberIsPostcode, Detail: "x"}
+	s.Recompute()
+
+	payload, err := b.BuildCheckout(t.Context(), tn, s, checkoutCaps)
+	require.NoError(t, err)
+	require.NoError(t, checkoutSchema(t).Validate(roundTrip(t, payload)))
+	assert.Equal(t, "incomplete", payload.Status)
+	assert.Equal(t, []Message{{
+		Type: "error", Code: django.CodeStreetNumberIsPostcode,
+		Path: pathStreet, Severity: "recoverable",
+		Text: StreetRefusedText(django.CodeStreetNumberIsPostcode),
+	}}, payload.Messages)
 }

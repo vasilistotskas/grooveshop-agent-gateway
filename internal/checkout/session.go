@@ -6,6 +6,7 @@
 package checkout
 
 import (
+	"fmt"
 	"slices"
 	"time"
 
@@ -38,10 +39,9 @@ const (
 	StatusCanceled           Status = "canceled"
 )
 
-const (
-	FulfillmentHomeDelivery = "home_delivery"
-	FulfillmentPickupPoint  = "pickup_point"
-)
+// FulfillmentHomeDelivery is the delivery kind of a checkout: to the
+// buyer's address.
+const FulfillmentHomeDelivery = "home_delivery"
 
 type Buyer struct {
 	FirstName string `json:"firstName"`
@@ -55,60 +55,41 @@ func (b Buyer) Complete() bool {
 		b.Email != "" && b.Phone != ""
 }
 
-// Fulfillment mirrors the Django order-create fields for delivery. It is
-// also the delivery member the UCP checkout tools publish and take until
-// the spec's fulfillment extension replaces it, so each field says what
-// a platform sends (mcpsrv.ownFulfillment reads the descriptions, and
-// takes the fields without omitempty as the required ones).
+// Fulfillment is a checkout's delivery, as the order takes it: home
+// delivery (Kind) by a carrier (ProviderCode), to a postal address.
+// Street is the one street line with its house number after the street
+// ("Ερμού 12"), which Django splits; AddressLine2 is what that line does
+// not hold (a flat, a floor).
 type Fulfillment struct {
-	Kind         string `json:"kind" jsonschema:"home_delivery (to the buyer's address) or pickup_point (a locker or shop)"`
-	ProviderCode string `json:"providerCode" jsonschema:"the carrier's providerCode from get_shipping_options; acs or boxnow for a pickup_point"`
+	Kind         string `json:"kind"`
+	ProviderCode string `json:"providerCode"`
 
-	CountryCode  string `json:"countryCode" jsonschema:"the delivery country, ISO 3166-1 alpha-2"`
+	CountryCode  string `json:"countryCode"`
 	City         string `json:"city"`
-	Zipcode      string `json:"zipcode" jsonschema:"the postal code"`
-	Street       string `json:"street" jsonschema:"the street name, without its number"`
-	StreetNumber string `json:"streetNumber"`
-	RegionID     string `json:"regionId,omitempty" jsonschema:"the delivery region's code or name, required when the country has regions; a checkout without one lists them in its messages"`
-
-	AcsStationExternalID string `json:"acsStationExternalId,omitempty" jsonschema:"the ACS point's id from find_pickup_points; required for a pickup_point with providerCode acs"`
-	AcsStationBranch     string `json:"acsStationBranch,omitempty" jsonschema:"the ACS point's branchCode from find_pickup_points; required for a pickup_point with providerCode acs"`
-	BoxnowLockerID       string `json:"boxnowLockerId,omitempty" jsonschema:"the BOX NOW point's id from find_pickup_points; required for a pickup_point with providerCode boxnow"`
+	Zipcode      string `json:"zipcode"`
+	Street       string `json:"street"`
+	AddressLine2 string `json:"addressLine2,omitempty"`
+	RegionID     string `json:"regionId,omitempty"`
 }
 
-// PickupPoint is the pickup point the fulfillment names, as both the
-// quote and the order carry it, so the quote's digest is of the point the
-// order is sent to.
-func (f Fulfillment) PickupPoint() django.PickupPoint {
-	return django.PickupPoint{
-		AcsStationExternalID: f.AcsStationExternalID,
-		AcsStationBranch:     f.AcsStationBranch,
-		BoxnowLockerID:       f.BoxnowLockerID,
-	}
+// HasAddress reports whether the postal address the order needs is
+// present.
+func (f Fulfillment) HasAddress() bool {
+	return f.CountryCode != "" && f.City != "" && f.Zipcode != "" &&
+		f.Street != ""
 }
 
-// Complete reports whether enough is present to place the order. Django
-// requires the postal address even for pickup points (billing/contact),
-// the street number included: without it a session would report itself
-// ready and then fail at order creation.
+// Complete reports whether enough is present to place the order: the
+// address and a home delivery.
 func (f Fulfillment) Complete() bool {
-	if f.CountryCode == "" || f.City == "" || f.Zipcode == "" ||
-		f.Street == "" || f.StreetNumber == "" {
-		return false
-	}
-	switch f.Kind {
-	case FulfillmentHomeDelivery:
-		return true
-	case FulfillmentPickupPoint:
-		switch f.ProviderCode {
-		case django.ShippingProviderACS:
-			return f.AcsStationExternalID != "" && f.AcsStationBranch != ""
-		case django.ShippingProviderBoxNow:
-			return f.BoxnowLockerID != ""
-		}
-		return false
-	}
-	return false
+	return f.HasAddress() && f.Kind == FulfillmentHomeDelivery
+}
+
+// sameAddress reports whether f and g name the same postal address.
+func (f Fulfillment) sameAddress(g Fulfillment) bool {
+	return f.CountryCode == g.CountryCode && f.City == g.City &&
+		f.Zipcode == g.Zipcode && f.Street == g.Street &&
+		f.AddressLine2 == g.AddressLine2
 }
 
 // Session is the durable checkout state. Money totals are Django's quote
@@ -136,6 +117,12 @@ type Session struct {
 	Buyer       Buyer       `json:"buyer"`
 	Fulfillment Fulfillment `json:"fulfillment"`
 	PayWayID    int64       `json:"payWayId"`
+
+	// StreetRefused is Django's refusal of the address's street line when
+	// the order was sent (django.StreetRefusedError): no house number it
+	// can read, or one that is a postcode. Until the address changes
+	// (Deliver), the checkout is not ready.
+	StreetRefused *Refusal `json:"streetRefused,omitempty"`
 
 	// RegionOptions are the delivery country's regions, as ResolveRegion
 	// last read them; empty when it has none.
@@ -414,33 +401,82 @@ func (s *Session) Recompute() {
 		StatusCompleted, StatusCanceled:
 		return
 	}
-	payReady := s.PayWayID > 0 || !s.payWaySelectionRequired()
-	if s.Buyer.Complete() && s.Fulfillment.Complete() &&
-		!s.regionMissing() && payReady {
+	if len(s.Missing()) == 0 {
 		s.Status = StatusReadyForComplete
 		return
 	}
 	s.Status = StatusIncomplete
 }
 
-// Missing lists what still blocks completion, in agent-actionable terms.
-func (s *Session) Missing() []string {
-	var out []string
+// Deliver sets the checkout's delivery. A street line the store refused
+// is refused no longer once the address changes.
+func (s *Session) Deliver(f Fulfillment) {
+	if !s.Fulfillment.sameAddress(f) {
+		s.StreetRefused = nil
+	}
+	s.Fulfillment = f
+}
+
+// Need is one thing a checkout still needs before its order can be
+// placed. Each surface says it in its own vocabulary.
+type Need int
+
+const (
+	// NeedBuyer: the buyer's first and last name, email and phone.
+	NeedBuyer Need = iota
+	// NeedAddress: the delivery's postal address (street line, city,
+	// postal code, country).
+	NeedAddress
+	// NeedStreet: a street line the store can read the house number of
+	// (Session.StreetRefused says why it could not).
+	NeedStreet
+	// NeedRegion: the delivery region, one of Session.RegionChoices.
+	NeedRegion
+	// NeedDelivery: the carrier that delivers.
+	NeedDelivery
+	// NeedPayment: the payment method.
+	NeedPayment
+)
+
+func (n Need) String() string {
+	switch n {
+	case NeedBuyer:
+		return "the buyer's first and last name, email and phone"
+	case NeedAddress:
+		return "the delivery address (street line, city, postal code, " +
+			"country)"
+	case NeedStreet:
+		return "a street line ending in its house number"
+	case NeedRegion:
+		return "the delivery region"
+	case NeedDelivery:
+		return "the delivery option (carrier)"
+	case NeedPayment:
+		return "the payment method"
+	}
+	return fmt.Sprintf("need %d", int(n))
+}
+
+// Missing lists what still blocks completion, in that order.
+func (s *Session) Missing() []Need {
+	var out []Need
 	if !s.Buyer.Complete() {
-		out = append(out,
-			"buyer (firstName, lastName, email, phone)")
+		out = append(out, NeedBuyer)
 	}
-	if !s.Fulfillment.Complete() {
-		out = append(out, "fulfillment (kind, providerCode, countryCode, "+
-			"city, zipcode, street, streetNumber; plus the pickup point "+
-			"ids for "+
-			"pickup_point deliveries)")
+	switch {
+	case !s.Fulfillment.HasAddress():
+		out = append(out, NeedAddress)
+	case s.StreetRefused != nil:
+		out = append(out, NeedStreet)
 	}
-	if choices := s.RegionChoices(); choices != "" {
-		out = append(out, "fulfillment.regionId, one of: "+choices)
+	if s.regionMissing() {
+		out = append(out, NeedRegion)
+	}
+	if s.Fulfillment.Kind != FulfillmentHomeDelivery {
+		out = append(out, NeedDelivery)
 	}
 	if s.PayWayID <= 0 && s.payWaySelectionRequired() {
-		out = append(out, "payWayId (see get_payment_methods)")
+		out = append(out, NeedPayment)
 	}
 	return out
 }

@@ -763,46 +763,37 @@ func applyFulfillment(
 	s *checkout.Session, fd *FulfillmentDetails,
 	selected []SelectedFulfillmentOption,
 ) {
+	f := s.Fulfillment
 	if fd != nil && fd.Address != nil {
+		// line_one is the street line, its house number after the
+		// street, which Django splits; line_two what it does not hold.
 		a := fd.Address
-		// ACP addresses are free-form lines while Django's order model
-		// requires a separate street_number — recover it from a
-		// trailing numeric token ("Ερμού 12" → "Ερμού" + "12").
-		street, number := splitStreetNumber(a.LineOne)
-		s.Fulfillment.Street = street
-		s.Fulfillment.StreetNumber = number
-		if a.LineTwo != "" {
-			s.Fulfillment.Street += ", " + a.LineTwo
-		}
-		s.Fulfillment.City = a.City
-		s.Fulfillment.Zipcode = a.PostalCode
-		s.Fulfillment.CountryCode = a.Country
+		f.Street = strings.TrimSpace(a.LineOne)
+		f.AddressLine2 = strings.TrimSpace(a.LineTwo)
+		f.City = a.City
+		f.Zipcode = a.PostalCode
+		f.CountryCode = a.Country
 	}
 	for _, sel := range selected {
 		provider, kind, ok := strings.Cut(sel.OptionID, ":")
 		if ok && kind == checkout.FulfillmentHomeDelivery {
-			s.Fulfillment.ProviderCode = provider
-			s.Fulfillment.Kind = kind
+			f.ProviderCode = provider
+			f.Kind = kind
 		}
 	}
+	s.Deliver(f)
 }
 
-// splitStreetNumber cuts a trailing house-number token off a free-form
-// address line ("Ερμού 12" → "Ερμού", "12"; "Ερμού 12Β" keeps the
-// letter suffix). Lines without a numeric tail stay whole — Django then
-// reports street_number as missing, which is the store's own rule for
-// human checkouts too.
-func splitStreetNumber(line string) (street, number string) {
-	line = strings.TrimSpace(line)
-	i := strings.LastIndexByte(line, ' ')
-	if i <= 0 {
-		return line, ""
+// streetRefusedText says why the store refused line_one, by Django's code.
+func streetRefusedText(r *checkout.Refusal) string {
+	if r.Code == django.CodeStreetNumberIsPostcode {
+		return "The number at the end of line_one reads as a postal " +
+			"code. Send the street with its house number in line_one " +
+			"(e.g. \"Ermou 12\") and the postal code in postal_code."
 	}
-	tail := line[i+1:]
-	if tail == "" || tail[0] < '0' || tail[0] > '9' {
-		return line, ""
-	}
-	return strings.TrimSpace(line[:i]), tail
+	return "The store could not read a house number at the end of " +
+		"line_one. Send the street followed by its house number (e.g. " +
+		"\"Ermou 12\"), and a floor or flat in line_two."
 }
 
 // cartLines maps ACP item refs onto product lines.
@@ -1539,6 +1530,7 @@ func (h *Handler) completeError(
 	w http.ResponseWriter, r *http.Request, s *checkout.Session, err error,
 ) {
 	var shortfall *django.StockShortfall
+	var street *django.StreetRefusedError
 	switch {
 	case errors.As(err, &shortfall):
 		var lines []string
@@ -1634,6 +1626,16 @@ func (h *Handler) completeError(
 				"(its items, discounts or delivery changed), so no order " +
 				"was placed. Read the session, confirm it with the buyer, " +
 				"then complete with a new Idempotency-Key.",
+		})
+	// The session is stored not ready, and its read names the field.
+	case errors.As(err, &street):
+		writeError(w, http.StatusBadRequest, Error{
+			Type: "invalid_request", Code: "invalid",
+			Param: "$.fulfillment_details.address.line_one",
+			Message: streetRefusedText(&checkout.Refusal{
+				Code: street.Code, Detail: street.Message}) + " No order was " +
+				"placed: update the session, then complete with a new " +
+				"Idempotency-Key.",
 		})
 	// Django names no order, and neither does the answer. The session
 	// stays ready: once that order is canceled unpaid it can be completed.

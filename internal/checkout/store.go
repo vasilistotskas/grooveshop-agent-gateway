@@ -124,7 +124,7 @@ func NewStore(rdb *redis.Client, upstreamTimeout time.Duration) *Store {
 //     order went unanswered (a v6 pod sends its order without the
 //     checkout's id: a resume of its session would place a second one).
 func sessionKey(schema, id string) string {
-	return "ag:" + schema + ":cs:v8:" + id
+	return "ag:" + schema + ":cs:v9:" + id
 }
 
 func lockKey(schema, id string) string {

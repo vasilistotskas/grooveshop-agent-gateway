@@ -220,31 +220,6 @@ func TestComputePricingWithoutEveryChoice(t *testing.T) {
 	assert.Nil(t, p.PayWay)
 }
 
-// A pickup checkout's quote names its pickup point, as its order does:
-// the quote's cart digest covers the point, so an order sent to it is
-// the cart the quote priced.
-func TestAPickupQuoteNamesItsPoint(t *testing.T) {
-	dj, asked := quoteDjango(t, pricingCart("20.00", false),
-		func(django.QuoteRequest) (int, string) {
-			return http.StatusOK, quoteBody(
-				`{"price":3.50,"waivedBy":null}`,
-				`{"amount":2.00,"waived":false}`,
-				`{"amount":18550,"currency":"EUR"}`)
-		})
-	s := readySession()
-	s.Fulfillment.Kind = FulfillmentPickupPoint
-	s.Fulfillment.ProviderCode = django.ShippingProviderBoxNow
-	s.Fulfillment.BoxnowLockerID = "4"
-
-	_, _, err := ComputePricing(t.Context(), dj, pricingTenant(), s)
-	require.NoError(t, err)
-	require.Len(t, *asked, 1)
-	assert.Equal(t, django.PickupPoint{BoxnowLockerID: "4"},
-		(*asked)[0].PickupPoint)
-	assert.Equal(t, s.Fulfillment.PickupPoint(), (*asked)[0].PickupPoint,
-		"the point the order is sent to")
-}
-
 // A quote that prices a delivery and a pay way without the digest of its
 // cart leaves out what the order is checked against: it is an error, as
 // a quote without its expected total is.

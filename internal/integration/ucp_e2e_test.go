@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -326,6 +327,13 @@ type checkoutFaults struct {
 	carts *fakeCarts
 }
 
+// endsInHouseNumber reports whether a street line ends in a house number
+// Django can split from it: its last word starts with a digit.
+func endsInHouseNumber(line string) bool {
+	words := strings.Fields(line)
+	return len(words) > 1 && unicode.IsDigit([]rune(words[len(words)-1])[0])
+}
+
 // fakeCheckoutDjango extends the shared fake with the order-placement
 // endpoints the checkout flow drives.
 func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
@@ -479,10 +487,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			"payWayId": order["payWayId"], "shippingKind": order["shippingKind"],
 			"shippingProviderCode": order["shippingProviderCode"],
 			"countryId":            order["countryId"], "regionId": order["regionId"],
-			"email":                order["email"],
-			"acsStationExternalId": order["acsStationExternalId"],
-			"acsStationBranch":     order["acsStationBranch"],
-			"boxnowLockerId":       order["boxnowLockerId"],
+			"email": order["email"],
 		})
 		rec := httptest.NewRecorder()
 		quote(rec, httptest.NewRequest(http.MethodPost, "/api/v1/cart/quote",
@@ -762,6 +767,22 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			// Every agent checkout linked the terms and privacy policy,
 			// so every order it places accepts them.
 			assert.Equal(t, true, body["termsAccepted"])
+			// The street is one line, which Django splits, refusing one
+			// that ends in no house number (core/validators/address.py
+			// split_street_line, through the order serializer).
+			assert.NotContains(t, body, "streetNumber")
+			if street, _ := body["street"].(string); !endsInHouseNumber(street) {
+				raw, err := os.ReadFile(
+					fixturePath("order_street_number_missing.json"))
+				if !assert.NoError(t, err) {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write(raw)
+				return
+			}
 			// It is placed only from the cart quoted, and at the amount
 			// due now, as Django places it, the cart checked first
 			// (order/services.py, OrderCartChangedError and
@@ -1110,13 +1131,8 @@ func TestUCPCompletedCheckoutRendersFromTheOrder(t *testing.T) {
 				"first_name": "Μαρία", "last_name": "Παπαδοπούλου",
 				"email": "maria@example.test", "phone_number": "+306912345678",
 			},
-			"fulfillment": map[string]any{
-				"kind": "home_delivery", "providerCode": "acs",
-				"countryCode": "GR", "city": "Αθήνα", "zipcode": "10431",
-				"street": "Πανεπιστημίου", "streetNumber": "12",
-				"regionId": "GR-14",
-			},
-			"payment": cod,
+			"fulfillment": homeDelivery(),
+			"payment":     cod,
 		},
 	})
 	require.False(t, res.IsError)
@@ -1187,11 +1203,7 @@ func TestRegionLookupFailureLeavesTheCartAlone(t *testing.T) {
 	meta := map[string]any{"ucp-agent": map[string]any{
 		"profile": servePlatformProfile(t, platform.URL+"/ucp/orders", nil),
 	}}
-	greek := map[string]any{
-		"kind": "home_delivery", "providerCode": "acs", "countryCode": "GR",
-		"city": "Αθήνα", "zipcode": "10431", "street": "Πανεπιστημίου",
-		"streetNumber": "12", "regionId": "GR-14",
-	}
+	greek := homeDelivery()
 
 	t.Run("ucp", func(t *testing.T) {
 		session := connectMCP(t, stack.gw.URL)
@@ -1434,12 +1446,7 @@ func TestUCPEndToEnd(t *testing.T) {
 			"selected":   true,
 		}},
 	}
-	fulfillment := map[string]any{
-		"kind": "home_delivery", "providerCode": "acs",
-		"countryCode": "GR", "city": "Αθήνα", "zipcode": "10431",
-		"street": "Πανεπιστημίου", "streetNumber": "12",
-		"regionId": "GR-14",
-	}
+	fulfillment := homeDelivery()
 	// An update replaces the checkout, so it carries the lines: the
 	// minted cart's own, product 1 twice.
 	cartLines := []any{map[string]any{
@@ -1448,12 +1455,7 @@ func TestUCPEndToEnd(t *testing.T) {
 
 	t.Run("a country with regions blocks completion until one is chosen",
 		func(t *testing.T) {
-			noRegion := map[string]any{}
-			for k, v := range fulfillment {
-				if k != "regionId" {
-					noRegion[k] = v
-				}
-			}
+			noRegion := shipTo("")
 			res := callTool(t, session, "create_checkout", map[string]any{
 				"meta":    meta(""),
 				"cart_id": stack.faults.carts.mint(),
@@ -1466,7 +1468,8 @@ func TestUCPEndToEnd(t *testing.T) {
 			created := structured(t, res)
 			assert.Equal(t, "incomplete", created["status"])
 			assert.Contains(t, fmt.Sprint(created["messages"]),
-				"fulfillment.regionId, one of: GR-14 (Αττική)")
+				"address_region must name a region of the country, one "+
+					"of: GR-14 (Αττική)")
 
 			res = callTool(t, session, "update_checkout", map[string]any{
 				"meta": meta(""),
@@ -1897,7 +1900,7 @@ func TestUCPEndToEnd(t *testing.T) {
 				"meta": meta(""), "id": id,
 				"checkout": map[string]any{
 					"line_items": cartLines, "buyer": buyer,
-					"payment": codInstrument,
+					"fulfillment": fulfillment, "payment": codInstrument,
 				},
 			})
 			require.False(t, res.IsError, "%v", res.Content)

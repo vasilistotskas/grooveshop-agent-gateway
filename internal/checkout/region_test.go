@@ -147,10 +147,9 @@ func TestRegionBlocksReadiness(t *testing.T) {
 
 	s.Recompute()
 	assert.Equal(t, StatusIncomplete, s.Status)
-	assert.Equal(t,
-		[]string{"fulfillment.regionId, one of: GR-14 (Αττική), " +
-			"GR-17 (Κεντρική Μακεδονία)"},
-		s.Missing(), "the agent is told exactly what it can send")
+	assert.Equal(t, []Need{NeedRegion}, s.Missing())
+	assert.Equal(t, "GR-14 (Αττική), GR-17 (Κεντρική Μακεδονία)",
+		s.RegionChoices(), "the agent is told exactly what it can send")
 
 	s.Fulfillment.RegionID = "GR-14"
 	s.Recompute()

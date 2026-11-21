@@ -241,7 +241,7 @@ UCP runs over `/mcp`: the five canonical checkout tools plus `get_order`, each c
 
 ```bash runbook
 BUYER='{"first_name":"Runbook","last_name":"Buyer","email":"runbook+ucp@example.com","phone_number":"+306912345678"}'
-FUL='{"kind":"home_delivery","providerCode":"flat_rate","countryCode":"GR","city":"Αθήνα","zipcode":"10431","street":"Πανεπιστημίου","streetNumber":"12","regionId":"GR-14"}'
+FUL='{"methods":[{"type":"shipping","line_item_ids":[],"destinations":[{"street_address":"Πανεπιστημίου 12","extended_address":"2ος όροφος","address_locality":"Αθήνα","postal_code":"10431","address_country":"GR","address_region":"GR-14"}],"groups":[{"id":"parcel","selected_option_id":"flat_rate"}]}]}'
 COD='{"instruments":[{"handler_id":"grooveshop_payments","type":"cash_on_delivery","selected":true}]}'
 PID=$(tool search_products '{"query":"θήκη","limit":1}' | j 't.products[0].id')
 
@@ -259,7 +259,7 @@ tool track_order "{\"orderUuid\":\"$ORDER\"}" | j 't.status'
 
 **Expected:** `incomplete`, `ready_for_complete`, `completed` with an order, then the same totals from `get_order`. Unsigned, the same block stops at `get_order` with `signature_missing`.
 
-An update replaces the checkout, so it carries the lines and the buyer every time; the delivery and the payment selection are kept when omitted. A `complete_checkout` never places an order at a total the checkout did not show. One whose instrument selects another method than the checkout holds places nothing and answers `incomplete` with the error `payment_method_changed`. One that names the first method of a checkout that holds none places the order when the method adds no fee for that cart; when it adds one, it places nothing and answers `incomplete` with the error `payment_fee_added`, which says the fee and the new total. Either way the platform selects the method with `update_checkout`, which shows the total, and completes again; the same idempotency key can be used.
+An update replaces the checkout, so it carries the lines, the buyer and the fulfillment every time (an omitted fulfillment is no delivery); the payment selection is kept when omitted. The delivery is the spec's fulfillment extension (`dev.ucp.shopping.fulfillment`, which the runbook profile declares): one `shipping` method, its destination the address with the house number in `street_address` (Django splits it) and a floor or flat in `extended_address`, and the carrier as its group's `selected_option_id`, one of the group's `options`. A street line Django cannot split is refused at completion: the answer is the checkout `incomplete`, with the error `street_number_missing` (or `street_number_is_postcode`) at `$.fulfillment.methods[0].destinations[0].street_address`, and nothing is placed. A `complete_checkout` never places an order at a total the checkout did not show. One whose instrument selects another method than the checkout holds places nothing and answers `incomplete` with the error `payment_method_changed`. One that names the first method of a checkout that holds none places the order when the method adds no fee for that cart; when it adds one, it places nothing and answers `incomplete` with the error `payment_fee_added`, which says the fee and the new total. Either way the platform selects the method with `update_checkout`, which shows the total, and completes again; the same idempotency key can be used.
 
 **Observed on local:** PASS. Totals `subtotal=3958 fulfillment=300 fee=200 total=4458`, equal to the order's own breakdown. No ERROR logged.
 
@@ -274,7 +274,7 @@ Leave out `regionId` and the checkout stays `incomplete`, with a message listing
 ```bash
 VIVA="<the viva_wallet id from get_payment_methods>"
 BUYER='{"first_name":"Runbook","last_name":"Buyer","email":"runbook+ucp@example.com","phone_number":"+306912345678"}'
-FUL='{"kind":"home_delivery","providerCode":"flat_rate","countryCode":"GR","city":"Αθήνα","zipcode":"10431","street":"Πανεπιστημίου","streetNumber":"12","regionId":"GR-14"}'
+FUL='{"methods":[{"type":"shipping","line_item_ids":[],"destinations":[{"street_address":"Πανεπιστημίου 12","extended_address":"2ος όροφος","address_locality":"Αθήνα","postal_code":"10431","address_country":"GR","address_region":"GR-14"}],"groups":[{"id":"parcel","selected_option_id":"flat_rate"}]}]}'
 PID=$(tool search_products '{"query":"θήκη","limit":1}' | j 't.products[0].id')
 R=$(tool create_checkout "{\"meta\":$(ucp_meta),\"checkout\":{\"line_items\":[{\"item\":{\"id\":\"$PID\"},\"quantity\":1}],\"buyer\":$BUYER,\"fulfillment\":$FUL,\"pay_way_id\":$VIVA}}")
 ID=$(j 't.id' <<<"$R")
@@ -592,7 +592,7 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 
 ## 10. Before deploying a release that moves the checkout session key
 
-**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Seven have so far:
+**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Eight have so far:
 
 | Release | Key | Why an older pod must not share a session |
 |---|---|---|
@@ -603,6 +603,7 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 | The one that prices from Django's quote (gateway #107) | `cs:v5` to `cs:v6` | It knows nothing of the total a session showed: its save would drop it, and the session would then place no order until it is read again |
 | The one that resumes an unanswered order (gateway #83) | `cs:v6` to `cs:v7` | It sends an order without its checkout's id, so Django cannot answer a repeat with it: a new pod resuming that session would place a second order |
 | The one that sends the cart digest a checkout showed (gateway #142) | `cs:v7` to `cs:v8` | It knows nothing of the cart digest a session showed: its save would drop it, and the session would then place no order until it is read again |
+| The one that takes the UCP fulfillment extension and one street line (gateway #109) | `cs:v8` to `cs:v9` | It reads a delivery with a separate street number and no address line 2: its save would drop the address line 2, and its completeness check would call a one-line street incomplete |
 
 **The pods it replaces must already answer a missing session truthfully.** Since the release with gateway #138, a checkout no session is stored for is answered "an order may exist, check before starting another", never only "start a new one". While a key-moving release rolls out, a pod of either kind then answers truthfully for a session it cannot see. Do not deploy one onto pods older than that.
 

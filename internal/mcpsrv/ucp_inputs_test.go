@@ -3,9 +3,11 @@ package mcpsrv
 import (
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -87,10 +89,18 @@ func TestCheckoutToolsPublishTheSpecsRequestSchemas(t *testing.T) {
 		require.NoError(t, err)
 		return string(raw)
 	}
-	assert.JSONEq(t, string(ucp.CheckoutRequestSchema(ucp.OpUpdate)),
-		specOf("update_checkout"))
-	assert.JSONEq(t, string(ucp.CheckoutRequestSchema(ucp.OpComplete)),
-		specOf("complete_checkout"))
+	// As the SDK's schema type holds it, which drops an empty
+	// `required` (the fulfillment extension's shipping destination has
+	// one): the same schema.
+	generated := func(op ucp.Operation) string {
+		var s jsonschema.Schema
+		require.NoError(t, json.Unmarshal(ucp.CheckoutRequestSchema(op), &s))
+		raw, err := json.Marshal(&s)
+		require.NoError(t, err)
+		return string(raw)
+	}
+	assert.JSONEq(t, generated(ucp.OpUpdate), specOf("update_checkout"))
+	assert.JSONEq(t, generated(ucp.OpComplete), specOf("complete_checkout"))
 	assert.Contains(t, specOf("create_checkout"),
 		`"$id":"https://ucp.dev/schemas/shopping/checkout.json"`)
 	assert.Contains(t, specOf("create_checkout"), `"discounts"`)
@@ -105,90 +115,59 @@ func TestCheckoutToolsPublishTheSpecsRequestSchemas(t *testing.T) {
 	}
 }
 
-// The spec's fulfillment extension is not implemented yet, so an agent
-// learns how to send a delivery from tools/list: create and update
-// describe the business's own `fulfillment` member, every field of it,
-// which of them a member naming its kind must carry, and that the
-// extension will replace it. `pay_way_id` is described the same way.
+// The business's own member in `checkout`, `pay_way_id`, is described
+// beside the spec's members on every operation that takes a payment; the
+// delivery is the spec's fulfillment extension, with nothing of the
+// business's own.
 func TestCheckoutToolsDescribeTheBusinessesOwnMembers(t *testing.T) {
 	schemas := ucpSchemas(t)
-	for _, tool := range []string{"create_checkout", "update_checkout"} {
+	for _, tool := range []string{"create_checkout", "update_checkout",
+		"complete_checkout"} {
 		t.Run(tool, func(t *testing.T) {
-			_, own := checkoutParts(t, schemas[tool])
+			spec, own := checkoutParts(t, schemas[tool])
 			members := own["properties"].(map[string]any)
-			require.Contains(t, members, "fulfillment")
-			f := members["fulfillment"].(map[string]any)
-			assert.Contains(t, f["description"], "business's own member")
-			assert.Contains(t, f["description"],
-				"not the UCP fulfillment extension")
-			assert.Contains(t, f["description"], "will replace this shape")
-			assert.Contains(t, f["description"], "only when it names `kind`")
-
-			fields := f["properties"].(map[string]any)
-			names := make([]string, 0, len(fields))
-			for name, field := range fields {
-				names = append(names, name)
-				assert.Equal(t, "string", field.(map[string]any)["type"], name)
-			}
-			assert.ElementsMatch(t, []string{"kind", "providerCode",
-				"countryCode", "city", "zipcode", "street", "streetNumber",
-				"regionId", "acsStationExternalId", "acsStationBranch",
-				"boxnowLockerId"}, names)
-			for name, says := range map[string]string{
-				"kind":                 "home_delivery",
-				"providerCode":         "get_shipping_options",
-				"regionId":             "required when the country has regions",
-				"acsStationExternalId": "required for a pickup_point",
-				"acsStationBranch":     "required for a pickup_point",
-				"boxnowLockerId":       "required for a pickup_point",
-			} {
-				assert.Contains(t,
-					fields[name].(map[string]any)["description"], says, name)
-			}
-			// Required of a member that names its kind, and of no other:
-			// the spec's own `fulfillment` has another shape.
-			assert.NotContains(t, f, "required")
-			assert.NotContains(t, f, "additionalProperties")
-			assert.Equal(t, map[string]any{"required": []any{"kind"}}, f["if"])
-			assert.Equal(t, map[string]any{"required": []any{"kind",
-				"providerCode", "countryCode", "city", "zipcode", "street",
-				"streetNumber"}}, f["then"])
-
+			assert.Equal(t, []string{"pay_way_id"},
+				slices.Collect(maps.Keys(members)))
 			assert.Contains(t,
 				members["pay_way_id"].(map[string]any)["description"],
 				ucp.HostedSelectionCapability)
+			raw, err := json.Marshal(spec)
+			require.NoError(t, err)
+			if tool != "complete_checkout" {
+				assert.Contains(t, string(raw),
+					`"$id":"https://ucp.dev/schemas/shopping/types/fulfillment.json"`)
+			}
 		})
 	}
-
-	// A complete carries the payment only.
-	_, own := checkoutParts(t, schemas["complete_checkout"])
-	members := own["properties"].(map[string]any)
-	assert.NotContains(t, members, "fulfillment")
-	assert.Contains(t, members, "pay_way_id")
 }
 
-// The delivery member is checked only when it is the business's own: one
-// naming its kind carries the carrier and the whole address, the spec's
-// extension member (`methods`) and an empty one are taken as they are.
-func TestOwnFulfillmentIsCheckedOnlyWhenItNamesItsKind(t *testing.T) {
+// A delivery is checked as the fulfillment extension's request schema
+// has it: a destination of a shipping method is a postal address, a
+// method needs its type, and a pickup method writes no destination.
+func TestFulfillmentIsCheckedAsTheExtensionHasIt(t *testing.T) {
 	session := ucpSession(t)
 	call := func(fulfillment string) (bool, string) {
 		return accepted(t, session, "update_checkout", `{"meta":`+specMeta+
 			`,"id":"c","checkout":{"line_items":[{"item":{"id":"5"},`+
 			`"quantity":1}],"fulfillment":`+fulfillment+`}}`)
 	}
-	whole := `"kind":"home_delivery","providerCode":"acs","countryCode":` +
-		`"GR","city":"Αθήνα","zipcode":"10431","street":"Πανεπιστημίου"`
+	destination := `{"street_address":"Πανεπιστημίου 12",` +
+		`"extended_address":"3ος όροφος","address_locality":"Αθήνα",` +
+		`"postal_code":"10431","address_country":"GR"}`
 	for name, tc := range map[string]struct {
 		fulfillment string
 		taken       bool
 	}{
-		"its own, whole":            {`{` + whole + `,"streetNumber":"12"}`, true},
-		"its own, with a region":    {`{` + whole + `,"streetNumber":"12","regionId":"GR-14"}`, true},
-		"its own, without a number": {`{` + whole + `}`, false},
-		"its own, a field mistyped": {`{` + whole + `,"streetNumber":12}`, false},
-		"the spec's extension":      {`{"methods":[{"type":"shipping"}]}`, true},
-		"empty":                     {`{}`, true},
+		"a shipping destination and an option": {`{"methods":[{"type":` +
+			`"shipping","line_item_ids":["410"],"destinations":[` +
+			destination + `],"groups":[{"id":"parcel",` +
+			`"selected_option_id":"acs"}]}]}`, true},
+		"a destination's member mistyped": {`{"methods":[{"type":` +
+			`"shipping","line_item_ids":[],"destinations":[` +
+			`{"postal_code":10431}]}]}`, false},
+		"a method without its line items": {`{"methods":[{"type":` +
+			`"shipping"}]}`, false},
+		"no methods": {`{}`, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ok, text := call(tc.fulfillment)
@@ -325,8 +304,9 @@ func TestWhatTheSpecRefusesIsRefused(t *testing.T) {
 // The SDK validates the arguments against the published schema and then
 // decodes them into the handler's struct, which it never compares with
 // the schema. Every member a struct decodes is described by its schema
-// with a type the field takes: the spec's members by the spec's schema,
-// the business's own (cart_id, fulfillment, pay_way_id) by its own.
+// with a type the field takes: the spec's members by the spec's schema
+// (a shipping method's destinations under its type's conditional
+// branch), the business's own (cart_id, pay_way_id) by its own.
 func TestRequestStructsDecodeWhatTheSchemasAccept(t *testing.T) {
 	// ucp-schema bundles an instrument's {"$ref": "#"} so that it points
 	// at the Payment object, not at the instrument: the members are
@@ -366,8 +346,9 @@ type structCheck struct {
 	instrument *jsonschema.Schema
 }
 
-// branches is s and every schema it is the allOf of, with the bundle's
-// self-reference read as the instrument.
+// branches is s and every schema it is the allOf of, and the then of
+// each conditional among them, with the bundle's self-reference read as
+// the instrument.
 func (c structCheck) branches(s *jsonschema.Schema) []*jsonschema.Schema {
 	if s.Ref == "#" {
 		s = c.instrument
@@ -375,6 +356,9 @@ func (c structCheck) branches(s *jsonschema.Schema) []*jsonschema.Schema {
 	out := []*jsonschema.Schema{s}
 	for _, b := range s.AllOf {
 		out = append(out, c.branches(b)...)
+	}
+	if s.Then != nil {
+		out = append(out, c.branches(s.Then)...)
 	}
 	return out
 }

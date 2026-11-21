@@ -99,8 +99,8 @@ type Pricing struct {
 // Refusal is a choice the store refused, by Django's code and its own
 // sentence in the request's language.
 type Refusal struct {
-	Code   string
-	Detail string
+	Code   string `json:"code"`
+	Detail string `json:"detail"`
 }
 
 // Refused is the first of the checkout's choices or data the store
@@ -191,8 +191,7 @@ func ComputePricing(
 
 // QuoteRequest is the quote of what the session has chosen: the very
 // choices its order is placed with (Flow.place), the email included,
-// since a promotion may depend on the buyer, and the pickup point, which
-// the quote's cart digest covers.
+// since a promotion may depend on the buyer.
 func QuoteRequest(s *Session) django.QuoteRequest {
 	f := s.Fulfillment
 	r := django.QuoteRequest{
@@ -204,7 +203,6 @@ func QuoteRequest(s *Session) django.QuoteRequest {
 		r.ShippingKind = f.Kind
 		r.ShippingProviderCode = f.ProviderCode
 		r.RegionID = f.RegionID
-		r.PickupPoint = f.PickupPoint()
 	}
 	return r
 }
@@ -235,7 +233,7 @@ func (p *Pricing) quote(
 		case shippingRefusal(apiErr.Code) && req.ShippingKind != "":
 			p.DeliveryRefused = refusal
 			req.ShippingKind, req.ShippingProviderCode = "", ""
-			req.RegionID, req.PickupPoint = "", django.PickupPoint{}
+			req.RegionID = ""
 		case apiErr.Code == django.CodeCartEmpty:
 			return &django.Quote{ItemsSubtotal: "0", DiscountTotal: "0",
 				Currency: t.DefaultCurrency}, nil

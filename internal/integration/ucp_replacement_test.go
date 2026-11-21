@@ -12,14 +12,16 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 )
 
 // update_checkout replaces the checkout: the platform sends the whole
 // resource. What the response renders is replaced, so an omitted buyer is
-// none and, with the discount extension negotiated, omitted codes are no
-// codes: the coupon they applied is removed. What the response does not
-// render cannot be sent back, so the gateway's own fulfillment member and
-// the payment selection are kept when omitted.
+// none and, with the discount and fulfillment extensions negotiated,
+// omitted codes are no codes (the coupon they applied is removed) and an
+// omitted fulfillment is no delivery. What the response does not render
+// cannot be sent back, so the payment selection is kept when omitted.
 func TestAnUpdateReplacesTheCheckout(t *testing.T) {
 	stack := startUCPGateway(t)
 	stack.faults.promotions.Store(true)
@@ -70,16 +72,16 @@ func TestAnUpdateReplacesTheCheckout(t *testing.T) {
 	assert.Equal(t, "incomplete", updated["status"])
 	assert.NotContains(t, updated, "buyer", "an omitted buyer is none")
 	missing := fmt.Sprint(updated["messages"])
-	assert.Contains(t, missing, "buyer (")
-	assert.NotContains(t, missing, "fulfillment (",
-		"the delivery is kept: the response does not carry it")
-	assert.NotContains(t, missing, "payWayId",
+	assert.Contains(t, missing, "$.buyer")
+	assert.Contains(t, missing, "$.fulfillment.methods[0].destinations",
+		"an omitted fulfillment is no delivery")
+	assert.NotContains(t, missing, "$.payment",
 		"the payment selection is kept: the response does not carry it")
 	assert.NotContains(t, updated, "discounts", "omitted codes are none")
 	assert.EqualValues(t, 1, removed.Load(), "the coupon is removed")
 	stored := stack.storedSession(t, id)
 	assert.Empty(t, stored.DiscountCodes)
-	assert.Equal(t, "home_delivery", stored.Fulfillment.Kind)
+	assert.Equal(t, checkout.Fulfillment{}, stored.Fulfillment)
 	assert.Positive(t, stored.PayWayID)
 
 	// A checkout's codes are its cart's, a coupon attached elsewhere
