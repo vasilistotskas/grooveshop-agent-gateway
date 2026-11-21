@@ -17,6 +17,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/identity"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
@@ -280,5 +281,29 @@ func TestAccountToolsCarryTheirScopes(t *testing.T) {
 		assert.Contains(t, tool.def.Description, scope, name)
 		assert.False(t, tool.servedOn(chatSurface), name)
 		assert.True(t, tool.servedOn(mcpSurface), name)
+	}
+}
+
+// A batch the request's protocol has none of, or one too long, is refused
+// on /mcp before any middleware or the SDK decodes it (mcptool.ReadBody).
+func TestABatchTheProtocolRefusesIsNotRead(t *testing.T) {
+	ctx := tenant.NewContext(t.Context(), challengeTenant())
+	for version, body := range map[string]string{
+		"2025-11-25": `[` + toolCall("my_orders") + `]`,
+		"2025-03-26": `[` + strings.TrimSuffix(strings.Repeat(
+			toolCall("search_products")+",", mcptool.MaxBatchMessages+1),
+			",") + `]`,
+	} {
+		reached := false
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/mcp",
+			strings.NewReader(body))
+		req.Header.Set("Mcp-Protocol-Version", version)
+		rec := httptest.NewRecorder()
+		RequireLinkedAccount(http.HandlerFunc(
+			func(http.ResponseWriter, *http.Request) { reached = true }),
+		).ServeHTTP(rec, req)
+
+		assert.False(t, reached, version)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, version)
 	}
 }

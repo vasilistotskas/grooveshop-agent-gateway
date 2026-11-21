@@ -176,3 +176,21 @@ func TestTheChallengeRefusesABodyNestedDeeperThanTheSDKReads(t *testing.T) {
 		})
 	}
 }
+
+// The reader decodes a call's name and arguments only: the params' other
+// members, `_meta` among them, are skipped, so the depth a call's `_meta`
+// may reach costs the reader nothing it would not cost for a flat one.
+func TestTheReaderDoesNotDecodeMeta(t *testing.T) {
+	deep := []byte(deepCall(sdkMaxDepth - 1))
+	flat := []byte(deepCall(4))
+	allocs := func(body []byte) float64 {
+		return testing.AllocsPerRun(20, func() {
+			if got := readToolCalls(body); len(got) != 1 ||
+				got[0].name != "my_orders" {
+				t.Fatalf("read %v", got)
+			}
+		})
+	}
+	assert.LessOrEqual(t, allocs(deep), allocs(flat)+8,
+		"the depth of _meta is not decoded")
+}
