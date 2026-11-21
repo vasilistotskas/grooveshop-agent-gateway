@@ -97,16 +97,15 @@ func quoteDjango(
 		5*time.Second, log, obs.NewMetrics()), &asked
 }
 
-// quoteDigest is the cart digest of a quote that prices both a delivery
-// and a pay way.
+// quoteDigest is the cart digest of a quote that prices a delivery.
 const quoteDigest = "5e1f0c2a9b3d4e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f"
 
 // quoteBody is a quote of the pricing cart (200.00 of items) with a
 // promotion of 20.00, and the rows given; "null" leaves one out. As
-// Django's, it has a cart digest when it has an expected total.
+// Django's, it has a cart digest when it prices a delivery.
 func quoteBody(shipping, fee, expected string) string {
 	digest := `"` + quoteDigest + `"`
-	if expected == "null" {
+	if shipping == "null" {
 		digest = "null"
 	}
 	return quoteBodyDigest(shipping, fee, expected, digest)
@@ -216,7 +215,8 @@ func TestComputePricingWithoutEveryChoice(t *testing.T) {
 	assert.Zero(t, (*asked)[0].PayWayID)
 	assert.False(t, p.HasPaymentFee)
 	assert.EqualValues(t, 20000-2000+350, p.Total)
-	assert.Empty(t, p.CartDigest, "no order's cart")
+	assert.Equal(t, quoteDigest, p.CartDigest,
+		"what the order is made of: the pay way is not part of it")
 	assert.Nil(t, p.PayWay)
 }
 
@@ -275,9 +275,9 @@ func TestARefusedPickupIsDroppedWithItsPoint(t *testing.T) {
 	assert.Empty(t, p.CartDigest)
 }
 
-// A quote that prices a delivery and a pay way without the digest of its
-// cart leaves out what the order is checked against: it is an error, as
-// a quote without its expected total is.
+// A quote that prices a delivery without the digest of its cart leaves
+// out what the order is checked against: it is an error, as a quote
+// without a row it was asked for is.
 func TestAQuoteWithoutItsCartDigestIsAnError(t *testing.T) {
 	dj, _ := quoteDjango(t, pricingCart("20.00", false),
 		func(django.QuoteRequest) (int, string) {
@@ -290,6 +290,17 @@ func TestAQuoteWithoutItsCartDigestIsAnError(t *testing.T) {
 	_, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
 		readySession())
 	require.ErrorIs(t, err, django.ErrUpstreamDown)
+
+	// A delivery priced without a pay way carries the digest too.
+	dj, _ = quoteDjango(t, pricingCart("20.00", false),
+		func(django.QuoteRequest) (int, string) {
+			return http.StatusOK, quoteBodyDigest(
+				`{"price":3.50,"waivedBy":null}`, "null", "null", "null")
+		})
+	s := readySession()
+	s.PayWayID = 0
+	_, _, err = ComputePricing(t.Context(), dj, pricingTenant(), s)
+	require.ErrorIs(t, err, django.ErrUpstreamDown, "delivery, no pay way")
 }
 
 // A choice the store refuses is named and left out, and the rest is

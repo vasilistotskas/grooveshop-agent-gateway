@@ -58,8 +58,8 @@ type payWayBody struct {
 // it; refused with its code when the store does not ship that way or the
 // cart does not fit), the chosen pay way's fee (waived from its free
 // threshold; refused while it is not one of Store.PayWays), the options
-// for the country, and the expected total and the cart digest once both
-// are chosen.
+// for the country, the cart digest once a delivery is chosen, and the
+// expected total once both are.
 func (s Store) Quote(w http.ResponseWriter, r *http.Request) {
 	var req django.QuoteRequest
 	var cart cartBody
@@ -163,6 +163,8 @@ func (s Store) Quote(w http.ResponseWriter, r *http.Request) {
 		body["giftCardAmount"] = amount(0)
 		body["expectedTotal"] = map[string]any{
 			"amount": total, "currency": cart.Currency}
+	}
+	if delivery != nil {
 		body["cartDigest"] = digest(cart, req)
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -170,9 +172,10 @@ func (s Store) Quote(w http.ResponseWriter, r *http.Request) {
 }
 
 // digest is the cart digest of an order of cart with req's choices, of
-// what Django's OrderQuoteService.cart_digest covers: the lines, the
-// promotions, the delivery with the chosen carrier's pickup point
-// (ShippingChoice.of keeps only its location_keys) and the pay way.
+// what Django's OrderQuoteService.cart_digest covers once a delivery is
+// chosen: the lines, the promotions and the delivery with the chosen
+// carrier's pickup point (ShippingChoice.of keeps only its
+// location_keys), not the pay way.
 // Not Django's value, an HMAC keyed by its SECRET_KEY that no client can
 // compute: a client only carries it back.
 func digest(cart cartBody, req django.QuoteRequest) string {
@@ -189,7 +192,6 @@ func digest(cart cartBody, req django.QuoteRequest) string {
 	canonical, _ := json.Marshal([]any{
 		cart.Items, cart.AppliedPromotions, req.ShippingKind,
 		req.ShippingProviderCode, req.CountryID, req.RegionID, point,
-		req.PayWayID,
 	})
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:])
