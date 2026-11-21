@@ -81,19 +81,19 @@ func TestARefusedStreetHoldsUntilTheAddressChanges(t *testing.T) {
 	s := NewSession("public", "shop.test", ProtocolUCP, "cart-1")
 	s.Buyer, s.PayWayID = completeBuyer(), 1
 	s.Deliver(homeDelivery())
-	s.StreetRefused = &Refusal{Code: django.CodeStreetNumberMissing}
+	s.DestinationRefused = &Refusal{Code: django.CodeStreetNumberMissing}
 	s.Recompute()
 	assert.Equal(t, StatusIncomplete, s.Status)
-	assert.Equal(t, []Need{NeedStreet}, s.Missing())
+	assert.Equal(t, []Need{NeedDestination}, s.Missing())
 
 	other := homeDelivery()
 	other.ProviderCode = "elta"
 	s.Deliver(other)
-	assert.NotNil(t, s.StreetRefused, "another carrier, the same address")
+	assert.NotNil(t, s.DestinationRefused, "another carrier, the same address")
 
 	other.Street = "Πανεπιστημίου 12Α"
 	s.Deliver(other)
-	assert.Nil(t, s.StreetRefused)
+	assert.Nil(t, s.DestinationRefused)
 	s.Recompute()
 	assert.Equal(t, StatusReadyForComplete, s.Status)
 }
@@ -373,4 +373,56 @@ func TestTerminal(t *testing.T) {
 	assert.True(t, s.Terminal())
 	s.Status = StatusCanceled
 	assert.True(t, s.Terminal())
+}
+
+// A pickup delivery needs its point and country, never an address or a
+// region; another point clears a refusal of the one before.
+func TestAPickupDeliveryNeedsItsPoint(t *testing.T) {
+	s := NewSession("public", "shop.test", ProtocolUCP, "cart-1")
+	s.Buyer, s.PayWayID = completeBuyer(), 1
+	s.Deliver(Fulfillment{Kind: FulfillmentPickupPoint})
+	s.Recompute()
+	assert.Equal(t, []Need{NeedPoint}, s.Missing())
+
+	locker := Fulfillment{Kind: FulfillmentPickupPoint,
+		ProviderCode: django.ShippingProviderBoxNow, CountryCode: "GR",
+		BoxnowLockerID: "25"}
+	s.Deliver(locker)
+	s.RegionOptions = nil
+	s.Recompute()
+	assert.Empty(t, s.Missing())
+	assert.Equal(t, StatusReadyForComplete, s.Status)
+
+	acs := Fulfillment{Kind: FulfillmentPickupPoint,
+		ProviderCode: django.ShippingProviderACS, CountryCode: "GR",
+		AcsStationExternalID: "AAT"}
+	assert.False(t, acs.Complete(), "an ACS station is a pair")
+	acs.AcsStationBranch = "502"
+	assert.True(t, acs.Complete())
+
+	s.DestinationRefused = &Refusal{Code: django.CodePickupPointUnknown}
+	s.Deliver(locker)
+	assert.NotNil(t, s.DestinationRefused, "the same point")
+	other := locker
+	other.BoxnowLockerID = "26"
+	s.Deliver(other)
+	assert.Nil(t, s.DestinationRefused)
+}
+
+// A pickup checkout's quote names its point, as its order does, and none
+// of a refused delivery's; without a delivery country, the options are
+// listed for the buyer's locality.
+func TestQuoteRequestOfAPickupAndOfALocality(t *testing.T) {
+	s := NewSession("public", "shop.test", ProtocolUCP, "cart-1")
+	s.Locality = Locality{CountryCode: "CY", PostalCode: "1010"}
+	assert.Equal(t, django.QuoteRequest{CountryID: "CY"}, QuoteRequest(s))
+
+	s.Deliver(Fulfillment{Kind: FulfillmentPickupPoint,
+		ProviderCode: django.ShippingProviderBoxNow, CountryCode: "GR",
+		BoxnowLockerID: "25"})
+	assert.Equal(t, django.QuoteRequest{CountryID: "GR",
+		ShippingKind:         FulfillmentPickupPoint,
+		ShippingProviderCode: django.ShippingProviderBoxNow,
+		BoxnowLockerID:       "25"},
+		QuoteRequest(s))
 }

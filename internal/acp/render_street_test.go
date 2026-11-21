@@ -55,7 +55,7 @@ func TestARefusedStreetLineIsNamedUntilItChanges(t *testing.T) {
 		FirstName: "Μαρία", LastName: "Παπαδοπούλου",
 		Email: "maria@example.test", Phone: "+306912345678",
 	}
-	s.StreetRefused = &checkout.Refusal{
+	s.DestinationRefused = &checkout.Refusal{
 		Code: django.CodeStreetNumberMissing, Detail: "Add the number."}
 	s.Recompute()
 	require.Equal(t, checkout.StatusIncomplete, s.Status)
@@ -73,8 +73,8 @@ func TestARefusedStreetLineIsNamedUntilItChanges(t *testing.T) {
 		[]string{"invalid $.fulfillment_details.address.line_one"}, params)
 
 	applyFulfillment(s, address, nil)
-	assert.NotNil(t, s.StreetRefused, "the same address")
+	assert.NotNil(t, s.DestinationRefused, "the same address")
 	address.Address.LineOne = "Πανεπιστημίου 12"
 	applyFulfillment(s, address, nil)
-	assert.Nil(t, s.StreetRefused)
+	assert.Nil(t, s.DestinationRefused)
 }

@@ -426,6 +426,25 @@ var djangoContract = []contractCall{
 		names: map[string]string{"AcsStation": "AcsStation"},
 	},
 	{
+		fn: "AcsStationByID", method: http.MethodGet,
+		path: "/shipping/acs/stations", status: http.StatusOK,
+		query: []contractParam{{"search", true}, {"pageSize", true}},
+		out:   reflect.TypeFor[Page[AcsStation]](),
+		names: map[string]string{
+			"Page": "PaginatedAcsStationList", "AcsStation": "AcsStation",
+		},
+	},
+	{
+		fn: "BoxNowLockerByID", method: http.MethodGet,
+		path: "/shipping/boxnow/lockers", status: http.StatusOK,
+		query: []contractParam{{"search", true}, {"pageSize", true}},
+		out:   reflect.TypeFor[Page[BoxNowCatalogueLocker]](),
+		names: map[string]string{
+			"Page":                  "PaginatedBoxNowLockerList",
+			"BoxNowCatalogueLocker": "BoxNowLocker",
+		},
+	},
+	{
 		fn: "BoxNowNearestLocker", method: http.MethodPost,
 		path: "/shipping/boxnow/lockers/nearest", status: http.StatusOK,
 		body: reflect.TypeFor[BoxNowNearestRequest](),

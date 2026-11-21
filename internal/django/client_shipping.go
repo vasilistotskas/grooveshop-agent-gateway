@@ -2,6 +2,7 @@ package django
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 )
@@ -102,6 +103,80 @@ func (c *Client) AcsNearestStations(
 		return nil, err
 	}
 	return out, nil
+}
+
+// catalogueSearchSize is the page a catalogue search by id reads: the
+// search matches the id as a substring, so a short one can match others
+// beside it.
+const catalogueSearchSize = "50"
+
+// AcsStationByID reads one ACS station from the store's catalogue by its
+// external id and branch (the pair a station is, and an order names),
+// ErrNotFound when the catalogue holds none: not synced yet, or a store
+// without ACS (whose station routes answer 404).
+func (c *Client) AcsStationByID(
+	ctx context.Context, host, lang, externalID, branch string,
+) (*AcsStation, error) {
+	var out Page[AcsStation]
+	err := c.get(ctx, request{
+		path:     "/shipping/acs/stations",
+		host:     host,
+		language: lang,
+		query: url.Values{
+			"search": {externalID}, "pageSize": {catalogueSearchSize},
+		},
+		out: &out,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i := range out.Results {
+		st := &out.Results[i]
+		if st.ExternalID == externalID && st.BranchCode == branch {
+			return st, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: acs station %s/%s", ErrNotFound,
+		externalID, branch)
+}
+
+// BoxNowCatalogueLocker is a BOX NOW locker as the store's catalogue
+// holds it (BoxNowLocker in Django's schema), not as BOX NOW's live
+// nearest lookup answers.
+type BoxNowCatalogueLocker struct {
+	ExternalID   string `json:"externalId"`
+	Name         string `json:"name"`
+	AddressLine1 string `json:"addressLine1"`
+	AddressLine2 string `json:"addressLine2"`
+	PostalCode   string `json:"postalCode"`
+	CountryCode  string `json:"countryCode"`
+}
+
+// BoxNowLockerByID reads one BOX NOW locker from the store's catalogue by
+// its id, ErrNotFound when the catalogue holds none (it syncs daily, and
+// BOX NOW's own lookup is live).
+func (c *Client) BoxNowLockerByID(
+	ctx context.Context, host, lang, id string,
+) (*BoxNowCatalogueLocker, error) {
+	var out Page[BoxNowCatalogueLocker]
+	err := c.get(ctx, request{
+		path:     "/shipping/boxnow/lockers",
+		host:     host,
+		language: lang,
+		query: url.Values{
+			"search": {id}, "pageSize": {catalogueSearchSize},
+		},
+		out: &out,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i := range out.Results {
+		if out.Results[i].ExternalID == id {
+			return &out.Results[i], nil
+		}
+	}
+	return nil, fmt.Errorf("%w: boxnow locker %s", ErrNotFound, id)
 }
 
 // BoxNowNearestRequest mirrors the lockers/nearest proxy body.

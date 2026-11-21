@@ -334,6 +334,24 @@ func endsInHouseNumber(line string) bool {
 	return len(words) > 1 && unicode.IsDigit([]rune(words[len(words)-1])[0])
 }
 
+// knownPickupPoints are the points the fake's catalogue holds, by
+// pickupPointOf.
+var knownPickupPoints = map[string]bool{
+	"boxnow 25": true, "acs AAT 502": true,
+}
+
+// pickupPointOf names an order's pickup point by its carrier's fields.
+func pickupPointOf(order map[string]any) string {
+	switch order["shippingProviderCode"] {
+	case django.ShippingProviderBoxNow:
+		return fmt.Sprintf("boxnow %v", order["boxnowLockerId"])
+	case django.ShippingProviderACS:
+		return fmt.Sprintf("acs %v %v", order["acsStationExternalId"],
+			order["acsStationBranch"])
+	}
+	return ""
+}
+
 // fakeCheckoutDjango extends the shared fake with the order-placement
 // endpoints the checkout flow drives.
 func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
@@ -470,6 +488,15 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			ShippingOptions: read("shipping_options.json"),
 		}.Quote(w, r)
 	}
+	// The catalogue searches a pickup point is read from by its id.
+	outer.HandleFunc("GET /api/v1/shipping/boxnow/lockers",
+		func(w http.ResponseWriter, _ *http.Request) {
+			serveFixture(t, w, "boxnow_lockers_search.json")
+		})
+	outer.HandleFunc("GET /api/v1/shipping/acs/stations",
+		func(w http.ResponseWriter, _ *http.Request) {
+			serveFixture(t, w, "acs_stations_search.json")
+		})
 	outer.HandleFunc("POST /api/v1/cart/quote",
 		func(w http.ResponseWriter, r *http.Request) {
 			faults.quotes.Add(1)
@@ -487,7 +514,10 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			"payWayId": order["payWayId"], "shippingKind": order["shippingKind"],
 			"shippingProviderCode": order["shippingProviderCode"],
 			"countryId":            order["countryId"], "regionId": order["regionId"],
-			"email": order["email"],
+			"email":                order["email"],
+			"acsStationExternalId": order["acsStationExternalId"],
+			"acsStationBranch":     order["acsStationBranch"],
+			"boxnowLockerId":       order["boxnowLockerId"],
 		})
 		rec := httptest.NewRecorder()
 		quote(rec, httptest.NewRequest(http.MethodPost, "/api/v1/cart/quote",
@@ -761,9 +791,12 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				"the order names a cart the store never made")
 			assert.NotEmpty(t, body["payWayId"])
 			assert.NotEmpty(t, body["email"])
-			// Django refuses an order without a region when the country
-			// has any, and Greece does.
-			assert.Equal(t, "GR-14", body["regionId"])
+			pickup := body["shippingKind"] == checkout.FulfillmentPickupPoint
+			if !pickup {
+				// Django refuses a home delivery without a region when
+				// the country has any, and Greece does.
+				assert.Equal(t, "GR-14", body["regionId"])
+			}
 			// Every agent checkout linked the terms and privacy policy,
 			// so every order it places accepts them.
 			assert.Equal(t, true, body["termsAccepted"])
@@ -771,7 +804,26 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			// that ends in no house number (core/validators/address.py
 			// split_street_line, through the order serializer).
 			assert.NotContains(t, body, "streetNumber")
-			if street, _ := body["street"].(string); !endsInHouseNumber(street) {
+			// A pickup order carries no address, and is delivered to a
+			// point the catalogue holds (order/serializers/order.py
+			// _deliver_to_pickup_point).
+			if pickup {
+				for _, field := range []string{"street", "city", "zipcode"} {
+					assert.NotContains(t, body, field)
+				}
+				if !knownPickupPoints[pickupPointOf(body)] {
+					raw, err := os.ReadFile(
+						fixturePath("order_pickup_point_unknown.json"))
+					if !assert.NoError(t, err) {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write(raw)
+					return
+				}
+			} else if street, _ := body["street"].(string); !endsInHouseNumber(street) {
 				raw, err := os.ReadFile(
 					fixturePath("order_street_number_missing.json"))
 				if !assert.NoError(t, err) {

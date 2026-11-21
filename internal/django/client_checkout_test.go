@@ -239,7 +239,7 @@ func TestCreateOrderSendsOneStreetLineAndNamesItsRefusal(t *testing.T) {
 	assert.Equal(t, "Ερμού 12", got["street"])
 	assert.Equal(t, "3ος όροφος", got["addressLine2"])
 	assert.NotContains(t, got, "streetNumber")
-	refused, ok := errors.AsType[*StreetRefusedError](err)
+	refused, ok := errors.AsType[*DestinationRefusedError](err)
 	require.True(t, ok, "%v", err)
 	assert.Equal(t, CodeStreetNumberMissing, refused.Code)
 	assert.Contains(t, refused.Message, "Ermou 12")
@@ -249,7 +249,7 @@ func TestCreateOrderSendsOneStreetLineAndNamesItsRefusal(t *testing.T) {
 	answer = []byte(`{"street": ["x"], "phone": ["y"], "code": "invalid", ` +
 		`"fields": {"phone": [{"message": "y", "code": "invalid"}], ` +
 		`"street": [{"message": "x", "code": "street_number_is_postcode"}]}}`)
-	refused, ok = errors.AsType[*StreetRefusedError](create())
+	refused, ok = errors.AsType[*DestinationRefusedError](create())
 	require.True(t, ok)
 	assert.Equal(t, CodeStreetNumberIsPostcode, refused.Code)
 
@@ -257,8 +257,85 @@ func TestCreateOrderSendsOneStreetLineAndNamesItsRefusal(t *testing.T) {
 		`"fields": {"street": [{"message": "x", "code": "blank"}]}}`)
 	err = create()
 	require.ErrorIs(t, err, ErrValidation)
-	assert.NotErrorAs(t, err, new(*StreetRefusedError),
+	assert.NotErrorAs(t, err, new(*DestinationRefusedError),
 		"a blank street is not a line it could not split")
+}
+
+// A pickup-point order carries the point under its carrier's field and no
+// address: Django delivers it to the point's. A point the catalogue does
+// not hold is its own refusal, naming the field.
+func TestCreateOrderSendsThePickupPointAndNamesItsRefusal(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			got = nil
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write(fixture(t, "order_pickup_point_unknown.json"))
+		}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).CreateOrder(t.Context(),
+		"shop.example.test", "el", "cart-uuid", OrderCreate{
+			PayWayID: 1, CountryID: "GR", ShippingKind: "pickup_point",
+			ShippingProviderCode: ShippingProviderBoxNow,
+			BoxnowLockerID:       "25",
+		})
+	assert.Equal(t, "25", got["boxnowLockerId"])
+	assert.Equal(t, "pickup_point", got["shippingKind"])
+	for _, field := range []string{"street", "city", "zipcode",
+		"streetNumber"} {
+		assert.NotContains(t, got, field)
+	}
+	refused, ok := errors.AsType[*DestinationRefusedError](err)
+	require.True(t, ok, "%v", err)
+	assert.Equal(t, "boxnowLockerId", refused.Field)
+	assert.Equal(t, CodePickupPointUnknown, refused.Code)
+}
+
+// A catalogue search by id matches it as a substring: the one point
+// whose id (and ACS branch) is exactly the one asked is read, and none
+// is ErrNotFound.
+func TestPickupPointsAreReadFromTheCatalogueByID(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			queries = append(queries, r.URL.Path+"?"+r.URL.RawQuery)
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/api/v1/shipping/acs/stations":
+				_, _ = w.Write(fixture(t, "acs_stations_search.json"))
+			case "/api/v1/shipping/boxnow/lockers":
+				_, _ = w.Write(fixture(t, "boxnow_lockers_search.json"))
+			}
+		}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL)
+
+	st, err := c.AcsStationByID(t.Context(), "shop.example.test", "el",
+		"AAT", "502")
+	require.NoError(t, err)
+	assert.Equal(t, "ACS SMARTPOINT LOCKER ΠΕΔΙΟ ΑΡΕΩΣ", st.Name)
+	_, err = c.AcsStationByID(t.Context(), "shop.example.test", "el",
+		"AAT", "999")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	l, err := c.BoxNowLockerByID(t.Context(), "shop.example.test", "el",
+		"25")
+	require.NoError(t, err)
+	assert.Equal(t, "AB Shop & Go - Εξάρχεια", l.Name)
+	assert.Equal(t, "Ιπποκράτους 132", l.AddressLine1)
+	_, err = c.BoxNowLockerByID(t.Context(), "shop.example.test", "el",
+		"2")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	assert.Equal(t, []string{
+		"/api/v1/shipping/acs/stations?pageSize=50&search=AAT",
+		"/api/v1/shipping/acs/stations?pageSize=50&search=AAT",
+		"/api/v1/shipping/boxnow/lockers?pageSize=50&search=25",
+		"/api/v1/shipping/boxnow/lockers?pageSize=50&search=2",
+	}, queries)
 }
 
 func TestLocalized(t *testing.T) {

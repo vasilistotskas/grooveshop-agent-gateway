@@ -127,6 +127,37 @@
         ],
         "type": "object"
       },
+      "BoxNowLocker": {
+        "properties": {
+          "addressLine1": {
+            "type": "string"
+          },
+          "addressLine2": {
+            "type": "string"
+          },
+          "countryCode": {
+            "type": "string"
+          },
+          "externalId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "postalCode": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "addressLine1",
+          "addressLine2",
+          "countryCode",
+          "externalId",
+          "name",
+          "postalCode"
+        ],
+        "type": "object"
+      },
       "BoxNowNearestLockerRequestRequest": {
         "properties": {
           "city": {
@@ -740,6 +771,15 @@
       },
       "CartQuoteRequestRequest": {
         "properties": {
+          "acsStationBranch": {
+            "type": "string"
+          },
+          "acsStationExternalId": {
+            "type": "string"
+          },
+          "boxnowLockerId": {
+            "type": "string"
+          },
           "countryId": {
             "type": "string"
           },
@@ -1003,6 +1043,12 @@
       },
       "OrderCreateFromCartRequest": {
         "properties": {
+          "acsStationBranch": {
+            "type": "string"
+          },
+          "acsStationExternalId": {
+            "type": "string"
+          },
           "addressLine2": {
             "type": "string"
           },
@@ -1012,6 +1058,9 @@
           },
           "attribution": {
             "$ref": "#/components/schemas/OrderAttributionInputRequest"
+          },
+          "boxnowLockerId": {
+            "type": "string"
           },
           "city": {
             "type": "string"
@@ -1068,7 +1117,6 @@
         },
         "required": [
           "agentCheckout",
-          "city",
           "countryId",
           "email",
           "expectedCartDigest",
@@ -1077,9 +1125,7 @@
           "lastName",
           "payWayId",
           "phone",
-          "street",
-          "termsAccepted",
-          "zipcode"
+          "termsAccepted"
         ],
         "type": "object"
       },
@@ -1350,6 +1396,48 @@
           "pricingBreakdown",
           "statusDisplay",
           "uuid"
+        ],
+        "type": "object"
+      },
+      "PaginatedAcsStationList": {
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/AcsStation"
+            },
+            "type": "array"
+          },
+          "totalPages": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "results"
+        ],
+        "type": "object"
+      },
+      "PaginatedBoxNowLockerList": {
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/BoxNowLocker"
+            },
+            "type": "array"
+          },
+          "totalPages": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "results"
         ],
         "type": "object"
       },
@@ -4107,6 +4195,41 @@
         "summary": "django.Client.PublicSettings"
       }
     },
+    "/api/v1/shipping/acs/stations": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "search",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pageSize",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedAcsStationList"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.AcsStationByID"
+      }
+    },
     "/api/v1/shipping/acs/stations/nearest": {
       "get": {
         "parameters": [
@@ -4143,6 +4266,41 @@
           }
         },
         "summary": "django.Client.AcsNearestStations"
+      }
+    },
+    "/api/v1/shipping/boxnow/lockers": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "search",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pageSize",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedBoxNowLockerList"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "django.Client.BoxNowLockerByID"
       }
     },
     "/api/v1/shipping/boxnow/lockers/nearest": {

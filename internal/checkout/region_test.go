@@ -83,6 +83,21 @@ func TestResolveRegionReadsTheCountryInAnyCase(t *testing.T) {
 	assert.Equal(t, "GR-14", s.Fulfillment.RegionID)
 }
 
+// A pickup order is delivered to the point and takes no region: none
+// is asked, and none chosen.
+func TestAPickupDeliveryTakesNoRegion(t *testing.T) {
+	s := &Session{Fulfillment: Fulfillment{
+		Kind: FulfillmentPickupPoint, ProviderCode: "boxnow",
+		CountryCode: "GR", BoxnowLockerID: "25",
+	}}
+	require.NoError(t, ResolveRegion(
+		t.Context(), regionDjango(t, http.StatusInternalServerError),
+		regionTenant(), s, "Αττική"))
+	assert.Empty(t, s.Fulfillment.RegionID)
+	assert.Empty(t, s.RegionOptions)
+	assert.False(t, s.regionMissing())
+}
+
 func TestResolveRegionFirstMatchWins(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/region/GR/get_regions_by_country_alpha_2",

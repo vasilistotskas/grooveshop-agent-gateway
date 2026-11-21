@@ -336,6 +336,13 @@ func TestRequestStructsDecodeWhatTheSchemasAccept(t *testing.T) {
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
 			c := structCheck{t: t, instrument: &instrument}
+			if tc.tool == "create_checkout" {
+				// The spec omits a method's line items from a create:
+				// a create names one method, which is the chosen one.
+				c.omitted = map[string]bool{
+					"checkout.fulfillment.methods[].line_item_ids": true,
+				}
+			}
 			c.object("", tc.in, tc.schema)
 		})
 	}
@@ -344,6 +351,9 @@ func TestRequestStructsDecodeWhatTheSchemasAccept(t *testing.T) {
 type structCheck struct {
 	t          *testing.T
 	instrument *jsonschema.Schema
+	// omitted are members the operation's schema leaves out that its
+	// struct shares with another operation's.
+	omitted map[string]bool
 }
 
 // branches is s and every schema it is the allOf of, and the then of
@@ -388,6 +398,9 @@ func (c structCheck) object(path string, typ reflect.Type, s *jsonschema.Schema)
 				prop = p
 				break
 			}
+		}
+		if prop == nil && c.omitted[member] {
+			continue
 		}
 		if !assert.NotNil(c.t, prop,
 			"%s is not in the schema, so the schema takes any value", member) {
