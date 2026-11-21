@@ -14,8 +14,9 @@ Loads when working on how /mcp and /mcp/admin verify a bearer, or /mcp's account
   and /mcp's optional-auth middleware.
   - `Verifier[P]` caches a `Probe`'s verdict for 60s, keyed by
     SHA-256(schema, token), so a verdict for one store never answers for
-    another. The cache holds at most 4096 entries and is flushed when
-    full. A valid token is cached, and so is Django's 401 (invalid).
+    another. The cache holds at most 4096 entries; a verdict written to
+    a full one drops the expired ones, else the least recently used,
+    never the whole cache (`evictLocked`). A valid token is cached, and so is Django's 401 (invalid).
     Anything else is returned uncached.
   - One implementation, one instance per server, never shared. The key
     names no server, so a shared instance would let a shopper's verdict
