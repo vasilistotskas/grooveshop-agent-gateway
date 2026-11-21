@@ -282,10 +282,11 @@ Loads when working on a checkout session on either surface, its completion, its 
     - An update reads the stored session once more before its first
       cart write (`Store.Current`), and writes nothing to the cart of a
       session stored since. That is a check, not a fence: Django's cart
-      is outside the session's compare-and-set, so a completion that
-      starts while an update's cart writes are under way can order a
-      cart that update has half written. Only the lock stands against
-      that.
+      is outside the session's compare-and-set, so a completion can
+      start while an update's cart writes are under way. The fence is
+      Django's: the completion sends the cart digest its checkout last
+      showed, which those writes change, and Django refuses the order
+      `cart_changed` (below, "The order is placed only at it").
   - **Order events** (`Flow.ApplyOrderEvent`), by the session the
     order's link leads to:
     - terminal: nothing;
@@ -296,7 +297,7 @@ Loads when working on a checkout session on either surface, its completion, its 
       warn and answered 204, and the session is left as it is: a
       session is never completed without its order. The record
       `Flow.place` writes beside the session (`Store.IndexOrder`:
-      `ag:{schema}:cs:v7:{id}:order`, the order's uuid) is for calls on
+      `ag:{schema}:cs:v8:{id}:order`, the order's uuid) is for calls on
       the session, not events: it can be lost (a flush or a
       restore);
     - the event's order status and payment status set the status
@@ -344,10 +345,17 @@ Loads when working on a checkout session on either surface, its completion, its 
   stored the checkout meanwhile (`keepLink`), so the next complete mints no
   other. ACP has no checkout awaiting a payment.
 - **A checkout's totals are Django's quote, and its order is placed at
-  the total it showed** (#107). `checkout.ComputePricing` reads the cart
-  for its lines and `POST /cart/quote` (`django.Client.Quote`) for every
-  amount, with the very choices the order is placed with
-  (`checkout.QuoteRequest`: delivery, pay way, region, email). The
+  the total it showed, from the cart it showed** (#107, #142).
+  `checkout.ComputePricing` reads the cart for its lines and
+  `POST /cart/quote` (`django.Client.Quote`) for every amount, with the
+  very choices the order is placed with (`checkout.QuoteRequest`:
+  delivery, pickup point (`Fulfillment.PickupPoint`, the order's own
+  fields), pay way, region, email). A quote that prices both a delivery
+  and a pay way also returns `cartDigest` (`Pricing.CartDigest`): Django's
+  opaque digest of what the order would be made of (the lines, the
+  promotions, the delivery with its pickup point, the pay way). A quote
+  with an expected total and no digest is a quote that cannot be read.
+  The
   gateway adds nothing up of its own: the free thresholds, the promotion
   waiver, the carrier's weight and parcels are Django's. A checkout that
   has not chosen both a delivery and a pay way shows the rows the quote
@@ -371,9 +379,10 @@ Loads when working on a checkout session on either surface, its completion, its 
     `unavailable` with `retryAfterSeconds`, ACP 503). So is a quote in
     another currency than the store's, under which every amount is
     shown.
-  - **The total shown is stored, never over a call that holds the
-    lock.** Every render of an open checkout sets `Session.ShownTotal`
-    (`Session.Show`). The calls holding its lock store it with their
+  - **What was shown is stored, never over a call that holds the
+    lock.** Every render of an open checkout sets `Session.Shown`
+    (`Session.Show`): the total and the cart digest, and the same total
+    of another cart is a change to store. The calls holding its lock store it with their
     own write: UCP's `rendered` with the status and expiry, ACP's
     `storeShown`, a create with its session. A read holds no lock
     (`mcpsrv.unlocked`, ACP's GET and HEAD), and stores it only by taking
@@ -389,18 +398,26 @@ Loads when working on a checkout session on either surface, its completion, its 
     requests keep storing is answered as changed (UCP `conflict`), never
     as a placed order.
   - **The order is placed only at it.** `Flow.admit` refuses a checkout
-    that has shown no total (`ErrTotalNotShown`, which is `ErrNotReady`:
-    read it, then complete), and one whose choices the store's quote now
-    refuses, whatever its stored status (`ErrChoiceRefused`, also
-    `ErrNotReady`). `Flow.place` sends the shown total as
-    `expectedTotal`. Django creates the order only at exactly that
-    amount due, and answers another with 409 `total_changed`
-    (`django.ErrTotalChanged`): nothing
-    was created, the checkout is stored ready again, and the answer shows
-    no total (UCP the tool error `total_changed`, its claim released; ACP
-    400 `total_changed`, kept against its key): the next read shows, and
-    stores, the total now. So no order is ever placed at a total its
-    checkout did not show, a same-key retry included.
+    that has shown no order's total, with its digest (`Shown.OfAnOrder`;
+    `ErrTotalNotShown`, which is `ErrNotReady`: read it, then complete),
+    and one whose choices the store's quote now refuses, whatever its
+    stored status (`ErrChoiceRefused`, also `ErrNotReady`). `Flow.place`
+    sends the shown total as `expectedTotal` and the shown digest as
+    `expectedCartDigest`. Django creates the order only from exactly
+    that cart, and answers another with 409 `cart_changed`
+    (`django.ErrCartChanged`), then only at exactly that amount due, and
+    answers another with 409 `total_changed` (`django.ErrTotalChanged`).
+    Either way nothing was created, the checkout is stored ready again,
+    and the answer shows no total (UCP the tool error, its claim
+    released; ACP 400 with the code, kept against its key): the next
+    read shows, and stores, the total and cart now. So no order is ever
+    placed at a total or from a cart its checkout did not show, a
+    same-key retry included. That covers the cart writes of an update
+    that outlived its lock under a running completion (#142): they
+    change the cart after the render whose digest the completion sends.
+    The one exception is a UCP complete that names a checkout's first
+    payment method, whose digest is its own quote's
+    (`.claude/rules/ucp.md`).
 - **One live checkout holds a cart** (#141). Two sessions on one cart
   could each place an order, because Django keeps the cart of an order
   that awaits its online payment. The store keeps it to one:

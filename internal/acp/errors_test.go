@@ -395,6 +395,8 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 			"cart_has_unpaid_order"},
 		"django.ErrTotalChanged": {
 			django.ErrTotalChanged, http.StatusBadRequest, "total_changed"},
+		"django.ErrCartChanged": {
+			django.ErrCartChanged, http.StatusBadRequest, "cart_changed"},
 		"django.ErrValidation": {
 			django.ErrValidation, http.StatusBadRequest, "invalid"},
 		"django.ErrInvalidCartToken": {

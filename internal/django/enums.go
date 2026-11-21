@@ -56,6 +56,12 @@ const CodeCartHasUnpaidOrder = "cart_has_unpaid_order"
 // ErrTotalChanged.
 const CodeTotalChanged = "total_changed"
 
+// CodeCartChanged is the `code` of Django's 409 refusing an order whose
+// expectedCartDigest is not the digest of the cart it would be made of
+// now (order/enum/create_error.py). CreateOrder reports it as
+// ErrCartChanged.
+const CodeCartChanged = "cart_changed"
+
 // CodePayWayUnavailable is the `code` of Django's 400 refusing a pay way
 // the store does not offer for the chosen delivery (cart/views/cart.py).
 const CodePayWayUnavailable = "pay_way_unavailable"

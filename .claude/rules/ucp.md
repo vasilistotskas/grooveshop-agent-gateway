@@ -185,7 +185,12 @@ wins over this page.
   - the first one, for a checkout that holds none, with no fee for this
     cart (its free threshold included): the method is taken. It is
     stored after the completion is claimed and before the flow, so a
-    refused complete keeps it;
+    refused complete keeps it. The checkout showed no cart digest
+    without a method (the quote gives one only with a delivery and a pay
+    way), so the order's is the digest of `firstMethodFee`'s quote, at
+    the total the checkout showed (`Shown.WithCart`): a cart changed
+    under the completion from that quote on is refused `cart_changed`,
+    one changed before it at the same total is not;
   - the first one, with a fee: `incomplete` and a `recoverable` error
     `payment_fee_added` saying the fee and the new total. The fee is the
     render's own (`checkout.ComputePricing` on the checkout as it would
@@ -199,14 +204,16 @@ wins over this page.
   which shows the new fee and total. A first method the store does not
   offer for the delivery is `unsupported`.
 
-  The order is placed at the total the checkout showed
-  (`Session.ShownTotal`, `.claude/rules/checkout.md`). One Django
+  The order is placed at the total the checkout showed, from the cart
+  it showed (`Session.Shown`, `.claude/rules/checkout.md`). One Django
   refuses because the total changed since is the tool error
   `total_changed`, its completion claim released, and shows no total:
   the platform reads the checkout, which shows and stores the total now.
-  A retry under the same key runs again and sends the total stored
-  before, so it places nothing at a total no answer showed, and a
-  complete after the read places the order at the total the read showed.
+  One refused because the cart changed since (`cart_changed`) is
+  answered the same way. A retry under the same key runs again and sends
+  what was stored before, so it places nothing at a total or from a cart
+  no answer showed, and a complete after the read places the order at
+  what the read showed.
 - **continue_url** is only where the spec requires it,
   `requires_escalation`: the PSP's page while its link can be paid,
   else the order's (never the cart's). Not in an open checkout (`incomplete`, `ready_for_complete`),

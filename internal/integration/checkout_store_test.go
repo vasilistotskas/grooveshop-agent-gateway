@@ -579,19 +579,22 @@ func TestAReadStoresTheTotalItShowedOnlyUnderTheFreeLock(t *testing.T) {
 		require.NoError(t, err)
 		return got
 	}
-	shown := &django.ExpectedTotal{Amount: 4200, Currency: "EUR"}
+	shown := &checkout.Shown{
+		Total:      django.ExpectedTotal{Amount: 4200, Currency: "EUR"},
+		CartDigest: "digest",
+	}
 
 	t.Run("free", func(t *testing.T) {
 		s := newSession()
 		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 		read := stored(t, s)
-		read.ShownTotal = shown
+		read.Shown = shown
 		read.Buyer.FirstName = "not stored by a read"
 
 		require.NoError(t, store.StoreShown(ctx, caller, read))
 
 		got := stored(t, s)
-		assert.Equal(t, shown, got.ShownTotal)
+		assert.Equal(t, shown, got.Shown)
 		assert.Empty(t, got.Buyer.FirstName, "nothing but the total")
 		_, err := store.Lock(ctx, s.Schema, s.ID)
 		require.NoError(t, err, "the read released the lock")
@@ -604,11 +607,11 @@ func TestAReadStoresTheTotalItShowedOnlyUnderTheFreeLock(t *testing.T) {
 		release, err := store.Lock(ctx, s.Schema, s.ID)
 		require.NoError(t, err)
 		defer release()
-		read.ShownTotal = shown
+		read.Shown = shown
 
 		require.ErrorIs(t, store.StoreShown(ctx, caller, read),
 			checkout.ErrLocked)
-		assert.Nil(t, stored(t, s).ShownTotal)
+		assert.Nil(t, stored(t, s).Shown)
 	})
 
 	t.Run("stored since the read", func(t *testing.T) {
@@ -616,22 +619,37 @@ func TestAReadStoresTheTotalItShowedOnlyUnderTheFreeLock(t *testing.T) {
 		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 		read := stored(t, s)
 		require.NoError(t, store.Save(ctx, stored(t, s)))
-		read.ShownTotal = shown
+		read.Shown = shown
 
 		require.ErrorIs(t, store.StoreShown(ctx, caller, read),
 			checkout.ErrSessionChanged)
-		assert.Nil(t, stored(t, s).ShownTotal)
+		assert.Nil(t, stored(t, s).Shown)
 	})
 
 	t.Run("stored since with the same total", func(t *testing.T) {
 		s := newSession()
 		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
 		first, second := stored(t, s), stored(t, s)
-		first.ShownTotal, second.ShownTotal = shown, shown
+		first.Shown, second.Shown = shown, shown
 		require.NoError(t, store.StoreShown(ctx, caller, first))
 
 		require.NoError(t, store.StoreShown(ctx, caller, second),
 			"another read stored the same total: nothing to refuse")
-		assert.Equal(t, shown, stored(t, s).ShownTotal)
+		assert.Equal(t, shown, stored(t, s).Shown)
+	})
+
+	t.Run("stored since with the same total of another cart", func(t *testing.T) {
+		s := newSession()
+		require.NoError(t, store.Create(ctx, s, checkout.CartHolder{}))
+		first, second := stored(t, s), stored(t, s)
+		other := *shown
+		other.CartDigest = "another cart"
+		first.Shown, second.Shown = shown, &other
+		require.NoError(t, store.StoreShown(ctx, caller, first))
+
+		require.ErrorIs(t, store.StoreShown(ctx, caller, second),
+			checkout.ErrSessionChanged,
+			"the same total of another cart is not what was stored")
+		assert.Equal(t, shown, stored(t, s).Shown)
 	})
 }

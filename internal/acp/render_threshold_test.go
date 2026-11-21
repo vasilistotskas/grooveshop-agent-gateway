@@ -87,6 +87,8 @@ func TestRenderShowsTheQuote(t *testing.T) {
 		"fee":         200,
 		"total":       want,
 	}, totals)
-	assert.Equal(t, &django.ExpectedTotal{Amount: want, Currency: "EUR"},
-		s.ShownTotal, "the total its order is placed at")
+	require.NotNil(t, s.Shown)
+	assert.Equal(t, django.ExpectedTotal{Amount: want, Currency: "EUR"},
+		s.Shown.Total, "the total its order is placed at")
+	assert.NotEmpty(t, s.Shown.CartDigest, "from the cart it was quoted for")
 }

@@ -97,15 +97,30 @@ func quoteDjango(
 		5*time.Second, log, obs.NewMetrics()), &asked
 }
 
+// quoteDigest is the cart digest of a quote that prices both a delivery
+// and a pay way.
+const quoteDigest = "5e1f0c2a9b3d4e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f"
+
 // quoteBody is a quote of the pricing cart (200.00 of items) with a
-// promotion of 20.00, and the rows given; "null" leaves one out.
+// promotion of 20.00, and the rows given; "null" leaves one out. As
+// Django's, it has a cart digest when it has an expected total.
 func quoteBody(shipping, fee, expected string) string {
+	digest := `"` + quoteDigest + `"`
+	if expected == "null" {
+		digest = "null"
+	}
+	return quoteBodyDigest(shipping, fee, expected, digest)
+}
+
+// quoteBodyDigest is quoteBody with the cart digest given.
+func quoteBodyDigest(shipping, fee, expected, digest string) string {
 	return `{"itemsSubtotal":200.00,"discountTotal":20.00,` +
 		`"appliedPromotions":[{"promotionId":3,"name":"-20","code":"SAVE20",` +
 		`"amount":20.00}],"blockingCoupon":null,"freeThresholdValue":180.00,` +
 		`"shipping":` + shipping + `,"paymentMethodFee":` + fee + `,` +
 		`"loyaltyDiscount":0,"giftCardAmount":null,"grandTotal":null,` +
 		`"amountDue":null,"currency":"EUR","expectedTotal":` + expected + `,` +
+		`"cartDigest":` + digest + `,` +
 		`"shippingOptions":[{"providerCode":"acs","providerName":"ACS",` +
 		`"kind":"home_delivery","price":3.50,"waivedBy":null,` +
 		`"exceedsMaxWeight":false,"exceedsParcelSize":false}],"payWays":[]}`
@@ -157,6 +172,7 @@ func TestComputePricingIsTheQuote(t *testing.T) {
 	assert.True(t, p.HasPaymentFee)
 	assert.EqualValues(t, 200, p.PaymentFee)
 	assert.EqualValues(t, 18550, p.Total, "the quote's expected total")
+	assert.Equal(t, quoteDigest, p.CartDigest, "and its cart's digest")
 	assert.Equal(t, "EUR", p.Currency)
 	assert.Len(t, p.ShippingOptions, 1)
 	require.NotNil(t, p.PayWay, "the pay way's settlement is read")
@@ -200,7 +216,50 @@ func TestComputePricingWithoutEveryChoice(t *testing.T) {
 	assert.Zero(t, (*asked)[0].PayWayID)
 	assert.False(t, p.HasPaymentFee)
 	assert.EqualValues(t, 20000-2000+350, p.Total)
+	assert.Empty(t, p.CartDigest, "no order's cart")
 	assert.Nil(t, p.PayWay)
+}
+
+// A pickup checkout's quote names its pickup point, as its order does:
+// the quote's cart digest covers the point, so an order sent to it is
+// the cart the quote priced.
+func TestAPickupQuoteNamesItsPoint(t *testing.T) {
+	dj, asked := quoteDjango(t, pricingCart("20.00", false),
+		func(django.QuoteRequest) (int, string) {
+			return http.StatusOK, quoteBody(
+				`{"price":3.50,"waivedBy":null}`,
+				`{"amount":2.00,"waived":false}`,
+				`{"amount":18550,"currency":"EUR"}`)
+		})
+	s := readySession()
+	s.Fulfillment.Kind = FulfillmentPickupPoint
+	s.Fulfillment.ProviderCode = django.ShippingProviderBoxNow
+	s.Fulfillment.BoxnowLockerID = "4"
+
+	_, _, err := ComputePricing(t.Context(), dj, pricingTenant(), s)
+	require.NoError(t, err)
+	require.Len(t, *asked, 1)
+	assert.Equal(t, django.PickupPoint{BoxnowLockerID: "4"},
+		(*asked)[0].PickupPoint)
+	assert.Equal(t, s.Fulfillment.PickupPoint(), (*asked)[0].PickupPoint,
+		"the point the order is sent to")
+}
+
+// A quote that prices a delivery and a pay way without the digest of its
+// cart leaves out what the order is checked against: it is an error, as
+// a quote without its expected total is.
+func TestAQuoteWithoutItsCartDigestIsAnError(t *testing.T) {
+	dj, _ := quoteDjango(t, pricingCart("20.00", false),
+		func(django.QuoteRequest) (int, string) {
+			return http.StatusOK, quoteBodyDigest(
+				`{"price":3.50,"waivedBy":null}`,
+				`{"amount":2.00,"waived":false}`,
+				`{"amount":18550,"currency":"EUR"}`, "null")
+		})
+
+	_, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+		readySession())
+	require.ErrorIs(t, err, django.ErrUpstreamDown)
 }
 
 // A choice the store refuses is named and left out, and the rest is

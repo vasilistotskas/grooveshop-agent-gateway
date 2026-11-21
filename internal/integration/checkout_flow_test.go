@@ -34,6 +34,7 @@ var testOrderRetry = checkout.OrderRetry{
 // Redis: what a completion leaves behind, without a protocol in front.
 type flowStack struct {
 	flow   *checkout.Flow
+	dj     *django.Client
 	store  *checkout.Store
 	rdb    *redis.Client
 	faults *checkoutFaults
@@ -60,7 +61,7 @@ func startFlowRetrying(
 	return flowStack{
 		flow: checkout.NewFlow(dj, store, storefront.NewSite("el"),
 			retry, quietLogger()),
-		store: store, rdb: rdb, faults: faults,
+		dj: dj, store: store, rdb: rdb, faults: faults,
 		tenant: &tenant.Tenant{
 			SchemaName: "demostore", DefaultLocale: "el",
 			DefaultCurrency: "EUR", Domain: "shop.test",
@@ -71,6 +72,15 @@ func startFlowRetrying(
 // readySession is a cash-on-delivery checkout the fake Django accepts,
 // stored as the handlers leave it before they call Complete.
 func (f flowStack) readySession(t *testing.T) *checkout.Session {
+	t.Helper()
+	return f.readySessionPaying(t, 1)
+}
+
+// readySessionPaying is readySession paid with the pay way given: 1 cash
+// on delivery, 2 Viva's hosted payment, both free for the fixture cart.
+func (f flowStack) readySessionPaying(
+	t *testing.T, payWayID int64,
+) *checkout.Session {
 	t.Helper()
 	s := checkout.NewSession(f.tenant.SchemaName, f.tenant.Domain,
 		checkout.ProtocolUCP, f.faults.carts.mint())
@@ -84,12 +94,15 @@ func (f flowStack) readySession(t *testing.T) *checkout.Session {
 		CountryCode:  "GR", City: "Αθήνα", Zipcode: "10431",
 		Street: "Πανεπιστημίου", StreetNumber: "12", RegionID: "GR-14",
 	}
-	s.PayWayID = 1
+	s.PayWayID = payWayID
 	s.Recompute()
 	require.Equal(t, checkout.StatusReadyForComplete, s.Status)
 	// What its last render showed: the fixture cart, delivered free and
-	// paid in cash without a fee.
-	s.ShownTotal = &fixtureShownTotal
+	// paid without a fee.
+	p, _, err := checkout.ComputePricing(t.Context(), f.dj, f.tenant, s)
+	require.NoError(t, err)
+	require.True(t, s.Show(p))
+	require.Equal(t, fixtureShownTotal, s.Shown.Total)
 	require.NoError(t, f.store.Create(t.Context(), s,
 		checkout.CartHolder{}))
 	return s
@@ -495,9 +508,7 @@ func TestAPlacedOrdersSaveWhoseReplyWasLostIsItsOwn(t *testing.T) {
 	f := startFlow(t, 5*time.Second)
 	f.tenant.AgentCommerceEnabled = true
 	f.tenant.AgentHostedPaymentEnabled = true
-	s := f.readySession(t)
-	s.PayWayID = 2
-	require.NoError(t, f.store.Save(ctx, s))
+	s := f.readySessionPaying(t, 2)
 	var linked, lost atomic.Bool
 	f.rdb.AddHook(replyLost(func(cmd redis.Cmder) bool {
 		if setsKey(cmd, ":orderlink:") {
@@ -735,9 +746,7 @@ func TestCompleteOverAnOrderEventKeepsTheExpiryItPublished(t *testing.T) {
 	ctx := t.Context()
 	f.tenant.AgentCommerceEnabled = true
 	f.tenant.AgentHostedPaymentEnabled = true
-	s := f.readySession(t)
-	s.PayWayID = 2
-	require.NoError(t, f.store.Save(ctx, s))
+	s := f.readySessionPaying(t, 2)
 	placed := time.Now()
 	f.faults.orderCreatedAt.Store(&placed)
 	var published time.Time
@@ -1233,9 +1242,7 @@ func (f flowStack) placedUnsaved(t *testing.T) *checkout.Session {
 	ctx := t.Context()
 	f.tenant.AgentCommerceEnabled = true
 	f.tenant.AgentHostedPaymentEnabled = true
-	s := f.readySession(t)
-	s.PayWayID = 2
-	require.NoError(t, f.store.Save(ctx, s))
+	s := f.readySessionPaying(t, 2)
 	var linked, failing atomic.Bool
 	failing.Store(true)
 	f.rdb.AddHook(redisStep(func(cmd redis.Cmder) error {
