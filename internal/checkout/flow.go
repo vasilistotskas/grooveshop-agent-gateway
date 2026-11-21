@@ -420,16 +420,11 @@ func (f *Flow) admit(
 	default:
 		return fmt.Errorf("%w: missing %v", ErrNotReady, s.Missing())
 	}
-	// The order is placed at the total the checkout showed, from the
-	// cart it was quoted for: a checkout whose render was never stored
-	// has shown none, and one stored before its delivery and pay way were
-	// both priced has shown no order's.
-	if !s.Shown.OfAnOrder() {
-		return ErrTotalNotShown
-	}
 	// A choice the store refuses now (the cart outgrew the carrier, the
 	// pay way is no longer offered) leaves the shown total without its
 	// row: the checkout is not ready, whatever its stored status says.
+	// It is named first: a checkout that showed a refused choice showed
+	// no order's total either, and the refusal says what to change.
 	pricing, _, err := ComputePricing(ctx, f.dj, t, s)
 	if err != nil {
 		return err
@@ -437,6 +432,13 @@ func (f *Flow) admit(
 	if r := pricing.Refused(); r != nil {
 		return fmt.Errorf("%w: %s (%s)", ErrChoiceRefused, r.Detail,
 			r.Code)
+	}
+	// The order is placed at the total the checkout showed, from the
+	// cart it was quoted for: a checkout whose render was never stored
+	// has shown none, and one stored before its delivery and pay way were
+	// both priced has shown no order's.
+	if !s.Shown.OfAnOrder() {
+		return ErrTotalNotShown
 	}
 
 	// Checked against the FINAL delivery: a method selected before the

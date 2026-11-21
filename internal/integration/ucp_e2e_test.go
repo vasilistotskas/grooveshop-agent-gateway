@@ -1876,6 +1876,34 @@ func TestUCPEndToEnd(t *testing.T) {
 			assert.Zero(t, stack.storedSession(t, id).PayWayID)
 		})
 
+	// A first method named for a checkout whose delivery the store refuses
+	// (a carrier it does not ship by) is not taken, and the answer names
+	// the refused delivery, never "no total shown".
+	t.Run("a method named first for a refused delivery names the delivery",
+		func(t *testing.T) {
+			heavy := maps.Clone(fulfillment)
+			heavy["providerCode"] = "carrier_pigeon"
+			res := callTool(t, session, "create_checkout", map[string]any{
+				"meta": meta(""), "cart_id": stack.faults.carts.mint(),
+				"checkout": map[string]any{
+					"buyer": buyer, "fulfillment": heavy,
+				},
+			})
+			require.False(t, res.IsError, "%v", res.Content)
+			id := structured(t, res)["id"].(string)
+			orders := stack.faults.orderCreates.Load()
+
+			res = complete(t, id, uuid.NewString(),
+				map[string]any{"payment": codInstrument})
+			require.True(t, res.IsError, "%v", res.Content)
+			text := res.Content[0].(*mcp.TextContent).Text
+			assert.Contains(t, text, "refuses one of this checkout's choices")
+			assert.Contains(t, text, django.CodeShippingUnavailable)
+			assert.Equal(t, orders, stack.faults.orderCreates.Load())
+			assert.Zero(t, stack.storedSession(t, id).PayWayID,
+				"nothing is stored")
+		})
+
 	t.Run("a method named only at complete time that adds a fee places nothing",
 		func(t *testing.T) {
 			stack.faults.codFee.Store(true)

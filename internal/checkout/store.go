@@ -123,6 +123,9 @@ func NewStore(rdb *redis.Client, upstreamTimeout time.Duration) *Store {
 //     answers a repeat with, and a complete resumes a session whose
 //     order went unanswered (a v6 pod sends its order without the
 //     checkout's id: a resume of its session would place a second one).
+//   - v8: a session keeps the cart digest it showed with its total, and
+//     its order is placed only from that cart (a v7 pod knows nothing of
+//     the digest, and its save drops it).
 func sessionKey(schema, id string) string {
 	return "ag:" + schema + ":cs:v8:" + id
 }

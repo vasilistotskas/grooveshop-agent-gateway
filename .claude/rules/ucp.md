@@ -190,7 +190,11 @@ wins over this page.
     way), so the order's is the digest of `firstMethodFee`'s quote, at
     the total the checkout showed (`Shown.WithCart`): a cart changed
     under the completion from that quote on is refused `cart_changed`,
-    one changed before it at the same total is not;
+    one changed before it at the same total is not, a known gap kept with
+    #110's decision until Django returns the digest without a pay way
+    (django-api #770): the complete then sends the digest the platform's
+    last read showed. A delivery the store refuses now is named first
+    (`firstMethodFee`, as `Flow.admit` names it);
   - the first one, with a fee: `incomplete` and a `recoverable` error
     `payment_fee_added` saying the fee and the new total. The fee is the
     render's own (`checkout.ComputePricing` on the checkout as it would

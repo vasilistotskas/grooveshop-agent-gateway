@@ -1120,6 +1120,12 @@ func (h *handlers) firstMethodFee(
 			Hint: "the payment method this call names is not offered for " +
 				"this checkout's delivery; name another advertised " +
 				"instrument, or select one with update_checkout"}
+	case pricing.Refused() != nil:
+		// Another choice the store refuses now (the delivery): named as
+		// the completion names it, with what to change.
+		r := pricing.Refused()
+		return nil, "", completeErr(s, fmt.Errorf("%w: %s (%s)",
+			checkout.ErrChoiceRefused, r.Detail, r.Code))
 	case pricing.PayWay == nil:
 		// A render goes on without a fee it could not read. A placement
 		// does not: the fee decides whether the order is placed.
@@ -1609,11 +1615,12 @@ func (h *handlers) checkoutResult(
 }
 
 // rendered builds the checkout and stores what the render read from its
-// order (a status the order decided, its expiry) and the total it shows
-// (Session.ShownTotal) before giving it: a checkout publishes only what is
-// stored, so no later read gives an earlier expires_at, and its order is
-// placed at the total it showed. A read (unlocked) that changed only the
-// total stores it by taking the lock, and not while another call holds
+// order (a status the order decided, its expiry) and what it shows, its
+// total and cart digest (Session.Shown), before giving it: a checkout
+// publishes only what is stored, so no later read gives an earlier
+// expires_at, and its order is placed at the total and from the cart it
+// showed. A read (unlocked) that changed only what it shows stores it by
+// taking the lock, and not while another call holds
 // it (checkout.Store.StoreShown). The save is a compare-and-set: a
 // checkout another request stored meanwhile is read again and rendered
 // once more. A placed checkout whose state cannot be stored is answered
@@ -1634,7 +1641,7 @@ func (h *handlers) rendered(
 				s.Shown == shown) {
 			return payload, err
 		}
-		// A read changed only the total it shows: it stores it under
+		// A read changed only what it shows: it stores it under
 		// the lock, which another call may hold. A total that cannot be
 		// stored is not published: its order would be placed at the one
 		// stored before.

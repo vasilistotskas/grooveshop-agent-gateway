@@ -102,7 +102,8 @@ func TestAChangedPriceIsChargedOnlyOnceShown(t *testing.T) {
 
 // A choice the store refuses for the cart now (cash on delivery is not
 // offered for the checkout's carrier) leaves its total without that row:
-// the checkout renders not ready, and a completion places nothing.
+// the checkout renders not ready, and a completion places nothing and
+// names the refused choice.
 func TestARefusedChoiceIsNotCompleted(t *testing.T) {
 	stack := startUCPGateway(t)
 	for _, surface := range completionSurfaces(t, stack) {
@@ -120,7 +121,19 @@ func TestARefusedChoiceIsNotCompleted(t *testing.T) {
 			assert.Contains(t,
 				[]string{"incomplete", "not_ready_for_payment"}, read.status)
 			assert.Empty(t, refused.status, "no order, no checkout placed")
-			assert.NotEmpty(t, refused.refusal)
+			// The refusal is what the store refuses, never "no total
+			// shown": the read showed the rows without the refused one.
+			switch surface.name {
+			case "ucp":
+				assert.Contains(t, refused.refusal,
+					"refuses one of this checkout's choices")
+			case "acp":
+				// ACP chooses the collect-later method at completion, and
+				// the delivery is offered none.
+				assert.Equal(t, "400 unsupported", refused.refusal)
+			}
+			assert.NotContains(t, refused.refusal+string(refused.errorBody),
+				"shown no total")
 			assert.Equal(t, placed, stack.faults.ordersPlaced.Load())
 			assert.Equal(t, sent, stack.faults.orderCreates.Load(),
 				"the refused choice never reaches the store's order call")
