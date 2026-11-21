@@ -297,7 +297,7 @@ Loads when working on a checkout session on either surface, its completion, its 
       warn and answered 204, and the session is left as it is: a
       session is never completed without its order. The record
       `Flow.place` writes beside the session (`Store.IndexOrder`:
-      `ag:{schema}:cs:v9:{id}:order`, the order's uuid) is for calls on
+      `ag:{schema}:cs:v8:{id}:order`, the order's uuid) is for calls on
       the session, not events: it can be lost (a flush or a
       restore);
     - the event's order status and payment status set the status
@@ -349,11 +349,12 @@ Loads when working on a checkout session on either surface, its completion, its 
   `checkout.ComputePricing` reads the cart for its lines and
   `POST /cart/quote` (`django.Client.Quote`) for every amount, with the
   very choices the order is placed with (`checkout.QuoteRequest`:
-  delivery, pay way, region, email). A quote that prices both a delivery
-  and a pay way also returns `cartDigest` (`Pricing.CartDigest`): Django's
-  opaque digest of what the order would be made of (the lines, the
-  promotions, the delivery, the pay way). A quote
-  with an expected total and no digest is a quote that cannot be read.
+  delivery, pay way, region, email). A quote that prices a delivery also
+  returns `cartDigest` (`Pricing.CartDigest`): Django's opaque digest of
+  what the order would be made of (the lines, the promotions, the
+  delivery; not the pay way, whose fee is the expected total's,
+  django-api #770). A quote that prices a delivery without a digest is a
+  quote that cannot be read.
   The
   gateway adds nothing up of its own: the free thresholds, the promotion
   waiver, the carrier's weight and parcels are Django's. A checkout that
@@ -414,9 +415,9 @@ Loads when working on a checkout session on either surface, its completion, its 
     same-key retry included. That covers the cart writes of an update
     that outlived its lock under a running completion (#142): they
     change the cart after the render whose digest the completion sends.
-    The one exception is a UCP complete that names a checkout's first
-    payment method, whose digest is its own quote's
-    (`.claude/rules/ucp.md`).
+    The digest holds no pay way, so a UCP complete that names a
+    checkout's first payment method is placed from the cart it showed
+    too.
   - **A street line Django refuses is the address's to correct.** The
     order carries the delivery's one street line (`Fulfillment.Street`,
     the house number after the street) and its `AddressLine2`, never a

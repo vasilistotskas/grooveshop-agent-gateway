@@ -61,9 +61,10 @@ type Pricing struct {
 	Total          int64
 	// Currency is the ISO 4217 code of every amount.
 	Currency string
-	// CartDigest is the quote's digest of the cart Total is of
-	// (django.Quote.CartDigest): empty until both a delivery and a pay
-	// way are priced, and once an order exists.
+	// CartDigest is the quote's digest of what the order would be made of
+	// (django.Quote.CartDigest: the lines, the promotions, the delivery;
+	// not the pay way): empty until a delivery is priced, and once an
+	// order exists.
 	CartDigest string
 	// DeliveryRefused and PayWayRefused are the checkout's choices the
 	// store no longer takes for this cart (it does not ship that way, the
@@ -256,10 +257,9 @@ func (p *Pricing) quote(
 // left out would be a total without it.
 func quoted(req django.QuoteRequest, q *django.Quote) error {
 	switch {
-	case req.ShippingKind != "" && q.Shipping == nil,
+	case req.ShippingKind != "" && (q.Shipping == nil || q.CartDigest == ""),
 		req.PayWayID > 0 && q.PaymentMethodFee == nil,
-		req.ShippingKind != "" && req.PayWayID > 0 &&
-			(q.ExpectedTotal == nil || q.CartDigest == ""):
+		req.ShippingKind != "" && req.PayWayID > 0 && q.ExpectedTotal == nil:
 		return fmt.Errorf("%w: the quote leaves out a chosen row",
 			django.ErrUpstreamDown)
 	}
@@ -313,9 +313,9 @@ func (p *Pricing) addQuote(q *django.Quote, cart *django.Cart) error {
 		}
 		p.HasPaymentFee = p.PaymentFee > 0
 	}
+	p.CartDigest = q.CartDigest
 	if q.ExpectedTotal != nil {
 		p.Total = q.ExpectedTotal.Amount
-		p.CartDigest = q.CartDigest
 		return nil
 	}
 	// As Django adds it up: the discount takes the products to zero at

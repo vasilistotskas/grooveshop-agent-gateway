@@ -592,7 +592,7 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 
 ## 10. Before deploying a release that moves the checkout session key
 
-**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Eight have so far:
+**Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Seven have so far:
 
 | Release | Key | Why an older pod must not share a session |
 |---|---|---|
@@ -602,8 +602,7 @@ Each is fixed at its root in its own PR, and all are live on production unless t
 | The one that publishes `expires_at` (gateway #108) | `cs:v4` to `cs:v5` | It knows nothing of the expiry a session published: its save would drop it, and a later answer could give an earlier one |
 | The one that prices from Django's quote (gateway #107) | `cs:v5` to `cs:v6` | It knows nothing of the total a session showed: its save would drop it, and the session would then place no order until it is read again |
 | The one that resumes an unanswered order (gateway #83) | `cs:v6` to `cs:v7` | It sends an order without its checkout's id, so Django cannot answer a repeat with it: a new pod resuming that session would place a second order |
-| The one that sends the cart digest a checkout showed (gateway #142) | `cs:v7` to `cs:v8` | It knows nothing of the cart digest a session showed: its save would drop it, and the session would then place no order until it is read again |
-| The one that takes the UCP fulfillment extension and one street line (gateway #109) | `cs:v8` to `cs:v9` | It reads a delivery with a separate street number and no address line 2: its save would drop the address line 2, and its completeness check would call a one-line street incomplete |
+| The one that sends the cart digest a checkout showed and takes UCP's fulfillment extension (gateway #142, #109) | `cs:v7` to `cs:v8` | It knows nothing of the cart digest a session showed, nor of a delivery's address line 2: its save would drop them (the session would then place no order until it is read again), and it reads a one-line street as incomplete |
 
 **The pods it replaces must already answer a missing session truthfully.** Since the release with gateway #138, a checkout no session is stored for is answered "an order may exist, check before starting another", never only "start a new one". While a key-moving release rolls out, a pod of either kind then answers truthfully for a session it cannot see. Do not deploy one onto pods older than that.
 

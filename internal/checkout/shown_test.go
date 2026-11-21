@@ -1,9 +1,11 @@
 package checkout
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 )
@@ -41,13 +43,53 @@ func TestShowRecordsWhatAnOpenCheckoutShows(t *testing.T) {
 		"an order's totals are its own")
 }
 
-// An order is placed only at what was shown of an order: a total the
-// quote priced with its cart's digest. A total shown before a delivery
-// and a pay way were both priced is the rows', and no order's.
-func TestOnlyAnOrdersTotalIsOneToPlaceAt(t *testing.T) {
-	var none *Shown
-	assert.False(t, none.OfAnOrder(), "nothing shown")
-	assert.False(t, (&Shown{Total: django.ExpectedTotal{Amount: 100}}).
-		OfAnOrder(), "the rows priced so far")
-	assert.True(t, (&Shown{CartDigest: "a"}).OfAnOrder())
+// A completion names a choice the store refuses now before it asks for
+// a total: a checkout that showed a refused delivery showed no order's
+// total either, and only the refusal says what to change. One that
+// showed nothing, or only the rows of a checkout not yet priced as an
+// order, is asked to be read first.
+func TestAdmitNamesARefusedChoiceBeforeTheShownTotal(t *testing.T) {
+	refusing := func(r django.QuoteRequest) (int, string) {
+		if r.ShippingKind != "" {
+			return http.StatusBadRequest, `{"detail":"Too heavy.",` +
+				`"reason":"shipping_weight_exceeded",` +
+				`"code":"shipping_weight_exceeded"}`
+		}
+		return http.StatusOK, quoteBody("null",
+			`{"amount":2.00,"waived":false}`, "null")
+	}
+	pricing := func(django.QuoteRequest) (int, string) {
+		return http.StatusOK, quoteBody(`{"price":3.50,"waivedBy":null}`,
+			`{"amount":2.00,"waived":false}`,
+			`{"amount":18550,"currency":"EUR"}`)
+	}
+	ready := func() *Session {
+		s := readySession()
+		s.Buyer = completeBuyer()
+		s.Fulfillment.City, s.Fulfillment.Zipcode = "Αθήνα", "10431"
+		s.Fulfillment.Street = "Ερμού 12"
+		s.Recompute()
+		return s
+	}
+	rows := &Shown{Total: django.ExpectedTotal{Amount: 18000, Currency: "EUR"}}
+	for name, tc := range map[string]struct {
+		quote func(django.QuoteRequest) (int, string)
+		shown *Shown
+		want  error
+	}{
+		"a refused delivery, its rows shown": {refusing, rows, ErrChoiceRefused},
+		"a refused delivery, nothing shown":  {refusing, nil, ErrChoiceRefused},
+		"nothing shown":                      {pricing, nil, ErrTotalNotShown},
+		"only the rows shown":                {pricing, rows, ErrTotalNotShown},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dj, _ := quoteDjango(t, pricingCart("20.00", false), tc.quote)
+			s := ready()
+			require.Equal(t, StatusReadyForComplete, s.Status)
+			s.Shown = tc.shown
+			err := (&Flow{dj: dj}).admit(t.Context(), pricingTenant(), s)
+			require.ErrorIs(t, err, tc.want)
+			require.ErrorIs(t, err, ErrNotReady)
+		})
+	}
 }

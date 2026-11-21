@@ -21,7 +21,7 @@ import (
 )
 
 // Where the gateway keeps a checkout session and its lock.
-func sessionRedisKey(id string) string { return "ag:demostore:cs:v9:" + id }
+func sessionRedisKey(id string) string { return "ag:demostore:cs:v8:" + id }
 func lockRedisKey(id string) string    { return sessionRedisKey(id) + ":lock" }
 
 // gate is one request the fake Django holds: reached closes when the
