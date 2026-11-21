@@ -80,15 +80,30 @@ func TestACountryIsReadInAnyCase(t *testing.T) {
 	f.CountryCode = " gr "
 	s := &Session{}
 	s.Deliver(f)
-	s.StreetRefused = &Refusal{Code: django.CodeStreetNumberMissing}
+	s.DestinationRefused = &Refusal{Code: django.CodeStreetNumberMissing}
 	f.CountryCode = "Gr"
 	s.Deliver(f)
-	assert.NotNil(t, s.StreetRefused, "the same address")
+	assert.NotNil(t, s.DestinationRefused, "the same address")
 	require.NoError(t, ResolveRegion(
 		t.Context(), regionDjango(t, http.StatusOK),
 		regionTenant(), s, "Αττική"))
 	assert.Equal(t, "GR", s.Fulfillment.CountryCode)
 	assert.Equal(t, "GR-14", s.Fulfillment.RegionID)
+}
+
+// A pickup order is delivered to the point and takes no region: none
+// is asked, and none chosen.
+func TestAPickupDeliveryTakesNoRegion(t *testing.T) {
+	s := &Session{Fulfillment: Fulfillment{
+		Kind: FulfillmentPickupPoint, ProviderCode: "boxnow",
+		CountryCode: "GR", BoxnowLockerID: "25",
+	}}
+	require.NoError(t, ResolveRegion(
+		t.Context(), regionDjango(t, http.StatusInternalServerError),
+		regionTenant(), s, "Αττική"))
+	assert.Empty(t, s.Fulfillment.RegionID)
+	assert.Empty(t, s.RegionOptions)
+	assert.False(t, s.regionMissing())
 }
 
 func TestResolveRegionFirstMatchWins(t *testing.T) {

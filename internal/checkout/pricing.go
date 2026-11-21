@@ -192,7 +192,8 @@ func ComputePricing(
 
 // QuoteRequest is the quote of what the session has chosen: the very
 // choices its order is placed with (Flow.place), the email included,
-// since a promotion may depend on the buyer.
+// since a promotion may depend on the buyer, and the pickup point, which
+// the quote's cart digest covers.
 func QuoteRequest(s *Session) django.QuoteRequest {
 	f := s.Fulfillment
 	r := django.QuoteRequest{
@@ -204,6 +205,12 @@ func QuoteRequest(s *Session) django.QuoteRequest {
 		r.ShippingKind = f.Kind
 		r.ShippingProviderCode = f.ProviderCode
 		r.RegionID = f.RegionID
+		r.PickupPoint = f.PickupPoint()
+	}
+	// Without a delivery country, the options are listed for where the
+	// buyer is.
+	if r.CountryID == "" {
+		r.CountryID = s.Locality.CountryCode
 	}
 	return r
 }
@@ -234,7 +241,7 @@ func (p *Pricing) quote(
 		case shippingRefusal(apiErr.Code) && req.ShippingKind != "":
 			p.DeliveryRefused = refusal
 			req.ShippingKind, req.ShippingProviderCode = "", ""
-			req.RegionID = ""
+			req.RegionID, req.PickupPoint = "", django.PickupPoint{}
 		case apiErr.Code == django.CodeCartEmpty:
 			return &django.Quote{ItemsSubtotal: "0", DiscountTotal: "0",
 				Currency: t.DefaultCurrency}, nil

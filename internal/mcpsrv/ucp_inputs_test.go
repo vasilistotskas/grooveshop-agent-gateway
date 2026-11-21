@@ -348,17 +348,23 @@ func TestRequestStructsDecodeWhatTheSchemasAccept(t *testing.T) {
 }
 
 // omittedBy is, per tool, the members a struct shares with another tool
-// that this tool's schema omits (ucp_request "omit"): a method's id, which
-// the business gives, is named on an update only. delivery refuses any id
-// but the business's, whichever tool decodes it.
+// that this tool's schema omits (ucp_request "omit"). A create names one
+// method, which is the chosen one, so it omits the method's line items
+// and its id, which the business gives: delivery refuses any id but the
+// business's, whichever tool decodes it.
 var omittedBy = map[string]map[string]bool{
-	"create_checkout": {"checkout.fulfillment.methods[].id": true},
+	"create_checkout": {
+		"checkout.fulfillment.methods[].id":            true,
+		"checkout.fulfillment.methods[].line_item_ids": true,
+	},
 }
 
 type structCheck struct {
 	t          *testing.T
 	instrument *jsonschema.Schema
-	omitted    map[string]bool
+	// omitted are members the operation's schema leaves out that its
+	// struct shares with another operation's (omittedBy).
+	omitted map[string]bool
 }
 
 // branches is s and every schema it is the allOf of, and the then of

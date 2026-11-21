@@ -232,8 +232,6 @@ func TestCheckoutInApplyToReplacesTheBuyerAndTheDelivery(t *testing.T) {
 	}
 
 	for name, raw := range map[string]string{
-		"a pickup method": `{"fulfillment":{"methods":[{"type":"pickup",` +
-			`"selected_destination_id":"locker-4"}]}}`,
 		"two shipping methods": `{"fulfillment":{"methods":[` +
 			`{"type":"shipping"},{"type":"shipping"}]}}`,
 		"two destinations": `{"fulfillment":{"methods":[{"type":` +
@@ -271,6 +269,104 @@ func withCarrier(f checkout.Fulfillment, carrier string) checkout.Fulfillment {
 	return f
 }
 
+// A pickup method is chosen when it is the request's only method, or the
+// one whose line_item_ids name the lines: its selected_destination_id is
+// the point, whether this checkout listed it or not, and the context's
+// locality is kept. An id this business never gives, and both methods
+// naming the lines, are refused.
+func TestCheckoutInApplyToChoosesThePickupMethod(t *testing.T) {
+	neg := fulfillmentNegotiated(t, true)
+	decode := func(t *testing.T, raw string) *UCPCheckoutIn {
+		t.Helper()
+		var in UCPCheckoutIn
+		require.NoError(t, json.Unmarshal([]byte(raw), &in))
+		return &in
+	}
+	locker := checkout.Fulfillment{
+		Kind: checkout.FulfillmentPickupPoint, ProviderCode: "boxnow",
+		CountryCode: "GR", BoxnowLockerID: "25",
+	}
+	for name, tc := range map[string]struct {
+		raw  string
+		want checkout.Fulfillment
+	}{
+		"the only method": {`{"fulfillment":{"methods":[{"type":"pickup",` +
+			`"selected_destination_id":"boxnow:gr:25"}]}}`, locker},
+		"the one naming the lines": {`{"fulfillment":{"methods":[` +
+			`{"type":"shipping","line_item_ids":[],"destinations":[` +
+			`{"postal_code":"10431"}]},{"type":"pickup",` +
+			`"line_item_ids":["410"],"selected_destination_id":` +
+			`"acs:GR:AAT:502"}]}}`, checkout.Fulfillment{
+			Kind: checkout.FulfillmentPickupPoint, ProviderCode: "acs",
+			CountryCode: "GR", AcsStationExternalID: "AAT",
+			AcsStationBranch: "502",
+		}},
+		"no point yet": {`{"fulfillment":{"methods":[{"type":"pickup"}]}}`,
+			checkout.Fulfillment{Kind: checkout.FulfillmentPickupPoint}},
+		"named by its id": {`{"fulfillment":{"methods":[{"id":"pickup",` +
+			`"line_item_ids":["410"],"selected_destination_id":` +
+			`"boxnow:GR:25"}]}}`, locker},
+		"neither naming the lines": {`{"fulfillment":{"methods":[` +
+			`{"type":"shipping","line_item_ids":[]},{"type":"pickup",` +
+			`"line_item_ids":[]}]}}`, checkout.Fulfillment{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := &checkout.Session{}
+			delivered, err := decode(t, tc.raw).applyTo(s, neg)
+			require.NoError(t, err)
+			assert.True(t, delivered)
+			assert.Equal(t, tc.want, s.Fulfillment)
+		})
+	}
+
+	t.Run("the point read from the catalogue is kept", func(t *testing.T) {
+		held := locker
+		held.Point = &checkout.Point{Name: "AB Shop & Go - Εξάρχεια"}
+		s := &checkout.Session{Fulfillment: held}
+		_, err := decode(t, `{"fulfillment":{"methods":[{"type":"pickup",`+
+			`"selected_destination_id":"boxnow:GR:25"}]}}`).applyTo(s, neg)
+		require.NoError(t, err)
+		assert.Equal(t, held.Point, s.Fulfillment.Point)
+	})
+
+	t.Run("the context's locality", func(t *testing.T) {
+		s := &checkout.Session{}
+		_, err := decode(t, `{"context":{"address_country":" gr ",`+
+			`"postal_code":"10434"}}`).applyTo(s, neg)
+		require.NoError(t, err)
+		want := checkout.Locality{CountryCode: "GR", PostalCode: "10434"}
+		assert.Equal(t, want, s.Locality)
+		_, err = decode(t, `{}`).applyTo(s, neg)
+		require.NoError(t, err)
+		assert.Equal(t, want, s.Locality, "not in the response: kept")
+		// A hint the business may ignore: a country that is not one is.
+		_, err = decode(t, `{"context":{"address_country":"Greece",`+
+			`"postal_code":"10434"}}`).applyTo(s, neg)
+		require.NoError(t, err)
+		assert.Equal(t, checkout.Locality{PostalCode: "10434"}, s.Locality)
+	})
+
+	for name, raw := range map[string]string{
+		"an id it never gives": `{"fulfillment":{"methods":[{"type":` +
+			`"pickup","selected_destination_id":"locker-4"}]}}`,
+		"both naming the lines": `{"fulfillment":{"methods":[` +
+			`{"type":"shipping","line_item_ids":["410"]},{"type":` +
+			`"pickup","line_item_ids":["410"]}]}}`,
+		"two pickup methods": `{"fulfillment":{"methods":[{"type":` +
+			`"pickup"},{"type":"pickup"}]}}`,
+		"another type": `{"fulfillment":{"methods":[{"type":"curbside"}]}}`,
+		"an id against its type": `{"fulfillment":{"methods":[{"id":` +
+			`"pickup","type":"shipping","line_item_ids":["410"]}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := decode(t, raw).applyTo(&checkout.Session{}, neg)
+			te, ok := errors.AsType[*mcptool.ToolError](err)
+			require.True(t, ok, "%v", err)
+			assert.Equal(t, mcptool.CodeInvalid, te.Code)
+		})
+	}
+}
+
 // A delivery to another address than the one whose street line the store
 // refused clears the refusal; the same address keeps it.
 func TestCheckoutInApplyToClearsARefusedStreetOnlyForANewAddress(
@@ -288,14 +384,14 @@ func TestCheckoutInApplyToClearsARefusedStreetOnlyForANewAddress(
 	s := &checkout.Session{}
 	_, err := line("Ερμού").applyTo(s, neg)
 	require.NoError(t, err)
-	s.StreetRefused = &checkout.Refusal{Code: "street_number_missing"}
+	s.DestinationRefused = &checkout.Refusal{Code: "street_number_missing"}
 
 	_, err = line("Ερμού").applyTo(s, neg)
 	require.NoError(t, err)
-	assert.NotNil(t, s.StreetRefused)
+	assert.NotNil(t, s.DestinationRefused)
 	_, err = line("Ερμού 12").applyTo(s, neg)
 	require.NoError(t, err)
-	assert.Nil(t, s.StreetRefused)
+	assert.Nil(t, s.DestinationRefused)
 }
 
 // fulfillmentNegotiated intersects a store with a platform that declares

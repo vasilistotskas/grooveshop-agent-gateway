@@ -163,47 +163,92 @@ wins over this page.
   read only while `dev.ucp.shopping.fulfillment` is negotiated, which the
   profile always advertises: without it a platform can give no address,
   and the checkout's `missing` error at `$.fulfillment` says so.
-- **The delivery is the spec's fulfillment extension** (#109 step B;
-  request `mcpsrv.UCPCheckoutIn.delivery`, response
-  `ucp.renderFulfillment`). The store fulfils a cart one way, home
-  delivery to one address, so a checkout has one `shipping` method
-  (`id` `shipping`) for every line, one destination (`shipping_address`)
-  and one group (`parcel`):
-  - the destination is the platform's postal address. `street_address`
-    is the one street line with the house number after the street,
-    sent to Django as `street`, which splits it; `extended_address` is
-    the order's `addressLine2`; `address_region` names the region
-    (`checkout.ResolveRegion`); its contact members are not read (the
-    order's contact is `buyer`). A request that names
-    `selected_destination_id` `shipping_address` and writes no
-    destination keeps the stored address.
-  - the group's `options` are the carriers that deliver the cart home as
-    Django quotes it (`Pricing.ShippingOptions`, home delivery the cart
-    fits), each `id` its provider code with its price as a `total`, listed
-    once the destination's country is known; `selected_option_id`
-    chooses one (`Fulfillment.Kind` and `ProviderCode`), null until then.
-    A placed order lists no options.
-  - An update may name the method by its `id` (`shipping`) instead of
-    its `type`, which the spec makes optional there.
-  - Refused, and nothing applied (the buyer included): another method
-    type than `shipping` (pickup waits for step C, after Django #642), a
-    method `id` the business never gave, a method named by neither, a
-    second method, destination or group, a `selected_destination_id` the
-    business never gave or that is not the destination written.
+- **The delivery is the spec's fulfillment extension** (#109 steps B
+  and C; request `mcpsrv.UCPCheckoutIn.delivery`, response
+  `ucp.renderFulfillment`, in `internal/ucp/fulfillment.go`). The store
+  fulfils a cart one way, so a checkout has two methods at most: the
+  `shipping` method (`id` `shipping`, `methods[0]`), always listed, and
+  the `pickup` method (`id` `pickup`, `methods[1]`), listed where the
+  store delivers the cart to pickup points in the country (a
+  `pickup_point` option the cart fits) or when the checkout chose it.
+  The chosen method holds every line in `line_item_ids`, the other
+  none; with nothing chosen, shipping holds them. A request chooses with
+  its only method, or the one of its two whose `line_item_ids` name the
+  lines; with neither naming them, it chooses none.
+  - **shipping:** one destination (`shipping_address`), the platform's
+    postal address. `street_address` is the one street line with the
+    house number after the street, sent to Django as `street`, which
+    splits it; `extended_address` is the order's `addressLine2`;
+    `address_region` names the region (`checkout.ResolveRegion`); its
+    contact members are not read (the order's contact is `buyer`). A
+    request that names `selected_destination_id` `shipping_address` and
+    writes no destination keeps the stored address. One group
+    (`parcel`, holding the method's lines: none while pickup is chosen):
+    its `options` are the carriers that deliver the cart home
+    as Django quotes it (`Pricing.ShippingOptions`, home delivery the
+    cart fits), each `id` its provider code with its price as a `total`,
+    listed once the country is known; `selected_option_id` chooses one,
+    null until then.
+  - **pickup:** the destinations are business locations
+    (`business_location`, a name and an address) the platform selects by
+    `selected_destination_id`, never writes. A location's id is opaque
+    (`ucp.PickupLocation.DestinationID`: carrier, the point's own
+    country, the carrier's ids, each query-escaped, joined by colons; an
+    ACS station's branch may be blank, the catalogue's row without one),
+    read back by `ucp.ParsePickupLocation`, which refuses a country that
+    is not two letters; one this checkout never listed is taken
+    (the spec's "any stable, Business-scoped ID"), for example a
+    `destinationId` from `find_pickup_points`. The destinations are the
+    ACS points nearest the checkout's locality (`checkout.context`'s
+    `address_country` and `postal_code`, `Session.Locality`, kept when
+    omitted since the response does not carry it, a country that is not
+    two letters ignored as the hint the spec makes it; at most five, one
+    `AcsNearestStations` call per render with the country, a failed one
+    a `warning` `pickup_points_unlisted`), and the selected point, by the name and
+    address the store's catalogue gave when it was chosen
+    (`handlers.applyPoint`: `AcsStationByID`, `BoxNowLockerByID`, one
+    call each to the catalogue lists with Django's exact filters,
+    `GET /shipping/acs/stations?externalId=&branch=&countryCode=` and
+    `GET /shipping/boxnow/lockers?externalId=&countryCode=`, from
+    django-api #767; an ACS area code alone names every Smartpoint of
+    its area, so the branch is always sent; one
+    the catalogue does not hold is taken and named by its carrier and
+    id, and Django decides at the order). BOX NOW lockers are found only
+    from a street, so only `find_pickup_points` lists them. A location
+    is always named: one the catalogue holds without a name, or does not
+    hold, by its carrier and id. No group until a point is selected,
+    then one (`pickup_parcel`) with that point's network as its one
+    option, selected. A pickup order carries no
+    address and no region: Django delivers it to the point's address
+    (django-api #767).
+  - An update may name a method by its `id` (`shipping`, `pickup`)
+    instead of its `type`, which the spec makes optional there
+    (`mcpsrv.methodType`).
+  - A placed order lists no options. Refused, and nothing applied (the
+    buyer included): another method type, a method `id` the business
+    never gave or that contradicts its `type`, a method named by
+    neither, two of one type, both naming the lines, a second
+    destination or group, a destination id this business never gives or
+    that is not the destination written.
   - What a checkout still needs is an `error` message, `recoverable`,
     code `missing`, at its path (`ucp.missing`: `$.buyer`,
-    `…destinations`, `…destinations[0].address_region`,
-    `…groups[0].selected_option_id`, `$.payment`), and a refused
-    delivery is the quote's code at the option.
-  - **A street line Django refuses** at order creation
-    (`django.StreetRefusedError`: any refusal on `fields.street`, whatever
-    the body's own code, but a street not sent; `street_number_missing`
-    and `street_number_is_postcode` get the gateway's own words) is
-    stored on the session (`Session.StreetRefused`)
-    until the address changes (`Session.Deliver`): the checkout reads
-    `incomplete` with that code at
-    `…destinations[0].street_address`, and the complete that met it is
-    answered with that checkout, nothing placed.
+    `…methods[0].destinations`, `…destinations[0].address_region`,
+    `…groups[0].selected_option_id`, `…methods[1].selected_destination_id`,
+    `$.payment`), and a refused delivery is the quote's code at the
+    shipping group's option, or for a pickup at the pickup method's
+    `selected_destination_id` (its remedy another point or shipping).
+  - **A destination Django refuses** at order creation
+    (`django.DestinationRefusedError`: any code on `street` but a street
+    not sent, `street_number_missing` and `street_number_is_postcode`
+    worded by the gateway; `pickup_point_unknown`,
+    `pickup_point_in_another_country`, `pickup_point_required` on the
+    carrier's location field, read from
+    `fields` whatever the body's own code) is stored on the session
+    (`Session.DestinationRefused`) until the destination changes
+    (`Session.Deliver`): the checkout reads `incomplete` with that code
+    at the street (`…destinations[0].street_address`) or the selection
+    (`…methods[1].selected_destination_id`), and the complete that met
+    it is answered with that checkout, nothing placed.
 - **update_checkout replaces the checkout** ("the platform is REQUIRED to
   send the entire checkout resource"). `line_items` is required and
   replaces the cart's lines; `buyer` is what the request carries, none

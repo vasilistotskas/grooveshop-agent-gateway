@@ -131,13 +131,14 @@ type UCPFulfillmentIn struct {
 }
 
 // UCPFulfillmentMethodIn is one method of a request. The business
-// fulfils the whole cart one way, so a method's `line_item_ids` are not
-// read. An update may name the method by the `id` the business gave it
-// instead of its `type` (the spec's update omits nothing but requires
+// fulfils the whole cart one way, so a method's `line_item_ids` only say
+// which method is chosen. An update may name the method by the `id` the
+// business gave it instead of its `type` (the spec's update requires
 // only the lines): methodType reads either.
 type UCPFulfillmentMethodIn struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
+	ID          string   `json:"id"`
+	Type        string   `json:"type"`
+	LineItemIDs []string `json:"line_item_ids"`
 	// Destinations is the shipping address the platform writes, under a
 	// shipping method.
 	Destinations          []UCPShippingDestinationIn `json:"destinations"`
@@ -163,6 +164,14 @@ type UCPFulfillmentGroupIn struct {
 	SelectedOptionID *string `json:"selected_option_id"`
 }
 
+// UCPContextIn is the part of a checkout's context (common/types/
+// context.json) the business reads: where the buyer is, near which the
+// pickup points are listed.
+type UCPContextIn struct {
+	AddressCountry string `json:"address_country"`
+	PostalCode     string `json:"postal_code"`
+}
+
 // UCPCheckoutIn is the `checkout` of a create or an update, decoded from
 // what the spec's request schema accepts (ucp_inputs.go). Extensions
 // compose FLAT onto the checkout object rather than nesting under their
@@ -172,6 +181,7 @@ type UCPFulfillmentGroupIn struct {
 type UCPCheckoutIn struct {
 	LineItems   []UCPLineItemReqIn `json:"line_items"`
 	Buyer       *UCPBuyerReqIn     `json:"buyer"`
+	Context     *UCPContextIn      `json:"context"`
 	Fulfillment *UCPFulfillmentIn  `json:"fulfillment"`
 	Discounts   *UCPDiscountsIn    `json:"discounts"`
 	UCPPaymentChoice
@@ -218,13 +228,20 @@ func (c *UCPCheckoutIn) buyer() checkout.Buyer {
 // delivery is the checkout's delivery as the request makes it, nil while
 // the fulfillment extension is not negotiated: its member is then
 // ignored, and the stored delivery kept. The request replaces the
-// delivery: without a shipping method, or a destination, or a selected
-// option, it has none. A destination the request does not write, named
-// by the id this business gave it, is held's address.
+// delivery: without a chosen method, it has none.
 //
-// The business fulfils a cart one way, so a request is refused when it
-// asks for more: another method type than shipping, a second method,
-// destination or group, or a destination id it never gave.
+// A cart goes one way: the chosen method is the request's only one, or
+// the one of its two whose line_item_ids name the lines.
+//   - shipping: its destination is the address, and its group's
+//     selected_option_id the carrier. A destination the request does not
+//     write, named by the id this business gave it, is held's address.
+//   - pickup: its selected_destination_id is a pickup point this business
+//     names (ucp.ParsePickupLocation), listed by this checkout or not;
+//     the point's network is the carrier.
+//
+// A request asking for more is refused: another method type, two of one
+// type, both naming the lines, a second destination or group, a
+// destination id this business never gave.
 func (c *UCPCheckoutIn) delivery(
 	neg ucp.Negotiated, held checkout.Fulfillment,
 ) (*checkout.Fulfillment, error) {
@@ -235,37 +252,61 @@ func (c *UCPCheckoutIn) delivery(
 	if c == nil || c.Fulfillment == nil {
 		return &f, nil
 	}
-	var shipping *UCPFulfillmentMethodIn
-	for i := range c.Fulfillment.Methods {
-		m := &c.Fulfillment.Methods[i]
-		switch {
-		case m.ID != "" && m.ID != ucp.FulfillmentMethodID:
-			return nil, invalidInput("checkout.fulfillment.methods[%d].id "+
-				"%q names no method of this checkout: its method is %q",
-				i, m.ID, ucp.FulfillmentMethodID)
-		case m.Type == "" && m.ID == "":
-			return nil, invalidInput("checkout.fulfillment.methods[%d]: "+
-				"name the method by its type or its id", i)
-		case m.Type != "" && m.Type != ucp.FulfillmentMethodType:
-			return nil, invalidInput("checkout.fulfillment.methods[%d]."+
-				"type %q is not offered: this store delivers by %q only, "+
-				"to one address", i, m.Type, ucp.FulfillmentMethodType)
-		case shipping != nil:
-			return nil, invalidInput("checkout.fulfillment.methods[%d]: "+
-				"this store delivers a cart by one %q method, to one "+
-				"address", i, ucp.FulfillmentMethodType)
+	byType := map[string]int{}
+	types := make([]string, len(c.Fulfillment.Methods))
+	for i, m := range c.Fulfillment.Methods {
+		typ, err := methodType(i, m)
+		if err != nil {
+			return nil, err
 		}
-		shipping = m
+		types[i] = typ
+		switch _, twice := byType[typ]; {
+		case typ != ucp.FulfillmentMethodType &&
+			typ != ucp.PickupMethodType:
+			return nil, invalidInput("checkout.fulfillment.methods[%d]."+
+				"type %q is not offered: this store delivers by %q or %q",
+				i, typ, ucp.FulfillmentMethodType, ucp.PickupMethodType)
+		case twice:
+			return nil, invalidInput("checkout.fulfillment.methods[%d]: "+
+				"this store delivers a cart one way, by one %q method",
+				i, typ)
+		}
+		byType[typ] = i
 	}
-	if shipping == nil {
+	chosen := -1
+	switch len(byType) {
+	case 0:
 		return &f, nil
+	case 1:
+		for _, i := range byType {
+			chosen = i
+		}
+	default:
+		for _, i := range byType {
+			if len(c.Fulfillment.Methods[i].LineItemIDs) == 0 {
+				continue
+			}
+			if chosen >= 0 {
+				return nil, invalidInput("checkout.fulfillment.methods: " +
+					"a cart goes one way, so only the chosen method's " +
+					"line_item_ids name its lines")
+			}
+			chosen = i
+		}
+		if chosen < 0 {
+			return &f, nil
+		}
 	}
-	const at = "checkout.fulfillment.methods[0]"
+	m := c.Fulfillment.Methods[chosen]
+	at := fmt.Sprintf("checkout.fulfillment.methods[%d]", chosen)
+	if types[chosen] == ucp.PickupMethodType {
+		return pickupDelivery(m, at, held)
+	}
 	selected := ""
-	if shipping.SelectedDestinationID != nil {
-		selected = *shipping.SelectedDestinationID
+	if m.SelectedDestinationID != nil {
+		selected = *m.SelectedDestinationID
 	}
-	switch d := shipping.Destinations; {
+	switch d := m.Destinations; {
 	case len(d) > 1:
 		return nil, invalidInput("%s.destinations: this store delivers "+
 			"a cart to one address", at)
@@ -280,7 +321,8 @@ func (c *UCPCheckoutIn) delivery(
 		f.Zipcode = strings.TrimSpace(d[0].PostalCode)
 		f.CountryCode = strings.TrimSpace(d[0].AddressCountry)
 		f.RegionID = strings.TrimSpace(d[0].AddressRegion)
-	case selected == ucp.DestinationID && held.HasAddress():
+	case selected == ucp.DestinationID && !held.Pickup() &&
+		held.HasAddress():
 		f = held
 		f.Kind, f.ProviderCode = "", ""
 	case selected != "":
@@ -288,7 +330,7 @@ func (c *UCPCheckoutIn) delivery(
 			"destination of this checkout: write the address in %s."+
 			"destinations", at, selected, at)
 	}
-	switch g := shipping.Groups; {
+	switch g := m.Groups; {
 	case len(g) > 1:
 		return nil, invalidInput("%s.groups: this store ships a cart in "+
 			"one group", at)
@@ -298,6 +340,63 @@ func (c *UCPCheckoutIn) delivery(
 		f.ProviderCode = *g[0].SelectedOptionID
 	}
 	return &f, nil
+}
+
+// pickupDelivery is the delivery a chosen pickup method makes: to the
+// point its selected_destination_id names, none yet without one. The
+// catalogue's word on a point the checkout already holds is kept.
+func pickupDelivery(
+	m UCPFulfillmentMethodIn, at string, held checkout.Fulfillment,
+) (*checkout.Fulfillment, error) {
+	f := checkout.Fulfillment{Kind: checkout.FulfillmentPickupPoint}
+	if m.SelectedDestinationID == nil || *m.SelectedDestinationID == "" {
+		return &f, nil
+	}
+	l, err := ucp.ParsePickupLocation(*m.SelectedDestinationID)
+	if err != nil {
+		return nil, invalidInput("%s.selected_destination_id %q is not a "+
+			"pickup point of this store: select one of the pickup "+
+			"method's destinations, or a destinationId from "+
+			"find_pickup_points", at, *m.SelectedDestinationID)
+	}
+	f.ProviderCode, f.CountryCode = l.Provider, strings.ToUpper(l.Country)
+	switch l.Provider {
+	case django.ShippingProviderACS:
+		f.AcsStationExternalID, f.AcsStationBranch = l.ID, l.Branch
+	case django.ShippingProviderBoxNow:
+		f.BoxnowLockerID = l.ID
+	}
+	if held.Pickup() && held.PickupPoint() == f.PickupPoint() &&
+		held.ProviderCode == f.ProviderCode {
+		f.Point = held.Point
+	}
+	return &f, nil
+}
+
+// methodType is the type of the request's method i: its type, or the
+// type of the business's method its id names. An id the business never
+// gave, a type its id contradicts, and neither are refused.
+func methodType(i int, m UCPFulfillmentMethodIn) (string, error) {
+	byID := map[string]string{
+		ucp.FulfillmentMethodID: ucp.FulfillmentMethodType,
+		ucp.PickupMethodID:      ucp.PickupMethodType,
+	}
+	switch named, known := byID[m.ID]; {
+	case m.ID == "" && m.Type == "":
+		return "", invalidInput("checkout.fulfillment.methods[%d]: name "+
+			"the method by its type or its id", i)
+	case m.ID == "":
+		return m.Type, nil
+	case !known:
+		return "", invalidInput("checkout.fulfillment.methods[%d].id %q "+
+			"names no method of this checkout: its methods are %q and %q",
+			i, m.ID, ucp.FulfillmentMethodID, ucp.PickupMethodID)
+	case m.Type != "" && m.Type != named:
+		return "", invalidInput("checkout.fulfillment.methods[%d]: id %q "+
+			"is the %q method, not %q", i, m.ID, named, m.Type)
+	default:
+		return named, nil
+	}
 }
 
 // lines flattens the requested line items into product lines. Item ids
@@ -449,6 +548,20 @@ func (c *UCPCheckoutIn) applyTo(
 		return false, err
 	}
 	s.Buyer = c.buyer()
+	// The context is not in the response: one the request omits keeps
+	// the locality the checkout holds. It is a hint the business may
+	// ignore (the spec's "provisional, non-binding"): a country that is
+	// not two letters is ignored, never sent to the store as the buyer's.
+	if c != nil && c.Context != nil {
+		country := strings.TrimSpace(c.Context.AddressCountry)
+		if !checkout.IsCountryCode(country) {
+			country = ""
+		}
+		s.Locality = checkout.Locality{
+			CountryCode: strings.ToUpper(country),
+			PostalCode:  strings.TrimSpace(c.Context.PostalCode),
+		}
+	}
 	if f == nil {
 		return false, nil
 	}

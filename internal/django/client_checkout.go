@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 )
 
@@ -64,22 +66,24 @@ func (c *Client) ReserveStock(
 }
 
 // OrderCreate is the guest checkout payload (camelCase on the wire). The
-// cart is taken from the X-Cart-Id header, never the body. Street is the
-// one street line, its house number after the street ("Ερμού 12"), and no
-// streetNumber is sent: Django splits the line, and refuses one it cannot
-// split (StreetRefusedError).
+// cart is taken from the X-Cart-Id header, never the body. A home
+// delivery's Street is the one street line, its house number after the
+// street ("Ερμού 12"), and no streetNumber is sent: Django splits the
+// line. A pickup-point order carries the point (PickupPoint) and no
+// address: Django delivers it to the point's. Django refuses a line it
+// cannot split, or a point it does not know (DestinationRefusedError).
 type OrderCreate struct {
 	PayWayID  int64  `json:"payWayId"`
 	FirstName string `json:"firstName"`
 	LastName  string `json:"lastName"`
 	Email     string `json:"email" contract:"format=email"`
 	Phone     string `json:"phone"`
-	Street    string `json:"street"`
+	Street    string `json:"street,omitempty"`
 	// AddressLine2 is what the street line does not hold: a flat, a
 	// floor, a building.
 	AddressLine2 string `json:"addressLine2,omitempty"`
-	City         string `json:"city"`
-	Zipcode      string `json:"zipcode"`
+	City         string `json:"city,omitempty"`
+	Zipcode      string `json:"zipcode,omitempty"`
 	CountryID    string `json:"countryId"`
 	// RegionID is required upstream when the country has regions.
 	RegionID     string `json:"regionId,omitempty"`
@@ -87,6 +91,7 @@ type OrderCreate struct {
 
 	ShippingProviderCode string `json:"shippingProviderCode,omitempty"`
 	ShippingKind         string `json:"shippingKind,omitempty"`
+	PickupPoint
 
 	CustomerNotes string `json:"customerNotes,omitempty"`
 
@@ -140,8 +145,8 @@ type Attribution struct {
 // refusal of a cart whose earlier order awaits its payment is
 // ErrCartHasUnpaidOrder, of a total that is no longer the amount due
 // ErrTotalChanged, of a cart that is no longer the one quoted
-// ErrCartChanged, and of a street line it cannot split a
-// *StreetRefusedError.
+// ErrCartChanged, and of a street line it cannot split or a pickup point
+// it does not know a *DestinationRefusedError.
 func (c *Client) CreateOrder(
 	ctx context.Context, host, lang, cartID string, body OrderCreate,
 ) (*Order, error) {
@@ -167,7 +172,7 @@ func (c *Client) CreateOrder(
 		}
 	}
 	if apiErr, ok := errors.AsType[*APIError](err); ok {
-		if refused := streetRefusal(apiErr); refused != nil {
+		if refused := destinationRefusal(apiErr); refused != nil {
 			return nil, refused
 		}
 	}
@@ -177,57 +182,84 @@ func (c *Client) CreateOrder(
 	return &out, nil
 }
 
-// StreetRefusedError is Django's refusal of an order's street line (400,
-// on `street`), whatever its code: among them a line it cannot split
-// into the street and its house number (CodeStreetNumberMissing), one
-// whose number is a postcode (CodeStreetNumberIsPostcode), and a street
-// or a number the address rules refuse (street_name_missing, the number
-// field's own checks). The gateway sends the one line only, so any
-// refusal on `street` is the line's, except a street not sent at all
-// (blank, required), which is a missing field. Nothing was created. Message is the
-// store's own sentence. It unwraps to Django's *APIError, so it is
-// ErrValidation too.
-type StreetRefusedError struct {
+// DestinationRefusedError is Django's refusal of an order's destination
+// (400, on one field): on `street`, the one street line, whatever its
+// code but a street not sent (blank, required), which is a missing field
+// (among them a line it cannot split into the street and its house
+// number, CodeStreetNumberMissing; one whose number is a postcode,
+// CodeStreetNumberIsPostcode; a street or a number the address rules
+// refuse, street_name_missing or the number field's own checks); on the
+// carrier's location field, a pickup point its catalogue does not hold
+// active (CodePickupPointUnknown), one in another country than the
+// order's (CodePickupPointInAnotherCountry) or none named
+// (CodePickupPointRequired). Nothing was created. Message is the store's
+// own sentence. It unwraps to Django's *APIError, so it is ErrValidation
+// too.
+type DestinationRefusedError struct {
+	Field   string
 	Code    string
 	Message string
 	err     *APIError
 }
 
-func (e *StreetRefusedError) Error() string {
-	return fmt.Sprintf("django: street refused (%s): %s", e.Code, e.Message)
+func (e *DestinationRefusedError) Error() string {
+	return fmt.Sprintf("django: %s refused (%s): %s", e.Field, e.Code,
+		e.Message)
 }
 
-func (e *StreetRefusedError) Unwrap() error {
+func (e *DestinationRefusedError) Unwrap() error {
 	if e.err == nil {
 		return ErrValidation
 	}
 	return e.err
 }
 
-// streetRefusal is the street line's refusal a 400 carries in its
+// destinationFields are the fields of an order's destination Django
+// refuses one on, by the codes it refuses each with: every code on
+// `street` (nil), but a street not sent (refusesDestination).
+var destinationFields = map[string][]string{
+	"street": nil,
+	"boxnowLockerId": {CodePickupPointUnknown,
+		CodePickupPointInAnotherCountry, CodePickupPointRequired},
+	"acsStationExternalId": {CodePickupPointUnknown,
+		CodePickupPointInAnotherCountry, CodePickupPointRequired},
+	"shippingProviderCode": {CodePickupPointRequired},
+}
+
+// refusesDestination reports whether Django's code on field refuses the
+// order's destination: on `street`, any code but a street not sent.
+func refusesDestination(field, code string) bool {
+	if codes := destinationFields[field]; codes != nil {
+		return slices.Contains(codes, code)
+	}
+	switch code {
+	case "blank", "required", "null":
+		return false
+	}
+	return true
+}
+
+// destinationRefusal is the destination's refusal a 400 carries in its
 // `fields`, nil for any other error: the body's own `code` is another
 // one whenever another field was refused too.
-func streetRefusal(apiErr *APIError) *StreetRefusedError {
+func destinationRefusal(apiErr *APIError) *DestinationRefusedError {
 	if apiErr.Status != http.StatusBadRequest {
 		return nil
 	}
 	var body struct {
-		Fields struct {
-			Street []struct {
-				Message string `json:"message"`
-				Code    string `json:"code"`
-			} `json:"street"`
+		Fields map[string][]struct {
+			Message string `json:"message"`
+			Code    string `json:"code"`
 		} `json:"fields"`
 	}
-	// A body that is not a field-error map refuses no street line.
+	// A body that is not a field-error map refuses no destination.
 	_ = json.Unmarshal(apiErr.Body, &body)
-	for _, f := range body.Fields.Street {
-		switch f.Code {
-		// A street not sent is a missing field, not a refused line.
-		case "blank", "required", "null":
-		default:
-			return &StreetRefusedError{
-				Code: f.Code, Message: f.Message, err: apiErr}
+	for _, field := range slices.Sorted(maps.Keys(destinationFields)) {
+		for _, f := range body.Fields[field] {
+			if refusesDestination(field, f.Code) {
+				return &DestinationRefusedError{Field: field, Code: f.Code,
+					Message: f.Message, err: apiErr}
+			}
 		}
 	}
 	return nil

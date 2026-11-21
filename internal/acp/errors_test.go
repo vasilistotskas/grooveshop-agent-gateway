@@ -440,7 +440,7 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 	t.Run("a refused street line names line_one", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.completeError(rec, req, session, fmt.Errorf("wrapped: %w",
-			&django.StreetRefusedError{Code: django.CodeStreetNumberIsPostcode}))
+			&django.DestinationRefusedError{Code: django.CodeStreetNumberIsPostcode}))
 		body := specError(t, rec, http.StatusBadRequest, "invalid")
 		assert.Equal(t, "$.fulfillment_details.address.line_one",
 			body["param"])

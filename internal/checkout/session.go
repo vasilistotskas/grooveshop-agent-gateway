@@ -40,9 +40,12 @@ const (
 	StatusCanceled           Status = "canceled"
 )
 
-// FulfillmentHomeDelivery is the delivery kind of a checkout: to the
-// buyer's address.
-const FulfillmentHomeDelivery = "home_delivery"
+// The delivery kinds of a checkout: to the buyer's address, or to a
+// pickup point.
+const (
+	FulfillmentHomeDelivery = "home_delivery"
+	FulfillmentPickupPoint  = django.ShippingKindPickupPoint
+)
 
 type Buyer struct {
 	FirstName string `json:"firstName"`
@@ -56,41 +59,97 @@ func (b Buyer) Complete() bool {
 		b.Email != "" && b.Phone != ""
 }
 
-// Fulfillment is a checkout's delivery, as the order takes it: home
-// delivery (Kind) by a carrier (ProviderCode), to a postal address.
-// Street is the one street line with its house number after the street
-// ("Ερμού 12"), which Django splits; AddressLine2 is what that line does
-// not hold (a flat, a floor).
+// Fulfillment is a checkout's delivery, as the order takes it, of one of
+// two kinds (Kind) by a carrier (ProviderCode), in a country:
+//   - home delivery, to a postal address: Street is the one street line
+//     with its house number after the street ("Ερμού 12"), which Django
+//     splits, and AddressLine2 what that line does not hold (a flat, a
+//     floor);
+//   - pickup at a point of the carrier's (a BOX NOW locker, an ACS station
+//     and branch), with no address: Django delivers it to the point's.
 type Fulfillment struct {
 	Kind         string `json:"kind"`
 	ProviderCode string `json:"providerCode"`
 
 	CountryCode  string `json:"countryCode"`
-	City         string `json:"city"`
-	Zipcode      string `json:"zipcode"`
-	Street       string `json:"street"`
+	City         string `json:"city,omitempty"`
+	Zipcode      string `json:"zipcode,omitempty"`
+	Street       string `json:"street,omitempty"`
 	AddressLine2 string `json:"addressLine2,omitempty"`
 	RegionID     string `json:"regionId,omitempty"`
+
+	AcsStationExternalID string `json:"acsStationExternalId,omitempty"`
+	AcsStationBranch     string `json:"acsStationBranch,omitempty"`
+	BoxnowLockerID       string `json:"boxnowLockerId,omitempty"`
+	// Point is what the store's catalogue says of the pickup point, read
+	// when it was chosen; nil for one the catalogue did not hold then.
+	Point *Point `json:"point,omitempty"`
 }
 
-// HasAddress reports whether the postal address the order needs is
+// Point is a pickup point as a buyer finds it.
+type Point struct {
+	Name       string `json:"name"`
+	Street     string `json:"street,omitempty"`
+	City       string `json:"city,omitempty"`
+	PostalCode string `json:"postalCode,omitempty"`
+}
+
+// Pickup reports whether the delivery is to a pickup point.
+func (f Fulfillment) Pickup() bool {
+	return f.Kind == FulfillmentPickupPoint
+}
+
+// PickupPoint is the pickup point the fulfillment names, as both the
+// quote and the order carry it, so the quote's digest is of the point the
+// order is sent to.
+func (f Fulfillment) PickupPoint() django.PickupPoint {
+	return django.PickupPoint{
+		AcsStationExternalID: f.AcsStationExternalID,
+		AcsStationBranch:     f.AcsStationBranch,
+		BoxnowLockerID:       f.BoxnowLockerID,
+	}
+}
+
+// HasPoint reports whether the pickup point the order needs is named, by
+// its carrier's own fields.
+func (f Fulfillment) HasPoint() bool {
+	switch f.ProviderCode {
+	case django.ShippingProviderACS:
+		// A station's branch may be blank: the catalogue's row without
+		// one, which Django names by the blank branch.
+		return f.AcsStationExternalID != ""
+	case django.ShippingProviderBoxNow:
+		return f.BoxnowLockerID != ""
+	}
+	return false
+}
+
+// HasAddress reports whether the postal address a home delivery needs is
 // present.
 func (f Fulfillment) HasAddress() bool {
 	return f.CountryCode != "" && f.City != "" && f.Zipcode != "" &&
 		f.Street != ""
 }
 
-// Complete reports whether enough is present to place the order: the
-// address and a home delivery.
+// Complete reports whether enough is present to place the order: a home
+// delivery to its address, or a pickup at its point in a country.
 func (f Fulfillment) Complete() bool {
-	return f.HasAddress() && f.Kind == FulfillmentHomeDelivery
+	switch f.Kind {
+	case FulfillmentHomeDelivery:
+		return f.HasAddress()
+	case FulfillmentPickupPoint:
+		return f.CountryCode != "" && f.HasPoint()
+	}
+	return false
 }
 
-// sameAddress reports whether f and g name the same postal address.
-func (f Fulfillment) sameAddress(g Fulfillment) bool {
+// sameDestination reports whether f and g deliver to the same place: the
+// same postal address, or the same pickup point.
+func (f Fulfillment) sameDestination(g Fulfillment) bool {
 	return f.CountryCode == g.CountryCode && f.City == g.City &&
 		f.Zipcode == g.Zipcode && f.Street == g.Street &&
-		f.AddressLine2 == g.AddressLine2
+		f.AddressLine2 == g.AddressLine2 &&
+		f.PickupPoint() == g.PickupPoint()
 }
 
 // Session is the durable checkout state. Money totals are Django's quote
@@ -119,11 +178,16 @@ type Session struct {
 	Fulfillment Fulfillment `json:"fulfillment"`
 	PayWayID    int64       `json:"payWayId"`
 
-	// StreetRefused is Django's refusal of the address's street line when
-	// the order was sent (django.StreetRefusedError): no house number it
-	// can read, or one that is a postcode. Until the address changes
-	// (Deliver), the checkout is not ready.
-	StreetRefused *Refusal `json:"streetRefused,omitempty"`
+	// DestinationRefused is Django's refusal of the delivery's destination
+	// when the order was sent (django.DestinationRefusedError): a street
+	// line with no house number it can read, or one that is a postcode; a
+	// pickup point its carrier's catalogue does not hold. Until the
+	// destination changes (Deliver), the checkout is not ready.
+	DestinationRefused *Refusal `json:"destinationRefused,omitempty"`
+
+	// Locality is where the buyer is, as the platform's checkout context
+	// last said it: the pickup points near it are listed.
+	Locality Locality `json:"locality,omitzero"`
 
 	// RegionOptions are the delivery country's regions, as ResolveRegion
 	// last read them; empty when it has none.
@@ -404,16 +468,36 @@ func (s *Session) Recompute() {
 	s.Status = StatusIncomplete
 }
 
+// IsCountryCode reports whether c is a country as Django names one, two
+// ASCII letters (ISO 3166-1 alpha-2), in either case.
+func IsCountryCode(c string) bool {
+	if len(c) != 2 {
+		return false
+	}
+	for _, r := range c {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+			return false
+		}
+	}
+	return true
+}
+
+// Locality is a coarse place: a country and a postal code.
+type Locality struct {
+	CountryCode string `json:"countryCode,omitempty"`
+	PostalCode  string `json:"postalCode,omitempty"`
+}
+
 // Deliver sets the checkout's delivery, the one way every surface sets
 // it. Django knows a country only by its upper-case code (in any other
 // case it has no regions, and refuses the order at the end), so the
-// country is stored so, and compared so: a street line the store refused
-// is refused no longer once the address changes, and the same address in
-// another case is not another.
+// country is stored so, and compared so: a destination the store refused
+// is refused no longer once the destination changes, and the same one
+// in another case is not another.
 func (s *Session) Deliver(f Fulfillment) {
 	f.CountryCode = strings.ToUpper(strings.TrimSpace(f.CountryCode))
-	if !s.Fulfillment.sameAddress(f) {
-		s.StreetRefused = nil
+	if !s.Fulfillment.sameDestination(f) {
+		s.DestinationRefused = nil
 	}
 	s.Fulfillment = f
 }
@@ -425,12 +509,14 @@ type Need int
 const (
 	// NeedBuyer: the buyer's first and last name, email and phone.
 	NeedBuyer Need = iota
-	// NeedAddress: the delivery's postal address (street line, city,
+	// NeedAddress: a home delivery's postal address (street line, city,
 	// postal code, country).
 	NeedAddress
-	// NeedStreet: a street line the store can read the house number of
-	// (Session.StreetRefused says why it could not).
-	NeedStreet
+	// NeedPoint: a pickup delivery's point.
+	NeedPoint
+	// NeedDestination: a destination the store takes, for the one it
+	// refused (Session.DestinationRefused says why).
+	NeedDestination
 	// NeedRegion: the delivery region, one of Session.RegionChoices.
 	NeedRegion
 	// NeedDelivery: the carrier that delivers.
@@ -446,8 +532,10 @@ func (n Need) String() string {
 	case NeedAddress:
 		return "the delivery address (street line, city, postal code, " +
 			"country)"
-	case NeedStreet:
-		return "a street line ending in its house number"
+	case NeedPoint:
+		return "the pickup point"
+	case NeedDestination:
+		return "another destination than the one the store refused"
 	case NeedRegion:
 		return "the delivery region"
 	case NeedDelivery:
@@ -464,16 +552,19 @@ func (s *Session) Missing() []Need {
 	if !s.Buyer.Complete() {
 		out = append(out, NeedBuyer)
 	}
+	f := s.Fulfillment
 	switch {
-	case !s.Fulfillment.HasAddress():
+	case f.Pickup() && (f.CountryCode == "" || !f.HasPoint()):
+		out = append(out, NeedPoint)
+	case !f.Pickup() && !f.HasAddress():
 		out = append(out, NeedAddress)
-	case s.StreetRefused != nil:
-		out = append(out, NeedStreet)
+	case s.DestinationRefused != nil:
+		out = append(out, NeedDestination)
 	}
 	if s.regionMissing() {
 		out = append(out, NeedRegion)
 	}
-	if s.Fulfillment.Kind != FulfillmentHomeDelivery {
+	if f.Kind != FulfillmentHomeDelivery && !f.Pickup() {
 		out = append(out, NeedDelivery)
 	}
 	if s.PayWayID <= 0 && s.payWaySelectionRequired() {

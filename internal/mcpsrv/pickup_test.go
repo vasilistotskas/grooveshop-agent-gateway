@@ -300,3 +300,21 @@ func providers(out PickupPointsOut) []string {
 	}
 	return p
 }
+
+// A point's destinationId names the point's own country, which an order
+// to it is checked against, not the country the search asked for: a
+// postcode prefix matches stations of another country too.
+func TestPickupPointsNameEachPointsOwnCountry(t *testing.T) {
+	h, _ := pickupDjango(t, http.StatusOK, acsHome, acsLocker, boxnowBox)
+	in := athens
+	in.CountryCode = "CY"
+
+	_, out, err := h.findPickupPoints(storeContext(), nil, in)
+
+	require.NoError(t, err)
+	require.NotEmpty(t, out.Points)
+	for _, p := range out.Points {
+		assert.True(t, strings.HasPrefix(p.DestinationID, p.Provider+":GR:"),
+			"%s: the fixture's points are in GR", p.DestinationID)
+	}
+}

@@ -2,6 +2,7 @@ package django
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 )
@@ -82,13 +83,18 @@ func (c *Client) FreeShippingInfo(
 
 // AcsNearestStations matches by postcode prefix (5→3 digits) with a city
 // fallback upstream; coordinates are not supported by the ACS dataset.
-// postalCode is required upstream.
+// postalCode is required upstream. country, the stations' country (and
+// the locker kinds of its points), is sent whenever it is known: a
+// postcode prefix alone matches other countries' stations too.
 func (c *Client) AcsNearestStations(
-	ctx context.Context, host, lang, postalCode, city string,
+	ctx context.Context, host, lang, postalCode, city, country string,
 ) ([]AcsStation, error) {
 	q := url.Values{"postalCode": {postalCode}}
 	if city != "" {
 		q.Set("city", city)
+	}
+	if country != "" {
+		q.Set("countryCode", country)
 	}
 	var out []AcsStation
 	err := c.get(ctx, request{
@@ -102,6 +108,75 @@ func (c *Client) AcsNearestStations(
 		return nil, err
 	}
 	return out, nil
+}
+
+// AcsStationByID reads one ACS station from the store's catalogue by
+// its external id and branch in a country (the pair a station is, and an
+// order names, filtered exactly), ErrNotFound when the catalogue holds
+// none active: not synced yet, withdrawn, or a store without ACS (whose
+// station routes answer 404). The list holds the country's locker kinds.
+func (c *Client) AcsStationByID(
+	ctx context.Context, host, lang, externalID, branch, country string,
+) (*AcsStation, error) {
+	var out Page[AcsStation]
+	err := c.get(ctx, request{
+		path:     "/shipping/acs/stations",
+		host:     host,
+		language: lang,
+		query: url.Values{
+			"externalId": {externalID}, "branch": {branch},
+			"countryCode": {country},
+		},
+		out: &out,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i := range out.Results {
+		st := &out.Results[i]
+		if st.ExternalID == externalID && st.BranchCode == branch {
+			return st, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: acs station %s/%s", ErrNotFound,
+		externalID, branch)
+}
+
+// BoxNowCatalogueLocker is a BOX NOW locker as the store's catalogue
+// holds it (BoxNowLocker in Django's schema), not as BOX NOW's live
+// nearest lookup answers.
+type BoxNowCatalogueLocker struct {
+	ExternalID   string `json:"externalId"`
+	Name         string `json:"name"`
+	AddressLine1 string `json:"addressLine1"`
+	AddressLine2 string `json:"addressLine2"`
+	PostalCode   string `json:"postalCode"`
+	CountryCode  string `json:"countryCode"`
+}
+
+// BoxNowLockerByID reads one BOX NOW locker from the store's catalogue by
+// its id in a country (filtered exactly), ErrNotFound when the catalogue
+// holds none active (it syncs daily, and BOX NOW's own lookup is live).
+func (c *Client) BoxNowLockerByID(
+	ctx context.Context, host, lang, id, country string,
+) (*BoxNowCatalogueLocker, error) {
+	var out Page[BoxNowCatalogueLocker]
+	err := c.get(ctx, request{
+		path:     "/shipping/boxnow/lockers",
+		host:     host,
+		language: lang,
+		query:    url.Values{"externalId": {id}, "countryCode": {country}},
+		out:      &out,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i := range out.Results {
+		if out.Results[i].ExternalID == id {
+			return &out.Results[i], nil
+		}
+	}
+	return nil, fmt.Errorf("%w: boxnow locker %s", ErrNotFound, id)
 }
 
 // BoxNowNearestRequest mirrors the lockers/nearest proxy body.

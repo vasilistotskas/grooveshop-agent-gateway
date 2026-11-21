@@ -383,14 +383,14 @@ func appendStateMessages(s *checkout.Session, out *Session) {
 		missing("$.fulfillment_details.address",
 			"A delivery address (line_one, city, postal_code, country) "+
 				"is required.")
-	case s.StreetRefused != nil:
+	case s.DestinationRefused != nil:
 		// Django splits line_one into the street and its house number,
 		// and refused this one when the order was sent.
 		out.Messages = append(out.Messages, Message{
 			Type: "error", Code: "invalid",
 			Param:      "$.fulfillment_details.address.line_one",
 			Resolution: "requires_buyer_input", ContentType: "plain",
-			Content: streetRefusedText(s.StreetRefused),
+			Content: streetRefusedText(s.DestinationRefused),
 		})
 	}
 	if choices := s.RegionChoices(); choices != "" {

@@ -128,6 +128,9 @@ Loads when working on a tool of any of the three MCP servers. The code wins over
   it.
   `find_pickup_points` reads Django's 400 from BOX NOW's nearest lookup
   as no locker found: Django answers every BOX NOW refusal with it.
+  Each point it finds carries its `destinationId`
+  (`ucp.PickupLocation.DestinationID`), which a UCP checkout's pickup
+  method takes as `selected_destination_id`.
   Returning a plain Go error from a typed tool handler is fine — the
   SDK wraps it into exactly that; only a `*jsonrpc.Error` becomes a
   protocol error, so never return one for a business condition. The single exception is UCP discovery: a platform

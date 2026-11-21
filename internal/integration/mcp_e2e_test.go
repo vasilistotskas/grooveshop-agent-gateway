@@ -31,6 +31,39 @@ func fixturePath(name string) string {
 	return filepath.Join("..", "..", "testdata", "fixtures", "django", name)
 }
 
+// serveCatalogue serves the paginated catalogue fixture name with only the
+// rows whose members equal match's, as Django's exact filters keep them
+// (the country in either case).
+func serveCatalogue(
+	t *testing.T, w http.ResponseWriter, name string, match map[string]string,
+) {
+	t.Helper()
+	b, err := os.ReadFile(fixturePath(name))
+	require.NoError(t, err)
+	var page map[string]any
+	require.NoError(t, json.Unmarshal(b, &page))
+	kept := []any{}
+	for _, row := range page["results"].([]any) {
+		r := row.(map[string]any)
+		keep := true
+		for k, v := range match {
+			got, _ := r[k].(string)
+			if k == "countryCode" {
+				keep = keep && strings.EqualFold(got, v)
+				continue
+			}
+			keep = keep && got == v
+		}
+		if keep {
+			kept = append(kept, r)
+		}
+	}
+	page["results"], page["count"] = kept, len(kept)
+	page["pageTotalResults"] = len(kept)
+	w.Header().Set("Content-Type", "application/json")
+	assert.NoError(t, json.NewEncoder(w).Encode(page))
+}
+
 func serveFixture(t *testing.T, w http.ResponseWriter, name string) {
 	t.Helper()
 	b, err := os.ReadFile(fixturePath(name))
