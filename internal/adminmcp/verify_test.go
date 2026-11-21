@@ -204,3 +204,21 @@ func TestAFailedStaffVerificationIsUnavailableAndNotCached(t *testing.T) {
 		})
 	}
 }
+
+// /mcp/admin refuses a batch its protocol has none of before the SDK
+// decodes it: the answer is the gateway's JSON, not the SDK's text.
+func TestABatchTheProtocolRefusesIsNotDecoded(t *testing.T) {
+	h := Handler(Deps{Log: quietLog(), Version: "test"})
+	req := httptest.NewRequestWithContext(
+		tenant.NewContext(t.Context(), acme()), http.MethodPost, Path,
+		strings.NewReader(`[{"jsonrpc":"2.0","id":1,"method":"ping"}]`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Mcp-Protocol-Version", "2025-11-25")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	assert.Contains(t, rec.Body.String(), `"error":"JSON-RPC batching`)
+}
