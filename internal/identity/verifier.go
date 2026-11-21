@@ -26,8 +26,9 @@ import (
 // within a minute. Django re-checks every forwarded call regardless.
 const cacheTTL = 60 * time.Second
 
-// cacheMax is a hard entry cap; hitting it flushes the map (crude, but
-// the cache is a shield, not a source of truth).
+// cacheMax is a hard entry cap. A verdict written to a full cache first
+// drops the expired ones, else the one least recently used: the bearers
+// in use keep theirs, however many others are probed.
 const cacheMax = 4096
 
 // ErrInvalidToken reports a bearer Django refused with a 401: unknown,
@@ -46,6 +47,8 @@ type cacheEntry[P any] struct {
 	profile P
 	invalid bool
 	expires time.Time
+	// used is when the verdict last answered a call.
+	used time.Time
 }
 
 // Verifier checks bearers with its Probe, with a small in-memory cache of
@@ -84,10 +87,7 @@ func (v *Verifier[P]) Verify(
 	// rejected at A was treated as invalid at its own store for the rest
 	// of the TTL. Every tenant's ingress targets this same pod pool, so
 	// both directions are reachable from outside.
-	sum := sha256.Sum256(
-		append(append([]byte(t.SchemaName), 0), token...),
-	)
-	key := hex.EncodeToString(sum[:])
+	key := cacheKey(t, token)
 
 	var zero P
 	entry, err := v.entry(ctx, key, t, token)
@@ -98,6 +98,14 @@ func (v *Verifier[P]) Verify(
 		return zero, ErrInvalidToken
 	}
 	return entry.profile, nil
+}
+
+// cacheKey is the cache's key for token at t (Verify says why it is so).
+func cacheKey(t *tenant.Tenant, token string) string {
+	sum := sha256.Sum256(
+		append(append([]byte(t.SchemaName), 0), token...),
+	)
+	return hex.EncodeToString(sum[:])
 }
 
 // entry is the cached verdict for key, probed when it has none or it has
@@ -118,10 +126,16 @@ func (v *Verifier[P]) Verify(
 func (v *Verifier[P]) entry(
 	ctx context.Context, key string, t *tenant.Tenant, token string,
 ) (cacheEntry[P], error) {
+	now := time.Now()
 	v.mu.Lock()
 	entry, hit := v.cache[key]
+	hit = hit && now.Before(entry.expires)
+	if hit {
+		entry.used = now
+		v.cache[key] = entry
+	}
 	v.mu.Unlock()
-	if hit && time.Now().Before(entry.expires) {
+	if hit {
 		return entry, nil
 	}
 	// A caller that has already hung up starts no probe and joins none.
@@ -149,7 +163,8 @@ func (v *Verifier[P]) fetch(
 	ctx context.Context, key string, t *tenant.Tenant, token string,
 ) (cacheEntry[P], error) {
 	profile, err := v.probe(ctx, t, token)
-	entry := cacheEntry[P]{expires: time.Now().Add(cacheTTL)}
+	now := time.Now()
+	entry := cacheEntry[P]{expires: now.Add(cacheTTL), used: now}
 	switch {
 	case err == nil:
 		entry.profile = profile
@@ -159,12 +174,32 @@ func (v *Verifier[P]) fetch(
 		return cacheEntry[P]{}, err
 	}
 	v.mu.Lock()
-	if len(v.cache) >= cacheMax {
-		v.cache = map[string]cacheEntry[P]{}
+	if _, present := v.cache[key]; !present && len(v.cache) >= cacheMax {
+		v.evictLocked(now)
 	}
 	v.cache[key] = entry
 	v.mu.Unlock()
 	return entry, nil
+}
+
+// evictLocked makes room for a verdict: every expired one goes, or, with
+// none expired, the one least recently used.
+func (v *Verifier[P]) evictLocked(now time.Time) {
+	var victim string
+	var oldest time.Time
+	expired := false
+	for k, e := range v.cache {
+		switch {
+		case !now.Before(e.expires):
+			delete(v.cache, k)
+			expired = true
+		case victim == "" || e.used.Before(oldest):
+			victim, oldest = k, e.used
+		}
+	}
+	if !expired {
+		delete(v.cache, victim)
+	}
 }
 
 // Refuse answers a call whose bearer Verify did not accept, with err, the
