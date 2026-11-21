@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -318,19 +317,24 @@ func TestCreateOrderNamesAPointInAnotherCountry(t *testing.T) {
 	assert.Equal(t, "boxnowLockerId", refused.Field)
 }
 
-// A catalogue search by id matches it as a substring: the one point
-// whose id (and ACS branch) is exactly the one asked is read, and none
-// is ErrNotFound.
-func TestPickupPointsAreReadFromTheCatalogueByID(t *testing.T) {
+// A pickup point is read from the catalogue with Django's exact filters,
+// in the order's country: an ACS station by its area code and branch
+// (the area code alone names every Smartpoint of the area), a BOX NOW
+// locker by its id. Only the row that is exactly the one asked is read,
+// and none is ErrNotFound.
+func TestPickupPointsAreReadFromTheCatalogueExactly(t *testing.T) {
 	var queries []string
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			queries = append(queries, r.URL.Path+"?"+r.URL.RawQuery)
 			w.Header().Set("Content-Type", "application/json")
-			switch r.URL.Path {
-			case "/api/v1/shipping/acs/stations":
+			switch {
+			case r.URL.Query().Get("externalId") == "none":
+				_, _ = w.Write([]byte(`{"count":0,"results":[]}`))
+			case r.URL.Path == "/api/v1/shipping/acs/stations":
+				// The fixture answers another branch of the area first.
 				_, _ = w.Write(fixture(t, "acs_stations_search.json"))
-			case "/api/v1/shipping/boxnow/lockers":
+			case r.URL.Path == "/api/v1/shipping/boxnow/lockers":
 				_, _ = w.Write(fixture(t, "boxnow_lockers_search.json"))
 			}
 		}))
@@ -338,66 +342,29 @@ func TestPickupPointsAreReadFromTheCatalogueByID(t *testing.T) {
 	c := newTestClient(t, srv.URL)
 
 	st, err := c.AcsStationByID(t.Context(), "shop.example.test", "el",
-		"AAT", "502")
+		"AAT", "502", "GR")
 	require.NoError(t, err)
+	assert.Equal(t, "502", st.BranchCode)
 	assert.Equal(t, "ACS SMARTPOINT LOCKER ΠΕΔΙΟ ΑΡΕΩΣ", st.Name)
 	_, err = c.AcsStationByID(t.Context(), "shop.example.test", "el",
-		"AAT", "999")
+		"none", "1", "GR")
 	require.ErrorIs(t, err, ErrNotFound)
 
 	l, err := c.BoxNowLockerByID(t.Context(), "shop.example.test", "el",
-		"25")
+		"25", "GR")
 	require.NoError(t, err)
 	assert.Equal(t, "AB Shop & Go - Εξάρχεια", l.Name)
 	assert.Equal(t, "Ιπποκράτους 132", l.AddressLine1)
 	_, err = c.BoxNowLockerByID(t.Context(), "shop.example.test", "el",
-		"2")
+		"none", "GR")
 	require.ErrorIs(t, err, ErrNotFound)
 
 	assert.Equal(t, []string{
-		"/api/v1/shipping/acs/stations?page=1&pageSize=100&search=AAT",
-		"/api/v1/shipping/acs/stations?page=1&pageSize=100&search=AAT",
-		"/api/v1/shipping/boxnow/lockers?page=1&pageSize=100&search=25",
-		"/api/v1/shipping/boxnow/lockers?page=1&pageSize=100&search=2",
-	}, queries)
-}
-
-// An ACS area code is shared by every point of its area, so the point
-// asked for can be past the first page: the pages are read until it is
-// found, or the search's count is reached.
-func TestACatalogueSearchReadsEveryPage(t *testing.T) {
-	var pages []string
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			page := r.URL.Query().Get("page")
-			pages = append(pages, page)
-			w.Header().Set("Content-Type", "application/json")
-			row := `{"externalId":"AAT","branchCode":"%s","name":"%s",` +
-				`"addressLine1":"","city":"","postalCode":"","countryCode":` +
-				`"GR","lat":null,"lng":null,"maxWeightKg":"","workingHours":` +
-				`"","isActive":true}`
-			if page == "1" {
-				_, _ = fmt.Fprintf(w, `{"count":101,"results":[`+row+`]}`,
-					"1", "first")
-				return
-			}
-			_, _ = fmt.Fprintf(w, `{"count":101,"results":[`+row+`]}`,
-				"777", "on page two")
-		}))
-	defer srv.Close()
-	c := newTestClient(t, srv.URL)
-
-	st, err := c.AcsStationByID(t.Context(), "shop.example.test", "el",
-		"AAT", "777")
-	require.NoError(t, err)
-	assert.Equal(t, "on page two", st.Name)
-	assert.Equal(t, []string{"1", "2"}, pages)
-
-	pages = nil
-	_, err = c.AcsStationByID(t.Context(), "shop.example.test", "el",
-		"AAT", "000")
-	require.ErrorIs(t, err, ErrNotFound)
-	assert.Equal(t, []string{"1", "2"}, pages, "not past its count")
+		"/api/v1/shipping/acs/stations?branch=502&countryCode=GR&externalId=AAT",
+		"/api/v1/shipping/acs/stations?branch=1&countryCode=GR&externalId=none",
+		"/api/v1/shipping/boxnow/lockers?countryCode=GR&externalId=25",
+		"/api/v1/shipping/boxnow/lockers?countryCode=GR&externalId=none",
+	}, queries, "one call each")
 }
 
 func TestLocalized(t *testing.T) {

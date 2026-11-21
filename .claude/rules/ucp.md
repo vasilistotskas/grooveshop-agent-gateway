@@ -181,10 +181,12 @@ wins over this page.
     `AcsNearestStations` call per render, a failed one a `warning`
     `pickup_points_unlisted`), and the selected point, by the name and
     address the store's catalogue gave when it was chosen
-    (`handlers.applyPoint`: `AcsStationByID`, `BoxNowLockerByID`, the
-    catalogue lists Django already serves, `GET /shipping/acs/stations`
-    and `GET /shipping/boxnow/lockers` with `search`, read page by page
-    for the exact id and branch; one
+    (`handlers.applyPoint`: `AcsStationByID`, `BoxNowLockerByID`, one
+    call each to the catalogue lists with Django's exact filters,
+    `GET /shipping/acs/stations?externalId=&branch=&countryCode=` and
+    `GET /shipping/boxnow/lockers?externalId=&countryCode=`, from
+    django-api #767; an ACS area code alone names every Smartpoint of
+    its area, so the branch is always sent; one
     the catalogue does not hold is taken and named by its carrier and
     id, and Django decides at the order). BOX NOW lockers are found only
     from a street, so only `find_pickup_points` lists them. No group

@@ -429,7 +429,7 @@ var djangoContract = []contractCall{
 		fn: "AcsStationByID", method: http.MethodGet,
 		path: "/shipping/acs/stations", status: http.StatusOK,
 		query: []contractParam{
-			{"search", true}, {"page", true}, {"pageSize", true},
+			{"externalId", true}, {"branch", true}, {"countryCode", true},
 		},
 		out: reflect.TypeFor[Page[AcsStation]](),
 		names: map[string]string{
@@ -440,7 +440,7 @@ var djangoContract = []contractCall{
 		fn: "BoxNowLockerByID", method: http.MethodGet,
 		path: "/shipping/boxnow/lockers", status: http.StatusOK,
 		query: []contractParam{
-			{"search", true}, {"page", true}, {"pageSize", true},
+			{"externalId", true}, {"countryCode", true},
 		},
 		out: reflect.TypeFor[Page[BoxNowCatalogueLocker]](),
 		names: map[string]string{

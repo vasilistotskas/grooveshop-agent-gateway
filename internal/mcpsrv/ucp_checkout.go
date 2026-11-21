@@ -644,7 +644,7 @@ func (h *handlers) applyPoint(
 	switch f.ProviderCode {
 	case django.ShippingProviderACS:
 		st, err := h.deps.Django.AcsStationByID(ctx, t.Domain, lang,
-			f.AcsStationExternalID, f.AcsStationBranch)
+			f.AcsStationExternalID, f.AcsStationBranch, f.CountryCode)
 		switch {
 		case err == nil:
 			f.Point = &checkout.Point{Name: st.Name,
@@ -655,7 +655,7 @@ func (h *handlers) applyPoint(
 		}
 	case django.ShippingProviderBoxNow:
 		l, err := h.deps.Django.BoxNowLockerByID(ctx, t.Domain, lang,
-			f.BoxnowLockerID)
+			f.BoxnowLockerID, f.CountryCode)
 		switch {
 		case err == nil:
 			f.Point = &checkout.Point{Name: l.Name,

@@ -488,13 +488,21 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			ShippingOptions: read("shipping_options.json"),
 		}.Quote(w, r)
 	}
-	// The catalogue searches a pickup point is read from by its id.
+	// The catalogue lists a pickup point is read from, by Django's exact
+	// filters.
 	outer.HandleFunc("GET /api/v1/shipping/boxnow/lockers",
-		func(w http.ResponseWriter, _ *http.Request) {
+		func(w http.ResponseWriter, r *http.Request) {
+			q := r.URL.Query()
+			assert.NotEmpty(t, q.Get("externalId"))
+			assert.NotEmpty(t, q.Get("countryCode"))
 			serveFixture(t, w, "boxnow_lockers_search.json")
 		})
 	outer.HandleFunc("GET /api/v1/shipping/acs/stations",
-		func(w http.ResponseWriter, _ *http.Request) {
+		func(w http.ResponseWriter, r *http.Request) {
+			q := r.URL.Query()
+			assert.NotEmpty(t, q.Get("externalId"))
+			assert.NotEmpty(t, q.Get("branch"))
+			assert.NotEmpty(t, q.Get("countryCode"))
 			serveFixture(t, w, "acs_stations_search.json")
 		})
 	outer.HandleFunc("POST /api/v1/cart/quote",

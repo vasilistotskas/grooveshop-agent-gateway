@@ -4200,7 +4200,7 @@
         "parameters": [
           {
             "in": "query",
-            "name": "search",
+            "name": "externalId",
             "required": true,
             "schema": {
               "type": "string"
@@ -4208,7 +4208,7 @@
           },
           {
             "in": "query",
-            "name": "page",
+            "name": "branch",
             "required": true,
             "schema": {
               "type": "string"
@@ -4216,7 +4216,7 @@
           },
           {
             "in": "query",
-            "name": "pageSize",
+            "name": "countryCode",
             "required": true,
             "schema": {
               "type": "string"
@@ -4281,7 +4281,7 @@
         "parameters": [
           {
             "in": "query",
-            "name": "search",
+            "name": "externalId",
             "required": true,
             "schema": {
               "type": "string"
@@ -4289,15 +4289,7 @@
           },
           {
             "in": "query",
-            "name": "page",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "pageSize",
+            "name": "countryCode",
             "required": true,
             "schema": {
               "type": "string"
