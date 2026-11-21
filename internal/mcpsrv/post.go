@@ -4,14 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 )
 
 // post is the body of a request to /mcp, read once for the middleware in
@@ -36,22 +34,16 @@ type postKey struct{}
 // readPost reads r's body, bounded as the MCP handler bounds it, and
 // gives it back to r. The first middleware to read it keeps it in the
 // returned request's context for the next. It answers the request
-// itself, and returns false, for a body it cannot read.
+// itself, and returns false, for a body it cannot read and for a batch
+// the protocol does not allow or that is too long,
+// which is then decoded neither here nor by the SDK (mcptool.ReadBody).
 func readPost(
 	w http.ResponseWriter, r *http.Request,
 ) (*http.Request, *post, bool) {
 	p, ok := r.Context().Value(postKey{}).(*post)
 	if !ok {
-		raw, err := io.ReadAll(
-			http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
-		if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
-			httpmw.WriteJSONError(w, http.StatusRequestEntityTooLarge,
-				"request body too large")
-			return r, nil, false
-		}
-		if err != nil {
-			httpmw.WriteJSONError(w, http.StatusBadRequest,
-				"request body could not be read")
+		raw, ok := mcptool.ReadBody(w, r, maxRequestBodyBytes)
+		if !ok {
 			return r, nil, false
 		}
 		p = &post{raw: raw}
@@ -97,14 +89,16 @@ func (p *post) replyID() any {
 //   - a JSON array is a batch of messages, anything else one message
 //     (the SDK's readBatch);
 //   - each message is decoded by the SDK's own jsonrpc.DecodeMessage;
-//   - a tools/call's params are decoded into the SDK's CallToolParamsRaw
-//     with the decoder and options the SDK uses: segmentio/encoding with
-//     case-sensitive field names, so `Name` is not `name`.
+//   - a tools/call's params are decoded, with the decoder and options
+//     the SDK uses (segmentio/encoding with case-sensitive field names,
+//     so `Name` is not `name`), into the two members of the SDK's
+//     CallToolParamsRaw read here (toolCallParams). The rest, `_meta`
+//     among it, is skipped: any params the SDK decodes are decoded here,
+//     so no call it runs goes unseen.
 //
-// The SDK refuses a batch on protocol 2025-06-18 and later; such a body
-// is still read here, and refusing one the SDK would refuse costs
-// nothing. A body that is not JSON-RPC calls nothing: the MCP handler
-// refuses it.
+// A batch reaches it only where the protocol allows one, of at most
+// mcptool.MaxBatchMessages messages (readPost). A body that is not
+// JSON-RPC calls nothing: the MCP handler refuses it.
 func readToolCalls(body []byte) []calledTool {
 	var batch []json.RawMessage
 	raws := []json.RawMessage{body}
@@ -121,7 +115,7 @@ func readToolCalls(body []byte) []calledTool {
 		if !ok || req.Method != "tools/call" || req.Params == nil {
 			continue
 		}
-		var params mcp.CallToolParamsRaw
+		var params toolCallParams
 		if decodeAsSDK(req.Params, &params) == nil {
 			calls = append(calls, calledTool{
 				name: params.Name, args: params.Arguments,
@@ -129,6 +123,14 @@ func readToolCalls(body []byte) []calledTool {
 		}
 	}
 	return calls
+}
+
+// toolCallParams is what readToolCalls reads of a tools/call's params:
+// the members of the SDK's CallToolParamsRaw by the same names, and none
+// of its others.
+type toolCallParams struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
 // calledTools names the tools a request body calls (readToolCalls).

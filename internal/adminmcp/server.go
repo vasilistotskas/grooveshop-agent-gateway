@@ -1,9 +1,11 @@
 package adminmcp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -58,7 +60,7 @@ const maxRequestBodyBytes = 64 << 10
 // credential.
 func Handler(d Deps) http.Handler {
 	cache := &serverCache{deps: d, servers: map[string]*mcp.Server{}}
-	return mcp.NewStreamableHTTPHandler(
+	return refuseBatches(mcp.NewStreamableHTTPHandler(
 		cache.forRequest,
 		&mcp.StreamableHTTPOptions{
 			Stateless:                    true,
@@ -67,7 +69,25 @@ func Handler(d Deps) http.Handler {
 			MaxRequestBodyBytes:          maxRequestBodyBytes,
 			Logger:                       d.Log,
 		},
-	)
+	))
+}
+
+// refuseBatches reads a POST's body, bounded as the MCP handler bounds
+// it, and refuses a batch the protocol does not allow or that is too
+// long before the handler decodes any of it (mcptool.ReadBody).
+func refuseBatches(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			next.ServeHTTP(w, r)
+			return
+		}
+		body, ok := mcptool.ReadBody(w, r, maxRequestBodyBytes)
+		if !ok {
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		next.ServeHTTP(w, r)
+	})
 }
 
 // serverCache holds one server per store identity: the tools are the same
