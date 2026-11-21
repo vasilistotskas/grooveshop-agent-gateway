@@ -24,8 +24,8 @@ type QuoteRequest struct {
 // Quote is what checkout charges for a cart with the choices of its
 // QuoteRequest (CartQuote): the one computation order creation runs. A
 // row that depends on a choice not made is nil: Shipping without a
-// delivery, PaymentMethodFee without a pay way, ExpectedTotal and
-// CartDigest without both.
+// delivery, PaymentMethodFee without a pay way, ExpectedTotal without
+// both, CartDigest without a delivery.
 type Quote struct {
 	ItemsSubtotal     json.Number          `json:"itemsSubtotal"`
 	DiscountTotal     json.Number          `json:"discountTotal"`
@@ -36,8 +36,8 @@ type Quote struct {
 	Currency          string               `json:"currency"`
 	ExpectedTotal     *ExpectedTotal       `json:"expectedTotal"`
 	// CartDigest is an opaque digest of what an order would be made of:
-	// the lines, the promotions, the delivery with its pickup point and
-	// the pay way. Sent back as OrderCreate.ExpectedCartDigest.
+	// the lines, the promotions and the delivery with its pickup point,
+	// not the pay way. Sent back as OrderCreate.ExpectedCartDigest.
 	CartDigest string `json:"cartDigest" contract:"nullable"`
 	// ShippingOptions is every delivery the store offers to the
 	// request's country, priced as an order would be; nil without a

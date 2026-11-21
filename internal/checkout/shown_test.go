@@ -43,6 +43,13 @@ func TestShowRecordsWhatAnOpenCheckoutShows(t *testing.T) {
 		"an order's totals are its own")
 }
 
+// shownBy is what Show stores from a render of p.
+func shownBy(p *Pricing) *Shown {
+	s := readySession()
+	s.Show(p)
+	return s.Shown
+}
+
 // A completion names a choice the store refuses now before it asks for
 // a total: a checkout that showed a refused delivery showed no order's
 // total either, and only the refusal says what to change. One that
@@ -81,6 +88,14 @@ func TestAdmitNamesARefusedChoiceBeforeTheShownTotal(t *testing.T) {
 		"a refused delivery, nothing shown":  {refusing, nil, ErrChoiceRefused},
 		"nothing shown":                      {pricing, nil, ErrTotalNotShown},
 		"only the rows shown":                {pricing, rows, ErrTotalNotShown},
+		// The last read named its pay way refused: the store takes it
+		// again now, but the checkout showed it refused, not an order.
+		"a render that named a refused pay way": {pricing,
+			shownBy(&Pricing{Total: 18550, Currency: "EUR",
+				CartDigest: "digest-of-the-cart",
+				PayWayRefused: &Refusal{
+					Code: "pay_way_unavailable", Detail: "Not now.",
+				}}), ErrTotalNotShown},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dj, _ := quoteDjango(t, pricingCart("20.00", false), tc.quote)
