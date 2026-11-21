@@ -63,12 +63,15 @@ const startupDeadline = 5 * time.Minute
 // Django's are in another.
 const gatewayRedisDB = "1"
 
-// paymentHosts are where Django opens a payment page for the store's online
-// pay way. The stack leads them to a container that serves nothing there, so
-// an order is placed and its payment page is refused at once, and no run
-// reaches the provider.
+// paymentHosts are every host Django calls for the store's online pay way
+// in demo mode (VivaWalletPaymentProvider): its OAuth token and payment
+// page, and the Basic API that reads an order's payment sessions back. The
+// stack leads them to a container that serves nothing there, so an order is
+// placed and its payment page is refused at once, and no run reaches the
+// provider.
 var paymentHosts = []string{
 	"demo-accounts.vivapayments.com", "demo-api.vivapayments.com",
+	"demo.vivapayments.com",
 }
 
 //go:embed testdata/seed.py

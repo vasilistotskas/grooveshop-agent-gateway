@@ -40,11 +40,19 @@ primary = store.get_primary_domain().domain
 
 # The store offers its online pay way, so a test can place an order that
 # awaits its payment. Django lists that pay way, and takes an order with it,
-# only while the store holds the provider's credentials. These are not real:
-# the stack leads the provider's hosts nowhere (paymentHosts).
-store.viva_wallet_client_id = "realstack"
-store.viva_wallet_client_secret = "realstack"
-store.save(update_fields=["viva_wallet_client_id", "viva_wallet_client_secret"])
+# only while the store holds all four of the provider's credentials (the
+# OAuth pair and the Basic pair, VivaWalletPaymentProvider
+# .is_configured_for_tenant). These are not real: the stack leads the
+# provider's hosts nowhere (paymentHosts).
+viva = {
+    "viva_wallet_merchant_id": "realstack",
+    "viva_wallet_api_key": "realstack",
+    "viva_wallet_client_id": "realstack",
+    "viva_wallet_client_secret": "realstack",
+}
+for field, value in viva.items():
+    setattr(store, field, value)
+store.save(update_fields=list(viva))
 
 with schema_context("demostore"):
     online = PayWay.objects.get(provider_code="viva_wallet")
