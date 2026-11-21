@@ -22,6 +22,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
@@ -37,6 +38,21 @@ var testOrderRetry = checkout.OrderRetry{
 // ucpMeta names a platform profile served from the recorded fixture.
 func ucpMeta(t *testing.T, idem string) *MetaIn {
 	t.Helper()
+	return &MetaIn{UCPAgent: &UCPAgentIn{Profile: platformProfile(t)},
+		IdempotencyKey: idem}
+}
+
+// platformProfiles is each test's platform profile URL (platformProfile).
+var platformProfiles sync.Map
+
+// platformProfile is the URL of the test's one platform profile, served
+// for the length of the test: every call a test makes names the same
+// platform, as a platform's calls do, so its profile is fetched once.
+func platformProfile(t *testing.T) string {
+	t.Helper()
+	if url, ok := platformProfiles.Load(t); ok {
+		return url.(string)
+	}
 	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata",
 		"fixtures", "ucp", "platform_profile.json"))
 	require.NoError(t, err)
@@ -47,9 +63,22 @@ func ucpMeta(t *testing.T, idem string) *MetaIn {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(body))
 		}))
-	t.Cleanup(srv.Close)
-	return &MetaIn{UCPAgent: &UCPAgentIn{Profile: srv.URL + "/profile.json"},
-		IdempotencyKey: idem}
+	url := srv.URL + "/profile.json"
+	platformProfiles.Store(t, url)
+	t.Cleanup(func() {
+		platformProfiles.Delete(t)
+		srv.Close()
+	})
+	return url
+}
+
+// platformCtx is ctx for a call to the UCP tools at the cart tenant, as
+// the rate limiter's middleware leaves it, naming the test's caller
+// (httpmw.ClientFrom).
+func platformCtx(t *testing.T) context.Context {
+	t.Helper()
+	return httpmw.WithClient(
+		tenant.NewContext(t.Context(), cartTenant()), "192.0.2.10")
 }
 
 // signedAs is ctx as VerifyPlatformSignature leaves it for a request
@@ -137,7 +166,7 @@ func TestCreateCheckoutRefusesThePaymentBeforeTheCart(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dj, calls := ucpDjango(t)
 			h := ucpHandlers(t, dj)
-			ctx := tenant.NewContext(t.Context(), cartTenant())
+			ctx := platformCtx(t)
 
 			_, _, err := h.createCheckout(ctx, nil, CreateCheckoutIn{
 				Meta: ucpMeta(t, ""),
@@ -171,7 +200,7 @@ func TestCreateCheckoutRefusesACartIDThatIsNoUUID(t *testing.T) {
 		t.Run(id, func(t *testing.T) {
 			dj, calls := ucpDjango(t)
 			h := ucpHandlers(t, dj)
-			ctx := tenant.NewContext(t.Context(), cartTenant())
+			ctx := platformCtx(t)
 
 			_, _, err := h.createCheckout(ctx, nil, CreateCheckoutIn{
 				Meta: ucpMeta(t, ""), CartID: id,
@@ -239,7 +268,7 @@ func TestCheckoutStoreOutageIsUnavailable(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			dj, _ := ucpDjango(t)
-			ctx := tenant.NewContext(t.Context(), cartTenant())
+			ctx := platformCtx(t)
 
 			err := call(ctx, ucpHandlers(t, dj), t)
 
@@ -260,7 +289,7 @@ func TestCheckoutStoreOutageIsUnavailable(t *testing.T) {
 func TestAMissingCheckoutIsNotOnlyStartANewOne(t *testing.T) {
 	dj, _ := ucpDjango(t)
 	h := ucpHandlers(t, dj)
-	ctx := tenant.NewContext(t.Context(), cartTenant())
+	ctx := platformCtx(t)
 
 	// An id no session can have is known to be missing without the store
 	// being asked, by the tools that lock the session too: these handlers'
@@ -362,7 +391,7 @@ func TestCompleteAndCancelBoundTheIdempotencyKey(t *testing.T) {
 		t.Run(tool, func(t *testing.T) {
 			dj, _ := ucpDjango(t)
 			h := ucpHandlers(t, dj)
-			ctx := tenant.NewContext(t.Context(), cartTenant())
+			ctx := platformCtx(t)
 			for _, key := range outside {
 				err := call(ctx, h, ucpMeta(t, key))
 				require.ErrorIs(t, err, errIdempotencyKeyForm, key)
@@ -535,7 +564,7 @@ func TestCheckoutRefusalsCarryACode(t *testing.T) {
 	}
 
 	// Through the tools themselves, before the store is asked.
-	ctx = tenant.NewContext(ctx, cartTenant())
+	ctx = platformCtx(t)
 	_, _, err := h.getCheckout(ctx, nil, GetCheckoutIn{Meta: ucpMeta(t, "")})
 	assert.Equal(t, "id is required",
 		codeOf(t, err, mcptool.CodeInvalid).Hint)
@@ -591,7 +620,7 @@ func TestUpdateCheckoutSettlesEverythingBeforeTheFirstCartWrite(
 		t.Run(name, func(t *testing.T) {
 			dj, calls := tc.django(t)
 			h := ucpHandlers(t, dj)
-			ctx := tenant.NewContext(t.Context(), cartTenant())
+			ctx := platformCtx(t)
 
 			tc.session.Status = checkout.StatusReadyForComplete
 			_, _, err := h.negotiated(ctx, ucpMeta(t, ""), false,

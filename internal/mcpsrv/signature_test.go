@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpsig"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
@@ -98,7 +99,11 @@ func newSignatureGate(t *testing.T) *signatureGate {
 		slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	g := &signatureGate{}
-	g.handler = VerifyPlatformSignature(Deps{
+	// Behind the rate limiter's middleware, as every route is, which
+	// names each request's caller (httpmw.ClientFrom). Its own limits are
+	// not under test here.
+	limiter := httpmw.NewRateLimiter(600, 600, nil)
+	g.handler = limiter.Middleware()(VerifyPlatformSignature(Deps{
 		Profiles:        profiles,
 		SignatureWindow: httpsig.Window{MaxAge: time.Minute, Skew: time.Minute},
 		Log:             slog.New(slog.DiscardHandler),
@@ -108,7 +113,7 @@ func newSignatureGate(t *testing.T) *signatureGate {
 		b, _ := io.ReadAll(r.Body)
 		g.body = string(b)
 		w.WriteHeader(http.StatusNoContent)
-	}))
+	})))
 	return g
 }
 
