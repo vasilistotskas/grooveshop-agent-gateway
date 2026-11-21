@@ -185,16 +185,12 @@ wins over this page.
   - the first one, for a checkout that holds none, with no fee for this
     cart (its free threshold included): the method is taken. It is
     stored after the completion is claimed and before the flow, so a
-    refused complete keeps it. The checkout showed no cart digest
-    without a method (the quote gives one only with a delivery and a pay
-    way), so the order's is the digest of `firstMethodFee`'s quote, at
-    the total the checkout showed (`Shown.WithCart`): a cart changed
-    under the completion from that quote on is refused `cart_changed`,
-    one changed before it at the same total is not, a known gap kept with
-    #110's decision until Django returns the digest without a pay way
-    (django-api #770): the complete then sends the digest the platform's
-    last read showed. A delivery the store refuses now is named first
-    (`firstMethodFee`, as `Flow.admit` names it);
+    refused complete keeps it. The order is placed from the cart the
+    checkout showed: the digest holds no pay way (django-api #770), so
+    the platform's last read already carries the one the order is
+    checked against, and a cart changed since, at the same total or not,
+    is refused `cart_changed`. A delivery the store refuses now is named
+    first (`firstMethodFee`, as `Flow.admit` names it);
   - the first one, with a fee: `incomplete` and a `recoverable` error
     `payment_fee_added` saying the fee and the new total. The fee is the
     render's own (`checkout.ComputePricing` on the checkout as it would

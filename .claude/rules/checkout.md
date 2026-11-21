@@ -350,11 +350,12 @@ Loads when working on a checkout session on either surface, its completion, its 
   `POST /cart/quote` (`django.Client.Quote`) for every amount, with the
   very choices the order is placed with (`checkout.QuoteRequest`:
   delivery, pickup point (`Fulfillment.PickupPoint`, the order's own
-  fields), pay way, region, email). A quote that prices both a delivery
-  and a pay way also returns `cartDigest` (`Pricing.CartDigest`): Django's
-  opaque digest of what the order would be made of (the lines, the
-  promotions, the delivery with its pickup point, the pay way). A quote
-  with an expected total and no digest is a quote that cannot be read.
+  fields), pay way, region, email). A quote that prices a delivery also
+  returns `cartDigest` (`Pricing.CartDigest`): Django's opaque digest of
+  what the order would be made of (the lines, the promotions, the
+  delivery with its pickup point; not the pay way, whose fee is the
+  expected total's, django-api #770). A quote that prices a delivery
+  without a digest is a quote that cannot be read.
   The
   gateway adds nothing up of its own: the free thresholds, the promotion
   waiver, the carrier's weight and parcels are Django's. A checkout that
@@ -415,9 +416,9 @@ Loads when working on a checkout session on either surface, its completion, its 
     same-key retry included. That covers the cart writes of an update
     that outlived its lock under a running completion (#142): they
     change the cart after the render whose digest the completion sends.
-    The one exception is a UCP complete that names a checkout's first
-    payment method, whose digest is its own quote's
-    (`.claude/rules/ucp.md`).
+    The digest holds no pay way, so a UCP complete that names a
+    checkout's first payment method is placed from the cart it showed
+    too.
 - **One live checkout holds a cart** (#141). Two sessions on one cart
   could each place an order, because Django keeps the cart of an order
   that awaits its online payment. The store keeps it to one:

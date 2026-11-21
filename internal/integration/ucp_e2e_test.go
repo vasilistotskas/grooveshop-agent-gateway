@@ -1769,31 +1769,37 @@ func TestUCPEndToEnd(t *testing.T) {
 			assert.EqualValues(t, 2, (*stack.faults.lastOrder.Load())["payWayId"])
 		})
 
-	// A checkout without a method showed no cart digest, so one completed
-	// with its first method is placed from the cart its own quote with
-	// that method priced: a cart write that lands under the completion
-	// after that quote is refused, and nothing is placed (#142).
-	t.Run("a cart changed under a complete that names the first method "+
-		"places nothing", func(t *testing.T) {
-		created := unready(t, nil)
-		require.Equal(t, "incomplete", created["status"])
-		placed := stack.faults.ordersPlaced.Load()
+	// The cart digest holds no pay way, so a checkout that names its
+	// first method only at completion is placed from the cart it showed:
+	// a cart changed since the platform read it, at the same total, is
+	// refused before the completion's quotes or after them, and nothing
+	// is placed (#142).
+	for name, fault := range map[string]*atomic.Bool{
+		"since the platform read it": &stack.faults.lineSwapped,
+		"under the completion":       &stack.faults.swapOnReserve,
+	} {
+		t.Run("a cart changed "+name+" places nothing on a complete "+
+			"that names the first method", func(t *testing.T) {
+			created := unready(t, nil)
+			require.Equal(t, "incomplete", created["status"])
+			placed := stack.faults.ordersPlaced.Load()
 
-		stack.faults.swapOnReserve.Store(true)
-		t.Cleanup(func() {
-			stack.faults.swapOnReserve.Store(false)
-			stack.faults.lineSwapped.Store(false)
+			fault.Store(true)
+			t.Cleanup(func() {
+				stack.faults.swapOnReserve.Store(false)
+				stack.faults.lineSwapped.Store(false)
+			})
+			res := complete(t, created["id"], uuid.NewString(),
+				map[string]any{"payment": codInstrument})
+			require.True(t, res.IsError, "refused: the cart changed")
+			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
+				"cart_changed")
+			assert.Equal(t, placed, stack.faults.ordersPlaced.Load())
+			assert.EqualValues(t, 1,
+				stack.storedSession(t, created["id"].(string)).PayWayID,
+				"the method it named is kept")
 		})
-		res := complete(t, created["id"], uuid.NewString(),
-			map[string]any{"payment": codInstrument})
-		require.True(t, res.IsError, "refused: the cart changed")
-		assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
-			"cart_changed")
-		assert.Equal(t, placed, stack.faults.ordersPlaced.Load())
-		assert.EqualValues(t, 1,
-			stack.storedSession(t, created["id"].(string)).PayWayID,
-			"the method it named is kept")
-	})
+	}
 
 	// A first method the store does not have is the caller's mistake, not
 	// an outage to retry: refused, nothing stored, nothing placed.
