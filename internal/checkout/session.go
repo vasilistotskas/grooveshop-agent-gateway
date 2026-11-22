@@ -220,29 +220,22 @@ func (s *Session) creator() Caller {
 }
 
 // Shown is what a render of an open checkout published, which its order
-// is placed at: the total, and the quote's digest of the cart that total
-// is of (Pricing.CartDigest), empty while the checkout has not chosen
-// both a delivery and a pay way.
+// is placed at: the total, and the quote's digest of what the order would
+// be made of (Pricing.CartDigest), empty while the checkout has no
+// delivery priced and for a render that named a choice the store refused
+// (it showed rows, not an order's total). The digest holds no pay way, so
+// a checkout that names its method only at completion is placed from the
+// cart it showed.
 type Shown struct {
 	Total      django.ExpectedTotal `json:"total"`
 	CartDigest string               `json:"cartDigest,omitempty"`
 }
 
 // OfAnOrder reports whether an order can be placed at what was shown: a
-// total the quote priced as an order's, with its cart's digest.
+// total with its cart's digest, which the quote gives once a delivery is
+// priced.
 func (sh *Shown) OfAnOrder() bool {
 	return sh != nil && sh.CartDigest != ""
-}
-
-// WithCart is what was shown, at its total, from the cart digest given:
-// for a complete that names a checkout's first payment method, whose
-// renders showed no digest (a quote gives one only with a delivery and a
-// pay way). Nil while nothing was shown.
-func (sh *Shown) WithCart(digest string) *Shown {
-	if sh == nil {
-		return nil
-	}
-	return &Shown{Total: sh.Total, CartDigest: digest}
 }
 
 // Show records what a render of the session publishes, and reports
@@ -254,8 +247,10 @@ func (s *Session) Show(p *Pricing) bool {
 		return false
 	}
 	shown := &Shown{
-		Total:      django.ExpectedTotal{Amount: p.Total, Currency: p.Currency},
-		CartDigest: p.CartDigest,
+		Total: django.ExpectedTotal{Amount: p.Total, Currency: p.Currency},
+	}
+	if p.Refused() == nil {
+		shown.CartDigest = p.CartDigest
 	}
 	if s.Shown != nil && *s.Shown == *shown {
 		return false
