@@ -311,9 +311,15 @@ func (c *UCPCheckoutIn) delivery(
 		return nil, invalidInput("%s.destinations: this store delivers "+
 			"a cart to one address", at)
 	case len(d) == 1:
-		if selected != "" && d[0].ID != "" && selected != d[0].ID {
+		// A destination written without an id has the one this business
+		// gives it.
+		id := d[0].ID
+		if id == "" {
+			id = ucp.DestinationID
+		}
+		if selected != "" && selected != id {
 			return nil, invalidInput("%s.selected_destination_id %q is "+
-				"not the destination written (%q)", at, selected, d[0].ID)
+				"not the destination written (%q)", at, selected, id)
 		}
 		f.Street = strings.TrimSpace(d[0].StreetAddress)
 		f.AddressLine2 = strings.TrimSpace(d[0].ExtendedAddress)
