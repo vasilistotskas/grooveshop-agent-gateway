@@ -104,6 +104,7 @@ const (
 	pathDestinations = "$.fulfillment.methods[0].destinations"
 	pathStreet       = "$.fulfillment.methods[0].destinations[0].street_address"
 	pathRegion       = "$.fulfillment.methods[0].destinations[0].address_region"
+	pathShipping     = "$.fulfillment.methods[0]"
 	pathOption       = "$.fulfillment.methods[0].groups[0].selected_option_id"
 	pathPoint        = "$.fulfillment.methods[1].selected_destination_id"
 )
@@ -399,10 +400,11 @@ func group(
 }
 
 // missing are the recoverable errors of what an open checkout still
-// needs, each at its place in the checkout. A checkout whose platform did
-// not negotiate the fulfillment extension can be given no delivery: it is
-// told so.
-func missing(s *checkout.Session, fulfills bool) []Message {
+// needs, each at its place in the checkout f renders. A checkout whose
+// platform did not negotiate the fulfillment extension can be given no
+// delivery: it is told so.
+func missing(s *checkout.Session, f *Fulfillment) []Message {
+	fulfills := f != nil
 	var out []Message
 	add := func(code, path, text string) {
 		out = append(out, Message{Type: "error", Code: code, Path: path,
@@ -442,6 +444,15 @@ func missing(s *checkout.Session, fulfills bool) []Message {
 				"region of the country, one of: "+s.RegionChoices())
 		case checkout.NeedDelivery:
 			if !fulfills {
+				continue
+			}
+			// The group is rendered once its options are known: until
+			// then the carrier is chosen at the shipping method.
+			if len(f.Methods[0].Groups) == 0 {
+				add("missing", pathShipping, "Select the carrier that "+
+					"delivers once the shipping group lists the options: "+
+					"write the destination first, or choose the pickup "+
+					"method.")
 				continue
 			}
 			add("missing", pathOption, "Select one of the shipping "+
