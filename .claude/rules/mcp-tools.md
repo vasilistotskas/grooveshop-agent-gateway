@@ -130,7 +130,8 @@ Loads when working on a tool of any of the three MCP servers. The code wins over
   as no locker found: Django answers every BOX NOW refusal with it.
   Each point it finds carries its `destinationId`
   (`ucp.PickupLocation.DestinationID`), naming the point's own country
-  (a BOX NOW locker BOX NOW gives none for, the country searched), which a UCP checkout's pickup
+  (a BOX NOW locker BOX NOW gives none for is left out, as Django's
+  locker sync leaves it out), which a UCP checkout's pickup
   method takes as `selected_destination_id`.
   Returning a plain Go error from a typed tool handler is fine — the
   SDK wraps it into exactly that; only a `*jsonrpc.Error` becomes a

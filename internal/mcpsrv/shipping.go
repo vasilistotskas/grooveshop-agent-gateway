@@ -317,12 +317,11 @@ func (h *handlers) findPickupPoints(
 				})
 			switch {
 			case err == nil:
-				// BOX NOW's answer may leave the country out: the locker
-				// nearest an address is in the address's country, the
-				// one searched.
+				// A locker BOX NOW names no country for is left out, as
+				// Django's locker sync leaves it out: no id names it.
 				lockerCountry := strings.ToUpper(strings.TrimSpace(l.Country))
 				if !checkout.IsCountryCode(lockerCountry) {
-					lockerCountry = country
+					break
 				}
 				out.Points = append(out.Points, PickupPoint{
 					Provider: django.ShippingProviderBoxNow,

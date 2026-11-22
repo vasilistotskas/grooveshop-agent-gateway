@@ -334,13 +334,15 @@ func TestPickupPointsNameEachPointsOwnCountry(t *testing.T) {
 }
 
 // BOX NOW's answer may hold no country, or one padded: a locker is named
-// by its own country when it gives one, else by the country searched.
-func TestABoxNowLockerWithoutItsCountryIsNamedByTheCountrySearched(
-	t *testing.T,
-) {
-	for name, tc := range map[string]struct{ country, want string }{
-		"none":   {`""`, "boxnow:CY:25"},
-		"padded": {`" gr "`, "boxnow:GR:25"},
+// by its own country, and one without a country is left out, as Django's
+// locker sync leaves it out, never given an id.
+func TestABoxNowLockerIsNamedByItsOwnCountryOrLeftOut(t *testing.T) {
+	for name, tc := range map[string]struct {
+		country string
+		want    []string
+	}{
+		"none":   {`""`, nil},
+		"padded": {`" gr "`, []string{"boxnow:GR:25"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			locker := bytes.Replace(
@@ -348,16 +350,21 @@ func TestABoxNowLockerWithoutItsCountryIsNamedByTheCountrySearched(
 				[]byte(`"country":"GR"`),
 				[]byte(`"country":`+tc.country), 1)
 			h, _ := pickupDjangoWith(t, locker, http.StatusOK, boxnowBox)
-			in := athens
-			in.CountryCode = "CY"
 
-			_, out, err := h.findPickupPoints(storeContext(), nil, in)
+			_, out, err := h.findPickupPoints(storeContext(), nil, athens)
 
-			require.NoError(t, err)
-			require.Len(t, out.Points, 1)
-			assert.Equal(t, tc.want, out.Points[0].DestinationID)
-			_, err = ucp.ParsePickupLocation(out.Points[0].DestinationID)
-			assert.NoError(t, err, "an id the checkout takes")
+			var got []string
+			for _, p := range out.Points {
+				got = append(got, p.DestinationID)
+				_, perr := ucp.ParsePickupLocation(p.DestinationID)
+				require.NoError(t, perr, "an id the checkout takes")
+			}
+			assert.Equal(t, tc.want, got)
+			if tc.want == nil {
+				require.Error(t, err, "no point found")
+			} else {
+				require.NoError(t, err)
+			}
 		})
 	}
 }
