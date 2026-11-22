@@ -385,7 +385,8 @@ func toolset(h *handlers) []tool {
 				"with to that country (ACS Smartpoint lockers/shops, BOX " +
 				"NOW lockers); says so when it has none. BOX NOW lockers " +
 				"are searched only with the shopper's city and street: " +
-				"ask the shopper for them.",
+				"ask the shopper for them. Each point's destinationId " +
+				"selects it in a UCP checkout's pickup method.",
 		}, h.findPickupPoints)),
 
 		onlyWith(cartOn, toolOf(&mcp.Tool{
@@ -570,12 +571,16 @@ func toolset(h *handlers) []tool {
 				"line_items and buyer as they should now be (an omitted " +
 				"buyer is cleared), and discounts.codes to keep its " +
 				"codes (omitted, they are cleared once the discount " +
-				"extension is negotiated), and fulfillment: the shipping " +
-				"method's destination (the address, street_address with " +
-				"its house number) and its group's selected_option_id " +
-				"(the carrier), cleared when omitted once the fulfillment " +
-				"extension is negotiated. The payment selection is kept " +
-				"when omitted. Requires meta.ucp-agent.profile.",
+				"extension is negotiated), and fulfillment, cleared when " +
+				"omitted once the fulfillment extension is negotiated: " +
+				"the method chosen holds the line_item_ids, either the " +
+				"shipping method with its destination (the address, " +
+				"street_address with its house number) and its group's " +
+				"selected_option_id (the carrier), or the pickup method " +
+				"with its selected_destination_id (a point it lists, or a " +
+				"destinationId from find_pickup_points). The payment " +
+				"selection is kept when omitted. Requires " +
+				"meta.ucp-agent.profile.",
 		}, h.updateCheckout))),
 
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{

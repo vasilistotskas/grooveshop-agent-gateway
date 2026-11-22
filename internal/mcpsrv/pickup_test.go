@@ -1,6 +1,7 @@
 package mcpsrv
 
 import (
+	"bytes"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/mcptool"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
 const (
@@ -30,14 +32,26 @@ func pickupDjango(
 	t *testing.T, tokenStatus int, rows ...string,
 ) (*handlers, map[string][]http.Header) {
 	t.Helper()
-	fixture := func(name string) []byte {
-		b, err := os.ReadFile(filepath.Join("..", "..", "testdata",
-			"fixtures", "django", name))
-		require.NoError(t, err)
-		return b
-	}
-	stations := fixture("acs_stations_nearest.json")
-	locker := fixture("boxnow_nearest.json")
+	return pickupDjangoWith(t, pickupFixture(t, "boxnow_nearest.json"),
+		tokenStatus, rows...)
+}
+
+// pickupFixture is a recorded Django answer.
+func pickupFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "testdata",
+		"fixtures", "django", name))
+	require.NoError(t, err)
+	return b
+}
+
+// pickupDjangoWith is pickupDjango whose BOX NOW nearest locker is
+// locker.
+func pickupDjangoWith(
+	t *testing.T, locker []byte, tokenStatus int, rows ...string,
+) (*handlers, map[string][]http.Header) {
+	t.Helper()
+	stations := pickupFixture(t, "acs_stations_nearest.json")
 	seen := map[string][]http.Header{}
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
@@ -299,4 +313,58 @@ func providers(out PickupPointsOut) []string {
 		p = append(p, pt.Provider)
 	}
 	return p
+}
+
+// A point's destinationId names the point's own country, which an order
+// to it is checked against, not the country the search asked for: a
+// postcode prefix matches stations of another country too.
+func TestPickupPointsNameEachPointsOwnCountry(t *testing.T) {
+	h, _ := pickupDjango(t, http.StatusOK, acsHome, acsLocker, boxnowBox)
+	in := athens
+	in.CountryCode = "CY"
+
+	_, out, err := h.findPickupPoints(storeContext(), nil, in)
+
+	require.NoError(t, err)
+	require.NotEmpty(t, out.Points)
+	for _, p := range out.Points {
+		assert.True(t, strings.HasPrefix(p.DestinationID, p.Provider+":GR:"),
+			"%s: the fixture's points are in GR", p.DestinationID)
+	}
+}
+
+// BOX NOW's answer may hold no country, or one padded: a locker is named
+// by its own country, and one without a country is left out, as Django's
+// locker sync leaves it out, never given an id.
+func TestABoxNowLockerIsNamedByItsOwnCountryOrLeftOut(t *testing.T) {
+	for name, tc := range map[string]struct {
+		country string
+		want    []string
+	}{
+		"none":   {`""`, nil},
+		"padded": {`" gr "`, []string{"boxnow:GR:25"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			locker := bytes.Replace(
+				pickupFixture(t, "boxnow_nearest.json"),
+				[]byte(`"country":"GR"`),
+				[]byte(`"country":`+tc.country), 1)
+			h, _ := pickupDjangoWith(t, locker, http.StatusOK, boxnowBox)
+
+			_, out, err := h.findPickupPoints(storeContext(), nil, athens)
+
+			var got []string
+			for _, p := range out.Points {
+				got = append(got, p.DestinationID)
+				_, perr := ucp.ParsePickupLocation(p.DestinationID)
+				require.NoError(t, perr, "an id the checkout takes")
+			}
+			assert.Equal(t, tc.want, got)
+			if tc.want == nil {
+				require.Error(t, err, "no point found")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }

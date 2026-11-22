@@ -1535,7 +1535,7 @@ func (h *Handler) completeError(
 	w http.ResponseWriter, r *http.Request, s *checkout.Session, err error,
 ) {
 	var shortfall *django.StockShortfall
-	var street *django.StreetRefusedError
+	var street *django.DestinationRefusedError
 	switch {
 	case errors.As(err, &shortfall):
 		var lines []string

@@ -523,6 +523,7 @@ func (f *Flow) place(
 		RegionID:             s.Fulfillment.RegionID,
 		ShippingProviderCode: s.Fulfillment.ProviderCode,
 		ShippingKind:         s.Fulfillment.Kind,
+		PickupPoint:          s.Fulfillment.PickupPoint(),
 		// Every UCP and ACP checkout response links the store's terms
 		// and privacy policy for the platform to present to the buyer
 		// (storefront.Terms, storefront.Privacy); completing it is the
@@ -545,10 +546,12 @@ func (f *Flow) place(
 	}
 	if err != nil {
 		s.Status = StatusReadyForComplete
-		// A street line the store cannot split is the address's to
-		// correct: until it changes, the checkout is not ready.
-		if refused, ok := errors.AsType[*django.StreetRefusedError](err); ok {
-			s.StreetRefused = &Refusal{
+		// A street line the store cannot split, or a pickup point it does
+		// not know, is the destination's to correct: until it changes,
+		// the checkout is not ready.
+		if refused, ok := errors.AsType[*django.DestinationRefusedError](
+			err); ok {
+			s.DestinationRefused = &Refusal{
 				Code: refused.Code, Detail: refused.Message}
 			s.Recompute()
 		}

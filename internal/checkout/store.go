@@ -125,9 +125,10 @@ func NewStore(rdb *redis.Client, upstreamTimeout time.Duration) *Store {
 //     checkout's id: a resume of its session would place a second one).
 //   - v8: a session keeps the cart digest it showed with its total, and
 //     its order is placed only from that cart; its delivery is one street
-//     line with an address line 2 (a v7 pod knows nothing of the digest
-//     or the address line 2, and its save drops them, and it reads a
-//     one-line street as incomplete).
+//     line with an address line 2, or a pickup point with no address (a
+//     v7 pod knows nothing of the digest, the address line 2 or the
+//     point's catalogue entry, and its save drops them, and it reads a
+//     one-line street or a pickup without an address as incomplete).
 func sessionKey(schema, id string) string {
 	return "ag:" + schema + ":cs:v8:" + id
 }

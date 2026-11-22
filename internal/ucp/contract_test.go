@@ -179,6 +179,8 @@ func fixtureDjango(t *testing.T, cartFixture ...string) *django.Client {
 	mux.HandleFunc("GET /api/v1/pay_way/2", fixture("pay_way_2.json"))
 	mux.HandleFunc("GET /api/v1/shipping/options",
 		fixture("shipping_options.json"))
+	mux.HandleFunc("GET /api/v1/shipping/acs/stations/nearest",
+		fixture("acs_stations_nearest.json"))
 	mux.HandleFunc("POST /api/v1/cart/quote", djangotest.Store{
 		Cart:            readFixture(t, cart),
 		ShippingOptions: readFixture(t, "shipping_options.json"),
@@ -741,7 +743,8 @@ func TestBuildCheckoutRendersTheFulfillmentExtension(t *testing.T) {
 	require.NotNil(t, payload.Fulfillment)
 	assert.Equal(t, []FulfillmentMethod{{
 		ID: "shipping", Type: "shipping", LineItemIDs: []string{"410"},
-	}}, payload.Fulfillment.Methods, "nothing written yet")
+	}}, payload.Fulfillment.Methods,
+		"nothing written yet, and no country to know the pickup carriers of")
 	paths := map[string]Message{}
 	for _, m := range payload.Messages {
 		paths[m.Path] = m
@@ -767,7 +770,7 @@ func TestBuildCheckoutRendersTheFulfillmentExtension(t *testing.T) {
 	acs := "acs"
 	assert.Equal(t, []FulfillmentMethod{{
 		ID: "shipping", Type: "shipping", LineItemIDs: []string{"410"},
-		Destinations: []ShippingDestination{{
+		Destinations: []Destination{{
 			Type: "shipping_address", ID: "shipping_address",
 			StreetAddress: "Πανεπιστημίου 12", ExtendedAddress: "3ος όροφος",
 			AddressLocality: "Αθήνα", AddressRegion: "GR-14",
@@ -782,6 +785,10 @@ func TestBuildCheckoutRendersTheFulfillmentExtension(t *testing.T) {
 			}},
 			SelectedOptionID: &acs,
 		}},
+	}, {
+		// BOX NOW delivers this cart to lockers in GR: the pickup method
+		// is listed, holding no line, with no point selected.
+		ID: "pickup", Type: "pickup", LineItemIDs: []string{},
 	}}, payload.Fulfillment.Methods)
 
 	// A platform without the extension is not given its member, and is
@@ -817,7 +824,7 @@ func TestBuildCheckoutNamesARefusedStreetLine(t *testing.T) {
 		CountryCode: "GR", City: "Αθήνα", Zipcode: "10431",
 		Street: "Πανεπιστημίου 10431",
 	})
-	s.StreetRefused = &checkout.Refusal{
+	s.DestinationRefused = &checkout.Refusal{
 		Code: django.CodeStreetNumberIsPostcode, Detail: "x"}
 	s.Recompute()
 
@@ -828,6 +835,6 @@ func TestBuildCheckoutNamesARefusedStreetLine(t *testing.T) {
 	assert.Equal(t, []Message{{
 		Type: "error", Code: django.CodeStreetNumberIsPostcode,
 		Path: pathStreet, Severity: "recoverable",
-		Text: StreetRefusedText(django.CodeStreetNumberIsPostcode),
+		Text: DestinationRefusedText(django.CodeStreetNumberIsPostcode),
 	}}, payload.Messages)
 }

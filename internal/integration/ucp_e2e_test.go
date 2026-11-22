@@ -334,6 +334,24 @@ func endsInHouseNumber(line string) bool {
 	return len(words) > 1 && unicode.IsDigit([]rune(words[len(words)-1])[0])
 }
 
+// knownPickupPoints are the points the fake's catalogue holds, by
+// pickupPointOf, and the country each is in.
+var knownPickupPoints = map[string]string{
+	"boxnow 25": "GR", "acs AAT 502": "GR",
+}
+
+// pickupPointOf names an order's pickup point by its carrier's fields.
+func pickupPointOf(order map[string]any) string {
+	switch order["shippingProviderCode"] {
+	case django.ShippingProviderBoxNow:
+		return fmt.Sprintf("boxnow %v", order["boxnowLockerId"])
+	case django.ShippingProviderACS:
+		return fmt.Sprintf("acs %v %v", order["acsStationExternalId"],
+			order["acsStationBranch"])
+	}
+	return ""
+}
+
 // cart is the fake's cart as the faults leave it, the one a read returns
 // and a quote prices alike: with the coupon while couponHeld, its line
 // another product at the same price while lineSwapped.
@@ -484,6 +502,28 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			ShippingOptions: read("shipping_options.json"),
 		}.Quote(w, r)
 	}
+	// The catalogue lists a pickup point is read from, by Django's exact
+	// filters.
+	outer.HandleFunc("GET /api/v1/shipping/boxnow/lockers",
+		func(w http.ResponseWriter, r *http.Request) {
+			q := r.URL.Query()
+			assert.NotEmpty(t, q.Get("externalId"))
+			assert.NotEmpty(t, q.Get("countryCode"))
+			serveCatalogue(t, w, "boxnow_lockers_search.json",
+				map[string]string{"externalId": q.Get("externalId"),
+					"countryCode": q.Get("countryCode")})
+		})
+	outer.HandleFunc("GET /api/v1/shipping/acs/stations",
+		func(w http.ResponseWriter, r *http.Request) {
+			q := r.URL.Query()
+			assert.NotEmpty(t, q.Get("externalId"))
+			assert.True(t, q.Has("branch"), "the branch, blank or not")
+			assert.NotEmpty(t, q.Get("countryCode"))
+			serveCatalogue(t, w, "acs_stations_search.json",
+				map[string]string{"externalId": q.Get("externalId"),
+					"branchCode":  q.Get("branch"),
+					"countryCode": q.Get("countryCode")})
+		})
 	outer.HandleFunc("POST /api/v1/cart/quote",
 		func(w http.ResponseWriter, r *http.Request) {
 			faults.quotes.Add(1)
@@ -501,7 +541,10 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			"payWayId": order["payWayId"], "shippingKind": order["shippingKind"],
 			"shippingProviderCode": order["shippingProviderCode"],
 			"countryId":            order["countryId"], "regionId": order["regionId"],
-			"email": order["email"],
+			"email":                order["email"],
+			"acsStationExternalId": order["acsStationExternalId"],
+			"acsStationBranch":     order["acsStationBranch"],
+			"boxnowLockerId":       order["boxnowLockerId"],
 		})
 		rec := httptest.NewRecorder()
 		quote(rec, httptest.NewRequest(http.MethodPost, "/api/v1/cart/quote",
@@ -775,9 +818,12 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 				"the order names a cart the store never made")
 			assert.NotEmpty(t, body["payWayId"])
 			assert.NotEmpty(t, body["email"])
-			// Django refuses an order without a region when the country
-			// has any, and Greece does.
-			assert.Equal(t, "GR-14", body["regionId"])
+			pickup := body["shippingKind"] == checkout.FulfillmentPickupPoint
+			if !pickup {
+				// Django refuses a home delivery without a region when
+				// the country has any, and Greece does.
+				assert.Equal(t, "GR-14", body["regionId"])
+			}
 			// Every agent checkout linked the terms and privacy policy,
 			// so every order it places accepts them.
 			assert.Equal(t, true, body["termsAccepted"])
@@ -785,7 +831,32 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			// that ends in no house number (core/validators/address.py
 			// split_street_line, through the order serializer).
 			assert.NotContains(t, body, "streetNumber")
-			if street, _ := body["street"].(string); !endsInHouseNumber(street) {
+			// A pickup order carries no address, and is delivered to a
+			// point the catalogue holds (order/serializers/order.py
+			// _deliver_to_pickup_point).
+			if pickup {
+				for _, field := range []string{"street", "city", "zipcode"} {
+					assert.NotContains(t, body, field)
+				}
+				refusal := ""
+				switch country, known := knownPickupPoints[pickupPointOf(body)]; {
+				case !known:
+					refusal = "order_pickup_point_unknown.json"
+				case country != body["countryId"]:
+					refusal = "order_pickup_point_in_another_country.json"
+				}
+				if refusal != "" {
+					raw, err := os.ReadFile(fixturePath(refusal))
+					if !assert.NoError(t, err) {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write(raw)
+					return
+				}
+			} else if street, _ := body["street"].(string); !endsInHouseNumber(street) {
 				raw, err := os.ReadFile(
 					fixturePath("order_street_number_missing.json"))
 				if !assert.NoError(t, err) {

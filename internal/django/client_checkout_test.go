@@ -239,7 +239,7 @@ func TestCreateOrderSendsOneStreetLineAndNamesItsRefusal(t *testing.T) {
 	assert.Equal(t, "Ερμού 12", got["street"])
 	assert.Equal(t, "3ος όροφος", got["addressLine2"])
 	assert.NotContains(t, got, "streetNumber")
-	refused, ok := errors.AsType[*StreetRefusedError](err)
+	refused, ok := errors.AsType[*DestinationRefusedError](err)
 	require.True(t, ok, "%v", err)
 	assert.Equal(t, CodeStreetNumberMissing, refused.Code)
 	assert.Contains(t, refused.Message, "Ermou 12")
@@ -249,14 +249,14 @@ func TestCreateOrderSendsOneStreetLineAndNamesItsRefusal(t *testing.T) {
 	answer = []byte(`{"street": ["x"], "phone": ["y"], "code": "invalid", ` +
 		`"fields": {"phone": [{"message": "y", "code": "invalid"}], ` +
 		`"street": [{"message": "x", "code": "street_number_is_postcode"}]}}`)
-	refused, ok = errors.AsType[*StreetRefusedError](create())
+	refused, ok = errors.AsType[*DestinationRefusedError](create())
 	require.True(t, ok)
 	assert.Equal(t, CodeStreetNumberIsPostcode, refused.Code)
 
 	// Any other refusal of the line is the line's, with Django's code.
 	answer = []byte(`{"street": ["x"], "code": "invalid", "fields": ` +
 		`{"street": [{"message": "x", "code": "street_name_missing"}]}}`)
-	refused, ok = errors.AsType[*StreetRefusedError](create())
+	refused, ok = errors.AsType[*DestinationRefusedError](create())
 	require.True(t, ok)
 	assert.Equal(t, "street_name_missing", refused.Code)
 
@@ -264,8 +264,114 @@ func TestCreateOrderSendsOneStreetLineAndNamesItsRefusal(t *testing.T) {
 		`"fields": {"street": [{"message": "x", "code": "blank"}]}}`)
 	err = create()
 	require.ErrorIs(t, err, ErrValidation)
-	assert.NotErrorAs(t, err, new(*StreetRefusedError),
+	assert.NotErrorAs(t, err, new(*DestinationRefusedError),
 		"a blank street is not a line it could not split")
+}
+
+// A pickup-point order carries the point under its carrier's field and no
+// address: Django delivers it to the point's. A point the catalogue does
+// not hold is its own refusal, naming the field.
+func TestCreateOrderSendsThePickupPointAndNamesItsRefusal(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			got = nil
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write(fixture(t, "order_pickup_point_unknown.json"))
+		}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL).CreateOrder(t.Context(),
+		"shop.example.test", "el", "cart-uuid", OrderCreate{
+			PayWayID: 1, CountryID: "GR", ShippingKind: "pickup_point",
+			ShippingProviderCode: ShippingProviderBoxNow,
+			BoxnowLockerID:       "25",
+		})
+	assert.Equal(t, "25", got["boxnowLockerId"])
+	assert.Equal(t, "pickup_point", got["shippingKind"])
+	for _, field := range []string{"street", "city", "zipcode",
+		"streetNumber"} {
+		assert.NotContains(t, got, field)
+	}
+	refused, ok := errors.AsType[*DestinationRefusedError](err)
+	require.True(t, ok, "%v", err)
+	assert.Equal(t, "boxnowLockerId", refused.Field)
+	assert.Equal(t, CodePickupPointUnknown, refused.Code)
+}
+
+// A point in another country than the order's is a refusal of the
+// destination too, under its own code.
+func TestCreateOrderNamesAPointInAnotherCountry(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write(fixture(t,
+				"order_pickup_point_in_another_country.json"))
+		}))
+	defer srv.Close()
+	_, err := newTestClient(t, srv.URL).CreateOrder(t.Context(),
+		"shop.example.test", "el", "cart-uuid", OrderCreate{
+			PayWayID: 1, CountryID: "CY", ShippingKind: "pickup_point",
+			ShippingProviderCode: ShippingProviderBoxNow,
+			BoxnowLockerID:       "25",
+		})
+	refused, ok := errors.AsType[*DestinationRefusedError](err)
+	require.True(t, ok, "%v", err)
+	assert.Equal(t, CodePickupPointInAnotherCountry, refused.Code)
+	assert.Equal(t, "boxnowLockerId", refused.Field)
+}
+
+// A pickup point is read from the catalogue with Django's exact filters,
+// in the order's country: an ACS station by its area code and branch
+// (the area code alone names every Smartpoint of the area), a BOX NOW
+// locker by its id. Only the row that is exactly the one asked is read,
+// and none is ErrNotFound.
+func TestPickupPointsAreReadFromTheCatalogueExactly(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			queries = append(queries, r.URL.Path+"?"+r.URL.RawQuery)
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.URL.Query().Get("externalId") == "none":
+				_, _ = w.Write([]byte(`{"count":0,"results":[]}`))
+			case r.URL.Path == "/api/v1/shipping/acs/stations":
+				// The fixture answers another branch of the area first.
+				_, _ = w.Write(fixture(t, "acs_stations_search.json"))
+			case r.URL.Path == "/api/v1/shipping/boxnow/lockers":
+				_, _ = w.Write(fixture(t, "boxnow_lockers_search.json"))
+			}
+		}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL)
+
+	st, err := c.AcsStationByID(t.Context(), "shop.example.test", "el",
+		"AAT", "502", "GR")
+	require.NoError(t, err)
+	assert.Equal(t, "502", st.BranchCode)
+	assert.Equal(t, "ACS SMARTPOINT LOCKER ΠΕΔΙΟ ΑΡΕΩΣ", st.Name)
+	_, err = c.AcsStationByID(t.Context(), "shop.example.test", "el",
+		"none", "1", "GR")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	l, err := c.BoxNowLockerByID(t.Context(), "shop.example.test", "el",
+		"25", "GR")
+	require.NoError(t, err)
+	assert.Equal(t, "AB Shop & Go - Εξάρχεια", l.Name)
+	assert.Equal(t, "Ιπποκράτους 132", l.AddressLine1)
+	_, err = c.BoxNowLockerByID(t.Context(), "shop.example.test", "el",
+		"none", "GR")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	assert.Equal(t, []string{
+		"/api/v1/shipping/acs/stations?branch=502&countryCode=GR&externalId=AAT",
+		"/api/v1/shipping/acs/stations?branch=1&countryCode=GR&externalId=none",
+		"/api/v1/shipping/boxnow/lockers?countryCode=GR&externalId=25",
+		"/api/v1/shipping/boxnow/lockers?countryCode=GR&externalId=none",
+	}, queries, "one call each")
 }
 
 func TestLocalized(t *testing.T) {

@@ -34,8 +34,9 @@ func ResolveRegion(
 ) error {
 	s.Fulfillment.RegionID = ""
 	s.RegionOptions = nil
-	// The country is upper-case: Deliver stores it so.
-	if s.Fulfillment.CountryCode == "" {
+	// The country is upper-case: Deliver stores it so. A pickup order is
+	// delivered to the point, and takes no region.
+	if s.Fulfillment.CountryCode == "" || s.Fulfillment.Pickup() {
 		return nil
 	}
 	regions, err := dj.Regions(

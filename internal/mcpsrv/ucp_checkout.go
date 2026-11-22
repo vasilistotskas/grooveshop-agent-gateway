@@ -241,6 +241,9 @@ func (h *handlers) newSession(
 	if err := h.applyRegion(ctx, t, s, delivered); err != nil {
 		return nil, err
 	}
+	if err := h.applyPoint(ctx, t, s); err != nil {
+		return nil, err
+	}
 	if err := h.applyPayment(ctx, t, s, &in.UCPPaymentChoice, neg); err != nil {
 		return nil, err
 	}
@@ -625,6 +628,46 @@ func (h *handlers) applyRegion(
 	return nil
 }
 
+// applyPoint reads a newly chosen pickup point from the store's
+// catalogue, for the name and address the checkout shows it with. One
+// the catalogue does not hold (it syncs daily, and a point can come from
+// BOX NOW's live lookup) is taken without them: the order is where
+// Django decides on it, and refuses one it does not know.
+func (h *handlers) applyPoint(
+	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
+) error {
+	f := &s.Fulfillment
+	if !f.Pickup() || !f.HasPoint() || f.Point != nil {
+		return nil
+	}
+	lang := django.Language(ctx, t.TenantConfig)
+	switch f.ProviderCode {
+	case django.ShippingProviderACS:
+		st, err := h.deps.Django.AcsStationByID(ctx, t.Domain, lang,
+			f.AcsStationExternalID, f.AcsStationBranch, f.CountryCode)
+		switch {
+		case err == nil:
+			f.Point = &checkout.Point{Name: st.Name,
+				Street: st.AddressLine1, City: st.City,
+				PostalCode: st.PostalCode}
+		case !errors.Is(err, django.ErrNotFound):
+			return upstreamErr(err, "pickup points are unavailable")
+		}
+	case django.ShippingProviderBoxNow:
+		l, err := h.deps.Django.BoxNowLockerByID(ctx, t.Domain, lang,
+			f.BoxnowLockerID, f.CountryCode)
+		switch {
+		case err == nil:
+			f.Point = &checkout.Point{Name: l.Name,
+				Street: l.AddressLine1, City: l.AddressLine2,
+				PostalCode: l.PostalCode}
+		case !errors.Is(err, django.ErrNotFound):
+			return upstreamErr(err, "pickup points are unavailable")
+		}
+	}
+	return nil
+}
+
 // applyPayment honours a payment selection: it changes the totals
 // through the method's fee. A hosted pay_way_id and an advertised
 // instrument are mutually exclusive. A request that names neither keeps
@@ -822,6 +865,9 @@ func (h *handlers) updateSession(
 		return refusedBy(err)
 	}
 	if err := h.applyRegion(ctx, t, s, delivered); err != nil {
+		return refusedBy(err)
+	}
+	if err := h.applyPoint(ctx, t, s); err != nil {
 		return refusedBy(err)
 	}
 	err = h.applyPayment(ctx, t, s, &in.Checkout.UCPPaymentChoice, neg)
@@ -1036,11 +1082,11 @@ func (h *handlers) placed(
 	err error, render toolResult,
 ) sessionAnswer {
 	if placement == checkout.NothingPlaced {
-		// The street line Django refused is the address's to correct:
-		// the answer is the checkout, stored incomplete, with the error
-		// at the destination's street_address ("incomplete for a
-		// recoverable change").
-		if errors.As(err, new(*django.StreetRefusedError)) {
+		// The destination Django refused (a street line, a pickup
+		// point) is the platform's to correct: the answer is the
+		// checkout, stored incomplete, with the error at the destination
+		// ("incomplete for a recoverable change").
+		if errors.As(err, new(*django.DestinationRefusedError)) {
 			return fromSnapshot(render)
 		}
 		// Refused before the order was sent, or by Django for the order

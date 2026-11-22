@@ -173,14 +173,23 @@ func (s Store) Quote(w http.ResponseWriter, r *http.Request) {
 
 // digest is the cart digest of an order of cart with req's choices, of
 // what Django's OrderQuoteService.cart_digest covers once a delivery is
-// chosen: the lines, the promotions and the delivery, not the pay way.
+// chosen: the lines, the promotions and the delivery with the chosen
+// carrier's pickup point (ShippingChoice.of keeps only its
+// location_keys), not the pay way.
 // Not Django's value, an HMAC keyed by its SECRET_KEY that no client can
 // compute: a client only carries it back.
 func digest(cart cartBody, req django.QuoteRequest) string {
+	var point []string
+	switch req.ShippingProviderCode {
+	case django.ShippingProviderACS:
+		point = []string{req.AcsStationExternalID, req.AcsStationBranch}
+	case django.ShippingProviderBoxNow:
+		point = []string{req.BoxnowLockerID}
+	}
 	// Values of decoded JSON and strings always encode.
 	canonical, _ := json.Marshal([]any{
 		cart.Items, cart.AppliedPromotions, req.ShippingKind,
-		req.ShippingProviderCode, req.CountryID, req.RegionID,
+		req.ShippingProviderCode, req.CountryID, req.RegionID, point,
 	})
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:])

@@ -418,14 +418,18 @@ Loads when working on a checkout session on either surface, its completion, its 
     The digest holds no pay way, so a UCP complete that names a
     checkout's first payment method is placed from the cart it showed
     too.
-  - **A street line Django refuses is the address's to correct.** The
-    order carries the delivery's one street line (`Fulfillment.Street`,
-    the house number after the street) and its `AddressLine2`, never a
-    street number: Django splits the line. A line it cannot split
-    (`django.StreetRefusedError`) is stored on the session
-    (`Session.StreetRefused`, `NeedStreet` in `Session.Missing`), so the
-    checkout reads not ready, and every surface sets a delivery through
-    `Session.Deliver`, which drops the refusal once the address changes.
+  - **A destination Django refuses is the platform's to correct.** A
+    home delivery's order carries its one street line
+    (`Fulfillment.Street`, the house number after the street) and its
+    `AddressLine2`, never a street number: Django splits the line. A
+    pickup order carries the point (`Fulfillment.PickupPoint`, which the
+    quote carries too) and no address or region: Django delivers it to
+    the point's (django-api #767). A line it cannot split, or a point its
+    catalogue does not hold (`django.DestinationRefusedError`), is stored
+    on the session (`Session.DestinationRefused`, `NeedDestination` in
+    `Session.Missing`), so the checkout reads not ready, and every
+    surface sets a delivery through `Session.Deliver`, which drops the
+    refusal once the destination changes.
     What a checkout still needs is `Session.Missing`, a list of `Need`
     each surface words and places itself.
 - **One live checkout holds a cart** (#141). Two sessions on one cart

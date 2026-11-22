@@ -5,11 +5,14 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
 )
 
 type ShippingOptionsIn struct {
@@ -162,18 +165,20 @@ type PickupPointsIn struct {
 }
 
 type PickupPoint struct {
-	Provider     string `json:"provider" jsonschema:"acs or boxnow"`
-	ID           string `json:"id" jsonschema:"provider-specific point id used at checkout"`
-	BranchCode   string `json:"branchCode,omitempty" jsonschema:"ACS branch code, required with the ACS id at checkout"`
-	Name         string `json:"name"`
-	Address      string `json:"address"`
-	City         string `json:"city"`
-	PostalCode   string `json:"postalCode"`
-	Lat          string `json:"lat,omitempty"`
-	Lng          string `json:"lng,omitempty"`
-	MaxWeightKg  string `json:"maxWeightKg,omitempty"`
-	WorkingHours string `json:"workingHours,omitempty"`
-	Note         string `json:"note,omitempty"`
+	Provider   string `json:"provider" jsonschema:"acs or boxnow"`
+	ID         string `json:"id" jsonschema:"provider-specific point id used at checkout"`
+	BranchCode string `json:"branchCode,omitempty" jsonschema:"ACS branch code, required with the ACS id at checkout"`
+	// DestinationID names the point to a UCP checkout.
+	DestinationID string `json:"destinationId" jsonschema:"the id a UCP checkout's pickup method takes as its selected_destination_id"`
+	Name          string `json:"name"`
+	Address       string `json:"address"`
+	City          string `json:"city"`
+	PostalCode    string `json:"postalCode"`
+	Lat           string `json:"lat,omitempty"`
+	Lng           string `json:"lng,omitempty"`
+	MaxWeightKg   string `json:"maxWeightKg,omitempty"`
+	WorkingHours  string `json:"workingHours,omitempty"`
+	Note          string `json:"note,omitempty"`
 }
 
 type PickupPointsOut struct {
@@ -230,6 +235,7 @@ func (h *handlers) findPickupPoints(
 		return nil, out, errors.New("postalCode is required")
 	}
 
+	country := strings.ToUpper(in.CountryCode)
 	carriers, anyPickup, err := h.pickupCarriers(
 		ctx, t, lang, in.CountryCode)
 	if err != nil {
@@ -261,15 +267,21 @@ func (h *handlers) findPickupPoints(
 	if carriers[django.ShippingProviderACS] {
 		var stations []django.AcsStation
 		stations, acsErr = h.deps.Django.AcsNearestStations(
-			ctx, t.Domain, lang, in.PostalCode, in.City)
+			ctx, t.Domain, lang, in.PostalCode, in.City, country)
 		for i, s := range stations {
 			if i >= maxAcsPoints {
 				break
 			}
 			out.Points = append(out.Points, PickupPoint{
-				Provider:     django.ShippingProviderACS,
-				ID:           s.ExternalID,
-				BranchCode:   s.BranchCode,
+				Provider:   django.ShippingProviderACS,
+				ID:         s.ExternalID,
+				BranchCode: s.BranchCode,
+				// The point's own country, which an order to it names.
+				DestinationID: ucp.PickupLocation{
+					Provider: django.ShippingProviderACS,
+					Country:  strings.ToUpper(s.CountryCode),
+					ID:       s.ExternalID, Branch: s.BranchCode,
+				}.DestinationID(),
 				Name:         s.Name,
 				Address:      s.AddressLine1,
 				City:         s.City,
@@ -305,9 +317,19 @@ func (h *handlers) findPickupPoints(
 				})
 			switch {
 			case err == nil:
+				// A locker BOX NOW names no country for is left out, as
+				// Django's locker sync leaves it out: no id names it.
+				lockerCountry := strings.ToUpper(strings.TrimSpace(l.Country))
+				if !checkout.IsCountryCode(lockerCountry) {
+					break
+				}
 				out.Points = append(out.Points, PickupPoint{
-					Provider:   django.ShippingProviderBoxNow,
-					ID:         l.ID,
+					Provider: django.ShippingProviderBoxNow,
+					ID:       l.ID,
+					DestinationID: ucp.PickupLocation{
+						Provider: django.ShippingProviderBoxNow,
+						Country:  lockerCountry, ID: l.ID,
+					}.DestinationID(),
 					Name:       l.Name,
 					Address:    l.AddressLine1,
 					City:       l.AddressLine2,
