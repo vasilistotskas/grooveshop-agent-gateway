@@ -91,6 +91,8 @@ type surfaceAnswer struct {
 	// text is what the rendered checkout says beside its status: UCP's
 	// summary text, ACP's messages.
 	text string
+	// products are the product ids of the rendered checkout's lines.
+	products []string
 }
 
 // acpAnswer sends an ACP request and reads its answer: a POST under key,
@@ -188,6 +190,12 @@ func rendered(out map[string]any) surfaceAnswer {
 	// ACP's messages; UCP's summary text replaces this.
 	if messages, err := json.Marshal(out["messages"]); err == nil {
 		a.text = string(messages)
+	}
+	lines, _ := out["line_items"].([]any)
+	for _, line := range lines {
+		item, _ := line.(map[string]any)["item"].(map[string]any)
+		id, _ := item["id"].(string)
+		a.products = append(a.products, id)
 	}
 	return a
 }

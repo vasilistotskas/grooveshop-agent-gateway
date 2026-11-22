@@ -314,7 +314,7 @@ type checkoutFaults struct {
 	// total_changed: the amount due is no longer the expected total.
 	totalChanged atomic.Bool
 	// lineSwapped makes the cart's line another product at the same
-	// price, as Django quotes it: the cart an order is made of is not
+	// price, as Django reads and quotes it: the cart an order is made of is not
 	// the one a checkout showed, at the same total. swapOnReserve sets
 	// it when stock is reserved: a cart write that lands under a running
 	// completion, after its quotes and before its order.
@@ -324,6 +324,27 @@ type checkoutFaults struct {
 	agentProtocol atomic.Value
 	// carts are the carts the fake made.
 	carts *fakeCarts
+}
+
+// cart is the fake's cart as the faults leave it, the one a read returns
+// and a quote prices alike: with the coupon while couponHeld, its line
+// another product at the same price while lineSwapped.
+func (f *checkoutFaults) cart(t *testing.T) []byte {
+	name := "cart_with_items.json"
+	if f.couponHeld.Load() {
+		name = "cart_with_coupon.json"
+	}
+	// It runs on the fake's goroutines, which must not stop the test.
+	cart, err := os.ReadFile(fixturePath(name))
+	if err != nil {
+		t.Errorf("read the fixture: %v", err)
+		return nil
+	}
+	if f.lineSwapped.Load() {
+		cart = bytes.Replace(cart, []byte(`"product":{"id":1,`),
+			[]byte(`"product":{"id":2,`), 1)
+	}
+	return cart
 }
 
 // fakeCheckoutDjango extends the shared fake with the order-placement
@@ -409,8 +430,9 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 					`", "items": []}`))
 				return
 			}
-			if faults.couponHeld.Load() {
-				serveFixture(t, w, "cart_with_coupon.json")
+			if faults.couponHeld.Load() || faults.lineSwapped.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(faults.cart(t))
 				return
 			}
 			inner.ServeHTTP(w, r)
@@ -436,15 +458,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 		var req django.QuoteRequest
 		assert.NoError(t, json.Unmarshal(body, &req))
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		cart := "cart_with_items.json"
-		if faults.couponHeld.Load() {
-			cart = "cart_with_coupon.json"
-		}
-		lines := read(cart)
-		if faults.lineSwapped.Load() {
-			lines = bytes.Replace(lines, []byte(`"product":{"id":1,`),
-				[]byte(`"product":{"id":2,`), 1)
-		}
+		lines := faults.cart(t)
 		cod := read("pay_way_1.json")
 		if faults.codFee.Load() {
 			cod = bytes.Replace(cod, []byte(`"freeThreshold": 100.0`),
