@@ -26,6 +26,14 @@
           "schema": "https://ucp.dev/2026-08-25/schemas/shopping/order.json"
         }
       ],
+      "dev.ucp.shopping.fulfillment": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/shopping/extensions/fulfillment/",
+          "schema": "https://ucp.dev/2026-08-25/schemas/shopping/fulfillment.json",
+          "extends": "dev.ucp.shopping.checkout"
+        }
+      ],
       "space.grooveshop.payments.hosted_selection": [
         {
           "version": "2026-08-25",

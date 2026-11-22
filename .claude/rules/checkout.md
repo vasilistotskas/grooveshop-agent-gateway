@@ -349,13 +349,12 @@ Loads when working on a checkout session on either surface, its completion, its 
   `checkout.ComputePricing` reads the cart for its lines and
   `POST /cart/quote` (`django.Client.Quote`) for every amount, with the
   very choices the order is placed with (`checkout.QuoteRequest`:
-  delivery, pickup point (`Fulfillment.PickupPoint`, the order's own
-  fields), pay way, region, email). A quote that prices a delivery also
+  delivery, pay way, region, email). A quote that prices a delivery also
   returns `cartDigest` (`Pricing.CartDigest`): Django's opaque digest of
   what the order would be made of (the lines, the promotions, the
-  delivery with its pickup point; not the pay way, whose fee is the
-  expected total's, django-api #770). A quote that prices a delivery
-  without a digest is a quote that cannot be read.
+  delivery; not the pay way, whose fee is the expected total's,
+  django-api #770). A quote that prices a delivery without a digest is a
+  quote that cannot be read.
   The
   gateway adds nothing up of its own: the free thresholds, the promotion
   waiver, the carrier's weight and parcels are Django's. A checkout that
@@ -419,6 +418,16 @@ Loads when working on a checkout session on either surface, its completion, its 
     The digest holds no pay way, so a UCP complete that names a
     checkout's first payment method is placed from the cart it showed
     too.
+  - **A street line Django refuses is the address's to correct.** The
+    order carries the delivery's one street line (`Fulfillment.Street`,
+    the house number after the street) and its `AddressLine2`, never a
+    street number: Django splits the line. A line it cannot split
+    (`django.StreetRefusedError`) is stored on the session
+    (`Session.StreetRefused`, `NeedStreet` in `Session.Missing`), so the
+    checkout reads not ready, and every surface sets a delivery through
+    `Session.Deliver`, which drops the refusal once the address changes.
+    What a checkout still needs is `Session.Missing`, a list of `Need`
+    each surface words and places itself.
 - **One live checkout holds a cart** (#141). Two sessions on one cart
   could each place an order, because Django keeps the cart of an order
   that awaits its online payment. The store keeps it to one:

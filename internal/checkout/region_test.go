@@ -72,10 +72,18 @@ func TestResolveRegion(t *testing.T) {
 	}
 }
 
-func TestResolveRegionReadsTheCountryInAnyCase(t *testing.T) {
+// A country written in any case is the store's upper-case code (Deliver),
+// which its regions are found by, and the same address in another case is
+// not another: a street line the store refused stays refused.
+func TestACountryIsReadInAnyCase(t *testing.T) {
 	f := homeDelivery()
-	f.CountryCode = "gr"
-	s := &Session{Fulfillment: f}
+	f.CountryCode = " gr "
+	s := &Session{}
+	s.Deliver(f)
+	s.StreetRefused = &Refusal{Code: django.CodeStreetNumberMissing}
+	f.CountryCode = "Gr"
+	s.Deliver(f)
+	assert.NotNil(t, s.StreetRefused, "the same address")
 	require.NoError(t, ResolveRegion(
 		t.Context(), regionDjango(t, http.StatusOK),
 		regionTenant(), s, "Αττική"))
@@ -147,10 +155,9 @@ func TestRegionBlocksReadiness(t *testing.T) {
 
 	s.Recompute()
 	assert.Equal(t, StatusIncomplete, s.Status)
-	assert.Equal(t,
-		[]string{"fulfillment.regionId, one of: GR-14 (Αττική), " +
-			"GR-17 (Κεντρική Μακεδονία)"},
-		s.Missing(), "the agent is told exactly what it can send")
+	assert.Equal(t, []Need{NeedRegion}, s.Missing())
+	assert.Equal(t, "GR-14 (Αττική), GR-17 (Κεντρική Μακεδονία)",
+		s.RegionChoices(), "the agent is told exactly what it can send")
 
 	s.Fulfillment.RegionID = "GR-14"
 	s.Recompute()

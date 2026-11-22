@@ -71,7 +71,8 @@ func TestRequestSchemasComposeWhatTheBusinessAdvertises(t *testing.T) {
 		assert.Equal(t, Version, caps[0].Version)
 	}
 	assert.ElementsMatch(t,
-		[]string{CapabilityCheckout, CapabilityDiscount}, names)
+		[]string{CapabilityCheckout, CapabilityDiscount, CapabilityFulfillment},
+		names)
 
 	for _, op := range []Operation{OpCreate, OpUpdate, OpComplete} {
 		var schema map[string]any

@@ -62,7 +62,7 @@ func TestRenderShowsTheQuote(t *testing.T) {
 		Kind:         checkout.FulfillmentHomeDelivery,
 		ProviderCode: "acs",
 		CountryCode:  "GR", City: "Αθήνα", Zipcode: "10431",
-		Street: "Πανεπιστημίου", StreetNumber: "12",
+		Street: "Πανεπιστημίου 12",
 	}
 	s.PayWayID = 7
 	s.Recompute()

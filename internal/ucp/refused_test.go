@@ -23,7 +23,7 @@ func TestRefusedChoicesAreRecoverableErrorsAtTheirMember(t *testing.T) {
 
 	require.Len(t, got, 2)
 	assert.Equal(t, "shipping_weight_exceeded", got[0].Code)
-	assert.Equal(t, "$.fulfillment", got[0].Path)
+	assert.Equal(t, pathOption, got[0].Path)
 	assert.Equal(t, "pay_way_unavailable", got[1].Code)
 	assert.Equal(t, "$.payment", got[1].Path)
 	for _, m := range got {

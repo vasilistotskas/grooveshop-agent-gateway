@@ -67,12 +67,10 @@ func payWayDjango(t *testing.T) (*django.Client, func() url.Values) {
 	}
 }
 
-func lockerDelivery() Fulfillment {
+func acsDelivery() Fulfillment {
 	return Fulfillment{
-		Kind: FulfillmentPickupPoint, ProviderCode: django.ShippingProviderBoxNow,
-		CountryCode: "GR", City: "Αθήνα", Zipcode: "10431", Street: "Ερμού",
-		StreetNumber:   "5",
-		BoxnowLockerID: "4",
+		Kind: FulfillmentHomeDelivery, ProviderCode: django.ShippingProviderACS,
+		CountryCode: "GR", City: "Αθήνα", Zipcode: "10431", Street: "Ερμού 5",
 	}
 }
 
@@ -83,15 +81,15 @@ func TestPayWaysForScopesByCompleteDelivery(t *testing.T) {
 	dj, lastQuery := payWayDjango(t)
 	tn := pricingTenant()
 
-	_, err := PayWaysFor(t.Context(), dj, tn, lockerDelivery())
+	_, err := PayWaysFor(t.Context(), dj, tn, acsDelivery())
 	require.NoError(t, err)
-	assert.Equal(t, "boxnow", lastQuery().Get("shippingProviderCode"))
-	assert.Equal(t, FulfillmentPickupPoint, lastQuery().Get("shippingKind"))
+	assert.Equal(t, "acs", lastQuery().Get("shippingProviderCode"))
+	assert.Equal(t, FulfillmentHomeDelivery, lastQuery().Get("shippingKind"))
 	assert.Equal(t, "100", lastQuery().Get("pageSize"),
 		"the default page of 12 would hide methods")
 
 	_, err = PayWaysFor(t.Context(), dj, tn,
-		Fulfillment{Kind: FulfillmentPickupPoint})
+		Fulfillment{Kind: FulfillmentHomeDelivery})
 	require.NoError(t, err)
 	assert.Empty(t, lastQuery().Get("shippingProviderCode"))
 }
@@ -99,7 +97,7 @@ func TestPayWaysForScopesByCompleteDelivery(t *testing.T) {
 func TestOfflinePayWayPicksCollectLater(t *testing.T) {
 	dj, _ := payWayDjango(t)
 	pw, err := OfflinePayWay(t.Context(), dj, pricingTenant(),
-		lockerDelivery())
+		acsDelivery())
 	require.NoError(t, err)
 	require.NotNil(t, pw)
 	assert.EqualValues(t, 1, pw.ID)
@@ -107,7 +105,7 @@ func TestOfflinePayWayPicksCollectLater(t *testing.T) {
 
 func TestAvailablePayWayRefusesAMethodNotOffered(t *testing.T) {
 	dj, _ := payWayDjango(t)
-	s := &Session{Fulfillment: lockerDelivery(), PayWayID: 99}
+	s := &Session{Fulfillment: acsDelivery(), PayWayID: 99}
 	_, err := availablePayWay(t.Context(), dj, pricingTenant(), s)
 	require.ErrorIs(t, err, ErrPayWayUnavailable)
 

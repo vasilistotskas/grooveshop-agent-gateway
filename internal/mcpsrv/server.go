@@ -570,10 +570,12 @@ func toolset(h *handlers) []tool {
 				"line_items and buyer as they should now be (an omitted " +
 				"buyer is cleared), and discounts.codes to keep its " +
 				"codes (omitted, they are cleared once the discount " +
-				"extension is negotiated). The delivery (fulfillment: " +
-				"an address or an ACS/BOX NOW pickup point) and the " +
-				"payment selection are kept when omitted. Requires " +
-				"meta.ucp-agent.profile.",
+				"extension is negotiated), and fulfillment: the shipping " +
+				"method's destination (the address, street_address with " +
+				"its house number) and its group's selected_option_id " +
+				"(the carrier), cleared when omitted once the fulfillment " +
+				"extension is negotiated. The payment selection is kept " +
+				"when omitted. Requires meta.ucp-agent.profile.",
 		}, h.updateCheckout))),
 
 		mcpOnly(onlyWith(cartOn, toolOf(&mcp.Tool{

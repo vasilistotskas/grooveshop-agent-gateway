@@ -204,17 +204,14 @@ func renderFulfillment(
 	if f.Street != "" || f.City != "" || f.Zipcode != "" ||
 		f.CountryCode != "" {
 		name := strings.TrimSpace(s.Buyer.FirstName + " " + s.Buyer.LastName)
-		line := f.Street
-		if f.StreetNumber != "" {
-			line += " " + f.StreetNumber
-		}
 		out.FulfillmentDetails = &FulfillmentDetails{
 			Name:        name,
 			PhoneNumber: s.Buyer.Phone,
 			Email:       s.Buyer.Email,
 			Address: &Address{
 				Name:       name,
-				LineOne:    line,
+				LineOne:    f.Street,
+				LineTwo:    f.AddressLine2,
 				City:       f.City,
 				State:      f.RegionID,
 				Country:    f.CountryCode,
@@ -381,17 +378,20 @@ func appendStateMessages(s *checkout.Session, out *Session) {
 			"Buyer first name, last name, email and phone are required.")
 	}
 	f := s.Fulfillment
-	if f.CountryCode == "" || f.City == "" || f.Zipcode == "" ||
-		f.Street == "" {
+	switch {
+	case !f.HasAddress():
 		missing("$.fulfillment_details.address",
 			"A delivery address (line_one, city, postal_code, country) "+
 				"is required.")
-	} else if f.StreetNumber == "" {
-		// ACP has no house-number field; splitStreetNumber reads it off
-		// the end of line_one.
-		missing("$.fulfillment_details.address.line_one",
-			"line_one must end with the house number, e.g. "+
-				"\"Main Street 12\".")
+	case s.StreetRefused != nil:
+		// Django splits line_one into the street and its house number,
+		// and refused this one when the order was sent.
+		out.Messages = append(out.Messages, Message{
+			Type: "error", Code: "invalid",
+			Param:      "$.fulfillment_details.address.line_one",
+			Resolution: "requires_buyer_input", ContentType: "plain",
+			Content: streetRefusedText(s.StreetRefused),
+		})
 	}
 	if choices := s.RegionChoices(); choices != "" {
 		missing("$.fulfillment_details.address.state",

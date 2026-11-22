@@ -67,19 +67,6 @@ func TestQuoteSendsTheChoicesMade(t *testing.T) {
 	}, got)
 
 	_, err = c.Quote(t.Context(), "shop.example.test", "el", "cart-uuid",
-		QuoteRequest{
-			PayWayID: 3, ShippingKind: "pickup_point",
-			ShippingProviderCode: "acs", CountryID: "GR",
-			AcsStationExternalID: "GR1234", AcsStationBranch: "BR7",
-		})
-	require.NoError(t, err)
-	assert.Equal(t, map[string]any{
-		"payWayId": float64(3), "shippingKind": "pickup_point",
-		"shippingProviderCode": "acs", "countryId": "GR",
-		"acsStationExternalId": "GR1234", "acsStationBranch": "BR7",
-	}, got, "the pickup point under the order's own field names")
-
-	_, err = c.Quote(t.Context(), "shop.example.test", "el", "cart-uuid",
 		QuoteRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{}, got,

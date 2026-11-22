@@ -587,15 +587,29 @@ func (stack ucpStack) sessions(t *testing.T) []*checkout.Session {
 	return out
 }
 
-// homeDelivery is a fulfillment whose country has regions, so a create
+// homeDelivery is the fulfillment extension's member of a checkout
+// shipped by ACS to an address whose country has regions, so a create
 // that carries it asks the store for them.
 func homeDelivery() map[string]any {
-	return map[string]any{
-		"kind": "home_delivery", "providerCode": "acs",
-		"countryCode": "GR", "city": "Αθήνα", "zipcode": "10431",
-		"street": "Πανεπιστημίου", "streetNumber": "12",
-		"regionId": "GR-14",
+	return shipTo("GR-14")
+}
+
+// shipTo is homeDelivery in the region named, none when "".
+func shipTo(region string) map[string]any {
+	destination := map[string]any{
+		"street_address": "Πανεπιστημίου 12", "address_locality": "Αθήνα",
+		"postal_code": "10431", "address_country": "GR",
 	}
+	if region != "" {
+		destination["address_region"] = region
+	}
+	return map[string]any{"methods": []any{map[string]any{
+		"type": "shipping", "line_item_ids": []any{},
+		"destinations": []any{destination},
+		"groups": []any{map[string]any{
+			"id": "parcel", "selected_option_id": "acs",
+		}},
+	}}}
 }
 
 const regionRoute = "GET /api/v1/region/GR/get_regions_by_country_alpha_2"

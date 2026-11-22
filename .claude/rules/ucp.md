@@ -97,10 +97,9 @@ wins over this page.
   sets no maximum; 255 is ACP's bound, while ACP's own key is any
   string of 1 to 255 characters, as its spec makes it opaque), `id`
   for the target session, and `checkout` for the domain object with
-  the spec's snake_case members (and `cart_id`, `pay_way_id`), except
-  the gateway's own flat `fulfillment`, camelCase until #109 step B
-  (below). Extensions compose FLAT onto `checkout`
-  (`discounts`), never nested under capability names.
+  the spec's snake_case members (and `cart_id`, `pay_way_id`).
+  Extensions compose FLAT onto `checkout` (`discounts`, `fulfillment`),
+  never nested under capability names.
   Payment is selected by submitting an ADVERTISED instrument
   (`checkout.payment.instruments`), which the business resolves to a
   pay-way. An ONLINE method is NOT an instrument (nothing for a platform
@@ -140,7 +139,8 @@ wins over this page.
   `checkout` is the request schema the spec's `ucp-schema` resolves per
   operation from checkout composed with every advertised extension that
   adds request members (`internal/ucp/spec/requests/compose.json`: the
-  discount extension), checked in beside the vendored spec by
+  discount and fulfillment extensions), checked in beside the vendored
+  spec by
   `scripts/ucp-request-schemas.sh`; `TestRequestSchemasAreCurrent`
   refuses files generated from another spec tree. They are open: a
   member no handler reads is dropped at decode, never refused. The
@@ -148,8 +148,9 @@ wins over this page.
   composed onto them where the schemas are assembled (`checkoutRequest`:
   `allOf` of the spec's schema and the own members, as an extension
   composes), each described as the business's own: `cart_id` beside
-  `checkout` on create, `fulfillment` in `checkout` on create and
-  update, `pay_way_id` in `checkout`.
+  `checkout` on create, `pay_way_id` in `checkout`. Each extension
+  composes its own copy of the checkout, so the create schema's
+  `required: [line_items]` is dropped from every copy (`dropRequired`).
   `TestRequestStructsDecodeWhatTheSchemasAccept` keeps each request
   struct to members its schema describes. The `ucp-schema`
   that made them (`spec/requests/generator`) bundles an instrument's
@@ -158,19 +159,51 @@ wins over this page.
 - **A member of an extension that was not negotiated is ignored,
   silently**, except `pay_way_id` (refused, above). `discounts` is read
   only while `dev.ucp.shopping.discount` is negotiated; the profile
-  advertises it while the store's promotions are on.
-- **The gateway's own flat `fulfillment`** (`checkout.Fulfillment`,
-  camelCase) is how a delivery is sent until the spec's fulfillment
-  extension is implemented (#109 step B, after Django #641), and it
-  stays in the published create and update schemas until then
-  (`ownFulfillment`): inferred from the struct, so its fields, their
-  descriptions (the struct's `jsonschema` tags) and which are required
-  cannot drift from what is decoded, and marked in its description as
-  the business's own shape the extension will replace. It is read only
-  when it names its `kind`, and the schema requires the carrier and the
-  whole postal address only then (`if`/`then`): the extension's own
-  member has the same name and another shape (`methods`), and is
-  accepted and ignored as not negotiated.
+  advertises it while the store's promotions are on. `fulfillment` is
+  read only while `dev.ucp.shopping.fulfillment` is negotiated, which the
+  profile always advertises: without it a platform can give no address,
+  and the checkout's `missing` error at `$.fulfillment` says so.
+- **The delivery is the spec's fulfillment extension** (#109 step B;
+  request `mcpsrv.UCPCheckoutIn.delivery`, response
+  `ucp.renderFulfillment`). The store fulfils a cart one way, home
+  delivery to one address, so a checkout has one `shipping` method
+  (`id` `shipping`) for every line, one destination (`shipping_address`)
+  and one group (`parcel`):
+  - the destination is the platform's postal address. `street_address`
+    is the one street line with the house number after the street,
+    sent to Django as `street`, which splits it; `extended_address` is
+    the order's `addressLine2`; `address_region` names the region
+    (`checkout.ResolveRegion`); its contact members are not read (the
+    order's contact is `buyer`). A request that names
+    `selected_destination_id` `shipping_address` and writes no
+    destination keeps the stored address.
+  - the group's `options` are the carriers that deliver the cart home as
+    Django quotes it (`Pricing.ShippingOptions`, home delivery the cart
+    fits), each `id` its provider code with its price as a `total`, listed
+    once the destination's country is known; `selected_option_id`
+    chooses one (`Fulfillment.Kind` and `ProviderCode`), null until then.
+    A placed order lists no options.
+  - An update may name the method by its `id` (`shipping`) instead of
+    its `type`, which the spec makes optional there.
+  - Refused, and nothing applied (the buyer included): another method
+    type than `shipping` (pickup waits for step C, after Django #642), a
+    method `id` the business never gave, a method named by neither, a
+    second method, destination or group, a `selected_destination_id` the
+    business never gave or that is not the destination written.
+  - What a checkout still needs is an `error` message, `recoverable`,
+    code `missing`, at its path (`ucp.missing`: `$.buyer`,
+    `…destinations`, `…destinations[0].address_region`,
+    `…groups[0].selected_option_id`, `$.payment`), and a refused
+    delivery is the quote's code at the option.
+  - **A street line Django refuses** at order creation
+    (`django.StreetRefusedError`: any refusal on `fields.street`, whatever
+    the body's own code, but a street not sent; `street_number_missing`
+    and `street_number_is_postcode` get the gateway's own words) is
+    stored on the session (`Session.StreetRefused`)
+    until the address changes (`Session.Deliver`): the checkout reads
+    `incomplete` with that code at
+    `…destinations[0].street_address`, and the complete that met it is
+    answered with that checkout, nothing placed.
 - **update_checkout replaces the checkout** ("the platform is REQUIRED to
   send the entire checkout resource"). `line_items` is required and
   replaces the cart's lines; `buyer` is what the request carries, none
@@ -180,9 +213,10 @@ wins over this page.
   whatever the checkout submitted). The spec is silent on an omitted member under replacement;
   the rule is that a member the response renders is replaced, and one
   it does not render cannot be sent back, so it is kept when omitted:
-  the flat `fulfillment`, and the payment selection
-  (`payment.instruments`, `pay_way_id`; `payment: {}` names none).
-  Without the extension, `discounts` is ignored and the codes are kept.
+  the payment selection (`payment.instruments`, `pay_way_id`;
+  `payment: {}` names none). With the fulfillment extension negotiated,
+  an omitted `fulfillment` is no delivery. Without an extension, its
+  member is ignored and what the checkout holds is kept.
   A kept method is kept only while the checkout's delivery is offered
   it (`payWayForDelivery`): Django offers some methods only for some
   carriers and kinds, and an instrument is resolved for the delivery the

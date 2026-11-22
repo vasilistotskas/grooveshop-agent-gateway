@@ -220,61 +220,6 @@ func TestComputePricingWithoutEveryChoice(t *testing.T) {
 	assert.Nil(t, p.PayWay)
 }
 
-// A pickup checkout's quote names its pickup point, as its order does:
-// the quote's cart digest covers the point, so an order sent to it is
-// the cart the quote priced.
-func TestAPickupQuoteNamesItsPoint(t *testing.T) {
-	dj, asked := quoteDjango(t, pricingCart("20.00", false),
-		func(django.QuoteRequest) (int, string) {
-			return http.StatusOK, quoteBody(
-				`{"price":3.50,"waivedBy":null}`,
-				`{"amount":2.00,"waived":false}`,
-				`{"amount":18550,"currency":"EUR"}`)
-		})
-	s := readySession()
-	s.Fulfillment.Kind = FulfillmentPickupPoint
-	s.Fulfillment.ProviderCode = django.ShippingProviderBoxNow
-	s.Fulfillment.BoxnowLockerID = "4"
-
-	_, _, err := ComputePricing(t.Context(), dj, pricingTenant(), s)
-	require.NoError(t, err)
-	require.Len(t, *asked, 1)
-	assert.Equal(t, django.PickupPoint{BoxnowLockerID: "4"},
-		(*asked)[0].PickupPoint)
-	assert.Equal(t, s.Fulfillment.PickupPoint(), (*asked)[0].PickupPoint,
-		"the point the order is sent to")
-}
-
-// A delivery the store refuses is dropped from the quote whole, its
-// pickup point with it: the rest is priced as a checkout without one.
-func TestARefusedPickupIsDroppedWithItsPoint(t *testing.T) {
-	dj, asked := quoteDjango(t, pricingCart("20.00", false),
-		func(r django.QuoteRequest) (int, string) {
-			if r.ShippingKind != "" {
-				return http.StatusBadRequest, `{"detail":"Too large.",` +
-					`"reason":"shipping_parcel_too_large",` +
-					`"code":"shipping_parcel_too_large"}`
-			}
-			return http.StatusOK, quoteBody("null",
-				`{"amount":2.00,"waived":false}`, "null")
-		})
-	s := readySession()
-	s.Fulfillment.Kind = FulfillmentPickupPoint
-	s.Fulfillment.ProviderCode = django.ShippingProviderBoxNow
-	s.Fulfillment.BoxnowLockerID = "4"
-
-	p, _, err := ComputePricing(t.Context(), dj, pricingTenant(), s)
-	require.NoError(t, err)
-	require.Len(t, *asked, 2)
-	assert.Equal(t, django.PickupPoint{BoxnowLockerID: "4"},
-		(*asked)[0].PickupPoint)
-	assert.Equal(t, django.QuoteRequest{PayWayID: 7, CountryID: "GR",
-		Email: "buyer@example.test"}, (*asked)[1],
-		"no delivery, no region, no pickup point")
-	require.NotNil(t, p.DeliveryRefused)
-	assert.Empty(t, p.CartDigest)
-}
-
 // A quote that prices a delivery without the digest of its cart leaves
 // out what the order is checked against: it is an error, as a quote
 // without a row it was asked for is.

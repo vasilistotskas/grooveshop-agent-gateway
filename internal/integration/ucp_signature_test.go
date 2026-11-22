@@ -112,13 +112,8 @@ func placeOrder(
 				"first_name": "Μαρία", "last_name": "Παπαδοπούλου",
 				"email": "maria@example.test", "phone_number": "+306912345678",
 			},
-			"fulfillment": map[string]any{
-				"kind": "home_delivery", "providerCode": "acs",
-				"countryCode": "GR", "city": "Αθήνα", "zipcode": "10431",
-				"street": "Πανεπιστημίου", "streetNumber": "12",
-				"regionId": "GR-14",
-			},
-			"payment": codPayment(),
+			"fulfillment": homeDelivery(),
+			"payment":     codPayment(),
 		},
 	})
 	require.False(t, res.IsError, "%v", res.Content)

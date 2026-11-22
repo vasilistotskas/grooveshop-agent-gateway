@@ -64,17 +64,20 @@ func (c *Client) ReserveStock(
 }
 
 // OrderCreate is the guest checkout payload (camelCase on the wire). The
-// cart is taken from the X-Cart-Id header, never the body. StreetNumber
-// is required upstream and always sent: an empty one is Django's to
-// refuse, with the store's own message.
+// cart is taken from the X-Cart-Id header, never the body. Street is the
+// one street line, its house number after the street ("Ερμού 12"), and no
+// streetNumber is sent: Django splits the line, and refuses one it cannot
+// split (StreetRefusedError).
 type OrderCreate struct {
-	PayWayID     int64  `json:"payWayId"`
-	FirstName    string `json:"firstName"`
-	LastName     string `json:"lastName"`
-	Email        string `json:"email" contract:"format=email"`
-	Phone        string `json:"phone"`
-	Street       string `json:"street"`
-	StreetNumber string `json:"streetNumber"`
+	PayWayID  int64  `json:"payWayId"`
+	FirstName string `json:"firstName"`
+	LastName  string `json:"lastName"`
+	Email     string `json:"email" contract:"format=email"`
+	Phone     string `json:"phone"`
+	Street    string `json:"street"`
+	// AddressLine2 is what the street line does not hold: a flat, a
+	// floor, a building.
+	AddressLine2 string `json:"addressLine2,omitempty"`
 	City         string `json:"city"`
 	Zipcode      string `json:"zipcode"`
 	CountryID    string `json:"countryId"`
@@ -84,7 +87,6 @@ type OrderCreate struct {
 
 	ShippingProviderCode string `json:"shippingProviderCode,omitempty"`
 	ShippingKind         string `json:"shippingKind,omitempty"`
-	PickupPoint
 
 	CustomerNotes string `json:"customerNotes,omitempty"`
 
@@ -99,8 +101,9 @@ type OrderCreate struct {
 	ExpectedTotal ExpectedTotal `json:"expectedTotal"`
 	// ExpectedCartDigest is the CartDigest of the quote whose total the
 	// buyer was shown: Django creates the order only from exactly the
-	// cart that quote priced (its lines, promotions, delivery with its
-	// pickup point, and pay way), else answers 409 cart_changed. It
+	// cart that quote priced (its lines, promotions and delivery, with
+	// the pickup point of a pickup; not the pay way), else answers 409
+	// cart_changed. It
 	// catches what the total cannot: a line swapped for one at the same
 	// price.
 	ExpectedCartDigest string `json:"expectedCartDigest"`
@@ -136,8 +139,9 @@ type Attribution struct {
 // AgentCheckout (checkout.Flow). Django's
 // refusal of a cart whose earlier order awaits its payment is
 // ErrCartHasUnpaidOrder, of a total that is no longer the amount due
-// ErrTotalChanged, and of a cart that is no longer the one quoted
-// ErrCartChanged.
+// ErrTotalChanged, of a cart that is no longer the one quoted
+// ErrCartChanged, and of a street line it cannot split a
+// *StreetRefusedError.
 func (c *Client) CreateOrder(
 	ctx context.Context, host, lang, cartID string, body OrderCreate,
 ) (*Order, error) {
@@ -162,10 +166,71 @@ func (c *Client) CreateOrder(
 			return nil, fmt.Errorf("%w: %w", ErrCartChanged, err)
 		}
 	}
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
+		if refused := streetRefusal(apiErr); refused != nil {
+			return nil, refused
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// StreetRefusedError is Django's refusal of an order's street line (400,
+// on `street`), whatever its code: among them a line it cannot split
+// into the street and its house number (CodeStreetNumberMissing), one
+// whose number is a postcode (CodeStreetNumberIsPostcode), and a street
+// or a number the address rules refuse (street_name_missing, the number
+// field's own checks). The gateway sends the one line only, so any
+// refusal on `street` is the line's, except a street not sent at all
+// (blank, required), which is a missing field. Nothing was created. Message is the
+// store's own sentence. It unwraps to Django's *APIError, so it is
+// ErrValidation too.
+type StreetRefusedError struct {
+	Code    string
+	Message string
+	err     *APIError
+}
+
+func (e *StreetRefusedError) Error() string {
+	return fmt.Sprintf("django: street refused (%s): %s", e.Code, e.Message)
+}
+
+func (e *StreetRefusedError) Unwrap() error {
+	if e.err == nil {
+		return ErrValidation
+	}
+	return e.err
+}
+
+// streetRefusal is the street line's refusal a 400 carries in its
+// `fields`, nil for any other error: the body's own `code` is another
+// one whenever another field was refused too.
+func streetRefusal(apiErr *APIError) *StreetRefusedError {
+	if apiErr.Status != http.StatusBadRequest {
+		return nil
+	}
+	var body struct {
+		Fields struct {
+			Street []struct {
+				Message string `json:"message"`
+				Code    string `json:"code"`
+			} `json:"street"`
+		} `json:"fields"`
+	}
+	// A body that is not a field-error map refuses no street line.
+	_ = json.Unmarshal(apiErr.Body, &body)
+	for _, f := range body.Fields.Street {
+		switch f.Code {
+		// A street not sent is a missing field, not a refused line.
+		case "blank", "required", "null":
+		default:
+			return &StreetRefusedError{
+				Code: f.Code, Message: f.Message, err: apiErr}
+		}
+	}
+	return nil
 }
 
 type CheckoutSessionResult struct {

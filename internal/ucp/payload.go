@@ -11,6 +11,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/media"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/storefront"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -178,6 +179,80 @@ type AppliedDiscount struct {
 	Automatic bool   `json:"automatic,omitempty"`
 }
 
+// Fulfillment is the fulfillment extension's member
+// (shopping/types/fulfillment.json), on a checkout whose platform
+// negotiated it. The store fulfils a whole cart one way, home delivery to
+// one address, so it has one shipping method, one destination and one
+// group: its options are the carriers that deliver the cart there.
+type Fulfillment struct {
+	Methods []FulfillmentMethod `json:"methods"`
+}
+
+// FulfillmentMethod is a fulfillment method (fulfillment_method.json).
+type FulfillmentMethod struct {
+	ID          string   `json:"id"`
+	Type        string   `json:"type"`
+	LineItemIDs []string `json:"line_item_ids"`
+	// Destinations is the shipping address the platform wrote, once it
+	// has written one.
+	Destinations          []ShippingDestination `json:"destinations,omitempty"`
+	SelectedDestinationID string                `json:"selected_destination_id,omitempty"`
+	// Groups is the one group of the cart's lines, once the delivery
+	// country is known and the options can be priced.
+	Groups []FulfillmentGroup `json:"groups,omitempty"`
+}
+
+// ShippingDestination is a shipping address (shipping_destination.json,
+// a postal_address.json with its type and id).
+type ShippingDestination struct {
+	Type            string `json:"type"`
+	ID              string `json:"id"`
+	StreetAddress   string `json:"street_address,omitempty"`
+	ExtendedAddress string `json:"extended_address,omitempty"`
+	AddressLocality string `json:"address_locality,omitempty"`
+	AddressRegion   string `json:"address_region,omitempty"`
+	AddressCountry  string `json:"address_country,omitempty"`
+	PostalCode      string `json:"postal_code,omitempty"`
+}
+
+// FulfillmentGroup is the package of the cart's lines and its options
+// (fulfillment_group.json). SelectedOptionID is null until the platform
+// selects one.
+type FulfillmentGroup struct {
+	ID               string              `json:"id"`
+	LineItemIDs      []string            `json:"line_item_ids"`
+	Options          []FulfillmentOption `json:"options"`
+	SelectedOptionID *string             `json:"selected_option_id"`
+}
+
+// FulfillmentOption is one carrier that delivers the cart
+// (fulfillment_option.json): its id is the carrier's provider code, and
+// its total what the cart's delivery costs with it.
+type FulfillmentOption struct {
+	ID      string          `json:"id"`
+	Title   string          `json:"title"`
+	Carrier string          `json:"carrier,omitempty"`
+	Totals  []LineItemTotal `json:"totals"`
+}
+
+// The ids this business gives the parts of its one way to fulfil a cart:
+// a platform sends them back on update.
+const (
+	FulfillmentMethodID   = "shipping"
+	FulfillmentMethodType = "shipping"
+	DestinationID         = "shipping_address"
+	DestinationType       = "shipping_address"
+	FulfillmentGroupID    = "parcel"
+)
+
+// The paths, into a checkout, of what its fulfillment needs.
+const (
+	pathDestinations = "$.fulfillment.methods[0].destinations"
+	pathStreet       = "$.fulfillment.methods[0].destinations[0].street_address"
+	pathRegion       = "$.fulfillment.methods[0].destinations[0].address_region"
+	pathOption       = "$.fulfillment.methods[0].groups[0].selected_option_id"
+)
+
 // Checkout is the UCP checkout session response payload.
 type Checkout struct {
 	UCP         Envelope           `json:"ucp"`
@@ -188,6 +263,7 @@ type Checkout struct {
 	Currency    string             `json:"currency"`
 	Totals      []LineItemTotal    `json:"totals"`
 	Discounts   *Discounts         `json:"discounts,omitempty"`
+	Fulfillment *Fulfillment       `json:"fulfillment,omitempty"`
 	Links       []Link             `json:"links"`
 	ContinueURL string             `json:"continue_url,omitempty"`
 	Order       *OrderConfirmation `json:"order,omitempty"`
@@ -334,6 +410,10 @@ func (b *Builder) BuildCheckout(
 	if _, ok := capabilities[CapabilityDiscount]; ok {
 		renderDiscounts(s, pricing, out)
 	}
+	_, fulfills := capabilities[CapabilityFulfillment]
+	if fulfills {
+		out.Fulfillment = renderFulfillment(s, pricing, out.LineItems)
+	}
 
 	if refusals := refusedChoices(pricing); len(refusals) > 0 && s.Open() {
 		// A choice the store no longer takes is left out of the price,
@@ -369,10 +449,7 @@ func (b *Builder) BuildCheckout(
 		// keeps the cart, and refuses a second order from it only when
 		// an agent places it: a buyer who opened the earlier link could
 		// order the same cart again on the web.
-		for _, m := range s.Missing() {
-			out.Messages = append(out.Messages,
-				Message{Type: "info", Code: "missing_input", Text: m})
-		}
+		out.Messages = append(out.Messages, missing(s, fulfills)...)
 	}
 	if s.OrderUUID != "" && s.Status == checkout.StatusCompleted {
 		out.Order = &OrderConfirmation{
@@ -384,16 +461,139 @@ func (b *Builder) BuildCheckout(
 	return out, nil
 }
 
+// renderFulfillment is the checkout's fulfillment: its one shipping
+// method for every line, the address once one was written, and once the
+// delivery country is known the options, each carrier that delivers the
+// cart as Django quotes it (home delivery the cart fits). A placed order
+// lists no options: there is nothing left to choose.
+func renderFulfillment(
+	s *checkout.Session, pricing *checkout.Pricing, lines []LineItem,
+) *Fulfillment {
+	ids := make([]string, 0, len(lines))
+	for _, l := range lines {
+		ids = append(ids, l.ID)
+	}
+	m := FulfillmentMethod{
+		ID: FulfillmentMethodID, Type: FulfillmentMethodType,
+		LineItemIDs: ids,
+	}
+	f := s.Fulfillment
+	if f.Street != "" || f.AddressLine2 != "" || f.City != "" ||
+		f.Zipcode != "" || f.CountryCode != "" {
+		m.Destinations = []ShippingDestination{{
+			Type: DestinationType, ID: DestinationID,
+			StreetAddress: f.Street, ExtendedAddress: f.AddressLine2,
+			AddressLocality: f.City, AddressRegion: f.RegionID,
+			AddressCountry: f.CountryCode, PostalCode: f.Zipcode,
+		}}
+		m.SelectedDestinationID = DestinationID
+	}
+	if pricing.ShippingOptions != nil {
+		g := FulfillmentGroup{
+			ID: FulfillmentGroupID, LineItemIDs: ids,
+			Options: []FulfillmentOption{},
+		}
+		for _, o := range pricing.ShippingOptions {
+			if o.Kind != checkout.FulfillmentHomeDelivery || !o.FitsCart() {
+				continue
+			}
+			price, err := money.MinorUnits(o.Price.String())
+			if err != nil {
+				continue
+			}
+			g.Options = append(g.Options, FulfillmentOption{
+				ID: o.ProviderCode, Title: o.ProviderName,
+				Carrier: o.ProviderName,
+				Totals:  []LineItemTotal{{Type: "total", Amount: price}},
+			})
+		}
+		if f.Kind == checkout.FulfillmentHomeDelivery &&
+			pricing.DeliveryRefused == nil {
+			selected := f.ProviderCode
+			g.SelectedOptionID = &selected
+		}
+		m.Groups = []FulfillmentGroup{g}
+	}
+	return &Fulfillment{Methods: []FulfillmentMethod{m}}
+}
+
+// missing are the recoverable errors of what an open checkout still
+// needs, each at its place in the checkout. A checkout whose platform did
+// not negotiate the fulfillment extension can be given no address: it is
+// told so.
+func missing(s *checkout.Session, fulfills bool) []Message {
+	var out []Message
+	add := func(code, path, text string) {
+		out = append(out, Message{Type: "error", Code: code, Path: path,
+			Severity: "recoverable", Text: text})
+	}
+	for _, need := range s.Missing() {
+		switch need {
+		case checkout.NeedBuyer:
+			add("missing", "$.buyer", "The buyer's first_name, "+
+				"last_name, email and phone_number are required.")
+		case checkout.NeedAddress:
+			if !fulfills {
+				add("missing", "$.fulfillment", "A shipping address is "+
+					"required, and is sent in the fulfillment extension ("+
+					CapabilityFulfillment+"), which your profile does not "+
+					"declare: declare it, or hand the buyer to the store.")
+				continue
+			}
+			add("missing", pathDestinations, "A shipping destination is "+
+				"required: street_address (the street and its house "+
+				"number), address_locality, postal_code and "+
+				"address_country; a floor or flat in extended_address.")
+		case checkout.NeedStreet:
+			add(s.StreetRefused.Code, pathStreet,
+				StreetRefusedText(s.StreetRefused.Code))
+		case checkout.NeedRegion:
+			add("missing", pathRegion, "address_region must name a "+
+				"region of the country, one of: "+s.RegionChoices())
+		case checkout.NeedDelivery:
+			if !fulfills {
+				continue
+			}
+			add("missing", pathOption, "Select one of the group's "+
+				"options, the carrier that delivers.")
+		case checkout.NeedPayment:
+			add("missing", "$.payment", "Select a payment method: one "+
+				"of the instruments this checkout advertises.")
+		}
+	}
+	return out
+}
+
+// StreetRefusedText says why the store refused the destination's street
+// line, by Django's code.
+func StreetRefusedText(code string) string {
+	switch code {
+	case django.CodeStreetNumberIsPostcode:
+		return "The number at the end of street_address reads as a " +
+			"postal code. Send the street with its house number in " +
+			"street_address (e.g. \"Ermou 12\"), and the postal code in " +
+			"postal_code."
+	case django.CodeStreetNumberMissing:
+		return "The store could not read a house number at the end of " +
+			"street_address. Send the street followed by its house " +
+			"number (e.g. \"Ermou 12\"), and a floor or flat in " +
+			"extended_address."
+	}
+	return "The store refused the street in street_address. Send the " +
+		"street's name followed by its house number (e.g. \"Ermou 12\"), " +
+		"and a floor or flat in extended_address."
+}
+
 // refusedChoices are the recoverable errors of the checkout's choices the
 // store refused for this cart, each at its member, in the store's words.
 func refusedChoices(p *checkout.Pricing) []Message {
 	var out []Message
 	if r := p.DeliveryRefused; r != nil {
 		out = append(out, Message{Type: "error", Code: r.Code,
-			Severity: "recoverable", Path: "$.fulfillment",
+			Severity: "recoverable", Path: pathOption,
 			Text: strings.TrimSpace(r.Detail + " The delivery is left out " +
-				"of the total: choose another with update_checkout (see " +
-				"get_shipping_options).")})
+				"of the total: select another of the group's options " +
+				"with update_checkout.")})
 	}
 	if r := p.PayWayRefused; r != nil {
 		out = append(out, Message{Type: "error", Code: r.Code,
