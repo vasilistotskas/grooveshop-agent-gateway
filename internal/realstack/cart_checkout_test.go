@@ -187,10 +187,10 @@ func cancelOrder(t *testing.T, order string) {
 from django_tenants.utils import tenant_context
 from order.enum.status import OrderStatus
 from order.models.order import Order
-from order.services import OrderService
+from order.lifecycle.service import OrderLifecycleService
 from tenant.models import Tenant
 with tenant_context(Tenant.objects.get(schema_name="demostore")):
-    OrderService.cancel_order(
+    OrderLifecycleService.cancel_order(
         Order.objects.get(uuid=%q),
         reason="the payment window ended",
         refund_payment=False,
