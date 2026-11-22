@@ -153,8 +153,10 @@ func ParsePickupLocation(id string) (PickupLocation, error) {
 			return PickupLocation{}, ErrUnknownLocation
 		}
 	}
+	// The country is upper-case, as every id this business gives names it.
 	switch {
-	case len(parts) < 2 || !checkout.IsCountryCode(parts[1]):
+	case len(parts) < 2 || !checkout.IsCountryCode(parts[1]) ||
+		parts[1] != strings.ToUpper(parts[1]):
 		return PickupLocation{}, ErrUnknownLocation
 	case len(parts) == 3 && parts[0] == django.ShippingProviderBoxNow:
 		return PickupLocation{Provider: parts[0], Country: parts[1],
@@ -190,8 +192,10 @@ func offersPickup(p *checkout.Pricing) bool {
 }
 
 // pickupPointsNear lists the ACS points near where the buyer is (the
-// checkout's locality), when the store delivers the cart to ACS points
-// there: a platform selects one. BOX NOW lockers are found only from a
+// checkout's locality), in the country its options are priced for, when
+// the store delivers the cart to ACS points there: a platform selects
+// one. Without a country none is searched, so the list never holds a
+// point of a country not priced. BOX NOW lockers are found only from a
 // street (find_pickup_points). A lookup that fails lists none, and says
 // so in a warning: the checkout is complete without the list.
 func (b *Builder) pickupPointsNear(
@@ -199,12 +203,13 @@ func (b *Builder) pickupPointsNear(
 	p *checkout.Pricing,
 ) ([]Destination, *Message) {
 	loc := s.Locality
-	if loc.PostalCode == "" || s.OrderUUID != "" || !offersACSPickup(p) {
+	country := checkout.QuoteRequest(s).CountryID
+	if loc.PostalCode == "" || country == "" || s.OrderUUID != "" ||
+		!offersACSPickup(p) {
 		return nil, nil
 	}
 	stations, err := b.dj.AcsNearestStations(ctx, t.Domain,
-		django.Language(ctx, t.TenantConfig), loc.PostalCode, "",
-		loc.CountryCode)
+		django.Language(ctx, t.TenantConfig), loc.PostalCode, "", country)
 	if err != nil {
 		// The Django client logs the failed call.
 		return nil, &Message{Type: "warning", Code: "pickup_points_unlisted",

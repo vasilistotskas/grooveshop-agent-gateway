@@ -302,7 +302,7 @@ func TestCheckoutInApplyToChoosesThePickupMethod(t *testing.T) {
 		want checkout.Fulfillment
 	}{
 		"the only method": {`{"fulfillment":{"methods":[{"type":"pickup",` +
-			`"selected_destination_id":"boxnow:gr:25"}]}}`, locker},
+			`"selected_destination_id":"boxnow:GR:25"}]}}`, locker},
 		"the one naming the lines": {`{"fulfillment":{"methods":[` +
 			`{"type":"shipping","line_item_ids":[],"destinations":[` +
 			`{"postal_code":"10431"}]},{"type":"pickup",` +
@@ -360,6 +360,8 @@ func TestCheckoutInApplyToChoosesThePickupMethod(t *testing.T) {
 	for name, raw := range map[string]string{
 		"an id it never gives": `{"fulfillment":{"methods":[{"type":` +
 			`"pickup","selected_destination_id":"locker-4"}]}}`,
+		"an id in a form it never gives": `{"fulfillment":{"methods":` +
+			`[{"type":"pickup","selected_destination_id":"boxnow:gr:25"}]}}`,
 		"both naming the lines": `{"fulfillment":{"methods":[` +
 			`{"type":"shipping","line_item_ids":["410"]},{"type":` +
 			`"pickup","line_item_ids":["410"]}]}}`,

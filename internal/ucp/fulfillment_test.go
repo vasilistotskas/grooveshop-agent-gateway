@@ -1,7 +1,11 @@
 package ucp
 
 import (
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,7 +37,9 @@ func TestPickupLocationIDsReadBack(t *testing.T) {
 	for _, id := range []string{"", "shipping_address", "boxnow:GR",
 		"boxnow:GR:25:9", "acs:GR:AAT", "elta:GR:1", "boxnow::25",
 		"boxnow:GR:%zz", "acs::AAT:502", "acs:GR::502",
-		"boxnow:Greece:25", "boxnow:G1:25"} {
+		"boxnow:Greece:25", "boxnow:G1:25",
+		// This business names a country upper-case only.
+		"boxnow:gr:25", "acs:Gr:AAT:502"} {
 		_, err := ParsePickupLocation(id)
 		require.ErrorIs(t, err, ErrUnknownLocation, id)
 	}
@@ -127,6 +133,60 @@ func TestBuildCheckoutRendersThePickupMethod(t *testing.T) {
 		ID: "boxnow:GR:25", Name: "BOX NOW 25"}, pickup.Destinations[0])
 	require.Len(t, pickup.Groups, 1)
 	assert.Equal(t, "boxnow", pickup.Groups[0].Options[0].ID)
+}
+
+// The points near the buyer are searched in the country the checkout's
+// options are priced for: the delivery's, else the locality's. Without
+// one, none is listed and none searched.
+func TestPointsNearTheBuyerAreInTheCountryPriced(t *testing.T) {
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/v1/shipping/acs/stations/nearest" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			asked = append(asked, r.URL.Query().Get("countryCode"))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(readFixture(t, "acs_stations_nearest.json"))
+		}))
+	t.Cleanup(srv.Close)
+	b := NewBuilder(django.New(srv.URL+"/api/v1", "api.example.test",
+		"secret", 5*time.Second, slog.New(slog.DiscardHandler), nil),
+		"https://{assets_host}/img/{path}.webp", "assets.platform.test",
+		"production", storefront.NewSite("el"))
+	p := &checkout.Pricing{ShippingOptions: []django.QuoteShippingOption{{
+		ProviderCode: django.ShippingProviderACS,
+		Kind:         checkout.FulfillmentPickupPoint,
+	}}}
+
+	for name, tc := range map[string]struct {
+		locality, delivery string
+		asked              []string
+	}{
+		"the locality's":                   {"GR", "", []string{"GR"}},
+		"the delivery's over the locality": {"GR", "CY", []string{"CY"}},
+		"none":                             {"", "", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			asked = nil
+			s := &checkout.Session{Locality: checkout.Locality{
+				CountryCode: tc.locality, PostalCode: "10434",
+			}}
+			s.Fulfillment.CountryCode = tc.delivery
+
+			points, warning := b.pickupPointsNear(t.Context(), testTenant(),
+				s, p)
+
+			assert.Nil(t, warning)
+			assert.Equal(t, tc.asked, asked)
+			if tc.asked == nil {
+				assert.Empty(t, points)
+			} else {
+				assert.NotEmpty(t, points)
+			}
+		})
+	}
 }
 
 // What a pickup checkout still needs is an error at the pickup method's

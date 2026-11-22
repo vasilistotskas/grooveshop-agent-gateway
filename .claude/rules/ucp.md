@@ -196,15 +196,16 @@ wins over this page.
     country, the carrier's ids, each query-escaped, joined by colons; an
     ACS station's branch may be blank, the catalogue's row without one),
     read back by `ucp.ParsePickupLocation`, which refuses a country that
-    is not two letters; one this checkout never listed is taken
+    is not two upper-case letters, the only form this business gives; one this checkout never listed is taken
     (the spec's "any stable, Business-scoped ID"), for example a
     `destinationId` from `find_pickup_points`. The destinations are the
     ACS points nearest the checkout's locality (`checkout.context`'s
     `address_country` and `postal_code`, `Session.Locality`, kept when
     omitted since the response does not carry it, a country that is not
     two letters ignored as the hint the spec makes it; at most five, one
-    `AcsNearestStations` call per render with the country, a failed one
-    a `warning` `pickup_points_unlisted`), and the selected point, by the name and
+    `AcsNearestStations` call per render in the country the options are
+    priced for, `checkout.QuoteRequest`'s, none without one; a failed
+    one a `warning` `pickup_points_unlisted`), and the selected point, by the name and
     address the store's catalogue gave when it was chosen
     (`handlers.applyPoint`: `AcsStationByID`, `BoxNowLockerByID`, one
     call each to the catalogue lists with Django's exact filters,

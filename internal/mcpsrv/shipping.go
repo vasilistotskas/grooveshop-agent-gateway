@@ -9,6 +9,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ucp"
@@ -316,12 +317,19 @@ func (h *handlers) findPickupPoints(
 				})
 			switch {
 			case err == nil:
+				// BOX NOW's answer may leave the country out: the locker
+				// nearest an address is in the address's country, the
+				// one searched.
+				lockerCountry := strings.ToUpper(strings.TrimSpace(l.Country))
+				if !checkout.IsCountryCode(lockerCountry) {
+					lockerCountry = country
+				}
 				out.Points = append(out.Points, PickupPoint{
 					Provider: django.ShippingProviderBoxNow,
 					ID:       l.ID,
 					DestinationID: ucp.PickupLocation{
 						Provider: django.ShippingProviderBoxNow,
-						Country:  strings.ToUpper(l.Country), ID: l.ID,
+						Country:  lockerCountry, ID: l.ID,
 					}.DestinationID(),
 					Name:       l.Name,
 					Address:    l.AddressLine1,
