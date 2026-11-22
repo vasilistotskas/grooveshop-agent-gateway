@@ -137,10 +137,15 @@ var buyer = map[string]any{
 // delivery to an address in country: its one street line, which Django
 // splits, and the store's flat rate selected.
 func homeDelivery(country string) map[string]any {
+	return deliveryTo("Πανεπιστημίου 12", country)
+}
+
+// deliveryTo is homeDelivery with street as its one street line.
+func deliveryTo(street, country string) map[string]any {
 	return map[string]any{"methods": []any{map[string]any{
 		"type": "shipping", "line_item_ids": []any{},
 		"destinations": []any{map[string]any{
-			"street_address": "Πανεπιστημίου 12", "address_locality": "Αθήνα",
+			"street_address": street, "address_locality": "Αθήνα",
 			"postal_code": "10431", "address_country": country,
 			"address_region": "GR-14",
 		}},
