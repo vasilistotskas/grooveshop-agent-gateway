@@ -206,6 +206,8 @@ func TestACartChangedAtTheSameTotalIsNotOrdered(t *testing.T) {
 			assert.Contains(t,
 				[]string{"ready_for_complete", "ready_for_payment"},
 				read.status, "the checkout is ready again")
+			assert.Equal(t, []string{"2"}, read.products,
+				"the read shows the cart as it is now")
 			assert.Equal(t, "completed",
 				surface.complete(ctx, id, uuid.NewString(), nil))
 			order := stack.faults.lastOrder.Load()
