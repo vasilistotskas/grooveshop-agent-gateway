@@ -236,7 +236,8 @@ func TestAQuoteWithoutItsCartDigestIsAnError(t *testing.T) {
 		readySession())
 	require.ErrorIs(t, err, django.ErrUpstreamDown)
 
-	// A delivery priced without a pay way carries the digest too.
+	// A delivery priced without a pay way must carry the digest too: a
+	// quote of one without it cannot be read either.
 	dj, _ = quoteDjango(t, pricingCart("20.00", false),
 		func(django.QuoteRequest) (int, string) {
 			return http.StatusOK, quoteBodyDigest(
