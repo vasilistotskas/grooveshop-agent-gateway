@@ -207,6 +207,13 @@ func TestCheckoutInApplyToReplacesTheBuyerAndTheDelivery(t *testing.T) {
 			CountryCode: "GR", City: "Αθήνα", Zipcode: "10434",
 			Street: "Πατησίων 5",
 		}},
+		"a destination written without an id, selected by the id it " +
+			"is given": {`{"fulfillment":{"methods":[{"type":"shipping",` +
+			`"selected_destination_id":"shipping_address","destinations":` +
+			`[{"street_address":"Πατησίων 5","address_locality":"Αθήνα",` +
+			`"postal_code":"10434","address_country":"GR"}]}]}}`,
+			checkout.Fulfillment{CountryCode: "GR", City: "Αθήνα",
+				Zipcode: "10434", Street: "Πατησίων 5"}},
 		"the destination given, by its id": {`{"fulfillment":{"methods":` +
 			`[{"type":"shipping","selected_destination_id":` +
 			`"shipping_address","groups":[{"id":"parcel",` +
@@ -244,6 +251,10 @@ func TestCheckoutInApplyToReplacesTheBuyerAndTheDelivery(t *testing.T) {
 		"another destination than the one written": `{"fulfillment":` +
 			`{"methods":[{"type":"shipping","selected_destination_id":` +
 			`"a","destinations":[{"id":"b","postal_code":"1"}]}]}}`,
+		"another destination than the one written without an id": `{` +
+			`"fulfillment":{"methods":[{"type":"shipping",` +
+			`"selected_destination_id":"saved-7","destinations":` +
+			`[{"postal_code":"1"}]}]}}`,
 		"two groups": `{"fulfillment":{"methods":[{"type":"shipping",` +
 			`"groups":[{"id":"parcel"},{"id":"other"}]}]}}`,
 		"a method id it never gave": `{"fulfillment":{"methods":` +
