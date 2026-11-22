@@ -7,6 +7,8 @@
 package djangotest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 
@@ -56,7 +58,8 @@ type payWayBody struct {
 // it; refused with its code when the store does not ship that way or the
 // cart does not fit), the chosen pay way's fee (waived from its free
 // threshold; refused while it is not one of Store.PayWays), the options
-// for the country, and the expected total once both are chosen.
+// for the country, and the expected total and the cart digest once both
+// are chosen.
 func (s Store) Quote(w http.ResponseWriter, r *http.Request) {
 	var req django.QuoteRequest
 	var cart cartBody
@@ -144,7 +147,7 @@ func (s Store) Quote(w http.ResponseWriter, r *http.Request) {
 		"freeThresholdValue": amount(value), "shipping": shipping,
 		"paymentMethodFee": nil, "loyaltyDiscount": amount(0),
 		"giftCardAmount": nil, "grandTotal": nil, "amountDue": nil,
-		"currency": cart.Currency, "expectedTotal": nil,
+		"currency": cart.Currency, "expectedTotal": nil, "cartDigest": nil,
 		"shippingOptions": listed, "payWays": []any{},
 	}
 	if body["appliedPromotions"] == nil {
@@ -160,9 +163,36 @@ func (s Store) Quote(w http.ResponseWriter, r *http.Request) {
 		body["giftCardAmount"] = amount(0)
 		body["expectedTotal"] = map[string]any{
 			"amount": total, "currency": cart.Currency}
+		body["cartDigest"] = digest(cart, req)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// digest is the cart digest of an order of cart with req's choices, of
+// what Django's OrderQuoteService.cart_digest covers: the lines, the
+// promotions, the delivery with the chosen carrier's pickup point
+// (ShippingChoice.of keeps only its location_keys) and the pay way.
+// Not Django's value, an HMAC keyed by its SECRET_KEY that no client can
+// compute: a client only carries it back.
+func digest(cart cartBody, req django.QuoteRequest) string {
+	var point []string
+	switch req.ShippingProviderCode {
+	case django.ShippingProviderACS:
+		point = []string{
+			req.AcsStationExternalID, req.AcsStationBranch,
+		}
+	case django.ShippingProviderBoxNow:
+		point = []string{req.BoxnowLockerID}
+	}
+	// Values of decoded JSON and strings always encode.
+	canonical, _ := json.Marshal([]any{
+		cart.Items, cart.AppliedPromotions, req.ShippingKind,
+		req.ShippingProviderCode, req.CountryID, req.RegionID, point,
+		req.PayWayID,
+	})
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:])
 }
 
 // refuse answers a choice the store refuses, as the quote does.

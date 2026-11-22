@@ -150,7 +150,10 @@ Loads when working on the ACP handler, or the routes that answer before it. The 
     since it was shown (`django.ErrTotalChanged`) is 400
     `total_changed`: nothing placed, the session ready again, and its
     next read shows, and stores, the total a complete with a new key
-    places the order at. Fulfillment options are the quote's
+    places the order at. One refused because the session's cart changed
+    since it was shown, at the same total or not
+    (`django.ErrCartChanged`), is 400 `cart_changed`, the same way.
+    Fulfillment options are the quote's
     (`Pricing.ShippingOptions`, home delivery the cart fits), and a
     delivery or pay way the store refuses is an `invalid` error at the
     member to choose again, with the status `not_ready_for_payment`.

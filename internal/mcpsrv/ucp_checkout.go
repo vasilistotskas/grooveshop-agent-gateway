@@ -975,14 +975,17 @@ func (h *handlers) completeSession(
 		return refusedBy(errNoPaymentMethod)
 	case named != held && held > 0:
 		return placedNothing(paymentChanged())
-	case named != held:
-		fee, err := h.firstMethodFee(ctx, t, s, named)
+	}
+	var firstQuoted string
+	if named != held {
+		fee, digest, err := h.firstMethodFee(ctx, t, s, named)
 		if err != nil {
 			return refusedBy(err)
 		}
 		if fee != nil {
 			return placedNothing(*fee)
 		}
+		firstQuoted = digest
 	}
 
 	claim, err := h.deps.Checkout.ClaimCompletion(
@@ -1008,9 +1011,16 @@ func (h *handlers) completeSession(
 	// that is still open (completeClosed), because a refused completion
 	// stores nothing: a later complete that names none would otherwise
 	// find the checkout without it.
+	//
+	// A checkout without a method showed no cart digest (the quote gives
+	// one only with a delivery and a pay way), so the order's is this
+	// call's own quote with the method, at the total the checkout showed:
+	// a cart changed under the completion from that quote on is refused,
+	// one changed before it at the same total is not.
 	if named != held {
 		s.PayWayID = named
 		s.Recompute()
+		s.Shown = s.Shown.WithCart(firstQuoted)
 		if err := h.deps.Checkout.Save(ctx, s); err != nil {
 			h.settleCompletion(ctx, s, claim, checkout.NothingPlaced)
 			return refusedBy(saveFailed(err))
@@ -1081,16 +1091,18 @@ func paymentChanged() ucp.Message {
 // its free threshold included), which the complete takes.
 //
 // The fee is the render's own: checkout.ComputePricing on the checkout as
-// it would be with the method, not a second calculation.
+// it would be with the method, not a second calculation. A method that
+// adds none comes with the cart digest of that quote, which the order is
+// placed from.
 func (h *handlers) firstMethodFee(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session, payWayID int64,
-) (*ucp.Message, error) {
+) (*ucp.Message, string, error) {
 	// ComputePricing reads past a pay way it cannot read; here a method
 	// the store does not have is the caller's to hear about, not an
 	// outage to retry.
 	if _, err := h.deps.Django.PayWayByID(
 		ctx, t.Domain, t.DefaultLocale, payWayID); err != nil {
-		return nil, upstreamErr(err, "checkout.pay_way_id names no "+
+		return nil, "", upstreamErr(err, "checkout.pay_way_id names no "+
 			"payment method this store offers; see get_payment_methods")
 	}
 	with := *s
@@ -1098,22 +1110,28 @@ func (h *handlers) firstMethodFee(
 	pricing, _, err := checkout.ComputePricing(ctx, h.deps.Django, t, &with)
 	switch {
 	case err != nil && isCartGone(err):
-		return nil, errCheckoutCartGone
+		return nil, "", errCheckoutCartGone
 	case err != nil:
-		return nil, upstreamErr(err,
+		return nil, "", upstreamErr(err,
 			"the checkout's totals could not be read; retry")
 	case pricing.PayWayRefused != nil:
-		return nil, &mcptool.ToolError{Code: mcptool.CodeUnsupported,
+		return nil, "", &mcptool.ToolError{Code: mcptool.CodeUnsupported,
 			Detail: pricing.PayWayRefused.Detail,
 			Hint: "the payment method this call names is not offered for " +
 				"this checkout's delivery; name another advertised " +
 				"instrument, or select one with update_checkout"}
+	case pricing.Refused() != nil:
+		// Another choice the store refuses now (the delivery): named as
+		// the completion names it, with what to change.
+		r := pricing.Refused()
+		return nil, "", completeErr(s, fmt.Errorf("%w: %s (%s)",
+			checkout.ErrChoiceRefused, r.Detail, r.Code))
 	case pricing.PayWay == nil:
 		// A render goes on without a fee it could not read. A placement
 		// does not: the fee decides whether the order is placed.
-		return nil, upstreamErr(django.ErrUpstreamDown, "")
+		return nil, "", upstreamErr(django.ErrUpstreamDown, "")
 	case !pricing.HasPaymentFee:
-		return nil, nil
+		return nil, pricing.CartDigest, nil
 	}
 	amount := func(minor int64) string {
 		return money.Format(minor) + " " + t.DefaultCurrency
@@ -1125,7 +1143,7 @@ func (h *handlers) firstMethodFee(
 			"total %s, so no order was placed. Select it with "+
 			"update_checkout and confirm the new total, then complete "+
 			"with the same instrument.",
-			amount(pricing.PaymentFee), amount(pricing.Total))}, nil
+			amount(pricing.PaymentFee), amount(pricing.Total))}, "", nil
 }
 
 // incompleteBy answers a complete that placed nothing because of what it
@@ -1170,6 +1188,13 @@ func completeErr(s *checkout.Session, err error) error {
 				"one it showed, so no order was placed; read it with " +
 				"get_checkout, confirm the total with the buyer, then " +
 				"complete"}
+	// As total_changed: the cart changed, at the same total or not.
+	case errors.Is(err, django.ErrCartChanged):
+		return &mcptool.ToolError{Code: django.CodeCartChanged,
+			Hint: "this checkout's cart is no longer the one it showed " +
+				"(its lines, discounts or delivery changed), so no order " +
+				"was placed; read it with get_checkout, confirm it with " +
+				"the buyer, then complete"}
 	case errors.Is(err, checkout.ErrSessionChanged):
 		return saveFailed(err)
 	case errors.Is(err, checkout.ErrCompletionInProgress):
@@ -1590,11 +1615,12 @@ func (h *handlers) checkoutResult(
 }
 
 // rendered builds the checkout and stores what the render read from its
-// order (a status the order decided, its expiry) and the total it shows
-// (Session.ShownTotal) before giving it: a checkout publishes only what is
-// stored, so no later read gives an earlier expires_at, and its order is
-// placed at the total it showed. A read (unlocked) that changed only the
-// total stores it by taking the lock, and not while another call holds
+// order (a status the order decided, its expiry) and what it shows, its
+// total and cart digest (Session.Shown), before giving it: a checkout
+// publishes only what is stored, so no later read gives an earlier
+// expires_at, and its order is placed at the total and from the cart it
+// showed. A read (unlocked) that changed only what it shows stores it by
+// taking the lock, and not while another call holds
 // it (checkout.Store.StoreShown). The save is a compare-and-set: a
 // checkout another request stored meanwhile is read again and rendered
 // once more. A placed checkout whose state cannot be stored is answered
@@ -1607,15 +1633,15 @@ func (h *handlers) rendered(
 	neg ucp.Negotiated,
 ) (*ucp.Checkout, error) {
 	for again := true; ; again = false {
-		status, expires, shown := s.Status, s.ExpiresAt, s.ShownTotal
+		status, expires, shown := s.Status, s.ExpiresAt, s.Shown
 		payload, err := h.deps.UCP.BuildCheckout(ctx, t, s,
 			neg.Declaration(ucp.CapabilityCheckout))
 		if err != nil ||
 			(s.Status == status && s.ExpiresAt.Equal(expires) &&
-				s.ShownTotal == shown) {
+				s.Shown == shown) {
 			return payload, err
 		}
-		// A read changed only the total it shows: it stores it under
+		// A read changed only what it shows: it stores it under
 		// the lock, which another call may hold. A total that cannot be
 		// stored is not published: its order would be placed at the one
 		// stored before.

@@ -11,7 +11,8 @@ import (
 // delivery once ShippingKind and CountryID are both given, and leaves
 // null every row that depends on a choice not made. Send what the order
 // will carry, the email included, so the quote is the total the order is
-// created at.
+// created at, and the pickup point, so its CartDigest is of the cart the
+// order is made of.
 type QuoteRequest struct {
 	PayWayID             int64  `json:"payWayId,omitempty"`
 	ShippingKind         string `json:"shippingKind,omitempty"`
@@ -19,13 +20,23 @@ type QuoteRequest struct {
 	CountryID            string `json:"countryId,omitempty"`
 	RegionID             string `json:"regionId,omitempty"`
 	Email                string `json:"email,omitempty" contract:"format=email"`
+	PickupPoint
+}
+
+// PickupPoint is the pickup point a checkout chose, by its carrier's own
+// fields (Django's PickupPointSerializer). The quote and order creation
+// take the same ones, and Django reads only the chosen carrier's.
+type PickupPoint struct {
+	AcsStationExternalID string `json:"acsStationExternalId,omitempty"`
+	AcsStationBranch     string `json:"acsStationBranch,omitempty"`
+	BoxnowLockerID       string `json:"boxnowLockerId,omitempty"`
 }
 
 // Quote is what checkout charges for a cart with the choices of its
 // QuoteRequest (CartQuote): the one computation order creation runs. A
 // row that depends on a choice not made is nil: Shipping without a
-// delivery, PaymentMethodFee without a pay way, ExpectedTotal without
-// both.
+// delivery, PaymentMethodFee without a pay way, ExpectedTotal and
+// CartDigest without both.
 type Quote struct {
 	ItemsSubtotal     json.Number          `json:"itemsSubtotal"`
 	DiscountTotal     json.Number          `json:"discountTotal"`
@@ -35,6 +46,10 @@ type Quote struct {
 	PaymentMethodFee  *QuotePaymentFee     `json:"paymentMethodFee"`
 	Currency          string               `json:"currency"`
 	ExpectedTotal     *ExpectedTotal       `json:"expectedTotal"`
+	// CartDigest is an opaque digest of what an order would be made of:
+	// the lines, the promotions, the delivery with its pickup point and
+	// the pay way. Sent back as OrderCreate.ExpectedCartDigest.
+	CartDigest string `json:"cartDigest" contract:"nullable"`
 	// ShippingOptions is every delivery the store offers to the
 	// request's country, priced as an order would be; nil without a
 	// country.

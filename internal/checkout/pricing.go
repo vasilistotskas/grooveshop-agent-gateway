@@ -61,6 +61,10 @@ type Pricing struct {
 	Total          int64
 	// Currency is the ISO 4217 code of every amount.
 	Currency string
+	// CartDigest is the quote's digest of the cart Total is of
+	// (django.Quote.CartDigest): empty until both a delivery and a pay
+	// way are priced, and once an order exists.
+	CartDigest string
 	// DeliveryRefused and PayWayRefused are the checkout's choices the
 	// store no longer takes for this cart (it does not ship that way, the
 	// cart outgrew the carrier, the pay way is not offered for the
@@ -187,7 +191,8 @@ func ComputePricing(
 
 // QuoteRequest is the quote of what the session has chosen: the very
 // choices its order is placed with (Flow.place), the email included,
-// since a promotion may depend on the buyer.
+// since a promotion may depend on the buyer, and the pickup point, which
+// the quote's cart digest covers.
 func QuoteRequest(s *Session) django.QuoteRequest {
 	f := s.Fulfillment
 	r := django.QuoteRequest{
@@ -199,6 +204,7 @@ func QuoteRequest(s *Session) django.QuoteRequest {
 		r.ShippingKind = f.Kind
 		r.ShippingProviderCode = f.ProviderCode
 		r.RegionID = f.RegionID
+		r.PickupPoint = f.PickupPoint()
 	}
 	return r
 }
@@ -229,7 +235,7 @@ func (p *Pricing) quote(
 		case shippingRefusal(apiErr.Code) && req.ShippingKind != "":
 			p.DeliveryRefused = refusal
 			req.ShippingKind, req.ShippingProviderCode = "", ""
-			req.RegionID = ""
+			req.RegionID, req.PickupPoint = "", django.PickupPoint{}
 		case apiErr.Code == django.CodeCartEmpty:
 			return &django.Quote{ItemsSubtotal: "0", DiscountTotal: "0",
 				Currency: t.DefaultCurrency}, nil
@@ -254,7 +260,8 @@ func quoted(req django.QuoteRequest, q *django.Quote) error {
 	switch {
 	case req.ShippingKind != "" && q.Shipping == nil,
 		req.PayWayID > 0 && q.PaymentMethodFee == nil,
-		req.ShippingKind != "" && req.PayWayID > 0 && q.ExpectedTotal == nil:
+		req.ShippingKind != "" && req.PayWayID > 0 &&
+			(q.ExpectedTotal == nil || q.CartDigest == ""):
 		return fmt.Errorf("%w: the quote leaves out a chosen row",
 			django.ErrUpstreamDown)
 	}
@@ -310,6 +317,7 @@ func (p *Pricing) addQuote(q *django.Quote, cart *django.Cart) error {
 	}
 	if q.ExpectedTotal != nil {
 		p.Total = q.ExpectedTotal.Amount
+		p.CartDigest = q.CartDigest
 		return nil
 	}
 	// As Django adds it up: the discount takes the products to zero at

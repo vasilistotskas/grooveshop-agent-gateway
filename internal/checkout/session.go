@@ -76,6 +76,17 @@ type Fulfillment struct {
 	BoxnowLockerID       string `json:"boxnowLockerId,omitempty" jsonschema:"the BOX NOW point's id from find_pickup_points; required for a pickup_point with providerCode boxnow"`
 }
 
+// PickupPoint is the pickup point the fulfillment names, as both the
+// quote and the order carry it, so the quote's digest is of the point the
+// order is sent to.
+func (f Fulfillment) PickupPoint() django.PickupPoint {
+	return django.PickupPoint{
+		AcsStationExternalID: f.AcsStationExternalID,
+		AcsStationBranch:     f.AcsStationBranch,
+		BoxnowLockerID:       f.BoxnowLockerID,
+	}
+}
+
 // Complete reports whether enough is present to place the order. Django
 // requires the postal address even for pickup points (billing/contact),
 // the street number included: without it a session would report itself
@@ -101,8 +112,8 @@ func (f Fulfillment) Complete() bool {
 }
 
 // Session is the durable checkout state. Money totals are Django's quote
-// at render time (ComputePricing); the one amount stored is the total the
-// checkout last showed (ShownTotal), which its order is placed at.
+// at render time (ComputePricing); what is stored of them is what the
+// checkout last showed (Shown), which its order is placed at.
 type Session struct {
 	ID       string `json:"id"`
 	Protocol string `json:"protocol"` // ProtocolUCP | ProtocolACP
@@ -150,13 +161,15 @@ type Session struct {
 	// takes it from its order (AwaitDecision); every other state from
 	// its own lifetime, set at each save (expire).
 	ExpiresAt time.Time `json:"expiresAt"`
-	// ShownTotal is the total the checkout last published while open:
-	// what the buyer was shown, the one total its order is placed at
-	// (django.OrderCreate.ExpectedTotal), since Django creates the order
-	// only at it. Every render of an open checkout sets it (Show), and the
-	// surfaces store it, a read only under the free lock
-	// (Store.StoreShown). Nil until a render of the checkout was stored.
-	ShownTotal *django.ExpectedTotal `json:"shownTotal,omitempty"`
+	// Shown is what the checkout last published while open: the total
+	// the buyer was shown and the digest of the cart it was quoted for,
+	// the one total and cart its order is placed at
+	// (django.OrderCreate.ExpectedTotal, ExpectedCartDigest), since
+	// Django creates the order only from them. Every render of an open
+	// checkout sets it (Show), and the surfaces store it, a read only
+	// under the free lock (Store.StoreShown). Nil until a render of the
+	// checkout was stored.
+	Shown *Shown `json:"shown,omitempty"`
 	// Unconfirmed marks a session in progress whose order was sent and
 	// never answered: the order may exist. One in progress without it,
 	// and without an order, is a completion that is still running, or
@@ -206,18 +219,48 @@ func (s *Session) creator() Caller {
 	return Caller{Protocol: s.Protocol, Platform: s.Platform}
 }
 
-// Show records the total a render of the session publishes, and reports
-// whether it is another than the one stored. Only an open checkout's: a
-// placed one shows its order's, which nothing is placed at.
+// Shown is what a render of an open checkout published, which its order
+// is placed at: the total, and the quote's digest of the cart that total
+// is of (Pricing.CartDigest), empty while the checkout has not chosen
+// both a delivery and a pay way.
+type Shown struct {
+	Total      django.ExpectedTotal `json:"total"`
+	CartDigest string               `json:"cartDigest,omitempty"`
+}
+
+// OfAnOrder reports whether an order can be placed at what was shown: a
+// total the quote priced as an order's, with its cart's digest.
+func (sh *Shown) OfAnOrder() bool {
+	return sh != nil && sh.CartDigest != ""
+}
+
+// WithCart is what was shown, at its total, from the cart digest given:
+// for a complete that names a checkout's first payment method, whose
+// renders showed no digest (a quote gives one only with a delivery and a
+// pay way). Nil while nothing was shown.
+func (sh *Shown) WithCart(digest string) *Shown {
+	if sh == nil {
+		return nil
+	}
+	return &Shown{Total: sh.Total, CartDigest: digest}
+}
+
+// Show records what a render of the session publishes, and reports
+// whether it is another than what is stored: a new total, or the same
+// total of another cart. Only an open checkout's: a placed one shows its
+// order's, which nothing is placed at.
 func (s *Session) Show(p *Pricing) bool {
 	if !s.Open() || p.Order != nil {
 		return false
 	}
-	shown := &django.ExpectedTotal{Amount: p.Total, Currency: p.Currency}
-	if s.ShownTotal != nil && *s.ShownTotal == *shown {
+	shown := &Shown{
+		Total:      django.ExpectedTotal{Amount: p.Total, Currency: p.Currency},
+		CartDigest: p.CartDigest,
+	}
+	if s.Shown != nil && *s.Shown == *shown {
 		return false
 	}
-	s.ShownTotal = shown
+	s.Shown = shown
 	return true
 }
 

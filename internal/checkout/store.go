@@ -123,8 +123,11 @@ func NewStore(rdb *redis.Client, upstreamTimeout time.Duration) *Store {
 //     answers a repeat with, and a complete resumes a session whose
 //     order went unanswered (a v6 pod sends its order without the
 //     checkout's id: a resume of its session would place a second one).
+//   - v8: a session keeps the cart digest it showed with its total, and
+//     its order is placed only from that cart (a v7 pod knows nothing of
+//     the digest, and its save drops it).
 func sessionKey(schema, id string) string {
-	return "ag:" + schema + ":cs:v7:" + id
+	return "ag:" + schema + ":cs:v8:" + id
 }
 
 func lockKey(schema, id string) string {
@@ -608,13 +611,13 @@ func (st *Store) LockSession(
 	return s, release, nil
 }
 
-// StoreShown stores the total a read showed for a session it does not
-// hold the lock of (Session.ShownTotal), taking the lock for the write:
-// storing over a call that holds it would make that call's own save
-// fail. Nothing is stored while another call holds the lock
-// (ErrLocked), or when the session was stored since the read loaded it
-// (ErrSessionChanged) with another total: that call, or a later read,
-// stores its own. One stored since with the same total is the read's.
+// StoreShown stores what a read showed for a session it does not hold
+// the lock of (Session.Shown), taking the lock for the write: storing
+// over a call that holds it would make that call's own save fail.
+// Nothing is stored while another call holds the lock (ErrLocked), or
+// when the session was stored since the read loaded it
+// (ErrSessionChanged) with something else shown: that call, or a later
+// read, stores its own. One stored since showing the same is the read's.
 func (st *Store) StoreShown(
 	ctx context.Context, caller Caller, read *Session,
 ) error {
@@ -623,16 +626,15 @@ func (st *Store) StoreShown(
 		return err
 	}
 	defer release()
-	stored := s.ShownTotal != nil && read.ShownTotal != nil &&
-		*s.ShownTotal == *read.ShownTotal
+	stored := s.Shown != nil && read.Shown != nil && *s.Shown == *read.Shown
 	switch {
 	case stored:
-		// Another read stored the same total since.
+		// Another read stored the same since.
 		return nil
 	case s.Revision != read.Revision:
 		return ErrSessionChanged
 	}
-	s.ShownTotal = read.ShownTotal
+	s.Shown = read.Shown
 	return st.Save(ctx, s)
 }
 

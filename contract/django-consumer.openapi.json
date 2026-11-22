@@ -663,6 +663,10 @@
             ],
             "type": "object"
           },
+          "cartDigest": {
+            "nullable": true,
+            "type": "string"
+          },
           "currency": {
             "type": "string"
           },
@@ -726,6 +730,7 @@
         },
         "required": [
           "appliedPromotions",
+          "cartDigest",
           "currency",
           "discountTotal",
           "itemsSubtotal",
@@ -735,6 +740,15 @@
       },
       "CartQuoteRequestRequest": {
         "properties": {
+          "acsStationBranch": {
+            "type": "string"
+          },
+          "acsStationExternalId": {
+            "type": "string"
+          },
+          "boxnowLockerId": {
+            "type": "string"
+          },
           "countryId": {
             "type": "string"
           },
@@ -1030,6 +1044,9 @@
             "format": "email",
             "type": "string"
           },
+          "expectedCartDigest": {
+            "type": "string"
+          },
           "expectedTotal": {
             "$ref": "#/components/schemas/ExpectedTotalRequest"
           },
@@ -1072,6 +1089,7 @@
           "city",
           "countryId",
           "email",
+          "expectedCartDigest",
           "expectedTotal",
           "firstName",
           "lastName",

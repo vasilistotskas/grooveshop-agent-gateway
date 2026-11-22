@@ -313,10 +313,38 @@ type checkoutFaults struct {
 	// totalChanged makes order creation answer Django's 409
 	// total_changed: the amount due is no longer the expected total.
 	totalChanged atomic.Bool
+	// lineSwapped makes the cart's line another product at the same
+	// price, as Django reads and quotes it: the cart an order is made of is not
+	// the one a checkout showed, at the same total. swapOnReserve sets
+	// it when stock is reserved: a cart write that lands under a running
+	// completion, after its quotes and before its order.
+	lineSwapped   atomic.Bool
+	swapOnReserve atomic.Bool
 	// agentProtocol is the attribution the last order create carried.
 	agentProtocol atomic.Value
 	// carts are the carts the fake made.
 	carts *fakeCarts
+}
+
+// cart is the fake's cart as the faults leave it, the one a read returns
+// and a quote prices alike: with the coupon while couponHeld, its line
+// another product at the same price while lineSwapped.
+func (f *checkoutFaults) cart(t *testing.T) []byte {
+	name := "cart_with_items.json"
+	if f.couponHeld.Load() {
+		name = "cart_with_coupon.json"
+	}
+	// It runs on the fake's goroutines, which must not stop the test.
+	cart, err := os.ReadFile(fixturePath(name))
+	if err != nil {
+		t.Errorf("read the fixture: %v", err)
+		return nil
+	}
+	if f.lineSwapped.Load() {
+		cart = bytes.Replace(cart, []byte(`"product":{"id":1,`),
+			[]byte(`"product":{"id":2,`), 1)
+	}
+	return cart
 }
 
 // fakeCheckoutDjango extends the shared fake with the order-placement
@@ -402,8 +430,9 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 					`", "items": []}`))
 				return
 			}
-			if faults.couponHeld.Load() {
-				serveFixture(t, w, "cart_with_coupon.json")
+			if faults.couponHeld.Load() || faults.lineSwapped.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(faults.cart(t))
 				return
 			}
 			inner.ServeHTTP(w, r)
@@ -429,10 +458,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 		var req django.QuoteRequest
 		assert.NoError(t, json.Unmarshal(body, &req))
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		cart := "cart_with_items.json"
-		if faults.couponHeld.Load() {
-			cart = "cart_with_coupon.json"
-		}
+		lines := faults.cart(t)
 		cod := read("pay_way_1.json")
 		if faults.codFee.Load() {
 			cod = bytes.Replace(cod, []byte(`"freeThreshold": 100.0`),
@@ -446,7 +472,7 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			ways[1] = cod
 		}
 		djangotest.Store{
-			Cart: read(cart), PayWays: ways,
+			Cart: lines, PayWays: ways,
 			ShippingOptions: read("shipping_options.json"),
 		}.Quote(w, r)
 	}
@@ -460,14 +486,17 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			quote(w, r)
 		})
 	// amountDue is Django's quote of an order with these choices now: its
-	// expected total, or its refusal of a choice.
+	// expected total and cart digest, or its refusal of a choice.
 	amountDue := func(order map[string]any) *httptest.ResponseRecorder {
 		// A map of decoded JSON values always encodes.
 		choices, _ := json.Marshal(map[string]any{
 			"payWayId": order["payWayId"], "shippingKind": order["shippingKind"],
 			"shippingProviderCode": order["shippingProviderCode"],
 			"countryId":            order["countryId"], "regionId": order["regionId"],
-			"email": order["email"],
+			"email":                order["email"],
+			"acsStationExternalId": order["acsStationExternalId"],
+			"acsStationBranch":     order["acsStationBranch"],
+			"boxnowLockerId":       order["boxnowLockerId"],
 		})
 		rec := httptest.NewRecorder()
 		quote(rec, httptest.NewRequest(http.MethodPost, "/api/v1/cart/quote",
@@ -639,6 +668,9 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 					`reserve stock for empty cart.", "code": "cart_empty"}`))
 				return
 			}
+			if faults.swapOnReserve.Load() {
+				faults.lineSwapped.Store(true)
+			}
 			if faults.stockShort.Load() {
 				w.WriteHeader(http.StatusConflict)
 				_, _ = w.Write([]byte(`{"detail": "Not enough stock.",
@@ -744,9 +776,12 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			// Every agent checkout linked the terms and privacy policy,
 			// so every order it places accepts them.
 			assert.Equal(t, true, body["termsAccepted"])
-			// It is placed only at the amount due now, as Django places
-			// it (order/services.py, OrderTotalChangedError).
+			// It is placed only from the cart quoted, and at the amount
+			// due now, as Django places it, the cart checked first
+			// (order/services.py, OrderCartChangedError and
+			// OrderTotalChangedError).
 			assert.NotEmpty(t, body["expectedTotal"])
+			assert.NotEmpty(t, body["expectedCartDigest"])
 			due := amountDue(body)
 			if due.Code != http.StatusOK {
 				w.Header().Set("Content-Type", "application/json")
@@ -756,6 +791,18 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			}
 			var now map[string]any
 			assert.NoError(t, json.Unmarshal(due.Body.Bytes(), &now))
+			if now["cartDigest"] != body["expectedCartDigest"] {
+				raw, err := os.ReadFile(
+					fixturePath("order_cart_changed.json"))
+				if !assert.NoError(t, err) {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write(raw)
+				return
+			}
 			if !assert.ObjectsAreEqual(now["expectedTotal"],
 				body["expectedTotal"]) {
 				raw, err := os.ReadFile(
@@ -1736,6 +1783,32 @@ func TestUCPEndToEnd(t *testing.T) {
 			assert.EqualValues(t, 2, (*stack.faults.lastOrder.Load())["payWayId"])
 		})
 
+	// A checkout without a method showed no cart digest, so one completed
+	// with its first method is placed from the cart its own quote with
+	// that method priced: a cart write that lands under the completion
+	// after that quote is refused, and nothing is placed (#142).
+	t.Run("a cart changed under a complete that names the first method "+
+		"places nothing", func(t *testing.T) {
+		created := unready(t, nil)
+		require.Equal(t, "incomplete", created["status"])
+		placed := stack.faults.ordersPlaced.Load()
+
+		stack.faults.swapOnReserve.Store(true)
+		t.Cleanup(func() {
+			stack.faults.swapOnReserve.Store(false)
+			stack.faults.lineSwapped.Store(false)
+		})
+		res := complete(t, created["id"], uuid.NewString(),
+			map[string]any{"payment": codInstrument})
+		require.True(t, res.IsError, "refused: the cart changed")
+		assert.Contains(t, res.Content[0].(*mcp.TextContent).Text,
+			"cart_changed")
+		assert.Equal(t, placed, stack.faults.ordersPlaced.Load())
+		assert.EqualValues(t, 1,
+			stack.storedSession(t, created["id"].(string)).PayWayID,
+			"the method it named is kept")
+	})
+
 	// A first method the store does not have is the caller's mistake, not
 	// an outage to retry: refused, nothing stored, nothing placed.
 	t.Run("an unknown method named only at complete time is refused",
@@ -1815,6 +1888,34 @@ func TestUCPEndToEnd(t *testing.T) {
 			require.False(t, res.IsError, "%v", res.Content)
 			assert.Equal(t, "incomplete", structured(t, res)["status"])
 			assert.Zero(t, stack.storedSession(t, id).PayWayID)
+		})
+
+	// A first method named for a checkout whose delivery the store refuses
+	// (a carrier it does not ship by) is not taken, and the answer names
+	// the refused delivery, never "no total shown".
+	t.Run("a method named first for a refused delivery names the delivery",
+		func(t *testing.T) {
+			heavy := maps.Clone(fulfillment)
+			heavy["providerCode"] = "carrier_pigeon"
+			res := callTool(t, session, "create_checkout", map[string]any{
+				"meta": meta(""), "cart_id": stack.faults.carts.mint(),
+				"checkout": map[string]any{
+					"buyer": buyer, "fulfillment": heavy,
+				},
+			})
+			require.False(t, res.IsError, "%v", res.Content)
+			id := structured(t, res)["id"].(string)
+			orders := stack.faults.orderCreates.Load()
+
+			res = complete(t, id, uuid.NewString(),
+				map[string]any{"payment": codInstrument})
+			require.True(t, res.IsError, "%v", res.Content)
+			text := res.Content[0].(*mcp.TextContent).Text
+			assert.Contains(t, text, "refuses one of this checkout's choices")
+			assert.Contains(t, text, django.CodeShippingUnavailable)
+			assert.Equal(t, orders, stack.faults.orderCreates.Load())
+			assert.Zero(t, stack.storedSession(t, id).PayWayID,
+				"nothing is stored")
 		})
 
 	t.Run("a method named only at complete time that adds a fee places nothing",

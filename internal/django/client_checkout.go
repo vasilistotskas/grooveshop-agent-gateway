@@ -84,9 +84,7 @@ type OrderCreate struct {
 
 	ShippingProviderCode string `json:"shippingProviderCode,omitempty"`
 	ShippingKind         string `json:"shippingKind,omitempty"`
-	AcsStationExternalID string `json:"acsStationExternalId,omitempty"`
-	AcsStationBranch     string `json:"acsStationBranch,omitempty"`
-	BoxnowLockerID       string `json:"boxnowLockerId,omitempty"`
+	PickupPoint
 
 	CustomerNotes string `json:"customerNotes,omitempty"`
 
@@ -99,6 +97,13 @@ type OrderCreate struct {
 	// ExpectedTotal is the total the buyer was shown: Django creates the
 	// order only at exactly it, else answers 409 total_changed.
 	ExpectedTotal ExpectedTotal `json:"expectedTotal"`
+	// ExpectedCartDigest is the CartDigest of the quote whose total the
+	// buyer was shown: Django creates the order only from exactly the
+	// cart that quote priced (its lines, promotions, delivery with its
+	// pickup point, and pay way), else answers 409 cart_changed. It
+	// catches what the total cannot: a line swapped for one at the same
+	// price.
+	ExpectedCartDigest string `json:"expectedCartDigest"`
 
 	// AgentCheckout is the checkout session's id. Django believes it
 	// beside the internal secret alone, keeps one order per checkout,
@@ -130,8 +135,9 @@ type Attribution struct {
 // decides on sending it again, which is safe with the same
 // AgentCheckout (checkout.Flow). Django's
 // refusal of a cart whose earlier order awaits its payment is
-// ErrCartHasUnpaidOrder, and of a total that is no longer the amount due
-// ErrTotalChanged.
+// ErrCartHasUnpaidOrder, of a total that is no longer the amount due
+// ErrTotalChanged, and of a cart that is no longer the one quoted
+// ErrCartChanged.
 func (c *Client) CreateOrder(
 	ctx context.Context, host, lang, cartID string, body OrderCreate,
 ) (*Order, error) {
@@ -148,9 +154,13 @@ func (c *Client) CreateOrder(
 		apiErr.Code == CodeCartHasUnpaidOrder {
 		return nil, fmt.Errorf("%w: %w", ErrCartHasUnpaidOrder, err)
 	}
-	if apiErr, ok := errors.AsType[*APIError](err); ok &&
-		apiErr.Code == CodeTotalChanged {
-		return nil, fmt.Errorf("%w: %w", ErrTotalChanged, err)
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
+		switch apiErr.Code {
+		case CodeTotalChanged:
+			return nil, fmt.Errorf("%w: %w", ErrTotalChanged, err)
+		case CodeCartChanged:
+			return nil, fmt.Errorf("%w: %w", ErrCartChanged, err)
+		}
 	}
 	if err != nil {
 		return nil, err
