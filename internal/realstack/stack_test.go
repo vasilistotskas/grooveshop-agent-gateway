@@ -74,6 +74,13 @@ var paymentHosts = []string{
 	"demo.vivapayments.com",
 }
 
+// carrierDead is where Django sends every carrier API call it could make
+// in this stack: the profile container, which serves nothing on that
+// port, so a call is refused at once and no run reaches a carrier.
+// testdata/seed.py refuses to seed the carriers' placeholder credentials
+// unless every carrier URL Django reads is this.
+const carrierDead = "http://profile:9"
+
 //go:embed testdata/seed.py
 var seedScript string
 
@@ -285,6 +292,15 @@ func startStack(ctx context.Context) (*stack, func(), error) {
 		"AGENT_GATEWAY_INTERNAL_URL":    "http://gateway:8080",
 		"IDP_OIDC_PRIVATE_KEY":          key,
 		"STAFF_CONNECT_HOST":            connectHost,
+		// Every carrier host, so the placeholder credentials the seed
+		// gives the store reach no carrier (carrierDead). No Celery
+		// worker runs in this stack, so no carrier task runs either.
+		"ACS_API_BASE_URL":                        carrierDead,
+		"BOXNOW_STAGE_API_BASE_URL":               carrierDead,
+		"BOXNOW_STAGE_LOCATION_API_BASE_URL":      carrierDead,
+		"BOXNOW_PRODUCTION_API_BASE_URL":          carrierDead,
+		"BOXNOW_PRODUCTION_LOCATION_API_BASE_URL": carrierDead,
+		"REALSTACK_CARRIER_DEAD_URL":              carrierDead,
 	}
 	// A one-off management command, in a container of its own.
 	manage := func(
