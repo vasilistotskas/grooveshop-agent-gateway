@@ -50,11 +50,6 @@ func payWayDjango(t *testing.T) (*django.Client, func() url.Values) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(payWayCOD))
 		})
-	mux.HandleFunc("GET /api/v1/cart",
-		func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(pricingCart("0.0", false)))
-		})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	log := slog.New(slog.DiscardHandler)

@@ -17,9 +17,15 @@ const fixtureCartDigest = "a473a2a9fd750275edea7a8cf8631494520b0d51ab6db83a64de8
 func TestDecodeQuote(t *testing.T) {
 	q := decodeFixture[Quote](t, "cart_quote.json")
 
+	assert.Equal(t, []QuoteLine{{
+		ID: 41, ProductID: 7, ProductName: "Ακουστικά Studio",
+		MainImagePath: "media/demostore/uploads/products/studio-headphones.png",
+		Quantity:      2, UnitPrice: "464.68", TotalPrice: "929.36",
+	}}, q.Lines)
 	assert.Equal(t, "929.36", q.ItemsSubtotal.String())
 	assert.Equal(t, "0", q.DiscountTotal.String())
 	assert.Empty(t, q.AppliedPromotions)
+	assert.Empty(t, q.AppliedCoupons)
 	assert.Nil(t, q.BlockingCoupon)
 	require.NotNil(t, q.Shipping)
 	assert.Equal(t, "4.9", q.Shipping.Price.String())

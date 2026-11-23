@@ -181,11 +181,10 @@ func TestACreateOnACartDjangoNoLongerServes(t *testing.T) {
 		nothingLeft(t, cart)
 	})
 
-	t.Run("a cart Django cannot read now", func(t *testing.T) {
+	t.Run("a cart Django cannot quote now", func(t *testing.T) {
 		cart := stack.faults.carts.mint()
-		stack.faults.namedCartReadsFailFrom.Store(
-			stack.faults.namedCartReads.Load() + 1)
-		t.Cleanup(func() { stack.faults.namedCartReadsFailFrom.Store(0) })
+		stack.faults.quoteDown.Store(true)
+		t.Cleanup(func() { stack.faults.quoteDown.Store(false) })
 
 		a := p.create(ctx, cart, nil)
 

@@ -58,7 +58,7 @@ const (
 	// lockSteps sizes the session lock, in upstream timeouts: the calls
 	// a completion makes under it before its last write of the session.
 	// The handler looks the payment up, Flow.admit prices the checkout
-	// (its cart, its quote, its pay way), reads the pay ways and
+	// (its quote, its pay way), reads the pay ways and
 	// reserves the stock, and then the completion's own budget runs. A
 	// UCP complete that names a checkout's first method prices it once
 	// more first (firstMethodFee), and a slow Django can outlast the lock
@@ -71,9 +71,9 @@ const (
 	lockSteps = 3 + admitPricingSteps + completionSteps
 
 	// admitPricingSteps are the calls Flow.admit's ComputePricing makes
-	// for a checkout it admits: the cart, one quote (a refused choice
-	// quotes again, and is refused), the pay way.
-	admitPricingSteps = 3
+	// for a checkout it admits: one quote (a refused choice quotes again,
+	// and is refused), the pay way.
+	admitPricingSteps = 2
 
 	// claimDone is the value of a completion key whose order was placed,
 	// kept for the session's terminal lifetime so a retried key renders

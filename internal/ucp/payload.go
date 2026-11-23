@@ -230,7 +230,7 @@ func (b *Builder) BuildCheckout(
 	ctx context.Context, t *tenant.Tenant, s *checkout.Session,
 	capabilities map[string][]CapabilityRef,
 ) (*Checkout, error) {
-	pricing, _, err := checkout.ComputePricing(ctx, b.dj, t, s)
+	pricing, err := checkout.ComputePricing(ctx, b.dj, t, s)
 	if err != nil {
 		return nil, fmt.Errorf("ucp: pricing: %w", err)
 	}

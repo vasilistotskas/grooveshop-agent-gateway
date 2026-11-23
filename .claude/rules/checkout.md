@@ -346,10 +346,14 @@ Loads when working on a checkout session on either surface, its completion, its 
   other. ACP has no checkout awaiting a payment.
 - **A checkout's totals are Django's quote, and its order is placed at
   the total it showed, from the cart it showed** (#107, #142).
-  `checkout.ComputePricing` reads the cart for its lines and
-  `POST /cart/quote` (`django.Client.Quote`) for every amount, with the
-  very choices the order is placed with (`checkout.QuoteRequest`:
-  delivery, pay way, region, email). A quote that prices a delivery also
+  `checkout.ComputePricing` renders a checkout from one
+  `POST /cart/quote` (`django.Client.Quote`), with the very choices the
+  order is placed with (`checkout.QuoteRequest`: delivery, pay way,
+  region, email): its lines (`Quote.Lines`, the ones Django priced, from
+  the read its subtotal and digest come from), every amount and each
+  attached coupon's verdict (`Quote.AppliedCoupons`). No cart is read
+  beside it, so the lines, the total and the digest one render shows are
+  one snapshot (#205). A quote that prices a delivery also
   returns `cartDigest` (`Pricing.CartDigest`): Django's opaque digest of
   what the order would be made of (the lines, the promotions, the
   delivery; not the pay way, whose fee is the expected total's,

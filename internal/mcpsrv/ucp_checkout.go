@@ -1167,7 +1167,7 @@ func (h *handlers) firstMethodFee(
 	}
 	with := *s
 	with.PayWayID = payWayID
-	pricing, _, err := checkout.ComputePricing(ctx, h.deps.Django, t, &with)
+	pricing, err := checkout.ComputePricing(ctx, h.deps.Django, t, &with)
 	switch {
 	case err != nil && isCartGone(err):
 		return nil, errCheckoutCartGone
