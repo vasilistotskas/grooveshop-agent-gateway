@@ -21,7 +21,7 @@ func TestAddDiscounts(t *testing.T) {
 					Amount: json.Number("5.00"),
 				},
 			},
-			AppliedCoupons: []django.QuoteCoupon{{Code: "SAVE5"}},
+			AppliedCoupons: []django.AppliedCoupon{{Code: "SAVE5"}},
 		}))
 
 		assert.Equal(t, []PricedDiscount{
@@ -34,7 +34,7 @@ func TestAddDiscounts(t *testing.T) {
 	t.Run("a free-shipping coupon applies at 0", func(t *testing.T) {
 		p := &Pricing{}
 		require.NoError(t, p.addDiscounts(&django.Quote{
-			AppliedCoupons: []django.QuoteCoupon{{Code: "SHIPFREE"}},
+			AppliedCoupons: []django.AppliedCoupon{{Code: "SHIPFREE"}},
 		}))
 
 		assert.Equal(t, []PricedDiscount{{Name: "SHIPFREE", Code: "SHIPFREE"}},
@@ -51,7 +51,7 @@ func TestAddDiscounts(t *testing.T) {
 			BlockingCoupon: &django.QuoteBlockingCoupon{
 				Code: "FIRST10", Reason: "discount_code_not_applicable",
 			},
-			AppliedCoupons: []django.QuoteCoupon{{Code: "FIRST10"}},
+			AppliedCoupons: []django.AppliedCoupon{{Code: "FIRST10"}},
 		}))
 
 		assert.Equal(t, []PricedDiscount{
@@ -69,7 +69,7 @@ func TestAddDiscounts(t *testing.T) {
 		"rejection too", func(t *testing.T) {
 		p := &Pricing{}
 		require.NoError(t, p.addDiscounts(&django.Quote{
-			AppliedCoupons: []django.QuoteCoupon{{
+			AppliedCoupons: []django.AppliedCoupon{{
 				Code: "WEAK", Rejection: DiscountCodeCombinationDisallowed,
 			}},
 		}))

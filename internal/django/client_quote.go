@@ -39,12 +39,13 @@ type PickupPoint struct {
 // both, CartDigest without a delivery. Lines are the cart lines it
 // priced, from the read its ItemsSubtotal and CartDigest come from, so
 // a checkout rendered from one quote shows the lines its total covers.
+// AppliedCoupons is each attached code's verdict, the cart's shape.
 type Quote struct {
 	Lines             []QuoteLine          `json:"lines"`
 	ItemsSubtotal     json.Number          `json:"itemsSubtotal"`
 	DiscountTotal     json.Number          `json:"discountTotal"`
 	AppliedPromotions []QuotePromotion     `json:"appliedPromotions"`
-	AppliedCoupons    []QuoteCoupon        `json:"appliedCoupons"`
+	AppliedCoupons    []AppliedCoupon      `json:"appliedCoupons"`
 	BlockingCoupon    *QuoteBlockingCoupon `json:"blockingCoupon"`
 	Shipping          *QuoteShipping       `json:"shipping"`
 	PaymentMethodFee  *QuotePaymentFee     `json:"paymentMethodFee"`
@@ -72,16 +73,6 @@ type QuoteLine struct {
 	Quantity      int         `json:"quantity"`
 	UnitPrice     json.Number `json:"unitPrice"`
 	TotalPrice    json.Number `json:"totalPrice"`
-}
-
-// QuoteCoupon is the quote's verdict on one coupon code attached to the
-// cart: Rejection is the discount_code_* reason the store refuses it
-// with now, empty while it applies. Its money, if any, is the
-// QuotePromotion with its Code.
-type QuoteCoupon struct {
-	Code string `json:"code"`
-	// Rejection: Django declares the reason enum or null as a oneOf.
-	Rejection string `json:"rejection" contract:"nullable,untyped"`
 }
 
 // QuotePromotion is one offer that took money off the quoted cart, with

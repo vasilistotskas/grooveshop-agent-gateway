@@ -291,7 +291,6 @@ var djangoContract = []contractCall{
 			"QuoteRequest":        "CartQuoteRequestRequest",
 			"Quote":               "CartQuote",
 			"QuoteLine":           "QuoteLine",
-			"QuoteCoupon":         "QuoteAppliedCoupon",
 			"QuotePromotion":      "QuoteAppliedPromotion",
 			"QuoteShippingOption": "QuoteShippingOption",
 		},

@@ -674,7 +674,28 @@
         "properties": {
           "appliedCoupons": {
             "items": {
-              "$ref": "#/components/schemas/QuoteAppliedCoupon"
+              "properties": {
+                "amount": {
+                  "type": "number"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "freeShipping": {
+                  "type": "boolean"
+                },
+                "rejection": {
+                  "nullable": true,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "amount",
+                "code",
+                "freeShipping",
+                "rejection"
+              ],
+              "type": "object"
             },
             "type": "array"
           },
@@ -2165,21 +2186,6 @@
         },
         "required": [
           "settings"
-        ],
-        "type": "object"
-      },
-      "QuoteAppliedCoupon": {
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "rejection": {
-            "nullable": true
-          }
-        },
-        "required": [
-          "code",
-          "rejection"
         ],
         "type": "object"
       },
