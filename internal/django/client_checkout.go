@@ -220,7 +220,8 @@ func (e *DestinationRefusedError) Unwrap() error {
 var destinationFields = map[string][]string{
 	"street": nil,
 	"boxnowLockerId": {CodePickupPointUnknown,
-		CodePickupPointInAnotherCountry, CodePickupPointRequired},
+		CodePickupPointInAnotherCountry, CodePickupPointRequired,
+		CodePickupPointTooSmall, CodePickupPointSizeUnknown},
 	"acsStationExternalId": {CodePickupPointUnknown,
 		CodePickupPointInAnotherCountry, CodePickupPointRequired},
 	"shippingProviderCode": {CodePickupPointRequired},

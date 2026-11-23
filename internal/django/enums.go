@@ -65,14 +65,18 @@ const CodeTotalChanged = "total_changed"
 // pickup-point order's point, on the carrier's location field: one its
 // catalogue does not hold active, even once resynced; one in another
 // country than the order's; none (order/serializers/order.py,
-// shipping.services.deliverable_pickup_point). CreateOrder reports each
-// as a *DestinationRefusedError.
+// shipping.services.deliverable_pickup_point); a BOX NOW locker on the
+// live network without a compartment of the cart's size, or whose sizes
+// are not known yet (shipping.interfaces.PickupPointUnfit). CreateOrder
+// reports each as a *DestinationRefusedError.
 const (
 	CodeStreetNumberMissing         = "street_number_missing"
 	CodeStreetNumberIsPostcode      = "street_number_is_postcode"
 	CodePickupPointUnknown          = "pickup_point_unknown"
 	CodePickupPointInAnotherCountry = "pickup_point_in_another_country"
 	CodePickupPointRequired         = "pickup_point_required"
+	CodePickupPointTooSmall         = "pickup_point_too_small"
+	CodePickupPointSizeUnknown      = "pickup_point_size_unknown"
 )
 
 // CodeCartChanged is the `code` of Django's 409 refusing an order whose
