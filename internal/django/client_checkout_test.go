@@ -324,6 +324,35 @@ func TestCreateOrderNamesAPointInAnotherCountry(t *testing.T) {
 	assert.Equal(t, "boxnowLockerId", refused.Field)
 }
 
+// A BOX NOW locker that cannot be confirmed to take the cart (no
+// compartment of its size, or sizes not known yet) is a refusal of the
+// destination under its own code: the agent picks another locker.
+func TestCreateOrderNamesALockerThatCannotTakeTheCart(t *testing.T) {
+	for _, code := range []string{CodePickupPointTooSmall,
+		CodePickupPointSizeUnknown} {
+		t.Run(code, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(
+				func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write(fixture(t, "order_"+code+".json"))
+				}))
+			defer srv.Close()
+			_, err := newTestClient(t, srv.URL).CreateOrder(t.Context(),
+				"shop.example.test", "el", "cart-uuid", OrderCreate{
+					PayWayID: 1, CountryID: "GR",
+					ShippingKind:         "pickup_point",
+					ShippingProviderCode: ShippingProviderBoxNow,
+					BoxnowLockerID:       "25",
+				})
+			refused, ok := errors.AsType[*DestinationRefusedError](err)
+			require.True(t, ok, "%v", err)
+			assert.Equal(t, code, refused.Code)
+			assert.Equal(t, "boxnowLockerId", refused.Field)
+		})
+	}
+}
+
 // A pickup point is read from the catalogue with Django's exact filters,
 // in the order's country: an ACS station by its area code and branch
 // (the area code alone names every Smartpoint of the area), a BOX NOW
