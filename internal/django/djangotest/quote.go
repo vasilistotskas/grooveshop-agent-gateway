@@ -16,7 +16,7 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
 )
 
-// Store is what a quote is computed from: the bodies Django serves for
+// Store is what a quote is computed from: the bodies Django records for
 // the cart (GET /cart), the delivery options (GET /shipping/options) and
 // each pay way by id (GET /pay_way/{id}).
 type Store struct {
@@ -31,12 +31,25 @@ const waivedByPromotion = "promotion"
 
 type cartBody struct {
 	Items                 []json.RawMessage `json:"items"`
+	AppliedCoupons        []json.RawMessage `json:"appliedCoupons"`
 	TotalPrice            json.Number       `json:"totalPrice"`
 	PromotionDiscount     json.Number       `json:"promotionDiscount"`
 	FreeThresholdValue    json.Number       `json:"freeThresholdValue"`
 	PromotionFreeShipping bool              `json:"promotionFreeShipping"`
 	AppliedPromotions     []json.RawMessage `json:"appliedPromotions"`
 	Currency              string            `json:"currency"`
+}
+
+type itemBody struct {
+	ID      int64 `json:"id"`
+	Product struct {
+		ID            int64                         `json:"id"`
+		Translations  map[string]django.Translation `json:"translations"`
+		MainImagePath string                        `json:"mainImagePath"`
+	} `json:"product"`
+	Quantity   int         `json:"quantity"`
+	FinalPrice json.Number `json:"finalPrice"`
+	TotalPrice json.Number `json:"totalPrice"`
 }
 
 type optionBody struct {
@@ -53,8 +66,9 @@ type payWayBody struct {
 	FreeThreshold json.Number `json:"freeThreshold"`
 }
 
-// Quote answers POST /cart/quote as Django does: the items after the
-// cart's promotions, the chosen delivery (free when a promotion waives
+// Quote answers POST /cart/quote as Django does: the cart's lines (the
+// product named in the request's X-Language) and its coupons' verdicts,
+// the items after the cart's promotions, the chosen delivery (free when a promotion waives
 // it; refused with its code when the store does not ship that way or the
 // cart does not fit), the chosen pay way's fee (waived from its free
 // threshold; refused while it is not one of Store.PayWays), the options
@@ -73,6 +87,22 @@ func (s Store) Quote(w http.ResponseWriter, r *http.Request) {
 	if len(cart.Items) == 0 {
 		refuse(w, django.CodeCartEmpty)
 		return
+	}
+	lines := make([]map[string]any, 0, len(cart.Items))
+	for _, raw := range cart.Items {
+		var it itemBody
+		if json.Unmarshal(raw, &it) != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		lines = append(lines, map[string]any{
+			"id": it.ID, "productId": it.Product.ID,
+			"productName": django.Localized(it.Product.Translations,
+				r.Header.Get("X-Language")).Name,
+			"mainImagePath": it.Product.MainImagePath,
+			"quantity":      it.Quantity, "unitPrice": it.FinalPrice,
+			"totalPrice": it.TotalPrice,
+		})
 	}
 	items := minor(cart.TotalPrice)
 	discount := minor(cart.PromotionDiscount)
@@ -141,17 +171,24 @@ func (s Store) Quote(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Django lists none as [], never null: a fixture without them is a
+	// cart that has none.
+	if cart.AppliedPromotions == nil {
+		cart.AppliedPromotions = []json.RawMessage{}
+	}
+	if cart.AppliedCoupons == nil {
+		cart.AppliedCoupons = []json.RawMessage{}
+	}
 	body := map[string]any{
+		"lines":         lines,
 		"itemsSubtotal": amount(items), "discountTotal": amount(discount),
-		"appliedPromotions": cart.AppliedPromotions, "blockingCoupon": nil,
+		"appliedPromotions": cart.AppliedPromotions,
+		"appliedCoupons":    cart.AppliedCoupons, "blockingCoupon": nil,
 		"freeThresholdValue": amount(value), "shipping": shipping,
 		"paymentMethodFee": nil, "loyaltyDiscount": amount(0),
 		"giftCardAmount": nil, "grandTotal": nil, "amountDue": nil,
 		"currency": cart.Currency, "expectedTotal": nil, "cartDigest": nil,
 		"shippingOptions": listed, "payWays": []any{},
-	}
-	if body["appliedPromotions"] == nil {
-		body["appliedPromotions"] = []any{}
 	}
 	if fee != nil {
 		body["paymentMethodFee"] = map[string]any{

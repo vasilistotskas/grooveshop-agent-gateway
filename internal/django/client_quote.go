@@ -36,11 +36,15 @@ type PickupPoint struct {
 // QuoteRequest (CartQuote): the one computation order creation runs. A
 // row that depends on a choice not made is nil: Shipping without a
 // delivery, PaymentMethodFee without a pay way, ExpectedTotal without
-// both, CartDigest without a delivery.
+// both, CartDigest without a delivery. Lines are the cart lines it
+// priced, from the read its ItemsSubtotal and CartDigest come from, so
+// a checkout rendered from one quote shows the lines its total covers.
 type Quote struct {
+	Lines             []QuoteLine          `json:"lines"`
 	ItemsSubtotal     json.Number          `json:"itemsSubtotal"`
 	DiscountTotal     json.Number          `json:"discountTotal"`
 	AppliedPromotions []QuotePromotion     `json:"appliedPromotions"`
+	AppliedCoupons    []QuoteCoupon        `json:"appliedCoupons"`
 	BlockingCoupon    *QuoteBlockingCoupon `json:"blockingCoupon"`
 	Shipping          *QuoteShipping       `json:"shipping"`
 	PaymentMethodFee  *QuotePaymentFee     `json:"paymentMethodFee"`
@@ -54,6 +58,30 @@ type Quote struct {
 	// request's country, priced as an order would be; nil without a
 	// country.
 	ShippingOptions []QuoteShippingOption `json:"shippingOptions" contract:"nullable"`
+}
+
+// QuoteLine is one cart line as the quote priced it. ID is the cart
+// item; ProductName is in the request's language. UnitPrice is what the
+// buyer pays per unit and TotalPrice Quantity units of it, both before
+// the promotions in Quote.DiscountTotal.
+type QuoteLine struct {
+	ID            int64       `json:"id"`
+	ProductID     int64       `json:"productId"`
+	ProductName   string      `json:"productName"`
+	MainImagePath string      `json:"mainImagePath"`
+	Quantity      int         `json:"quantity"`
+	UnitPrice     json.Number `json:"unitPrice"`
+	TotalPrice    json.Number `json:"totalPrice"`
+}
+
+// QuoteCoupon is the quote's verdict on one coupon code attached to the
+// cart: Rejection is the discount_code_* reason the store refuses it
+// with now, empty while it applies. Its money, if any, is the
+// QuotePromotion with its Code.
+type QuoteCoupon struct {
+	Code string `json:"code"`
+	// Rejection: Django declares the reason enum or null as a oneOf.
+	Rejection string `json:"rejection" contract:"nullable,untyped"`
 }
 
 // QuotePromotion is one offer that took money off the quoted cart, with

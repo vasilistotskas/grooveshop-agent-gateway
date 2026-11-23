@@ -425,7 +425,7 @@ func (f *Flow) admit(
 	// row: the checkout is not ready, whatever its stored status says.
 	// It is named first: a checkout that showed a refused choice showed
 	// no order's total either, and the refusal says what to change.
-	pricing, _, err := ComputePricing(ctx, f.dj, t, s)
+	pricing, err := ComputePricing(ctx, f.dj, t, s)
 	if err != nil {
 		return err
 	}

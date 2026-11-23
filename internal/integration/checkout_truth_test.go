@@ -261,9 +261,8 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 		assert.NotContains(t, body, "continue_url")
 	})
 
-	// Its cart cannot be read: it may have gone with the order.
-	stack.faults.namedCartReadsFailFrom.Store(
-		stack.faults.namedCartReads.Load() + 1)
+	// Its cart cannot be priced: it may have gone with the order.
+	stack.faults.quoteDown.Store(true)
 	calls := func(surface completionSurface) map[string]surfaceAnswer {
 		id := ids[surface.name]
 		return map[string]surfaceAnswer{
@@ -334,7 +333,7 @@ func TestAnUnconfirmedOrderIsAnsweredAsOne(t *testing.T) {
 	t.Run("once it cannot be running", unknown)
 
 	// A read that renders carries the same guidance beside the status.
-	stack.faults.namedCartReadsFailFrom.Store(0)
+	stack.faults.quoteDown.Store(false)
 	read := surfaces["ucp"].read(ctx, ids["ucp"])
 	assert.Equal(t, "complete_in_progress", read.status, read.refusal)
 	assert.Contains(t, read.text, "has not confirmed")

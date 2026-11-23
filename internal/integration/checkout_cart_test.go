@@ -1304,9 +1304,8 @@ func TestACreateWritesItsCartOnlyOnceItHoldsIt(t *testing.T) {
 			cart := stack.faults.carts.mint()
 			old := p.started(t, cart)
 			sessions := stack.sessionCount(t)
-			stack.faults.namedCartReadsFailFrom.Store(
-				stack.faults.namedCartReads.Load() + 1)
-			defer stack.faults.namedCartReadsFailFrom.Store(0)
+			stack.faults.quoteDown.Store(true)
+			defer stack.faults.quoteDown.Store(false)
 
 			a := p.create(ctx, cart, nil)
 

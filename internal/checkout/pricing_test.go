@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
-	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -31,44 +29,22 @@ func pricingTenant() *tenant.Tenant {
 	}
 }
 
-// pricingCart renders a one-line cart (2 × 100.00 EUR) with the given
-// promotion state, in the upstream wire shape. Its freeThresholdValue is
-// Django's: the items after the promotion discount, never below zero.
-func pricingCart(promo string, freeShipping bool) string {
-	rawCodes := []byte("[]")
-	discount, err := money.MinorUnits(promo)
-	if err != nil {
-		panic(err)
-	}
-	threshold := money.Format(max(20000-discount, 0))
-	return `{"id":1,"uuid":"29eb4495-e018-45e7-b59c-6646302bd4ef",` +
-		`"items":[{"id":10,"product":{"id":5,"translations":` +
-		`{"el":{"name":"Δοκιμαστικό","description":""}},` +
-		`"finalPrice":100.00},"quantity":2,"finalPrice":100.00,` +
-		`"totalPrice":200.00}],"totalPrice":200.00,` +
-		`"totalDiscountValue":12.00,"promotionDiscount":` + promo + `,` +
-		`"freeThresholdValue":` + threshold + `,` +
-		`"promotionFreeShipping":` + strconv.FormatBool(freeShipping) + `,` +
-		`"appliedCouponCodes":` + string(rawCodes) + `,` +
-		`"totalItems":2,"totalItemsUnique":1,"totalWeightGrams":107,` +
-		`"currency":"EUR"}`
-}
-
 // pricingSessionCart is the cart every pricing test session names.
 const pricingSessionCart = "29eb4495-e018-45e7-b59c-6646302bd4ef"
 
-// quoteDjango serves the pricing cart, answers each quote with quote(r)
-// (the status and body Django would), and records every quote request.
+// quoteDjango answers each quote with quote(r) (the status and body
+// Django would) and records every quote request. A checkout is priced
+// from its quote alone: a read of the cart beside it fails the test.
 func quoteDjango(
-	t *testing.T, cart string, quote func(django.QuoteRequest) (int, string),
+	t *testing.T, quote func(django.QuoteRequest) (int, string),
 ) (*django.Client, *[]django.QuoteRequest) {
 	t.Helper()
 	var asked []django.QuoteRequest
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/cart",
 		func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(cart))
+			t.Error("the checkout read the cart beside its quote")
+			w.WriteHeader(http.StatusInternalServerError)
 		})
 	mux.HandleFunc("POST /api/v1/cart/quote",
 		func(w http.ResponseWriter, r *http.Request) {
@@ -100,9 +76,9 @@ func quoteDjango(
 // quoteDigest is the cart digest of a quote that prices a delivery.
 const quoteDigest = "5e1f0c2a9b3d4e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f"
 
-// quoteBody is a quote of the pricing cart (200.00 of items) with a
-// promotion of 20.00, and the rows given; "null" leaves one out. As
-// Django's, it has a cart digest when it prices a delivery.
+// quoteBody is a quote of a one-line cart (2 × 100.00 EUR) with a
+// coupon's promotion of 20.00, and the rows given; "null" leaves one
+// out. As Django's, it has a cart digest when it prices a delivery.
 func quoteBody(shipping, fee, expected string) string {
 	digest := `"` + quoteDigest + `"`
 	if shipping == "null" {
@@ -113,9 +89,15 @@ func quoteBody(shipping, fee, expected string) string {
 
 // quoteBodyDigest is quoteBody with the cart digest given.
 func quoteBodyDigest(shipping, fee, expected, digest string) string {
-	return `{"itemsSubtotal":200.00,"discountTotal":20.00,` +
+	return `{"lines":[{"id":10,"productId":5,"productName":"Δοκιμαστικό",` +
+		`"mainImagePath":"media/public/uploads/products/test.png",` +
+		`"quantity":2,"unitPrice":100.00,"totalPrice":200.00,` +
+		`"promotionDiscount":20.00}],` +
+		`"itemsSubtotal":200.00,"discountTotal":20.00,` +
 		`"appliedPromotions":[{"promotionId":3,"name":"-20","code":"SAVE20",` +
-		`"amount":20.00}],"blockingCoupon":null,"freeThresholdValue":180.00,` +
+		`"amount":20.00}],"appliedCoupons":[{"code":"SAVE20","amount":20.00,` +
+		`"freeShipping":false,"gift":false,"rejection":null}],` +
+		`"blockingCoupon":null,"freeThresholdValue":180.00,` +
 		`"shipping":` + shipping + `,"paymentMethodFee":` + fee + `,` +
 		`"loyaltyDiscount":0,"giftCardAmount":null,"grandTotal":null,` +
 		`"amountDue":null,"currency":"EUR","expectedTotal":` + expected + `,` +
@@ -142,7 +124,7 @@ func readySession() *Session {
 // email included: the gateway adds nothing up, and the total is the one
 // an order is placed at.
 func TestComputePricingIsTheQuote(t *testing.T) {
-	dj, asked := quoteDjango(t, pricingCart("20.00", false),
+	dj, asked := quoteDjango(t,
 		func(django.QuoteRequest) (int, string) {
 			return http.StatusOK, quoteBody(
 				`{"price":3.50,"waivedBy":null}`,
@@ -150,17 +132,20 @@ func TestComputePricingIsTheQuote(t *testing.T) {
 				`{"amount":18550,"currency":"EUR"}`)
 		})
 
-	p, cart, err := ComputePricing(t.Context(), dj, pricingTenant(),
+	p, err := ComputePricing(t.Context(), dj, pricingTenant(),
 		readySession())
 	require.NoError(t, err)
-	require.NotNil(t, cart)
 
 	assert.Equal(t, []django.QuoteRequest{{
 		PayWayID: 7, ShippingKind: FulfillmentHomeDelivery,
 		ShippingProviderCode: "acs", CountryID: "GR", RegionID: "ATT",
 		Email: "buyer@example.test",
 	}}, *asked)
-	assert.Len(t, p.Lines, 1)
+	assert.Equal(t, []PricedLine{{
+		LineID: 10, ProductID: 5, Title: "Δοκιμαστικό",
+		ImagePath: "media/public/uploads/products/test.png",
+		Quantity:  2, UnitMinor: 10000, TotalMinor: 20000,
+	}}, p.Lines, "the lines the quote priced")
 	assert.EqualValues(t, 20000, p.ItemsSubtotal)
 	assert.EqualValues(t, 2000, p.DiscountTotal)
 	assert.Equal(t, []PricedDiscount{
@@ -182,7 +167,7 @@ func TestComputePricingIsTheQuote(t *testing.T) {
 // A delivery a promotion waived is a free row; a pay way's waived fee is
 // no row.
 func TestComputePricingWaivers(t *testing.T) {
-	dj, _ := quoteDjango(t, pricingCart("20.00", true),
+	dj, _ := quoteDjango(t,
 		func(django.QuoteRequest) (int, string) {
 			return http.StatusOK, quoteBody(
 				`{"price":0,"waivedBy":"promotion"}`,
@@ -190,7 +175,7 @@ func TestComputePricingWaivers(t *testing.T) {
 				`{"amount":18000,"currency":"EUR"}`)
 		})
 
-	p, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+	p, err := ComputePricing(t.Context(), dj, pricingTenant(),
 		readySession())
 	require.NoError(t, err)
 	assert.True(t, p.HasDelivery)
@@ -202,7 +187,7 @@ func TestComputePricingWaivers(t *testing.T) {
 // A checkout that has not chosen everything has no total an order is
 // placed at: its total is the rows the quote priced, and it is not final.
 func TestComputePricingWithoutEveryChoice(t *testing.T) {
-	dj, asked := quoteDjango(t, pricingCart("20.00", false),
+	dj, asked := quoteDjango(t,
 		func(django.QuoteRequest) (int, string) {
 			return http.StatusOK, quoteBody(
 				`{"price":3.50,"waivedBy":null}`, "null", "null")
@@ -210,7 +195,7 @@ func TestComputePricingWithoutEveryChoice(t *testing.T) {
 	s := readySession()
 	s.PayWayID = 0
 
-	p, _, err := ComputePricing(t.Context(), dj, pricingTenant(), s)
+	p, err := ComputePricing(t.Context(), dj, pricingTenant(), s)
 	require.NoError(t, err)
 	assert.Zero(t, (*asked)[0].PayWayID)
 	assert.False(t, p.HasPaymentFee)
@@ -224,7 +209,7 @@ func TestComputePricingWithoutEveryChoice(t *testing.T) {
 // out what the order is checked against: it is an error, as a quote
 // without a row it was asked for is.
 func TestAQuoteWithoutItsCartDigestIsAnError(t *testing.T) {
-	dj, _ := quoteDjango(t, pricingCart("20.00", false),
+	dj, _ := quoteDjango(t,
 		func(django.QuoteRequest) (int, string) {
 			return http.StatusOK, quoteBodyDigest(
 				`{"price":3.50,"waivedBy":null}`,
@@ -232,27 +217,27 @@ func TestAQuoteWithoutItsCartDigestIsAnError(t *testing.T) {
 				`{"amount":18550,"currency":"EUR"}`, "null")
 		})
 
-	_, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+	_, err := ComputePricing(t.Context(), dj, pricingTenant(),
 		readySession())
 	require.ErrorIs(t, err, django.ErrUpstreamDown)
 
 	// A delivery priced without a pay way must carry the digest too: a
 	// quote of one without it cannot be read either.
-	dj, _ = quoteDjango(t, pricingCart("20.00", false),
+	dj, _ = quoteDjango(t,
 		func(django.QuoteRequest) (int, string) {
 			return http.StatusOK, quoteBodyDigest(
 				`{"price":3.50,"waivedBy":null}`, "null", "null", "null")
 		})
 	s := readySession()
 	s.PayWayID = 0
-	_, _, err = ComputePricing(t.Context(), dj, pricingTenant(), s)
+	_, err = ComputePricing(t.Context(), dj, pricingTenant(), s)
 	require.ErrorIs(t, err, django.ErrUpstreamDown, "delivery, no pay way")
 }
 
 // A choice the store refuses is named and left out, and the rest is
 // priced: the pay way, judged against the delivery, then the delivery.
 func TestComputePricingDropsARefusedChoice(t *testing.T) {
-	dj, asked := quoteDjango(t, pricingCart("0.0", false),
+	dj, asked := quoteDjango(t,
 		func(r django.QuoteRequest) (int, string) {
 			switch {
 			case r.PayWayID != 0:
@@ -266,7 +251,7 @@ func TestComputePricingDropsARefusedChoice(t *testing.T) {
 			return http.StatusOK, quoteBody("null", "null", "null")
 		})
 
-	p, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+	p, err := ComputePricing(t.Context(), dj, pricingTenant(),
 		readySession())
 	require.NoError(t, err)
 	require.Len(t, *asked, 3)
@@ -288,9 +273,9 @@ func TestComputePricingQuoteFailures(t *testing.T) {
 		http.StatusNotFound: `{"detail":"Cart not found",` +
 			`"code":"cart_not_found"}`,
 	} {
-		dj, _ := quoteDjango(t, pricingCart("0.0", false),
+		dj, _ := quoteDjango(t,
 			func(django.QuoteRequest) (int, string) { return status, body })
-		_, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+		_, err := ComputePricing(t.Context(), dj, pricingTenant(),
 			readySession())
 		require.Error(t, err, status)
 	}
@@ -301,7 +286,7 @@ func TestComputePricingQuoteFailures(t *testing.T) {
 // no longer has is a refused choice; an empty cart has nothing to price.
 func TestComputePricingRefusedData(t *testing.T) {
 	t.Run("the checkout's data", func(t *testing.T) {
-		dj, asked := quoteDjango(t, pricingCart("0.0", false),
+		dj, asked := quoteDjango(t,
 			func(r django.QuoteRequest) (int, string) {
 				if r.Email != "" {
 					return http.StatusBadRequest, `{"email":["Enter a ` +
@@ -311,7 +296,7 @@ func TestComputePricingRefusedData(t *testing.T) {
 				}
 				return http.StatusOK, quoteBody("null", "null", "null")
 			})
-		p, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+		p, err := ComputePricing(t.Context(), dj, pricingTenant(),
 			readySession())
 		require.NoError(t, err)
 		require.Len(t, *asked, 2)
@@ -321,7 +306,7 @@ func TestComputePricingRefusedData(t *testing.T) {
 		assert.Contains(t, p.InputRefused.Detail, "valid email")
 	})
 	t.Run("a pay way the store no longer has", func(t *testing.T) {
-		dj, _ := quoteDjango(t, pricingCart("0.0", false),
+		dj, _ := quoteDjango(t,
 			func(r django.QuoteRequest) (int, string) {
 				if r.PayWayID != 0 {
 					return http.StatusNotFound, `{"detail":"Payment method ` +
@@ -330,7 +315,7 @@ func TestComputePricingRefusedData(t *testing.T) {
 				return http.StatusOK, quoteBody(
 					`{"price":3.50,"waivedBy":null}`, "null", "null")
 			})
-		p, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+		p, err := ComputePricing(t.Context(), dj, pricingTenant(),
 			readySession())
 		require.NoError(t, err)
 		require.NotNil(t, p.PayWayRefused)
@@ -338,24 +323,25 @@ func TestComputePricingRefusedData(t *testing.T) {
 		assert.True(t, p.HasDelivery)
 	})
 	t.Run("an empty cart", func(t *testing.T) {
-		dj, _ := quoteDjango(t, pricingCart("0.0", false),
+		dj, _ := quoteDjango(t,
 			func(django.QuoteRequest) (int, string) {
 				return http.StatusBadRequest, `{"detail":"Cart is empty.",` +
 					`"code":"cart_empty"}`
 			})
-		p, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+		p, err := ComputePricing(t.Context(), dj, pricingTenant(),
 			readySession())
 		require.NoError(t, err)
 		assert.Zero(t, p.Total)
 		assert.Equal(t, "EUR", p.Currency)
+		assert.Equal(t, []PricedLine{}, p.Lines, "lists no line")
 	})
 	t.Run("a quote in another currency than the store's", func(t *testing.T) {
-		dj, _ := quoteDjango(t, pricingCart("0.0", false),
+		dj, _ := quoteDjango(t,
 			func(django.QuoteRequest) (int, string) {
 				return http.StatusOK, strings.Replace(quoteBody("null",
 					"null", "null"), `"EUR"`, `"USD"`, 1)
 			})
-		_, _, err := ComputePricing(t.Context(), dj, pricingTenant(),
+		_, err := ComputePricing(t.Context(), dj, pricingTenant(),
 			readySession())
 		require.Error(t, err, "never shown under the store's currency")
 	})

@@ -118,9 +118,10 @@ func (p *Pricing) Refused() *Refusal {
 	return nil
 }
 
-// ComputePricing fetches the cart fresh for its lines and Django's quote
-// for every amount. Money totals are never computed by the gateway: what
-// the checkout shows is what Django charges.
+// ComputePricing renders a checkout from Django's quote: its lines and
+// every amount come from that one answer, so the lines, the total and the
+// cart digest are one snapshot of the cart. Money totals are never
+// computed by the gateway: what the checkout shows is what Django charges.
 //
 // A choice the store refuses (Pricing.DeliveryRefused, PayWayRefused) is
 // left out and the rest is priced. A quote that cannot be read is an
@@ -129,54 +130,28 @@ func (p *Pricing) Refused() *Refusal {
 //
 // Once an order exists it is what the buyer bought, and Django deletes the
 // cart with it (on payment, for an online method), so the totals come from
-// the order and the returned cart is nil.
+// the order.
 func ComputePricing(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant, s *Session,
-) (*Pricing, *django.Cart, error) {
+) (*Pricing, error) {
 	if s.OrderUUID != "" {
-		p, err := orderPricing(ctx, dj, t, s.OrderUUID)
-		return p, nil, err
-	}
-	cart, err := dj.GetCart(ctx, t.Domain, t.DefaultLocale, s.CartID)
-	if err != nil {
-		return nil, nil, err
+		return orderPricing(ctx, dj, t, s.OrderUUID)
 	}
 
-	p := &Pricing{Lines: []PricedLine{}}
-	for _, it := range cart.Items {
-		tr := django.Localized(it.Product.Translations, t.DefaultLocale)
-		unit, err := money.MinorUnits(it.FinalPrice.String())
-		if err != nil {
-			return nil, nil, err
-		}
-		lineTotal, err := money.MinorUnits(it.TotalPrice.String())
-		if err != nil {
-			return nil, nil, err
-		}
-		p.Lines = append(p.Lines, PricedLine{
-			LineID:     it.ID,
-			ProductID:  it.Product.ID,
-			Title:      tr.Name,
-			ImagePath:  it.Product.MainImagePath,
-			Quantity:   it.Quantity,
-			UnitMinor:  unit,
-			TotalMinor: lineTotal,
-		})
-	}
-
+	p := &Pricing{}
 	q, err := p.quote(ctx, dj, t, s)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	// Every amount is labelled with the store's currency: a quote in
 	// another is a store whose settings disagree, and is not shown.
 	if q.Currency != t.DefaultCurrency || (q.ExpectedTotal != nil &&
 		q.ExpectedTotal.Currency != t.DefaultCurrency) {
-		return nil, nil, fmt.Errorf("checkout: the store quotes %s, "+
+		return nil, fmt.Errorf("checkout: the store quotes %s, "+
 			"its checkout shows %s", q.Currency, t.DefaultCurrency)
 	}
-	if err := p.addQuote(q, cart); err != nil {
-		return nil, nil, err
+	if err := p.addQuote(q); err != nil {
+		return nil, err
 	}
 	if s.PayWayID > 0 && p.PayWayRefused == nil {
 		// Whether the agent can settle the checkout is the pay way's
@@ -187,7 +162,7 @@ func ComputePricing(
 			p.PayWay = pw
 		}
 	}
-	return p, cart, nil
+	return p, nil
 }
 
 // QuoteRequest is the quote of what the session has chosen: the very
@@ -291,10 +266,13 @@ func shippingRefusal(code string) bool {
 	return false
 }
 
-// addQuote copies the quote's amounts. The total is the quote's expected
-// total when it has one (both a delivery and a pay way chosen); without,
-// the rows it has, which no order is placed at.
-func (p *Pricing) addQuote(q *django.Quote, cart *django.Cart) error {
+// addQuote copies the quote's lines and amounts. The total is the quote's
+// expected total when it has one (both a delivery and a pay way chosen);
+// without, the rows it has, which no order is placed at.
+func (p *Pricing) addQuote(q *django.Quote) error {
+	if err := p.addLines(q); err != nil {
+		return err
+	}
 	var err error
 	if p.ItemsSubtotal, err = money.MinorUnits(q.ItemsSubtotal.String()); err != nil {
 		return err
@@ -302,7 +280,7 @@ func (p *Pricing) addQuote(q *django.Quote, cart *django.Cart) error {
 	if p.DiscountTotal, err = money.MinorUnits(q.DiscountTotal.String()); err != nil {
 		return err
 	}
-	if err := p.addDiscounts(q, cart); err != nil {
+	if err := p.addDiscounts(q); err != nil {
 		return err
 	}
 	p.Currency = q.Currency
@@ -329,6 +307,32 @@ func (p *Pricing) addQuote(q *django.Quote, cart *django.Cart) error {
 	// most, and the delivery and the fee come on top.
 	p.Total = max(p.ItemsSubtotal-p.DiscountTotal, 0) + p.DeliveryFee +
 		p.PaymentFee
+	return nil
+}
+
+// addLines copies the lines the quote priced, at its prices: a line is
+// listed as the quote's total covers it.
+func (p *Pricing) addLines(q *django.Quote) error {
+	p.Lines = make([]PricedLine, 0, len(q.Lines))
+	for _, l := range q.Lines {
+		unit, err := money.MinorUnits(l.UnitPrice.String())
+		if err != nil {
+			return err
+		}
+		lineTotal, err := money.MinorUnits(l.TotalPrice.String())
+		if err != nil {
+			return err
+		}
+		p.Lines = append(p.Lines, PricedLine{
+			LineID:     l.ID,
+			ProductID:  l.ProductID,
+			Title:      l.ProductName,
+			ImagePath:  l.MainImagePath,
+			Quantity:   l.Quantity,
+			UnitMinor:  unit,
+			TotalMinor: lineTotal,
+		})
+	}
 	return nil
 }
 
@@ -395,12 +399,11 @@ func orderPricing(
 }
 
 // addDiscounts copies the quote's per-offer breakdown and its verdict on
-// the attached coupon. A coupon that applies with no money of its own
-// (free shipping, a gift) takes nothing off, so the quote does not list
-// it: the cart names it, and it is listed at 0. The coupon the quote
-// says order creation refuses is a rejection, and so is one the cart
-// says is refused without blocking the order.
-func (p *Pricing) addDiscounts(q *django.Quote, cart *django.Cart) error {
+// each attached coupon. A coupon that applies with no money of its own
+// (free shipping, a gift) takes nothing off, so no offer lists it: it is
+// listed at 0. The coupon the quote says order creation refuses is a
+// rejection, and so is one it refuses without blocking the order.
+func (p *Pricing) addDiscounts(q *django.Quote) error {
 	monetary := map[string]bool{}
 	for _, ap := range q.AppliedPromotions {
 		amount, err := money.MinorUnits(ap.Amount.String())
@@ -426,11 +429,11 @@ func (p *Pricing) addDiscounts(q *django.Quote, cart *django.Cart) error {
 			"The store refuses discount code %q (%s) for an order.",
 			b.Code, reason)}
 	}
-	for _, c := range cart.AppliedCoupons {
+	for _, c := range q.AppliedCoupons {
 		switch {
 		case q.BlockingCoupon != nil && q.BlockingCoupon.Code == c.Code:
 		// Refused without blocking the order (another offer won, it
-		// applies to nothing in the cart): the cart says why.
+		// applies to nothing in the cart): the quote says why.
 		case c.Rejection != "":
 			p.RefusedCoupons = append(p.RefusedCoupons, DiscountRejection{
 				Code:   c.Code,

@@ -55,11 +55,10 @@ func TestComputePricingPlacedOrder(t *testing.T) {
 		Domain:        "demostore.test",
 	}
 
-	p, cart, err := ComputePricing(t.Context(), dj, tn,
+	p, err := ComputePricing(t.Context(), dj, tn,
 		&Session{CartID: "gone", OrderUUID: placedOrderUUID})
 	require.NoError(t, err)
 
-	assert.Nil(t, cart)
 	assert.Equal(t, []PricedLine{{
 		LineID: 19, ProductID: 19, Title: "Powerbank", ImagePath: "p.jpg",
 		Quantity: 2, UnitMinor: 3958, TotalMinor: 7916,
@@ -88,7 +87,7 @@ func TestComputePricingPlacedOrderUnreadable(t *testing.T) {
 	dj := django.New(srv.URL+"/api/v1", "platform.test", "secret",
 		time.Second, slog.New(slog.DiscardHandler), obs.NewMetrics())
 
-	_, _, err := ComputePricing(t.Context(), dj,
+	_, err := ComputePricing(t.Context(), dj,
 		&tenant.Tenant{Domain: "demostore.test"},
 		&Session{OrderUUID: placedOrderUUID})
 	assert.ErrorIs(t, err, django.ErrUpstreamDown)

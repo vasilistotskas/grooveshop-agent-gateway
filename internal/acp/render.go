@@ -65,7 +65,7 @@ func Render(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant,
 	links storefront.Links, s *checkout.Session,
 ) (*Session, error) {
-	pricing, _, err := checkout.ComputePricing(ctx, dj, t, s)
+	pricing, err := checkout.ComputePricing(ctx, dj, t, s)
 	if err != nil {
 		return nil, fmt.Errorf("acp: pricing: %w", err)
 	}

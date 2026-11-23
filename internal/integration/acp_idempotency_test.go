@@ -300,17 +300,17 @@ func TestACPIdempotencyKeys(t *testing.T) {
 		func(t *testing.T) {
 			key := uuid.NewString()
 			sessions := stack.sessionCount(t)
-			// The create's own read of the cart passes; the render's fails.
-			stack.faults.namedCartReadsFailFrom.Store(
-				stack.faults.namedCartReads.Load() + 2)
-			t.Cleanup(func() { stack.faults.namedCartReadsFailFrom.Store(0) })
+			// The create's own read of the cart passes; the render's quote
+			// fails.
+			stack.faults.quoteDown.Store(true)
+			t.Cleanup(func() { stack.faults.quoteDown.Store(false) })
 			resp, body := acpCall(t, http.MethodPost, base, createBody, key)
 			assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 			assert.Equal(t, "unavailable", body["code"])
 			assert.Equal(t, sessions, stack.sessionCount(t),
 				"a create that cannot be answered must not keep a session")
 
-			stack.faults.namedCartReadsFailFrom.Store(0)
+			stack.faults.quoteDown.Store(false)
 			resp, raw := create(t, key, createBody)
 			assertFresh(t, resp, raw)
 		})
@@ -340,7 +340,7 @@ func TestACPIdempotencyKeys(t *testing.T) {
 	// A claim lasts what its request can take when the store answers
 	// every call just inside the upstream timeout: the lock's nine, and
 	// one more for the write that settles the key.
-	t.Run("a settled key is kept 24 hours, a claim ten upstream timeouts",
+	t.Run("a settled key is kept 24 hours, a claim nine upstream timeouts",
 		func(t *testing.T) {
 			key := uuid.NewString()
 			resp, body := create(t, key, createBody)
@@ -382,11 +382,11 @@ func TestACPIdempotencyKeys(t *testing.T) {
 				"ag:demostore:acp:idem:complete.v3:"+id+":"+completeKey).Result()
 			require.NoError(t, err)
 			assert.Positive(t, ttl, "a claim must expire")
-			assert.InDelta(t, (10 * ucpUpstreamTimeout).Seconds(),
+			assert.InDelta(t, (9 * ucpUpstreamTimeout).Seconds(),
 				ttl.Seconds(), 2)
 			lock, err := stack.rdb.TTL(ctx, lockRedisKey(id)).Result()
 			require.NoError(t, err)
-			assert.InDelta(t, (9 * ucpUpstreamTimeout).Seconds(),
+			assert.InDelta(t, (8 * ucpUpstreamTimeout).Seconds(),
 				lock.Seconds(), 2)
 			release()
 			assert.Equal(t, http.StatusOK, <-done)
@@ -712,15 +712,14 @@ func TestAnACPKeyIsFreedForARetry(t *testing.T) {
 	t.Run("stored, answered with a 5xx", func(t *testing.T) {
 		id := acpReady(t, base)
 		key := uuid.NewString()
-		stack.faults.namedCartReadsFailFrom.Store(
-			stack.faults.namedCartReads.Load() + 1)
-		t.Cleanup(func() { stack.faults.namedCartReadsFailFrom.Store(0) })
+		stack.faults.quoteDown.Store(true)
+		t.Cleanup(func() { stack.faults.quoteDown.Store(false) })
 		resp, body := update(id, key)
 		require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 		assert.Equal(t, "unavailable", body["code"])
 		saved := stack.storedSession(t, id)
 		require.Equal(t, "other@example.test", saved.Buyer.Email)
-		stack.faults.namedCartReadsFailFrom.Store(0)
+		stack.faults.quoteDown.Store(false)
 		assertFreeThenKept(t, id, key)
 		// The retry found its own change in the session and saved nothing.
 		assert.Equal(t, saved.Revision, stack.storedSession(t, id).Revision)
@@ -736,15 +735,14 @@ func TestAnACPKeyIsFreedForARetry(t *testing.T) {
 			return acpCall(t, http.MethodPost, base+"/"+id+"/cancel",
 				nil, key)
 		}
-		stack.faults.namedCartReadsFailFrom.Store(
-			stack.faults.namedCartReads.Load() + 1)
-		t.Cleanup(func() { stack.faults.namedCartReadsFailFrom.Store(0) })
+		stack.faults.quoteDown.Store(true)
+		t.Cleanup(func() { stack.faults.quoteDown.Store(false) })
 		resp, body := cancel(key)
 		require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 		assert.Equal(t, "unavailable", body["code"])
 		saved := stack.storedSession(t, id)
 		require.Equal(t, checkout.StatusCanceled, saved.Status)
-		stack.faults.namedCartReadsFailFrom.Store(0)
+		stack.faults.quoteDown.Store(false)
 		assertFree(t, "ag:demostore:acp:idem:cancel.v3:"+id+":"+key)
 
 		resp, body = cancel(key)

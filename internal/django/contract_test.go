@@ -290,6 +290,8 @@ var djangoContract = []contractCall{
 		names: map[string]string{
 			"QuoteRequest":        "CartQuoteRequestRequest",
 			"Quote":               "CartQuote",
+			"QuoteLine":           "QuoteLine",
+			"QuoteCoupon":         "QuoteAppliedCoupon",
 			"QuotePromotion":      "QuoteAppliedPromotion",
 			"QuoteShippingOption": "QuoteShippingOption",
 		},

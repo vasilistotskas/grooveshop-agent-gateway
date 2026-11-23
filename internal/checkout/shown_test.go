@@ -98,7 +98,7 @@ func TestAdmitNamesARefusedChoiceBeforeTheShownTotal(t *testing.T) {
 				}}), ErrTotalNotShown},
 	} {
 		t.Run(name, func(t *testing.T) {
-			dj, _ := quoteDjango(t, pricingCart("20.00", false), tc.quote)
+			dj, _ := quoteDjango(t, tc.quote)
 			s := ready()
 			require.Equal(t, StatusReadyForComplete, s.Status)
 			s.Shown = tc.shown

@@ -303,10 +303,6 @@ type checkoutFaults struct {
 	couponHeld atomic.Bool
 	// cartCreates counts the carts created: a cart read naming none.
 	cartCreates atomic.Int32
-	// namedCartReads counts the reads of a named cart; from the read
-	// numbered namedCartReadsFailFrom on (when set), they answer 502.
-	namedCartReads         atomic.Int32
-	namedCartReadsFailFrom atomic.Int32
 	// quoteDown makes the checkout quote answer 502; quotes counts the
 	// quotes asked.
 	quoteDown atomic.Bool
@@ -441,13 +437,6 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 		func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("X-Cart-Id") == "" {
 				faults.cartCreates.Add(1)
-			} else {
-				n := faults.namedCartReads.Add(1)
-				from := faults.namedCartReadsFailFrom.Load()
-				if from > 0 && n >= from {
-					w.WriteHeader(http.StatusBadGateway)
-					return
-				}
 			}
 			if faults.cartDeletedOnOrder.Load() &&
 				faults.ordersPlaced.Load() > 0 {
@@ -529,6 +518,16 @@ func fakeCheckoutDjango(t *testing.T, faults *checkoutFaults) http.Handler {
 			faults.quotes.Add(1)
 			if faults.quoteDown.Load() {
 				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			// A quote never creates a cart: one Django does not serve
+			// is cart_not_found.
+			if id := r.Header.Get("X-Cart-Id"); id != "" &&
+				!faults.carts.known(id) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"detail": "Cart not found", ` +
+					`"code": "cart_not_found"}`))
 				return
 			}
 			quote(w, r)

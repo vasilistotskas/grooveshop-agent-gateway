@@ -672,6 +672,12 @@
       },
       "CartQuote": {
         "properties": {
+          "appliedCoupons": {
+            "items": {
+              "$ref": "#/components/schemas/QuoteAppliedCoupon"
+            },
+            "type": "array"
+          },
           "appliedPromotions": {
             "items": {
               "$ref": "#/components/schemas/QuoteAppliedPromotion"
@@ -723,6 +729,12 @@
           "itemsSubtotal": {
             "type": "number"
           },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/QuoteLine"
+            },
+            "type": "array"
+          },
           "paymentMethodFee": {
             "nullable": true,
             "properties": {
@@ -760,11 +772,13 @@
           }
         },
         "required": [
+          "appliedCoupons",
           "appliedPromotions",
           "cartDigest",
           "currency",
           "discountTotal",
           "itemsSubtotal",
+          "lines",
           "shippingOptions"
         ],
         "type": "object"
@@ -2154,6 +2168,21 @@
         ],
         "type": "object"
       },
+      "QuoteAppliedCoupon": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "rejection": {
+            "nullable": true
+          }
+        },
+        "required": [
+          "code",
+          "rejection"
+        ],
+        "type": "object"
+      },
       "QuoteAppliedPromotion": {
         "properties": {
           "amount": {
@@ -2175,6 +2204,41 @@
           "code",
           "name",
           "promotionId"
+        ],
+        "type": "object"
+      },
+      "QuoteLine": {
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "mainImagePath": {
+            "type": "string"
+          },
+          "productId": {
+            "type": "integer"
+          },
+          "productName": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "integer"
+          },
+          "totalPrice": {
+            "type": "number"
+          },
+          "unitPrice": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "mainImagePath",
+          "productId",
+          "productName",
+          "quantity",
+          "totalPrice",
+          "unitPrice"
         ],
         "type": "object"
       },

@@ -99,7 +99,7 @@ func (f flowStack) readySessionPaying(
 	require.Equal(t, checkout.StatusReadyForComplete, s.Status)
 	// What its last render showed: the fixture cart, delivered free and
 	// paid without a fee.
-	p, _, err := checkout.ComputePricing(t.Context(), f.dj, f.tenant, s)
+	p, err := checkout.ComputePricing(t.Context(), f.dj, f.tenant, s)
 	require.NoError(t, err)
 	require.True(t, s.Show(p))
 	require.Equal(t, fixtureShownTotal, s.Shown.Total)
