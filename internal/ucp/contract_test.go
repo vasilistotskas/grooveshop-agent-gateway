@@ -749,14 +749,31 @@ func TestBuildCheckoutRendersTheFulfillmentExtension(t *testing.T) {
 	for _, m := range payload.Messages {
 		paths[m.Path] = m
 	}
-	for _, path := range []string{"$.buyer", pathDestinations, pathOption,
-		"$.payment"} {
+	// No group is rendered without a country, so the carrier is asked
+	// for at the shipping method.
+	for _, path := range []string{"$.buyer", pathDestinations,
+		pathShipping, "$.payment"} {
 		m, ok := paths[path]
 		if assert.True(t, ok, path) {
 			assert.Equal(t, Message{Type: "error", Code: "missing",
 				Path: path, Severity: "recoverable", Text: m.Text}, m)
 		}
 	}
+	assert.NotContains(t, paths, pathOption, "no group to select in")
+
+	// With the country known the group is rendered, and the carrier is
+	// asked for at its selection.
+	s.Deliver(checkout.Fulfillment{CountryCode: "GR", City: "Αθήνα",
+		Zipcode: "10431", Street: "Πανεπιστημίου 12", RegionID: "GR-14"})
+	payload, err = b.BuildCheckout(t.Context(), tn, s, checkoutCaps)
+	require.NoError(t, err)
+	require.NotEmpty(t, payload.Fulfillment.Methods[0].Groups)
+	paths = map[string]Message{}
+	for _, m := range payload.Messages {
+		paths[m.Path] = m
+	}
+	assert.Contains(t, paths, pathOption)
+	assert.NotContains(t, paths, pathShipping)
 
 	s.Deliver(checkout.Fulfillment{
 		Kind: checkout.FulfillmentHomeDelivery, ProviderCode: "acs",

@@ -198,10 +198,11 @@ func TestMissingAPickupPointIsAnErrorAtTheSelection(t *testing.T) {
 		Email: "maria@example.test", Phone: "+306912345678"}
 	s.PayWayID = 1
 	s.Deliver(checkout.Fulfillment{Kind: checkout.FulfillmentPickupPoint})
+	rendered := &Fulfillment{Methods: []FulfillmentMethod{{ID: "shipping"}}}
 
 	assert.Equal(t, []Message{{Type: "error", Code: "missing",
 		Path: pathPoint, Severity: "recoverable",
-		Text: missing(s, true)[0].Text}}, missing(s, true))
+		Text: missing(s, rendered)[0].Text}}, missing(s, rendered))
 
 	s.Deliver(checkout.Fulfillment{
 		Kind: checkout.FulfillmentPickupPoint, ProviderCode: "boxnow",
@@ -213,7 +214,7 @@ func TestMissingAPickupPointIsAnErrorAtTheSelection(t *testing.T) {
 		assert.Equal(t, []Message{{Type: "error", Code: code,
 			Path: pathPoint, Severity: "recoverable",
 			Text: DestinationRefusedText(code),
-		}}, missing(s, true), code)
+		}}, missing(s, rendered), code)
 	}
 	assert.Contains(t,
 		DestinationRefusedText(django.CodePickupPointInAnotherCountry),

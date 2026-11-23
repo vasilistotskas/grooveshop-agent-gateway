@@ -234,10 +234,12 @@ wins over this page.
   - What a checkout still needs is an `error` message, `recoverable`,
     code `missing`, at its path (`ucp.missing`: `$.buyer`,
     `…methods[0].destinations`, `…destinations[0].address_region`,
-    `…groups[0].selected_option_id`, `…methods[1].selected_destination_id`,
-    `$.payment`), and a refused delivery is the quote's code at the
-    shipping group's option, or for a pickup at the pickup method's
-    `selected_destination_id` (its remedy another point or shipping).
+    `…groups[0].selected_option_id` once the group is rendered, else
+    `$.fulfillment.methods[0]`, `…methods[1].selected_destination_id`,
+    `$.payment`): a path names only a member the checkout renders. A
+    refused delivery is the quote's code at the shipping group's option,
+    or for a pickup at the pickup method's `selected_destination_id`
+    (its remedy another point or shipping).
   - **A destination Django refuses** at order creation
     (`django.DestinationRefusedError`: any code on `street` but a street
     not sent, `street_number_missing` and `street_number_is_postcode`

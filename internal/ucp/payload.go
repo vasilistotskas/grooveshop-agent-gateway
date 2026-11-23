@@ -383,7 +383,7 @@ func (b *Builder) BuildCheckout(
 		// keeps the cart, and refuses a second order from it only when
 		// an agent places it: a buyer who opened the earlier link could
 		// order the same cart again on the web.
-		out.Messages = append(out.Messages, missing(s, fulfills)...)
+		out.Messages = append(out.Messages, missing(s, out.Fulfillment)...)
 	}
 	if s.OrderUUID != "" && s.Status == checkout.StatusCompleted {
 		out.Order = &OrderConfirmation{

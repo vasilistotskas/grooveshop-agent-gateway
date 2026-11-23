@@ -267,6 +267,8 @@ An update replaces the checkout, so it carries the lines, the buyer and the fulf
 
 Leave out `regionId` and the checkout stays `incomplete`, with a message listing the valid codes. **Observed:** PASS.
 
+**Real-stack test** (`internal/realstack/order_create_test.go`), against a real Django: a pickup order at an ACS Smartpoint (paid on delivery) and at a BOX NOW locker (paid online), each selected by its id, shown by its catalogue name and delivered to the point's catalogue address; a street line with no house number refused `street_number_missing` at the line until the address changes; and a cart written in Django after its checkout showed it refused with Django's own 409 `cart_changed`, then placed after a read. The stack gives its throwaway store placeholder carrier credentials for this, with every carrier URL leading nowhere (`testdata/seed.py`).
+
 ### U2. Hosted payment hands off to the buyer
 
 **Label:** Staging. **Purpose:** an online method cannot be paid by an agent, so the checkout must hand off to the provider's page. Never open the link, so no payment is made.
