@@ -338,7 +338,7 @@ func TestACPIdempotencyKeys(t *testing.T) {
 	})
 
 	// A claim lasts what its request can take when the store answers
-	// every call just inside the upstream timeout: the lock's nine, and
+	// every call just inside the upstream timeout: the lock's eight, and
 	// one more for the write that settles the key.
 	t.Run("a settled key is kept 24 hours, a claim nine upstream timeouts",
 		func(t *testing.T) {
