@@ -24,10 +24,18 @@ type RegionOption struct {
 
 // ResolveRegion settles the session's delivery region from what the caller
 // named: a region code or name, in any language the store has it in,
-// whatever its case or accents. Django refuses an order without a region
-// when the country has any, so the session keeps the country's regions and
-// stays incomplete until one is chosen. Naming nothing, or a region the
-// country does not have, leaves it unchosen, and Missing lists the choices.
+// whatever its case or accents. The choices are the regions of the country
+// the store delivers to at home (its shipping zones, django.Client.Regions).
+// Django refuses an order without a region when the country has any, so
+// the session keeps those regions and stays incomplete until one is
+// chosen. Naming nothing, a region the country does not have, or one the
+// store does not deliver to, leaves it unchosen, and Missing lists the
+// choices.
+//
+// A region Django refused when the order was sent (region_not_served: the
+// store stopped delivering there since it was chosen) is judged again
+// here, against the regions read now: the refusal goes, and the region is
+// chosen only if the store delivers to it again.
 func ResolveRegion(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant, s *Session,
 	named string,
@@ -43,6 +51,10 @@ func ResolveRegion(
 		ctx, t.Domain, t.DefaultLocale, s.Fulfillment.CountryCode)
 	if err != nil {
 		return fmt.Errorf("checkout: regions: %w", err)
+	}
+	if r := s.DestinationRefused; r != nil &&
+		r.Code == django.CodeRegionNotServed {
+		s.DestinationRefused = nil
 	}
 	want := foldRegion(named)
 	for _, r := range regions {

@@ -435,7 +435,10 @@ func missing(s *checkout.Session, f *Fulfillment) []Message {
 		case checkout.NeedDestination:
 			r := s.DestinationRefused
 			path := pathStreet
-			if s.Fulfillment.Pickup() {
+			switch {
+			case r.Code == django.CodeRegionNotServed:
+				path = pathRegion
+			case s.Fulfillment.Pickup():
 				path = pathPoint
 			}
 			add(r.Code, path, DestinationRefusedText(r.Code))
@@ -489,6 +492,11 @@ func DestinationRefusedText(code string) string {
 			"street_address. Send the street followed by its house " +
 			"number (e.g. \"Ermou 12\"), and a floor or flat in " +
 			"extended_address."
+	case django.CodeRegionNotServed:
+		return "The store no longer delivers to the region in " +
+			"address_region. Send the destination again with another " +
+			"region of the country, or choose the pickup method, where " +
+			"the store offers it."
 	}
 	return "The store refused the street in street_address. Send the " +
 		"street's name followed by its house number (e.g. \"Ermou 12\"), " +

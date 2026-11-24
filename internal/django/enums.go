@@ -67,7 +67,10 @@ const CodeTotalChanged = "total_changed"
 // country than the order's; none (order/serializers/order.py,
 // shipping.services.deliverable_pickup_point); a BOX NOW locker on the
 // live network without a compartment of the cart's size, or whose sizes
-// are not known yet (shipping.interfaces.PickupPointUnfit). CreateOrder
+// are not known yet (shipping.interfaces.PickupPointUnfit).
+// CodeRegionNotServed refuses a home delivery's region, on `regionId`: the
+// store delivers home elsewhere in the country, but its shipping zones do
+// not reach that region (shipping/zones.py, destination_errors). CreateOrder
 // reports each as a *DestinationRefusedError.
 const (
 	CodeStreetNumberMissing         = "street_number_missing"
@@ -77,6 +80,7 @@ const (
 	CodePickupPointRequired         = "pickup_point_required"
 	CodePickupPointTooSmall         = "pickup_point_too_small"
 	CodePickupPointSizeUnknown      = "pickup_point_size_unknown"
+	CodeRegionNotServed             = "region_not_served"
 )
 
 // CodeCartChanged is the `code` of Django's 409 refusing an order whose
@@ -99,11 +103,14 @@ const CodeCartEmpty = "cart_empty"
 
 // The codes of Django's 400 refusing a delivery that cannot be priced for
 // a cart (shipping/enum/refusal.py, ShippingRefusal): the store does not
-// ship that way to the country, or the cart does not fit it.
+// ship that way to the country, or ships that way to the country but not
+// to the region (the region's shipping zone has no such rate), or the
+// cart does not fit it.
 const (
-	CodeShippingUnavailable    = "shipping_unavailable"
-	CodeShippingParcelTooLarge = "shipping_parcel_too_large"
-	CodeShippingWeightExceeded = "shipping_weight_exceeded"
+	CodeShippingUnavailable       = "shipping_unavailable"
+	CodeShippingRegionUnavailable = "shipping_region_unavailable"
+	CodeShippingParcelTooLarge    = "shipping_parcel_too_large"
+	CodeShippingWeightExceeded    = "shipping_weight_exceeded"
 )
 
 // AgentProtocolMCP is the attribution agentProtocol (Django's

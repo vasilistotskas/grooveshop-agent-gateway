@@ -324,6 +324,29 @@ func TestCreateOrderNamesAPointInAnotherCountry(t *testing.T) {
 	assert.Equal(t, "boxnowLockerId", refused.Field)
 }
 
+// A region the store's shipping zones no longer reach (it stopped
+// delivering there after the checkout chose it) is a refusal of the
+// destination, on regionId: the agent names another region.
+func TestCreateOrderNamesARegionTheStoreDoesNotDeliverTo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write(fixture(t, "order_region_not_served.json"))
+		}))
+	defer srv.Close()
+	_, err := newTestClient(t, srv.URL).CreateOrder(t.Context(),
+		"shop.example.test", "el", "cart-uuid", OrderCreate{
+			PayWayID: 1, CountryID: "GR", RegionID: "GR-M",
+			ShippingKind: "home_delivery", Street: "Ερμού 12",
+		})
+	refused, ok := errors.AsType[*DestinationRefusedError](err)
+	require.True(t, ok, "%v", err)
+	assert.Equal(t, CodeRegionNotServed, refused.Code)
+	assert.Equal(t, "regionId", refused.Field)
+	require.ErrorIs(t, err, ErrValidation)
+}
+
 // A BOX NOW locker that cannot be confirmed to take the cart (no
 // compartment of its size, or sizes not known yet) is a refusal of the
 // destination under its own code: the agent picks another locker.

@@ -225,6 +225,7 @@ var destinationFields = map[string][]string{
 	"acsStationExternalId": {CodePickupPointUnknown,
 		CodePickupPointInAnotherCountry, CodePickupPointRequired},
 	"shippingProviderCode": {CodePickupPointRequired},
+	"regionId":             {CodeRegionNotServed},
 }
 
 // refusesDestination reports whether Django's code on field refuses the
