@@ -35,7 +35,9 @@ type RegionOption struct {
 // A region Django refused when the order was sent (region_not_served: the
 // store stopped delivering there since it was chosen) is judged again
 // here, against the regions read now: the refusal goes, and the region is
-// chosen only if the store delivers to it again.
+// chosen only if the store delivers to it again. It stays while the store
+// delivers home to no region of the country: the checkout then takes
+// another country or a pickup, either of which drops it (Session.Deliver).
 func ResolveRegion(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant, s *Session,
 	named string,
@@ -52,7 +54,9 @@ func ResolveRegion(
 	if err != nil {
 		return fmt.Errorf("checkout: regions: %w", err)
 	}
-	if r := s.DestinationRefused; r != nil &&
+	// The refused region is one of this country's, so an empty list says
+	// that none of its regions is served, not that it has none.
+	if r := s.DestinationRefused; r != nil && len(regions) > 0 &&
 		r.Code == django.CodeRegionNotServed {
 		s.DestinationRefused = nil
 	}

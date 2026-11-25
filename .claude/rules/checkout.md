@@ -367,8 +367,8 @@ Loads when working on a checkout session on either surface, its completion, its 
   priced.
   - **A choice the store refuses is named, not priced.** A delivery the
     store does not ship that way or the cart outgrew
-    (`shipping_unavailable`, `shipping_weight_exceeded`,
-    `shipping_parcel_too_large`), or a pay way not offered for the
+    (`shipping_unavailable`, `shipping_region_unavailable`,
+    `shipping_weight_exceeded`, `shipping_parcel_too_large`), or a pay way not offered for the
     delivery or gone (`pay_way_unavailable`, `pay_way_not_found`), is
     left out and the rest quoted again (`Pricing.DeliveryRefused`,
     `PayWayRefused`). An attached coupon the order would be refused for
@@ -429,12 +429,15 @@ Loads when working on a checkout session on either surface, its completion, its 
     `AddressLine2`, never a street number: Django splits the line. A
     pickup order carries the point (`Fulfillment.PickupPoint`, which the
     quote carries too) and no address or region: Django delivers it to
-    the point's (django-api #767). A line it cannot split, or a point its
-    catalogue does not hold (`django.DestinationRefusedError`), is stored
+    the point's (django-api #767). A line it cannot split, a point its
+    catalogue does not hold, or a region the store no longer delivers to
+    (`django.DestinationRefusedError`), is stored
     on the session (`Session.DestinationRefused`, `NeedDestination` in
     `Session.Missing`), so the checkout reads not ready, and every
     surface sets a delivery through `Session.Deliver`, which drops the
-    refusal once the destination changes.
+    refusal once the destination changes. A refused region is also
+    judged again by `ResolveRegion`, against the regions the store serves
+    now; while it serves none of the country's, the refusal stays.
     What a checkout still needs is `Session.Missing`, a list of `Need`
     each surface words and places itself.
 - **One live checkout holds a cart** (#141). Two sessions on one cart

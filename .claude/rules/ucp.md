@@ -179,7 +179,8 @@ wins over this page.
     postal address. `street_address` is the one street line with the
     house number after the street, sent to Django as `street`, which
     splits it; `extended_address` is the order's `addressLine2`;
-    `address_region` names the region (`checkout.ResolveRegion`); its
+    `address_region` names the region, one the store delivers to at home
+    (`checkout.ResolveRegion`); its
     contact members are not read (the order's contact is `buyer`). A
     request that names `selected_destination_id` `shipping_address` and
     writes no destination keeps the stored address. One group
@@ -245,11 +246,15 @@ wins over this page.
     not sent, `street_number_missing` and `street_number_is_postcode`
     worded by the gateway; `pickup_point_unknown`,
     `pickup_point_in_another_country`, `pickup_point_required` on the
-    carrier's location field, read from
+    carrier's location field; `region_not_served` on `regionId`, a region
+    the store's shipping zones no longer reach; read from
     `fields` whatever the body's own code) is stored on the session
     (`Session.DestinationRefused`) until the destination changes
-    (`Session.Deliver`): the checkout reads `incomplete` with that code
-    at the street (`…destinations[0].street_address`) or the selection
+    (`Session.Deliver`) or, for a region, until one is read that the
+    store serves (`checkout.ResolveRegion`): the checkout reads
+    `incomplete` with that code
+    at the street (`…destinations[0].street_address`), the region
+    (`…destinations[0].address_region`) or the selection
     (`…methods[1].selected_destination_id`), and the complete that met
     it is answered with that checkout, nothing placed.
 - **update_checkout replaces the checkout** ("the platform is REQUIRED to

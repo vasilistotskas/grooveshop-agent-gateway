@@ -129,6 +129,19 @@ func TestARefusedRegionIsJudgedAgain(t *testing.T) {
 	assert.NotNil(t, s.DestinationRefused)
 }
 
+// The refusal stays while the store delivers home to no region of the
+// country (regionDjango lists none for any country but GR): the checkout
+// is not ready without the region Django refused.
+func TestARefusedRegionStaysWhileNoRegionIsServed(t *testing.T) {
+	s := &Session{Fulfillment: homeDelivery()}
+	s.Fulfillment.CountryCode = "CY"
+	s.DestinationRefused = &Refusal{Code: django.CodeRegionNotServed}
+	require.NoError(t, ResolveRegion(t.Context(),
+		regionDjango(t, http.StatusOK), regionTenant(), s, "CY-01"))
+	assert.NotNil(t, s.DestinationRefused)
+	assert.Contains(t, s.Missing(), NeedDestination)
+}
+
 // The refusal stays while the served regions cannot be read: nothing
 // says the region is served again.
 func TestARefusedRegionStaysWhileTheRegionsAreUnreadable(t *testing.T) {

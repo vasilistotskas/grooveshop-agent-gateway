@@ -160,11 +160,13 @@ Loads when working on the ACP handler, or the routes that answer before it. The 
   - The address's `line_one` is the one street line, sent to Django as
     `street` with no street number (Django splits it, and refuses a
     line it cannot split), and `line_two` the order's `addressLine2`. A
-    complete Django refuses for the street line
-    (`django.DestinationRefusedError`) is 400 `invalid` with `param`
-    `$.fulfillment_details.address.line_one`, nothing placed; the session
-    then reads `not_ready_for_payment` with an `invalid` message there
-    until an update changes the address (`Session.DestinationRefused`).
+    complete Django refuses for the street line or the region
+    (`django.DestinationRefusedError`, `destinationRefusal`) is 400
+    `invalid` with `param` `$.fulfillment_details.address.line_one` or
+    `….address.state`, nothing placed; the session then reads
+    `not_ready_for_payment` with an `invalid` message there until an
+    update changes the address (`Session.DestinationRefused`) or, for a
+    region, names one the store serves (`checkout.ResolveRegion`).
     ACP offers no pickup point.
   - `completeError` answers every `checkout` and `django` sentinel
     deliberately (`TestCompleteErrorMapsEverySentinel` walks them): a
