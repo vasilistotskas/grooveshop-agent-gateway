@@ -240,18 +240,22 @@ wins over this page.
     `$.payment`): a path names only a member the checkout renders. A
     refused delivery is the quote's code at the shipping group's option,
     or for a pickup at the pickup method's `selected_destination_id`
-    (its remedy another point or shipping).
+    (its remedy another point or shipping), and for a region no carrier
+    delivers to at `…destinations[0].address_region`.
   - **A destination Django refuses** at order creation
     (`django.DestinationRefusedError`: any code on `street` but a street
     not sent, `street_number_missing` and `street_number_is_postcode`
     worded by the gateway; `pickup_point_unknown`,
     `pickup_point_in_another_country`, `pickup_point_required` on the
     carrier's location field; `region_not_served` on `regionId`, a region
-    the store's shipping zones no longer reach; read from
+    the store's shipping zones no longer reach, and `region_required`, none
+    named in a country that has some; read from
     `fields` whatever the body's own code) is stored on the session
     (`Session.DestinationRefused`) until the destination changes
-    (`Session.Deliver`) or, for a region, until one is read that the
-    store serves (`checkout.ResolveRegion`): the checkout reads
+    (`Session.Deliver`) or, for a region, until the regions the store
+    serves are read again (`checkout.ResolveRegion`, which also refuses a
+    country none of whose regions is served, `country_not_served` at
+    `…destinations[0].address_country`): the checkout reads
     `incomplete` with that code
     at the street (`…destinations[0].street_address`), the region
     (`…destinations[0].address_region`) or the selection

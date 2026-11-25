@@ -1,13 +1,18 @@
 package acp
 
 import (
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/obs"
 )
 
 // line_one is the one street line, which Django splits, and line_two
@@ -77,6 +82,70 @@ func TestARefusedStreetLineIsNamedUntilItChanges(t *testing.T) {
 	address.Address.LineOne = "Πανεπιστημίου 12"
 	applyFulfillment(s, address, nil)
 	assert.Nil(t, s.DestinationRefused)
+}
+
+// A delivery no carrier makes to the region is refused at state: with no
+// option left, another option is no remedy.
+func TestARegionNoCarrierDeliversToIsAtState(t *testing.T) {
+	refused := &checkout.Refusal{
+		Code: django.CodeShippingRegionUnavailable, Detail: "Not there."}
+	for name, tc := range map[string]struct {
+		options []django.QuoteShippingOption
+		param   string
+	}{
+		"none left": {nil, paramState},
+		"another carrier": {
+			[]django.QuoteShippingOption{{Kind: "home_delivery"}},
+			"$.selected_fulfillment_options",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := refusedChoices(&checkout.Pricing{
+				DeliveryRefused: refused, ShippingOptions: tc.options})
+			require.Len(t, got, 1)
+			assert.Equal(t, tc.param, got[0].Param)
+			assert.Contains(t, got[0].Content, "Not there.")
+		})
+	}
+}
+
+// An update that only selects a carrier judges the held region again, so
+// one the store stopped serving is asked for again; one that touches no
+// delivery reads no regions.
+func TestSelectingACarrierJudgesTheRegionAgain(t *testing.T) {
+	var asked int
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/region/GR/get_regions_by_country_alpha_2",
+		func(w http.ResponseWriter, _ *http.Request) {
+			asked++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"alpha":"GR-14",` +
+				`"translations":{"el":{"name":"Αττική"}}}]`))
+		})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	h := &Handler{dj: django.New(srv.URL+"/api/v1", "platform.test", "secret",
+		time.Second, slog.New(slog.DiscardHandler), obs.NewMetrics())}
+	s := checkout.NewSession("public", testTenant().Domain, "acp", "c")
+	s.Deliver(checkout.Fulfillment{CountryCode: "GR", RegionID: "GR-M"})
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+
+	require.NoError(t, h.applyRegion(r, testTenant(), s, nil, nil))
+	assert.Equal(t, "GR-M", s.Fulfillment.RegionID)
+	assert.Zero(t, asked)
+
+	require.NoError(t, h.applyRegion(r, testTenant(), s, nil,
+		[]SelectedFulfillmentOption{{OptionID: "acs:home_delivery"}}))
+	assert.Empty(t, s.Fulfillment.RegionID)
+	assert.Equal(t, "GR-14 (Αττική)", s.RegionChoices())
+}
+
+// A country the store delivers home to no region of is named at country.
+func TestARefusedCountryIsNamedAtCountry(t *testing.T) {
+	param, text := destinationRefusal(
+		&checkout.Refusal{Code: django.CodeCountryNotServed})
+	assert.Equal(t, "$.fulfillment_details.address.country", param)
+	assert.Contains(t, text, "another country")
 }
 
 // A region the store refused at completion (its shipping zones no longer

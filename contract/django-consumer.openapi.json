@@ -4098,7 +4098,7 @@
           {
             "in": "query",
             "name": "shippable",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }

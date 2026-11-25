@@ -33,11 +33,17 @@ type RegionOption struct {
 // choices.
 //
 // A region Django refused when the order was sent (region_not_served: the
-// store stopped delivering there since it was chosen) is judged again
-// here, against the regions read now: the refusal goes, and the region is
-// chosen only if the store delivers to it again. It stays while the store
-// delivers home to no region of the country: the checkout then takes
-// another country or a pickup, either of which drops it (Session.Deliver).
+// store stopped delivering there since it was chosen; region_required:
+// the country has regions now) is judged again here, against the regions
+// read now: the refusal goes, and the region is chosen only if the store
+// delivers to it.
+//
+// A country whose regions the store delivers home to none of is not one
+// without regions: Django prices its whole-country zone for a checkout
+// that names no region, and then refuses the order for the region it must
+// name. So the country is refused here (country_not_served), whatever
+// else of the destination changes, until the store delivers to one of its
+// regions or the checkout takes another country or a pickup.
 func ResolveRegion(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant, s *Session,
 	named string,
@@ -50,15 +56,24 @@ func ResolveRegion(
 		return nil
 	}
 	regions, err := dj.Regions(
-		ctx, t.Domain, t.DefaultLocale, s.Fulfillment.CountryCode)
+		ctx, t.Domain, t.DefaultLocale, s.Fulfillment.CountryCode, true)
 	if err != nil {
 		return fmt.Errorf("checkout: regions: %w", err)
 	}
-	// The refused region is one of this country's, so an empty list says
-	// that none of its regions is served, not that it has none.
-	if r := s.DestinationRefused; r != nil && len(regions) > 0 &&
-		r.Code == django.CodeRegionNotServed {
+	unserved := false
+	if len(regions) == 0 {
+		all, err := dj.Regions(
+			ctx, t.Domain, t.DefaultLocale, s.Fulfillment.CountryCode, false)
+		if err != nil {
+			return fmt.Errorf("checkout: regions: %w", err)
+		}
+		unserved = len(all) > 0
+	}
+	if r := s.DestinationRefused; r != nil && regionRefusal(r.Code) {
 		s.DestinationRefused = nil
+	}
+	if unserved {
+		s.DestinationRefused = &Refusal{Code: django.CodeCountryNotServed}
 	}
 	want := foldRegion(named)
 	for _, r := range regions {
@@ -72,6 +87,17 @@ func ResolveRegion(
 		}
 	}
 	return nil
+}
+
+// regionRefusal reports whether code refuses a destination for its region,
+// the refusals the regions the store serves decide again.
+func regionRefusal(code string) bool {
+	switch code {
+	case django.CodeRegionNotServed, django.CodeRegionRequired,
+		django.CodeCountryNotServed:
+		return true
+	}
+	return false
 }
 
 func regionNamed(r django.Region, folded string) bool {

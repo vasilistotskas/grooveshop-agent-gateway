@@ -788,16 +788,26 @@ func applyFulfillment(
 const (
 	paramLineOne = "$.fulfillment_details.address.line_one"
 	paramState   = "$.fulfillment_details.address.state"
+	paramCountry = "$.fulfillment_details.address.country"
 )
 
 // destinationRefusal says which address field the store refused, and why,
-// by Django's code: the region in state (the store's shipping zones do not
-// reach it), else the street in line_one.
+// by the refusal's code: the region in state (the store's shipping zones do
+// not reach it, or it is needed), the country (they reach none of its
+// regions), else the street in line_one.
 func destinationRefusal(r *checkout.Refusal) (param, text string) {
-	if r.Code == django.CodeRegionNotServed {
+	switch r.Code {
+	case django.CodeRegionNotServed:
 		return paramState, "The store no longer delivers to the region " +
 			"in state. Send the address again with another region of " +
 			"the country."
+	case django.CodeRegionRequired:
+		return paramState, "The store needs the region of the address. " +
+			"Send the address again with its region in state."
+	case django.CodeCountryNotServed:
+		return paramCountry, "The store delivers to no address in this " +
+			"country. Send an address in another country, or hand the " +
+			"buyer to continue_url."
 	}
 	return paramLineOne, streetRefusedText(r)
 }
@@ -869,17 +879,23 @@ func (h *Handler) selectPayWay(
 	return nil
 }
 
-// applyRegion settles the delivery region from the submitted address's
-// state, whenever one was submitted: its country decides whether a region
-// is needed at all.
+// applyRegion settles the delivery region whenever the request set the
+// delivery: from the submitted address's state, or, for one that only
+// selects a carrier, from the region the session holds, judged again by
+// what the store serves now. The country decides whether a region is
+// needed at all.
 func (h *Handler) applyRegion(
 	r *http.Request, t *tenant.Tenant, s *checkout.Session,
-	fd *FulfillmentDetails,
+	fd *FulfillmentDetails, selected []SelectedFulfillmentOption,
 ) error {
-	if fd == nil || fd.Address == nil {
+	named := s.Fulfillment.RegionID
+	switch {
+	case fd != nil && fd.Address != nil:
+		named = fd.Address.State
+	case len(selected) == 0:
 		return nil
 	}
-	return checkout.ResolveRegion(r.Context(), h.dj, t, s, fd.Address.State)
+	return checkout.ResolveRegion(r.Context(), h.dj, t, s, named)
 }
 
 // --- Endpoints -------------------------------------------------------------
@@ -969,7 +985,8 @@ func (h *Handler) createSession(
 	s := checkout.NewSession(t.SchemaName, t.Domain, checkout.ProtocolACP, "")
 	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
 	applyFulfillment(s, req.FulfillmentDetails, nil)
-	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
+	if err := h.applyRegion(
+		r, t, s, req.FulfillmentDetails, nil); err != nil {
 		return refused(err)
 	}
 	if err := h.selectPayWay(r, t, s); err != nil {
@@ -1184,7 +1201,8 @@ func (h *Handler) updateSession(
 	applyBuyer(s, req.Buyer, req.FulfillmentDetails)
 	applyFulfillment(s, req.FulfillmentDetails,
 		req.SelectedFulfillmentOptions)
-	if err := h.applyRegion(r, t, s, req.FulfillmentDetails); err != nil {
+	if err := h.applyRegion(r, t, s, req.FulfillmentDetails,
+		req.SelectedFulfillmentOptions); err != nil {
 		return refused(err)
 	}
 	if err := h.selectPayWay(r, t, s); err != nil {
@@ -1553,7 +1571,7 @@ func (h *Handler) completeError(
 	w http.ResponseWriter, r *http.Request, s *checkout.Session, err error,
 ) {
 	var shortfall *django.StockShortfall
-	var street *django.DestinationRefusedError
+	var refused *django.DestinationRefusedError
 	switch {
 	case errors.As(err, &shortfall):
 		var lines []string
@@ -1651,9 +1669,9 @@ func (h *Handler) completeError(
 				"then complete with a new Idempotency-Key.",
 		})
 	// The session is stored not ready, and its read names the field.
-	case errors.As(err, &street):
+	case errors.As(err, &refused):
 		param, text := destinationRefusal(&checkout.Refusal{
-			Code: street.Code, Detail: street.Message})
+			Code: refused.Code, Detail: refused.Message})
 		writeError(w, http.StatusBadRequest, Error{
 			Type: "invalid_request", Code: "invalid", Param: param,
 			Message: text + " No order was placed: update the session, " +

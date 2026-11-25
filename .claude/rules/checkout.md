@@ -368,15 +368,20 @@ Loads when working on a checkout session on either surface, its completion, its 
   - **A choice the store refuses is named, not priced.** A delivery the
     store does not ship that way or the cart outgrew
     (`shipping_unavailable`, `shipping_region_unavailable`,
-    `shipping_weight_exceeded`, `shipping_parcel_too_large`), or a pay way not offered for the
-    delivery or gone (`pay_way_unavailable`, `pay_way_not_found`), is
+    `shipping_weight_exceeded`, `shipping_parcel_too_large`), or a pay
+    way not offered for the delivery or gone (`pay_way_unavailable`, `pay_way_not_found`), is
     left out and the rest quoted again (`Pricing.DeliveryRefused`,
     `PayWayRefused`). An attached coupon the order would be refused for
     (`Quote.BlockingCoupon`) is named too (`Pricing.CouponRefused`:
     remove it); the quote already leaves its discount out. Any other
     refusal of the checkout's data (an email
     the store does not take) leaves only the cart to price
-    (`Pricing.InputRefused`), and an empty cart prices nothing. An open
+    (`Pricing.InputRefused`), and an empty cart prices nothing. A home
+    address names its region in every quote, before its carrier is chosen
+    and after one was refused (`QuoteRequest`), so the options and their
+    prices are those of the region's shipping zone; with no carrier left
+    to it (`Pricing.OffersHome`), `shipping_region_unavailable` is named
+    at the region, not at the option. An open
     checkout is then rendered not ready, with an error naming what to
     correct (UCP `incomplete`, ACP `not_ready_for_payment`).
   - **A quote that cannot be read is an error**, never a total without
@@ -435,9 +440,13 @@ Loads when working on a checkout session on either surface, its completion, its 
     on the session (`Session.DestinationRefused`, `NeedDestination` in
     `Session.Missing`), so the checkout reads not ready, and every
     surface sets a delivery through `Session.Deliver`, which drops the
-    refusal once the destination changes. A refused region is also
-    judged again by `ResolveRegion`, against the regions the store serves
-    now; while it serves none of the country's, the refusal stays.
+    refusal once the destination changes. A region refused
+    (`region_not_served`, `region_required`) is also judged again by
+    `ResolveRegion`, against the regions the store serves now. A country
+    the store delivers home to none of the regions of is refused there
+    (`country_not_served`, the gateway's own refusal), never read as a
+    country without regions: Django prices a checkout that names no region
+    by the whole-country zone and then refuses its order.
     What a checkout still needs is `Session.Missing`, a list of `Need`
     each surface words and places itself.
 - **One live checkout holds a cart** (#141). Two sessions on one cart

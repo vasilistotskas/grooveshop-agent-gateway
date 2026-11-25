@@ -447,14 +447,20 @@ func TestCompleteErrorMapsEverySentinel(t *testing.T) {
 		assert.Contains(t, body["message"], "postal code")
 	})
 
-	t.Run("a refused region names state", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		h.completeError(rec, req, session, fmt.Errorf("wrapped: %w",
-			&django.DestinationRefusedError{Code: django.CodeRegionNotServed}))
-		body := specError(t, rec, http.StatusBadRequest, "invalid")
-		assert.Equal(t, "$.fulfillment_details.address.state", body["param"])
-		assert.Contains(t, body["message"], "no longer delivers")
-	})
+	for code, said := range map[string]string{
+		django.CodeRegionNotServed: "no longer delivers",
+		django.CodeRegionRequired:  "needs the region",
+	} {
+		t.Run("a refused region names state: "+code, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.completeError(rec, req, session, fmt.Errorf("wrapped: %w",
+				&django.DestinationRefusedError{Code: code}))
+			body := specError(t, rec, http.StatusBadRequest, "invalid")
+			assert.Equal(t, "$.fulfillment_details.address.state",
+				body["param"])
+			assert.Contains(t, body["message"], said)
+		})
+	}
 
 	t.Run("a stock shortfall names the lines", func(t *testing.T) {
 		shortfall := &django.StockShortfall{}

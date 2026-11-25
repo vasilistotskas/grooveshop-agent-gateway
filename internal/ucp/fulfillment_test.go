@@ -244,4 +244,18 @@ func TestARefusedRegionIsAnErrorAtTheRegion(t *testing.T) {
 	}}, missing(s, rendered))
 	assert.Contains(t, DestinationRefusedText(django.CodeRegionNotServed),
 		"address_region")
+
+	for code, path := range map[string]string{
+		django.CodeRegionRequired:   pathRegion,
+		django.CodeCountryNotServed: pathCountry,
+	} {
+		s.DestinationRefused = &checkout.Refusal{Code: code}
+		got := missing(s, rendered)
+		require.Len(t, got, 1, code)
+		assert.Equal(t, code, got[0].Code)
+		assert.Equal(t, path, got[0].Path, code)
+		assert.Equal(t, DestinationRefusedText(code), got[0].Text)
+	}
+	assert.Contains(t, DestinationRefusedText(django.CodeCountryNotServed),
+		"another country")
 }

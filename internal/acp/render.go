@@ -313,14 +313,19 @@ func renderDiscounts(
 func refusedChoices(p *checkout.Pricing) []Message {
 	var out []Message
 	if r := p.DeliveryRefused; r != nil {
+		param, remedy := "$.selected_fulfillment_options", " Select "+
+			"another fulfillment option from fulfillment_options; when it "+
+			"lists none, change the address or the cart, or hand the "+
+			"buyer to continue_url."
+		if r.Code == django.CodeShippingRegionUnavailable && !p.OffersHome() {
+			param, remedy = paramState, " No carrier delivers to the "+
+				"region in state. Send the address again with another "+
+				"region of the country."
+		}
 		out = append(out, Message{
-			Type: "error", Code: "invalid",
-			Param:      "$.selected_fulfillment_options",
+			Type: "error", Code: "invalid", Param: param,
 			Resolution: "requires_buyer_input", ContentType: "plain",
-			Content: strings.TrimSpace(r.Detail + " Select another " +
-				"fulfillment option from fulfillment_options; when it " +
-				"lists none, change the address or the cart, or hand the " +
-				"buyer to continue_url."),
+			Content: strings.TrimSpace(r.Detail + remedy),
 		})
 	}
 	if r := p.PayWayRefused; r != nil {
@@ -384,9 +389,9 @@ func appendStateMessages(s *checkout.Session, out *Session) {
 			"A delivery address (line_one, city, postal_code, country) "+
 				"is required.")
 	case s.DestinationRefused != nil:
-		// Django refused this address when the order was sent: the street
-		// in line_one, which it splits into the street and its house
-		// number, or the region in state, which its zones do not reach.
+		// The address is refused: the street in line_one, which Django
+		// splits into the street and its house number, the region in
+		// state, or the country (destinationRefusal).
 		param, text := destinationRefusal(s.DestinationRefused)
 		out.Messages = append(out.Messages, Message{
 			Type: "error", Code: "invalid", Param: param,
