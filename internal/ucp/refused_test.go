@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/checkout"
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 )
 
 // A choice the store refuses is a recoverable error at its member, with
@@ -32,6 +33,46 @@ func TestRefusedChoicesAreRecoverableErrorsAtTheirMember(t *testing.T) {
 		assert.Contains(t, m.Text, "update_checkout")
 	}
 	assert.Contains(t, got[0].Text, "Too heavy.")
+}
+
+// A delivery no carrier makes to the region is refused at the region: with
+// no option left, another option is no remedy. While a carrier still
+// delivers there, it is.
+func TestARegionNoCarrierDeliversToIsAtTheRegion(t *testing.T) {
+	refused := &checkout.Refusal{
+		Code: django.CodeShippingRegionUnavailable, Detail: "Not there."}
+	for name, tc := range map[string]struct {
+		options []django.QuoteShippingOption
+		path    string
+		remedy  string
+	}{
+		"none left": {
+			[]django.QuoteShippingOption{{Kind: "pickup_point"}},
+			pathRegion, "another region",
+		},
+		"another carrier": {
+			[]django.QuoteShippingOption{{Kind: "home_delivery"}},
+			pathOption, "another of the group's options",
+		},
+		"another carrier the cart does not fit": {
+			[]django.QuoteShippingOption{
+				{Kind: "home_delivery", ExceedsMaxWeight: true}},
+			pathOption, "another of the group's options",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := refusedChoices(
+				&checkout.Session{Fulfillment: checkout.Fulfillment{
+					CountryCode: "GR", RegionID: "GR-M"}},
+				&checkout.Pricing{
+					DeliveryRefused: refused, ShippingOptions: tc.options})
+			require.Len(t, got, 1)
+			assert.Equal(t, tc.path, got[0].Path)
+			assert.Equal(t, django.CodeShippingRegionUnavailable, got[0].Code)
+			assert.Contains(t, got[0].Text, "Not there.")
+			assert.Contains(t, got[0].Text, tc.remedy)
+		})
+	}
 }
 
 // A refused pickup is at the point: its one option is the point's

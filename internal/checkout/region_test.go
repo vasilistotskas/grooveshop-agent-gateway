@@ -17,9 +17,9 @@ import (
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
 
-// regionDjango serves the recorded regions for GR and none for any other
-// country, as Django does. The gateway asks only for the regions the
-// store delivers to at home (shippable=true): any other request fails.
+// regionDjango serves the recorded regions for GR, which the store
+// delivers to at home, one region for CY, which it does not, and none for
+// any other country, as Django does.
 func regionDjango(t *testing.T, status int) *django.Client {
 	t.Helper()
 	fixture, err := os.ReadFile(filepath.Join(
@@ -29,18 +29,17 @@ func regionDjango(t *testing.T, status int) *django.Client {
 	mux.HandleFunc("GET /api/v1/region/{country}/get_regions_by_country_alpha_2",
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			if r.URL.Query().Get("shippable") != "true" {
-				t.Errorf("regions asked without shippable=true: %s",
-					r.URL.RawQuery)
-				w.WriteHeader(http.StatusBadRequest)
-				return
-			}
 			w.WriteHeader(status)
-			if r.PathValue("country") == "GR" {
+			served := r.URL.Query().Get("shippable") == "true"
+			switch country := r.PathValue("country"); {
+			case country == "GR":
 				_, _ = w.Write(fixture)
-				return
+			case country == "CY" && !served:
+				_, _ = w.Write([]byte(`[{"alpha":"CY-01",` +
+					`"translations":{"el":{"name":"Λευκωσία"}}}]`))
+			default:
+				_, _ = w.Write([]byte(`[]`))
 			}
-			_, _ = w.Write([]byte(`[]`))
 		})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -129,17 +128,64 @@ func TestARefusedRegionIsJudgedAgain(t *testing.T) {
 	assert.NotNil(t, s.DestinationRefused)
 }
 
-// The refusal stays while the store delivers home to no region of the
-// country (regionDjango lists none for any country but GR): the checkout
-// is not ready without the region Django refused.
-func TestARefusedRegionStaysWhileNoRegionIsServed(t *testing.T) {
-	s := &Session{Fulfillment: homeDelivery()}
-	s.Fulfillment.CountryCode = "CY"
-	s.DestinationRefused = &Refusal{Code: django.CodeRegionNotServed}
-	require.NoError(t, ResolveRegion(t.Context(),
-		regionDjango(t, http.StatusOK), regionTenant(), s, "CY-01"))
-	assert.NotNil(t, s.DestinationRefused)
+// A country the store delivers home to none of the regions of is refused,
+// not read as one without regions: Django would price a checkout that
+// names no region there and then refuse its order. The refusal holds
+// through any other change of the address, and goes with the country or
+// with a pickup.
+func TestACountryWithNoServedRegionIsRefused(t *testing.T) {
+	dj := regionDjango(t, http.StatusOK)
+	f := homeDelivery()
+	f.CountryCode = "CY"
+	s := &Session{}
+	resolve := func(named string) {
+		t.Helper()
+		s.Deliver(f)
+		require.NoError(t, ResolveRegion(
+			t.Context(), dj, regionTenant(), s, named))
+	}
+
+	resolve("CY-01")
+	require.NotNil(t, s.DestinationRefused)
+	assert.Equal(t, django.CodeCountryNotServed, s.DestinationRefused.Code)
 	assert.Contains(t, s.Missing(), NeedDestination)
+	assert.Empty(t, s.RegionOptions)
+
+	f.AddressLine2 = "3ος όροφος"
+	resolve("CY-01")
+	assert.NotNil(t, s.DestinationRefused, "another line 2, same country")
+
+	s.DestinationRefused = &Refusal{Code: django.CodeRegionNotServed}
+	resolve("CY-01")
+	assert.Equal(t, django.CodeCountryNotServed, s.DestinationRefused.Code)
+
+	f.CountryCode = "GR"
+	resolve("GR-14")
+	assert.Nil(t, s.DestinationRefused, "another country")
+	assert.Equal(t, "GR-14", s.Fulfillment.RegionID)
+
+	f.CountryCode = "CY"
+	resolve("CY-01")
+	require.NotNil(t, s.DestinationRefused)
+	f = Fulfillment{Kind: FulfillmentPickupPoint, ProviderCode: "boxnow",
+		CountryCode: "CY", BoxnowLockerID: "25"}
+	resolve("")
+	assert.Nil(t, s.DestinationRefused, "a pickup")
+}
+
+// A country with no region at all, and one whose served regions come
+// back, are not refused.
+func TestACountryWithServedOrNoRegionsIsNotRefused(t *testing.T) {
+	dj := regionDjango(t, http.StatusOK)
+	for country, named := range map[string]string{"MT": "", "GR": "GR-14"} {
+		f := homeDelivery()
+		f.CountryCode = country
+		s := &Session{Fulfillment: f}
+		s.DestinationRefused = &Refusal{Code: django.CodeCountryNotServed}
+		require.NoError(t, ResolveRegion(
+			t.Context(), dj, regionTenant(), s, named))
+		assert.Nil(t, s.DestinationRefused, country)
+	}
 }
 
 // The refusal stays while the served regions cannot be read: nothing

@@ -71,7 +71,8 @@ func (c *Client) ReserveStock(
 // street ("Ερμού 12"), and no streetNumber is sent: Django splits the
 // line. A pickup-point order carries the point (PickupPoint) and no
 // address: Django delivers it to the point's. Django refuses a line it
-// cannot split, or a point it does not know (DestinationRefusedError).
+// cannot split, a point it does not know, or a region the store does not
+// deliver to (DestinationRefusedError).
 type OrderCreate struct {
 	PayWayID  int64  `json:"payWayId"`
 	FirstName string `json:"firstName"`
@@ -145,8 +146,9 @@ type Attribution struct {
 // refusal of a cart whose earlier order awaits its payment is
 // ErrCartHasUnpaidOrder, of a total that is no longer the amount due
 // ErrTotalChanged, of a cart that is no longer the one quoted
-// ErrCartChanged, and of a street line it cannot split or a pickup point
-// it does not know a *DestinationRefusedError.
+// ErrCartChanged, and of a street line it cannot split, a pickup point
+// it does not know or a region the store does not deliver to a
+// *DestinationRefusedError.
 func (c *Client) CreateOrder(
 	ctx context.Context, host, lang, cartID string, body OrderCreate,
 ) (*Order, error) {
@@ -192,7 +194,9 @@ func (c *Client) CreateOrder(
 // carrier's location field, a pickup point its catalogue does not hold
 // active (CodePickupPointUnknown), one in another country than the
 // order's (CodePickupPointInAnotherCountry) or none named
-// (CodePickupPointRequired). Nothing was created. Message is the store's
+// (CodePickupPointRequired); on `regionId`, a region the store does not
+// deliver to at home (CodeRegionNotServed), or none named in a country
+// that has some (CodeRegionRequired). Nothing was created. Message is the store's
 // own sentence. It unwraps to Django's *APIError, so it is ErrValidation
 // too.
 type DestinationRefusedError struct {
@@ -225,7 +229,7 @@ var destinationFields = map[string][]string{
 	"acsStationExternalId": {CodePickupPointUnknown,
 		CodePickupPointInAnotherCountry, CodePickupPointRequired},
 	"shippingProviderCode": {CodePickupPointRequired},
-	"regionId":             {CodeRegionNotServed},
+	"regionId":             {CodeRegionNotServed, CodeRegionRequired},
 }
 
 // refusesDestination reports whether Django's code on field refuses the

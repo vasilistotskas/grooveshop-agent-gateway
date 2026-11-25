@@ -547,9 +547,10 @@ func (f *Flow) place(
 	}
 	if err != nil {
 		s.Status = StatusReadyForComplete
-		// A street line the store cannot split, or a pickup point it does
-		// not know, is the destination's to correct: until it changes,
-		// the checkout is not ready.
+		// A street line the store cannot split, a pickup point it does
+		// not know, or a region it does not deliver to, is the
+		// destination's to correct: until it changes, the checkout is not
+		// ready.
 		if refused, ok := errors.AsType[*django.DestinationRefusedError](
 			err); ok {
 			s.DestinationRefused = &Refusal{

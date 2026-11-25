@@ -165,8 +165,11 @@ Loads when working on the ACP handler, or the routes that answer before it. The 
     `invalid` with `param` `$.fulfillment_details.address.line_one` or
     `….address.state`, nothing placed; the session then reads
     `not_ready_for_payment` with an `invalid` message there until an
-    update changes the address (`Session.DestinationRefused`) or, for a
-    region, names one the store serves (`checkout.ResolveRegion`).
+    update changes the address (`Session.DestinationRefused`). A refused
+    region is judged again (`checkout.ResolveRegion`) by every update that
+    submits an address or selects an option (`applyRegion`): one the store
+    does not serve is then `missing` at `state`, with the choices, and a
+    country it serves no region of `invalid` at `….address.country`.
     ACP offers no pickup point.
   - `completeError` answers every `checkout` and `django` sentinel
     deliberately (`TestCompleteErrorMapsEverySentinel` walks them): a

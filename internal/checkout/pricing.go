@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/money"
@@ -67,7 +68,8 @@ type Pricing struct {
 	// order exists.
 	CartDigest string
 	// DeliveryRefused and PayWayRefused are the checkout's choices the
-	// store no longer takes for this cart (it does not ship that way, the
+	// store no longer takes for this cart (it does not ship that way, no
+	// carrier reaches the region, the
 	// cart outgrew the carrier, the pay way is not offered for the
 	// delivery or no longer exists), left out of the price. The checkout
 	// must choose again.
@@ -82,8 +84,9 @@ type Pricing struct {
 	// only the cart is priced, and the checkout must correct it.
 	InputRefused *Refusal
 	// ShippingOptions is every delivery the store offers to the
-	// checkout's country, at the price this cart would be charged for
-	// it; nil without a country, and once an order exists.
+	// checkout's country, and home to its region once it names one, at
+	// the price this cart would be charged for it; nil without a country,
+	// and once an order exists.
 	ShippingOptions []django.QuoteShippingOption
 	// PayWay is the pay-way the buyer selected, or nil when none is
 	// selected yet, the store refused it, or the lookup failed. Callers
@@ -153,6 +156,13 @@ func ComputePricing(
 	if err := p.addQuote(q); err != nil {
 		return nil, err
 	}
+	// A region the store stopped serving before a carrier was chosen:
+	// there is none to choose.
+	if p.DeliveryRefused == nil && s.Fulfillment.Kind == "" &&
+		p.RegionUnreached(s) {
+		p.DeliveryRefused = &Refusal{
+			Code: django.CodeShippingRegionUnavailable}
+	}
 	if s.PayWayID > 0 && p.PayWayRefused == nil {
 		// Whether the agent can settle the checkout is the pay way's
 		// settlement, which the quote does not carry.
@@ -168,7 +178,9 @@ func ComputePricing(
 // QuoteRequest is the quote of what the session has chosen: the very
 // choices its order is placed with (Flow.place), the email included,
 // since a promotion may depend on the buyer, and the pickup point, which
-// the quote's cart digest covers.
+// the quote's cart digest covers. A home address names its region before
+// its carrier is chosen too: the options and their prices are those of
+// the region's shipping zone.
 func QuoteRequest(s *Session) django.QuoteRequest {
 	f := s.Fulfillment
 	r := django.QuoteRequest{
@@ -176,10 +188,12 @@ func QuoteRequest(s *Session) django.QuoteRequest {
 		CountryID: f.CountryCode,
 		Email:     s.Buyer.Email,
 	}
+	if f.CountryCode != "" && !f.Pickup() {
+		r.RegionID = f.RegionID
+	}
 	if f.Kind != "" && f.CountryCode != "" {
 		r.ShippingKind = f.Kind
 		r.ShippingProviderCode = f.ProviderCode
-		r.RegionID = f.RegionID
 		r.PickupPoint = f.PickupPoint()
 	}
 	// Without a delivery country, the options are listed for where the
@@ -193,13 +207,17 @@ func QuoteRequest(s *Session) django.QuoteRequest {
 // quote asks Django what the session's choices cost. A choice the store
 // refuses is recorded on p and dropped, and the rest quoted again: the
 // pay way is judged first, against the delivery, so at most both are.
-// Any other refusal of the session's data leaves only the cart to price.
+// Any other refusal of the session's data leaves only the cart to price,
+// with the options of the place, as far as the store takes it.
 // An empty cart has nothing to price.
 func (p *Pricing) quote(
 	ctx context.Context, dj *django.Client, t *tenant.Tenant, s *Session,
 ) (*django.Quote, error) {
 	req := QuoteRequest(s)
 	for {
+		place := django.QuoteRequest{
+			CountryID: req.CountryID, RegionID: req.RegionID,
+		}
 		q, err := dj.Quote(ctx, t.Domain, t.DefaultLocale, s.CartID, req)
 		if err == nil {
 			return q, quoted(req, q)
@@ -215,17 +233,20 @@ func (p *Pricing) quote(
 			req.PayWayID = 0
 		case shippingRefusal(apiErr.Code) && req.ShippingKind != "":
 			p.DeliveryRefused = refusal
+			// The region is kept: the options left are its own.
 			req.ShippingKind, req.ShippingProviderCode = "", ""
-			req.RegionID, req.PickupPoint = "", django.PickupPoint{}
+			req.PickupPoint = django.PickupPoint{}
 		case apiErr.Code == django.CodeCartEmpty:
 			return &django.Quote{ItemsSubtotal: "0", DiscountTotal: "0",
 				Currency: t.DefaultCurrency}, nil
-		// The country is kept, so the deliveries stay listed, unless it
-		// is what the store refuses.
-		case errors.Is(err, django.ErrValidation) &&
-			req != (django.QuoteRequest{CountryID: req.CountryID}):
+		// The place is kept, so its deliveries stay listed, unless the
+		// region, then the country, is what the store refuses.
+		case errors.Is(err, django.ErrValidation) && req != place:
 			p.InputRefused = refusal
-			req = django.QuoteRequest{CountryID: req.CountryID}
+			req = place
+		case errors.Is(err, django.ErrValidation) && req.RegionID != "":
+			p.InputRefused = refusal
+			req.RegionID = ""
 		case errors.Is(err, django.ErrValidation) && req.CountryID != "":
 			p.InputRefused = refusal
 			req = django.QuoteRequest{}
@@ -233,6 +254,18 @@ func (p *Pricing) quote(
 			return nil, err
 		}
 	}
+}
+
+// RegionUnreached reports whether the checkout's home delivery names a
+// region no carrier delivers to: the region, not the carrier, is what
+// changes. A carrier that delivers there but does not take this cart
+// (its weight, its parcels) reaches it.
+func (p *Pricing) RegionUnreached(s *Session) bool {
+	return s.Fulfillment.RegionID != "" && p.ShippingOptions != nil &&
+		!slices.ContainsFunc(p.ShippingOptions,
+			func(o django.QuoteShippingOption) bool {
+				return o.Kind == FulfillmentHomeDelivery
+			})
 }
 
 // quoted checks that a quote prices every choice it was asked: a row it

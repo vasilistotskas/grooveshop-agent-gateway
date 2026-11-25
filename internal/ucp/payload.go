@@ -409,6 +409,15 @@ func refusedChoices(s *checkout.Session, p *checkout.Pricing) []Message {
 			Text: strings.TrimSpace(r.Detail + " The delivery is left out " +
 				"of the total: select another pickup point, or the " +
 				"shipping method, with update_checkout.")})
+	case p.RegionUnreached(s):
+		// No carrier is left to select: the region is what changes.
+		out = append(out, Message{Type: "error", Code: r.Code,
+			Severity: "recoverable", Path: pathRegion,
+			Text: strings.TrimSpace(r.Detail + " The delivery is left out " +
+				"of the total: no carrier delivers to the region in " +
+				"address_region. Send the destination again with another " +
+				"region of the country with update_checkout, or choose " +
+				"the pickup method, where the store offers it.")})
 	default:
 		out = append(out, Message{Type: "error", Code: r.Code,
 			Severity: "recoverable", Path: pathOption,

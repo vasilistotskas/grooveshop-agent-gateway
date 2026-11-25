@@ -104,6 +104,7 @@ const (
 	pathDestinations = "$.fulfillment.methods[0].destinations"
 	pathStreet       = "$.fulfillment.methods[0].destinations[0].street_address"
 	pathRegion       = "$.fulfillment.methods[0].destinations[0].address_region"
+	pathCountry      = "$.fulfillment.methods[0].destinations[0].address_country"
 	pathShipping     = "$.fulfillment.methods[0]"
 	pathOption       = "$.fulfillment.methods[0].groups[0].selected_option_id"
 	pathPoint        = "$.fulfillment.methods[1].selected_destination_id"
@@ -436,8 +437,11 @@ func missing(s *checkout.Session, f *Fulfillment) []Message {
 			r := s.DestinationRefused
 			path := pathStreet
 			switch {
-			case r.Code == django.CodeRegionNotServed:
+			case r.Code == django.CodeRegionNotServed,
+				r.Code == django.CodeRegionRequired:
 				path = pathRegion
+			case r.Code == django.CodeCountryNotServed:
+				path = pathCountry
 			case s.Fulfillment.Pickup():
 				path = pathPoint
 			}
@@ -470,7 +474,7 @@ func missing(s *checkout.Session, f *Fulfillment) []Message {
 }
 
 // DestinationRefusedText says why the store refused the destination, by
-// Django's code.
+// the refusal's code.
 func DestinationRefusedText(code string) string {
 	switch code {
 	case django.CodeStreetNumberIsPostcode:
@@ -497,6 +501,13 @@ func DestinationRefusedText(code string) string {
 			"address_region. Send the destination again with another " +
 			"region of the country, or choose the pickup method, where " +
 			"the store offers it."
+	case django.CodeRegionRequired:
+		return "The store needs the region of the destination. Send the " +
+			"destination again with its region in address_region."
+	case django.CodeCountryNotServed:
+		return "The store delivers to no address in this country. Send a " +
+			"destination in another country, or choose the pickup method, " +
+			"where the store offers it."
 	}
 	return "The store refused the street in street_address. Send the " +
 		"street's name followed by its house number (e.g. \"Ermou 12\"), " +

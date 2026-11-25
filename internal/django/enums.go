@@ -70,8 +70,13 @@ const CodeTotalChanged = "total_changed"
 // are not known yet (shipping.interfaces.PickupPointUnfit).
 // CodeRegionNotServed refuses a home delivery's region, on `regionId`: the
 // store delivers home elsewhere in the country, but its shipping zones do
-// not reach that region (shipping/zones.py, destination_errors). CreateOrder
-// reports each as a *DestinationRefusedError.
+// not reach that region (shipping/zones.py, destination_errors), and
+// CodeRegionRequired one without a region in a country that has some
+// (core/validators/address.py). CreateOrder reports each as a
+// *DestinationRefusedError. CodeCountryNotServed is Django's code for a
+// saved address in a country no home delivery reaches: an order's is
+// shipping_unavailable, so here it is the checkout's own
+// (checkout.ResolveRegion).
 const (
 	CodeStreetNumberMissing         = "street_number_missing"
 	CodeStreetNumberIsPostcode      = "street_number_is_postcode"
@@ -81,6 +86,8 @@ const (
 	CodePickupPointTooSmall         = "pickup_point_too_small"
 	CodePickupPointSizeUnknown      = "pickup_point_size_unknown"
 	CodeRegionNotServed             = "region_not_served"
+	CodeRegionRequired              = "region_required"
+	CodeCountryNotServed            = "country_not_served"
 )
 
 // CodeCartChanged is the `code` of Django's 409 refusing an order whose

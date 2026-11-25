@@ -1083,7 +1083,7 @@ func (h *handlers) placed(
 ) sessionAnswer {
 	if placement == checkout.NothingPlaced {
 		// The destination Django refused (a street line, a pickup
-		// point) is the platform's to correct: the answer is the
+		// point, a region) is the platform's to correct: the answer is the
 		// checkout, stored incomplete, with the error at the destination
 		// ("incomplete for a recoverable change").
 		if errors.As(err, new(*django.DestinationRefusedError)) {

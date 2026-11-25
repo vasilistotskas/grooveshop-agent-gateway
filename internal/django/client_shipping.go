@@ -212,13 +212,18 @@ func (c *Client) BoxNowNearestLocker(
 	return &out, nil
 }
 
-// Regions lists the regions of a country the store delivers to at home
-// (`shippable=true`: its shipping zones reach them); a country without
-// any, one the store does not deliver to at home, or one Django does not
-// know, answers an empty list.
+// Regions lists the regions of a country; a country without any, or one
+// Django does not know, answers an empty list. With served, only those the
+// store delivers to at home (`shippable=true`: its shipping zones reach
+// them), so an empty list is then also a country the store delivers home
+// to no region of.
 func (c *Client) Regions(
-	ctx context.Context, host, lang, countryCode string,
+	ctx context.Context, host, lang, countryCode string, served bool,
 ) ([]Region, error) {
+	q := url.Values{}
+	if served {
+		q.Set("shippable", "true")
+	}
 	var out []Region
 	err := c.get(ctx, request{
 		path: "/region/{alpha}/get_regions_by_country_alpha_2",
@@ -226,7 +231,7 @@ func (c *Client) Regions(
 			"/get_regions_by_country_alpha_2",
 		host:     host,
 		language: lang,
-		query:    url.Values{"shippable": {"true"}},
+		query:    q,
 		out:      &out,
 	})
 	if err != nil {

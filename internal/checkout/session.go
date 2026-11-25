@@ -181,16 +181,20 @@ type Session struct {
 	// DestinationRefused is Django's refusal of the delivery's destination
 	// when the order was sent (django.DestinationRefusedError): a street
 	// line with no house number it can read, or one that is a postcode; a
-	// pickup point its carrier's catalogue does not hold. Until the
-	// destination changes (Deliver), the checkout is not ready.
+	// pickup point its carrier's catalogue does not hold; a region the
+	// store does not deliver to. Until the destination changes (Deliver),
+	// or for a region until the store serves one it names (ResolveRegion,
+	// which also refuses a country none of whose regions is served), the
+	// checkout is not ready.
 	DestinationRefused *Refusal `json:"destinationRefused,omitempty"`
 
 	// Locality is where the buyer is, as the platform's checkout context
 	// last said it: the pickup points near it are listed.
 	Locality Locality `json:"locality,omitzero"`
 
-	// RegionOptions are the delivery country's regions, as ResolveRegion
-	// last read them; empty when it has none.
+	// RegionOptions are the delivery country's regions the store delivers
+	// to at home, as ResolveRegion last read them; empty when the country
+	// has none, or none is served.
 	RegionOptions []RegionOption `json:"regionOptions,omitempty"`
 
 	// DiscountCodes is the last discount-code list the caller submitted
