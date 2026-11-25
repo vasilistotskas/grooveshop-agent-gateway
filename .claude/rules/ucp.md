@@ -473,7 +473,7 @@ wins over this page.
   never mints a second key; `/gateway seal-signing-keys` seals the rest and deletes the
   unsealed records and sentinels once no older pod is left. That code
   goes in the release after every environment has run the command
-  (`docs/agent-protocols-runbook.md`, section 11).
+  (`docs/agent-protocols-runbook.md`, "Sealing the stores' signing keys").
 
 ## Signatures
 
