@@ -93,7 +93,7 @@ CI also runs the tests with `-race`, which needs cgo; run it locally only if you
 
 ## Project layout
 
-```
+```text
 cmd/
 ├── gateway/        # Wiring: config, clients, mux, graceful shutdown
 └── ucp-sign/       # Signs requests to a running gateway as a UCP platform

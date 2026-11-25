@@ -199,7 +199,8 @@ func NewFlow(
 // still end it: a graceful shutdown waits for it (CompletionTail), but
 // a pod killed or lost mid-placement leaves the session in progress,
 // which the next complete resumes once no completion can be running
-// (Resume; docs/agent-protocols-runbook.md, section 11).
+// (Resume; docs/agent-protocols-runbook.md, "A checkout stuck in
+// progress").
 func (f *Flow) Complete(
 	ctx context.Context, t *tenant.Tenant, s *Session,
 ) (Placement, error) {

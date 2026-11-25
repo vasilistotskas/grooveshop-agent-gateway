@@ -79,7 +79,7 @@ Each row of this map imports only rows below it, and within a row only
 along its arrows (`go list -f '{{.Imports}}'` shows it). Each package's
 detail is in the rule that loads with its files.
 
-```
+```text
 cmd/gateway    cmd/ucp-sign                  wiring and serve; sign as a platform
 internal/server                              mux assembly, /internal/* routes
 chat → mcpsrv    adminmcp    acp    feeds    the surfaces

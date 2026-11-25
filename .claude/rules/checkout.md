@@ -190,7 +190,8 @@ Loads when working on a checkout session on either surface, its completion, its 
     stored value cannot tell them apart, and Django can: within that
     half hour a complete resumes the session (below), and Django
     answers the order it placed, if any.
-    `docs/agent-protocols-runbook.md` section 11 is the operator's side.
+    `docs/agent-protocols-runbook.md`, "A checkout stuck in progress",
+    is the operator's side.
   - A complete of one answers what it is, before any lookup: the
     session when its order is placed (completed, or on UCP awaiting
     payment), in flight while it is being placed, canceled when it
@@ -466,8 +467,9 @@ Loads when working on a checkout session on either surface, its completion, its 
     check before starting another checkout. The rule names no version,
     so from the move after `cs:v7` on it holds the cart both ways;
     pods older than it free a cart whose holder they cannot read
-    (`docs/agent-protocols-runbook.md` section 10). An operator who
-    deletes a session deletes its record with it (section 11).
+    (`docs/agent-protocols-runbook.md`, "Before deploying a release that
+    moves the checkout session key"). An operator who deletes a session
+    deletes its record with it ("A checkout stuck in progress" there).
   - UCP `create_checkout` with `cart_id` (`mcpsrv.createFromCart`)
     takes a UUID only, in its canonical spelling
     (`checkout.CanonicalCartID`: Django reads every spelling as one

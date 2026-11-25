@@ -20,7 +20,8 @@ package ucp
 //
 // Delete this file, mintScript's unsealed record and the gateway's seal
 // command in the release after every environment has run the command
-// (docs/agent-protocols-runbook.md, section 12). Sentinels written until
+// (docs/agent-protocols-runbook.md, "Sealing the stores' signing keys").
+// Sentinels written until
 // then expire by themselves within unsealedSentinelTTL; that release
 // needs no cleanup of its own.
 
