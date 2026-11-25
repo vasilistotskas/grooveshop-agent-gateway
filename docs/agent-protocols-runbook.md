@@ -263,7 +263,7 @@ An update replaces the checkout, so it carries the lines, the buyer and the fulf
 
 **Observed on staging:** PASS, 2026-11-06, product 15, order 1186. `incomplete`, `ready_for_complete`, `completed`. Totals `subtotal=1600 fulfillment=300 fee=200 total=2100`, the same from `get_order`. Replaying `complete_checkout` with the same key returned the same order. `track_order` answered `PENDING`.
 
-Leave out `address_region` and the checkout stays `incomplete`, with a message listing the valid codes. **Observed:** PASS.
+Leave out `address_region` and the checkout stays `incomplete`, with a message listing the valid codes. **Observed:** PASS (on the earlier request shape, where the member was `regionId`).
 
 **Real-stack test** (`internal/realstack/order_create_test.go`), against a real Django: a pickup order at an ACS Smartpoint (paid on delivery) and at a BOX NOW locker (paid online), each selected by its id, shown by its catalogue name and delivered to the point's catalogue address; a street line with no house number refused `street_number_missing` at the line until the address changes; and a cart written in Django after its checkout showed it refused with Django's own 409 `cart_changed`, then placed after a read. The stack gives its throwaway store placeholder carrier credentials for this, with every carrier URL leading nowhere (`internal/realstack/testdata/seed.py`).
 

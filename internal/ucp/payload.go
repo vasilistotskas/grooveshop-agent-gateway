@@ -409,7 +409,7 @@ func refusedChoices(s *checkout.Session, p *checkout.Pricing) []Message {
 			Text: strings.TrimSpace(r.Detail + " The delivery is left out " +
 				"of the total: select another pickup point, or the " +
 				"shipping method, with update_checkout.")})
-	case r.Code == django.CodeShippingRegionUnavailable && !p.OffersHome():
+	case p.RegionUnreached(s):
 		// No carrier is left to select: the region is what changes.
 		out = append(out, Message{Type: "error", Code: r.Code,
 			Severity: "recoverable", Path: pathRegion,

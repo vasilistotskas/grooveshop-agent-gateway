@@ -68,7 +68,8 @@ type Pricing struct {
 	// order exists.
 	CartDigest string
 	// DeliveryRefused and PayWayRefused are the checkout's choices the
-	// store no longer takes for this cart (it does not ship that way, the
+	// store no longer takes for this cart (it does not ship that way, no
+	// carrier reaches the region, the
 	// cart outgrew the carrier, the pay way is not offered for the
 	// delivery or no longer exists), left out of the price. The checkout
 	// must choose again.
@@ -154,6 +155,13 @@ func ComputePricing(
 	}
 	if err := p.addQuote(q); err != nil {
 		return nil, err
+	}
+	// A region the store stopped serving before a carrier was chosen:
+	// there is none to choose.
+	if p.DeliveryRefused == nil && s.Fulfillment.Kind == "" &&
+		p.RegionUnreached(s) {
+		p.DeliveryRefused = &Refusal{
+			Code: django.CodeShippingRegionUnavailable}
 	}
 	if s.PayWayID > 0 && p.PayWayRefused == nil {
 		// Whether the agent can settle the checkout is the pay way's
@@ -248,13 +256,16 @@ func (p *Pricing) quote(
 	}
 }
 
-// OffersHome reports whether the store delivers the cart home to the
-// place its options were priced for, by any carrier.
-func (p *Pricing) OffersHome() bool {
-	return slices.ContainsFunc(p.ShippingOptions,
-		func(o django.QuoteShippingOption) bool {
-			return o.Kind == FulfillmentHomeDelivery && o.FitsCart()
-		})
+// RegionUnreached reports whether the checkout's home delivery names a
+// region no carrier delivers to: the region, not the carrier, is what
+// changes. A carrier that delivers there but does not take this cart
+// (its weight, its parcels) reaches it.
+func (p *Pricing) RegionUnreached(s *Session) bool {
+	return s.Fulfillment.RegionID != "" && p.ShippingOptions != nil &&
+		!slices.ContainsFunc(p.ShippingOptions,
+			func(o django.QuoteShippingOption) bool {
+				return o.Kind == FulfillmentHomeDelivery
+			})
 }
 
 // quoted checks that a quote prices every choice it was asked: a row it

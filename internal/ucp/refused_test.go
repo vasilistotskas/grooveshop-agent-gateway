@@ -57,12 +57,15 @@ func TestARegionNoCarrierDeliversToIsAtTheRegion(t *testing.T) {
 		"another carrier the cart does not fit": {
 			[]django.QuoteShippingOption{
 				{Kind: "home_delivery", ExceedsMaxWeight: true}},
-			pathRegion, "another region",
+			pathOption, "another of the group's options",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := refusedChoices(&checkout.Session{}, &checkout.Pricing{
-				DeliveryRefused: refused, ShippingOptions: tc.options})
+			got := refusedChoices(
+				&checkout.Session{Fulfillment: checkout.Fulfillment{
+					CountryCode: "GR", RegionID: "GR-M"}},
+				&checkout.Pricing{
+					DeliveryRefused: refused, ShippingOptions: tc.options})
 			require.Len(t, got, 1)
 			assert.Equal(t, tc.path, got[0].Path)
 			assert.Equal(t, django.CodeShippingRegionUnavailable, got[0].Code)

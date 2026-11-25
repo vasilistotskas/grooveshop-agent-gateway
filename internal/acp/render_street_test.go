@@ -93,15 +93,18 @@ func TestARegionNoCarrierDeliversToIsAtState(t *testing.T) {
 		options []django.QuoteShippingOption
 		param   string
 	}{
-		"none left": {nil, paramState},
+		"none left": {[]django.QuoteShippingOption{}, paramState},
 		"another carrier": {
 			[]django.QuoteShippingOption{{Kind: "home_delivery"}},
 			"$.selected_fulfillment_options",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := refusedChoices(&checkout.Pricing{
-				DeliveryRefused: refused, ShippingOptions: tc.options})
+			got := refusedChoices(
+				&checkout.Session{Fulfillment: checkout.Fulfillment{
+					CountryCode: "GR", RegionID: "GR-M"}},
+				&checkout.Pricing{
+					DeliveryRefused: refused, ShippingOptions: tc.options})
 			require.Len(t, got, 1)
 			assert.Equal(t, tc.param, got[0].Param)
 			assert.Contains(t, got[0].Content, "Not there.")

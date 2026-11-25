@@ -377,11 +377,12 @@ Loads when working on a checkout session on either surface, its completion, its 
     refusal of the checkout's data (an email
     the store does not take) leaves only the cart to price
     (`Pricing.InputRefused`), and an empty cart prices nothing. A home
-    address names its region in every quote, before its carrier is chosen
-    and after one was refused (`QuoteRequest`), so the options and their
-    prices are those of the region's shipping zone; with no carrier left
-    to it (`Pricing.OffersHome`), `shipping_region_unavailable` is named
-    at the region, not at the option. An open
+    address names its region in the quote, before its carrier is chosen
+    and after one was refused (`QuoteRequest`; only a region the store
+    refuses as data is left out), so the options and their prices are
+    those of the region's shipping zone. With no carrier delivering to it
+    (`Pricing.RegionUnreached`) the refusal is named at the region, not at
+    the option, chosen or not yet. An open
     checkout is then rendered not ready, with an error naming what to
     correct (UCP `incomplete`, ACP `not_ready_for_payment`).
   - **A quote that cannot be read is an error**, never a total without

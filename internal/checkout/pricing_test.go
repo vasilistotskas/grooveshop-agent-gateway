@@ -311,6 +311,28 @@ func TestComputePricingListsTheRegionsOptionsBeforeACarrier(t *testing.T) {
 		Email: "buyer@example.test"}}, *asked)
 }
 
+// A region no carrier delivers to, with none chosen yet, is refused: there
+// is no option to choose. A carrier that reaches it is.
+func TestComputePricingRefusesARegionNoCarrierReaches(t *testing.T) {
+	for kind, want := range map[string]*Refusal{
+		FulfillmentPickupPoint:  {Code: django.CodeShippingRegionUnavailable},
+		FulfillmentHomeDelivery: nil,
+	} {
+		dj, _ := quoteDjango(t,
+			func(django.QuoteRequest) (int, string) {
+				return http.StatusOK, strings.Replace(
+					quoteBody("null", "null", "null"),
+					`"kind":"home_delivery"`, `"kind":"`+kind+`"`, 1)
+			})
+		s := readySession()
+		s.PayWayID = 0
+		s.Fulfillment.Kind, s.Fulfillment.ProviderCode = "", ""
+		p, err := ComputePricing(t.Context(), dj, pricingTenant(), s)
+		require.NoError(t, err)
+		assert.Equal(t, want, p.DeliveryRefused, kind)
+	}
+}
+
 // Data the store refuses leaves the cart priced for the place, as far as
 // the store takes it: with the region, then the country alone, then none.
 func TestComputePricingKeepsThePlaceTheStoreTakes(t *testing.T) {

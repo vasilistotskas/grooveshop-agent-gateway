@@ -237,7 +237,8 @@ wins over this page.
     `…methods[0].destinations`, `…destinations[0].address_region`,
     `…groups[0].selected_option_id` once the group is rendered, else
     `$.fulfillment.methods[0]`, `…methods[1].selected_destination_id`,
-    `$.payment`): a path names only a member the checkout renders. A
+    `$.payment`): a path names only a member the checkout renders, or
+    `address_region`, the member to add to a rendered destination. A
     refused delivery is the quote's code at the shipping group's option,
     or for a pickup at the pickup method's `selected_destination_id`
     (its remedy another point or shipping), and for a region no carrier

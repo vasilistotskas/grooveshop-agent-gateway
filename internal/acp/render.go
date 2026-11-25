@@ -174,7 +174,7 @@ func Render(
 	out.Status = statusOf(s, s.PayWayID > 0)
 
 	appendStateMessages(s, out)
-	if refusals := refusedChoices(pricing); len(refusals) > 0 && s.Open() {
+	if refusals := refusedChoices(s, pricing); len(refusals) > 0 && s.Open() {
 		// A choice the store no longer takes is left out of the price,
 		// so the session cannot be paid until it is chosen again.
 		out.Status = "not_ready_for_payment"
@@ -310,14 +310,14 @@ func renderDiscounts(
 // refusedChoices are the errors of the session's choices the store
 // refused for this cart, in the store's words: ACP's invalid, at the
 // member the buyer chooses again.
-func refusedChoices(p *checkout.Pricing) []Message {
+func refusedChoices(s *checkout.Session, p *checkout.Pricing) []Message {
 	var out []Message
 	if r := p.DeliveryRefused; r != nil {
 		param, remedy := "$.selected_fulfillment_options", " Select "+
 			"another fulfillment option from fulfillment_options; when it "+
 			"lists none, change the address or the cart, or hand the "+
 			"buyer to continue_url."
-		if r.Code == django.CodeShippingRegionUnavailable && !p.OffersHome() {
+		if p.RegionUnreached(s) {
 			param, remedy = paramState, " No carrier delivers to the "+
 				"region in state. Send the address again with another "+
 				"region of the country."
