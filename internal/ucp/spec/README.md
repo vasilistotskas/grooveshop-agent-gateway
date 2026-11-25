@@ -20,8 +20,7 @@ curl -sSL "https://codeload.github.com/Universal-Commerce-Protocol/ucp/tar.gz/re
 
 Then update `ucp.Version`, this directory's name, and the per-capability
 `spec` page paths in `internal/ucp/profile.go` (those move between
-releases — `/specification/checkout/` became
-`/specification/shopping/checkout/` in 2026-08-25).
+releases).
 
 Validate the snapshot with the official CLI (`cargo install ucp-schema`):
 

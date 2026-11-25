@@ -35,7 +35,6 @@ The staging run logged no ERROR or CRITICAL, checked in VictoriaLogs. The same f
 
 A real sign-in, consent and PKCE (M2 without the staging password), and the refusal of a token bound elsewhere, run in the real-stack test.
 
-The first staging flows ran on 2026-11-06, after production took the same versions on 2026-11-05. They were meant to run first, but the promote went ahead without them. They passed, so nothing needs undoing.
 
 ## 1. Smoke check
 
@@ -184,7 +183,7 @@ npx -y @modelcontextprotocol/inspector --cli https://demo-staging.grooveshop.spa
 
 **Observed on local:** PASS, with the official MCP TypeScript SDK, a headless browser for the sign-in, and the token bound to `https://<primary domain>/mcp` as on production:
 
-```
+```text
 connected anonymously, tools/list: 26 tools
 asked for scope: favourites:read loyalty:read orders:read profile
 challenged: client started OAuth by itself (UnauthorizedError)
@@ -267,7 +266,7 @@ An update replaces the checkout, so it carries the lines, the buyer and the fulf
 
 Leave out `regionId` and the checkout stays `incomplete`, with a message listing the valid codes. **Observed:** PASS.
 
-**Real-stack test** (`internal/realstack/order_create_test.go`), against a real Django: a pickup order at an ACS Smartpoint (paid on delivery) and at a BOX NOW locker (paid online), each selected by its id, shown by its catalogue name and delivered to the point's catalogue address; a street line with no house number refused `street_number_missing` at the line until the address changes; and a cart written in Django after its checkout showed it refused with Django's own 409 `cart_changed`, then placed after a read. The stack gives its throwaway store placeholder carrier credentials for this, with every carrier URL leading nowhere (`testdata/seed.py`).
+**Real-stack test** (`internal/realstack/order_create_test.go`), against a real Django: a pickup order at an ACS Smartpoint (paid on delivery) and at a BOX NOW locker (paid online), each selected by its id, shown by its catalogue name and delivered to the point's catalogue address; a street line with no house number refused `street_number_missing` at the line until the address changes; and a cart written in Django after its checkout showed it refused with Django's own 409 `cart_changed`, then placed after a read. The stack gives its throwaway store placeholder carrier credentials for this, with every carrier URL leading nowhere (`internal/realstack/testdata/seed.py`).
 
 ### U2. Hosted payment hands off to the buyer
 
@@ -303,7 +302,7 @@ with schema_context("demo"):
 
 Verify at the sink: `Content-Digest` must equal the SHA-256 of the raw body, and the RFC 9421 signature, rebuilt from `Signature-Input`, must verify as ES256 against the JWK with the same `kid` in the store's `/.well-known/ucp`. `Webhook-Id` is the outbox row's id and `Webhook-Timestamp` its `occurred_at`. Answer 503 from the sink once: the row stays `pending`, and its next attempt carries the same two headers.
 
-**Observed:** PASS before the outbox (Django's Celery push, gateway v1.47.0 and earlier). Digest matches, signature valid, key published in the profile, `UCP-Agent` and `Webhook-Id` present, body is the full order entity. Not run since.
+**Observed:** PASS on the design before the outbox (Django's Celery push). Digest matches, signature valid, key published in the profile, `UCP-Agent` and `Webhook-Id` present, body is the full order entity. Not run since.
 
 ### U4. Cancel
 
@@ -414,9 +413,8 @@ acp GET "/checkout_sessions/$ID" | sed '$d' | node -e 'let s="";process.stdin.on
 | ACP same key, different body (`null` where the first had no member counts as different) | 422 `idempotency_conflict`, on every operation |
 | ACP create replayed after its session expired, same key and body | 201 with the original body and `Idempotent-Replayed: true` |
 | ACP POST refused (400, 404, 405) | The message ends "This Idempotency-Key keeps this answer for 24 hours: send a new attempt with a new key." The key keeps the refusal and replays it, `Allow` included, even after what caused it is gone (`TestAnACPRefusalIsReplayedAfterItsCauseIsGone`). A new attempt needs a new key |
-| ACP POST answered 409 `idempotency_in_flight`, 429, or a 5xx | The key is free: the same key runs again as a new request. A complete answered 502 `order_outcome_unknown` sent again with its key resumes the completion (section 11). Except a complete answered 500 `order_placed` for an order whose session was not saved: that key keeps the answer and replays it (departs from the spec's §6.5, see `.claude/rules/acp.md`) |
+| ACP POST answered 409 `idempotency_in_flight`, 429, or a 5xx | The key is free: the same key runs again as a new request. A complete answered 502 `order_outcome_unknown` sent again with its key resumes the completion (section 10). Except a complete answered 500 `order_placed` for an order whose session was not saved: that key keeps the answer and replays it (departs from the spec's §6.5, see `.claude/rules/acp.md`) |
 | ACP update or cancel that was saved and then answered a 5xx (its session could not be rendered), retried with the same key | 200 with the session, and the session is not saved again: the retry finds its own mark in it (`Session.AppliedBy`). A cancel is not answered 405 for its own cancel, also when its save was stored and Redis lost the reply: that request is answered 200 at once |
-| ACP key settled by the release before #128 | Not read (the keys moved to `….v3`): the request runs as new, as after expiry. Those records end within 24 hours |
 | ACP call while another holds the session (lock busy) | 409 `idempotency_in_flight` with `Retry-After` |
 | ACP or UCP call whose session another call stored while it ran (a slow store can hold a call past its lock) | Nothing is written and no order is sent. ACP: 409 `idempotency_in_flight` with `Retry-After: 2`. UCP: an error saying the checkout was changed by another request. Sent again, the call reads the session as it is. Not exercised here: the integration suite holds the store's answer to produce it (`completion_fence_test.go`) |
 | Two completes of one ready session at once, with one key or two | One order. The other complete answers as the row above, then, sent again, the placed session |
@@ -429,7 +427,7 @@ A cart has one live checkout: two on one cart could each place an order, because
 | `create_checkout` with `cart_id`, by the checkout that holds the cart | Expected |
 |---|---|
 | None, or one that is completed or canceled | A new checkout, which holds the cart. Django usually removes a guest cart its order emptied, so after a completed checkout the cart is usually gone: see the row for a cart Django no longer serves |
-| One this server cannot read: the cart's record names a session that is not stored under this release's key (another release's, while a key move rolls out, or one Redis lost) | Refused, `conflict`: "held by a checkout whose records this server cannot read, so an order may exist", do not start another checkout before checking, and where to look with the checkout id or order id the caller holds. The record holds the cart until it ends with the lifetime its checkout gave it: half an hour after an open one's last save, up to a day otherwise (section 10). A record that ended with its session between the gateway's two reads frees the cart, and one another create took meanwhile is decided again |
+| One this server cannot read: the cart's record names a session that is not stored under this release's key (another release's, while a key move rolls out, or one Redis lost) | Refused, `conflict`: "held by a checkout whose records this server cannot read, so an order may exist", do not start another checkout before checking, and where to look with the checkout id or order id the caller holds. The record holds the cart until it ends with the lifetime its checkout gave it: half an hour after an open one's last save, up to a day otherwise (section 9). A record that ended with its session between the gateway's two reads frees the cart, and one another create took meanwhile is decided again |
 | Any, for a cart Django no longer serves (removed with its order or by a sign-in, or never made) | `not_found`: "that cart no longer exists: the shopper may have checked it out on the store's site, so an order may exist. Check with the shopper before building another cart with create_cart. No checkout was created". Nothing is left stored. A read of a checkout whose cart is gone says the same of the checkout, and to check before starting another checkout. A Django outage on that read is `unavailable`, never this answer |
 | An open UCP checkout | It is canceled and the new checkout holds the cart: the newest create wins. The old id reads `canceled`, and a complete of it is refused. A create the store refuses (region, payment) cancels nothing. Its discount codes go to the cart only after the new checkout holds it. A create that fails after it took the cart (that write, the save after it, the render) discards the new checkout, and the old one stays canceled |
 | An open UCP checkout another call is at work on (an update, a completion) | Not canceled under that call. The create looks again, three times at most, then answers `conflict`: "another request is at work on this cart's checkout", send it again shortly |
@@ -449,7 +447,7 @@ No answer gives the caller another checkout, or names one or its order.
 
 A cart Django just made (UCP `line_items`, an ACP create) is taken the same way. If it already has a record, no session is handed out: UCP `unavailable`, ACP 503, and an error line "a cart just made is already in a checkout".
 
-Two limits. The record can be lost while its session lives (a flush or a restore of the gateway's Redis, which never evicts). Every read of a session touches the record, and the session's next save writes a lost one again; a session nobody reads or saves (one left awaiting its payment) can still lose it, and that cart can then get a second checkout. What refuses the second order then is Django: an agent's order from a cart whose earlier order still awaits its online payment is answered 400 with `code` `cart_has_unpaid_order` (django-api #693). The same refusal follows a shopper who opened a checkout's `continue_url`, placed a hosted-payment order on the storefront and left it unpaid. No order is placed and the checkout stays `ready_for_complete`; UCP's key is free, ACP's keeps the refusal. Over UCP the platform gets that code, Django's sentence, and a hint: this checkout placed no order, start no other checkout, and once the store cancels that order when its payment window ends, this checkout can be completed. Over ACP it gets 400 `invalid_request`, code `cart_has_unpaid_order`, with a message of the same meaning. Neither names the earlier order (Django names none). Once that order is paid, Django empties the cart and the next complete is refused `cart_empty`; once it is canceled unpaid, the next complete places this checkout's order. And the release that adds the record moves the session key (section 10), because an older pod saves a session without keeping its cart's record alive: while it rolls out, a checkout an older pod stored is not seen by a newer pod, and the rule holds among the checkouts the newer pods store.
+Two limits. The record can be lost while its session lives (a flush or a restore of the gateway's Redis, which never evicts). Every read of a session touches the record, and the session's next save writes a lost one again; a session nobody reads or saves (one left awaiting its payment) can still lose it, and that cart can then get a second checkout. What refuses the second order then is Django: an agent's order from a cart whose earlier order still awaits its online payment is answered 400 with `code` `cart_has_unpaid_order` (django-api #693). The same refusal follows a shopper who opened a checkout's `continue_url`, placed a hosted-payment order on the storefront and left it unpaid. No order is placed and the checkout stays `ready_for_complete`; UCP's key is free, ACP's keeps the refusal. Over UCP the platform gets that code, Django's sentence, and a hint: this checkout placed no order, start no other checkout, and once the store cancels that order when its payment window ends, this checkout can be completed. Over ACP it gets 400 `invalid_request`, code `cart_has_unpaid_order`, with a message of the same meaning. Neither names the earlier order (Django names none). Once that order is paid, Django empties the cart and the next complete is refused `cart_empty`; once it is canceled unpaid, the next complete places this checkout's order. And the release that adds the record moves the session key (section 9), because an older pod saves a session without keeping its cart's record alive: while it rolls out, a checkout an older pod stored is not seen by a newer pod, and the rule holds among the checkouts the newer pods store.
 
 ### Invalid input
 
@@ -565,34 +563,7 @@ These were checked and left as they are:
 - **Tool schemas use `type: ["null","array"]` and similar.** Inspector `--strict` warns about them, 124 times across 21 tools on 2026-11-06. It is legal JSON Schema and no client has failed on it, so nothing changed. Look again if a client fails.
 - **If an order's outcome is unknown, the checkout cannot render.** When Django's answer to `POST /order` is lost, the session stays `complete_in_progress` with no order id, so a read goes to a cart that may be gone and fails. It is safe: it cannot place a second order. A platform that hangs up during `complete` does not cause it: the gateway waits for Django's answer without the platform, saves the checkout as placed and links the order, so the platform's retry with the same key answers the order. Not exercised here.
 
-## 9. Bugs these flows found
-
-Each is fixed at its root in its own PR, and all are live on production unless the table says otherwise. Fake-Django tests could not have found them, so the e2e fake now deletes the cart with the order and requires a region, as Django does, and the real-stack test runs the flows against Django itself.
-
-| Bug | Effect on production | Fix |
-|---|---|---|
-| The gateway collected no region, and Django requires one | **No agent order to a Greek address could complete**, on UCP or ACP, since late September | gateway #56 |
-| A placed checkout rendered from its deleted cart | The order existed, and the agent was told it failed and to retry | gateway #60 |
-| A client with no token got a tool error, never a 401 | No client could start linking an account | gateway #61 |
-| allauth compared a token's resource with the API URL | Every real client's token got 403 on all `my_*` tools | Django #490 |
-| No OIDC signing key in any environment | The token endpoint crashed for any client asking for `openid` | infra #248 |
-| Quantity below 1 read as 1 | An agent reducing a cart added to it | gateway #57 |
-| ACP `complete` on an unready session blamed the store | A platform would abandon a checkout it could finish | gateway #58 |
-| ACP ignored `currency` | A USD request silently got EUR amounts | gateway #59 |
-| Staging basic auth covered the OAuth paths | OAuth could not be tested with a real client | infra #247 |
-| A gift card counted as a discount in order totals | None today: no gateway order can carry a gift card | gateway #63 |
-| A token for another resource got 403 instead of 401 | The gateway read it as a missing scope, so the client was never sent to link again | Django #495 |
-| An error reading a placed order hid the order | The agent was told to retry an order that existed | gateway #64 |
-| A lower-case country code found no region | Buyers from clients that send `gr` could not check out | gateway #65 |
-| Discovery named whichever host was asked | A store's secondary domain advertised itself instead of the primary | gateway #66 |
-| A client registering with no `scope` got `openid` alone | It could not link an account: asking for the commerce scopes ended in `invalid_scope` | Django #500 |
-| Flower logged a clean stop as an uncaught error | No shopper effect, but the error blocked `promote.py production` | Django #502 |
-| The gateway read its own orders through the guest route | From 14 days after an agent order, the platform stopped getting order webhooks | Django #504, gateway #72 |
-| `get_order` called an expired guest order unavailable | The agent was told to retry something that could never work | gateway #72 |
-| Every save restarted a placed checkout's lifetime | Repeated calls could keep a session alive indefinitely | gateway #72 |
-| The UCP profile named whichever host was asked | A client reading it on a secondary domain was sent to a server it could not link an account on | gateway #71 |
-
-## 10. Before deploying a release that moves the checkout session key
+## 9. Before deploying a release that moves the checkout session key
 
 **Applies to:** every release that moves the checkout session key (`sessionKey` in `internal/checkout/store.go`). Seven have so far:
 
@@ -619,7 +590,7 @@ The new pods do not read sessions the old pods stored, and the reverse, on purpo
 
 **A cart held by the other release's checkout.** The record of the checkout that holds a cart (`ag:{schema}:checkoutcart:{cartId}`) is not versioned: it names its session by id. A pod that finds a record whose session it does not read under its own key holds the cart until the record ends (`CartHolder.Unread`, since the `cs:v7` release), with the lifetime its session gave it: half an hour after an open checkout's last save, up to a day for one that ended or whose order exists or may. A `create_checkout` naming such a cart is answered `conflict`: held by a checkout this server cannot read, an order may exist, check before starting another. That holds for the old release's checkouts during the rollout and after it, until their records end, and it is the same rule for a session Redis lost. Pods older than the `cs:v7` release read such a record as a free cart, so while one serves beside a new pod, a create on it can take a cart a new pod's checkout holds. The Deployment rolls its two replicas one at a time (`maxSurge: 1`, `maxUnavailable: 1`, the infrastructure repo's `base/agent-gateway.yaml`), so that window lasts from the first new pod's readiness until the last old pod stops taking requests; Django still refuses an agent's order from a cart whose earlier order awaits its online payment (django-api #693). From the move after `cs:v7` on, pods of both releases hold such a cart.
 
-So before the deploy, list the sessions whose order exists or may. Since v1.44.0 the gateway's Redis is its own instance, `redis-gateway`, database **0** (`REDIS_URL` in the infrastructure repo's `base/agent-gateway.yaml`), and its container already has `REDISCLI_AUTH` set. Run this from your machine: it runs the check in that container's shell (`sh -s`), so a failure ends the check and not your shell. It prints how many sessions it read (a session's lock and its placed-order record are not sessions and are not counted; the carts' records are under `ag:*:checkoutcart:*`, outside the scan), then the ones that matter:
+So before the deploy, list the sessions whose order exists or may. The gateway's Redis is its own instance, `redis-gateway`, database **0** (`REDIS_URL` in the infrastructure repo's `base/agent-gateway.yaml`), and its container already has `REDISCLI_AUTH` set. Run this from your machine: it runs the check in that container's shell (`sh -s`), so a failure ends the check and not your shell. It prints how many sessions it read (a session's lock and its placed-order record are not sessions and are not counted; the carts' records are under `ag:*:checkoutcart:*`, outside the scan), then the ones that matter:
 
 ```bash
 NS=grooveshop # grooveshop-staging for staging
@@ -660,7 +631,7 @@ CHECK
 
 So run the check above before a rollback too, and do not roll back further than the release with #138: older pods answer a session they cannot see with only "start a new one".
 
-## 11. A checkout stuck in progress
+## 10. A checkout stuck in progress
 
 **What it is.** A session whose stored status stays `complete_in_progress`. A completion marks the session before it asks Django for the order, and stores the outcome after. The session stays marked when that second write never happens:
 
@@ -676,7 +647,7 @@ Callers are told "in progress" for three upstream timeouts after the mark. After
 
 **Nothing needs doing**: the platform's next complete settles it. Look only when a buyer or a platform is waiting on one whose completes keep failing (Django down or throttling the cart's order creations, logged at the complete). Then:
 
-1. Find it. In the check of section 10, the lines that start `complete_in_progress` are these sessions. For one of them, in a shell in the same container (`kubectl --context grooveshop -n <namespace> exec -it redis-gateway-0 -c redis-gateway -- sh`), with `R="redis-cli -e -n 0"`:
+1. Find it. In the check of section 9, the lines that start `complete_in_progress` are these sessions. For one of them, in a shell in the same container (`kubectl --context grooveshop -n <namespace> exec -it redis-gateway-0 -c redis-gateway -- sh`), with `R="redis-cli -e -n 0"`:
 
    ```bash
    $R GET "$key"            # status, updatedAt, cartId, the buyer's email, "unconfirmed", orderUuid
@@ -706,7 +677,7 @@ Callers are told "in progress" for three upstream timeouts after the mark. After
    - Search the gateway's logs for the session id (`session`) too. "checkout: session save failed" and "checkout: order index write failed" each name the `order` when one exists. "checkout: the store did not tie the order to its checkout" names an order Django took without the checkout's id, which the lookup above cannot find: that order is this checkout's.
    - Anything else (an admin search by email, products or total that finds a candidate, or the buyer's confirmation email) leaves the outcome unknown: keep the session (step 3).
 
-3. Clear it **only when you have confirmed that no order exists**, and only while no complete can resume it. A complete of a session stuck in progress sends its order again (section 11's first paragraph), so a confirmation taken while a complete may arrive does not justify the delete: hold the session first, confirm under the hold, and delete under it.
+3. Clear it **only when you have confirmed that no order exists**, and only while no complete can resume it. A complete of a session stuck in progress sends its order again (section 10's first paragraph), so a confirmation taken while a complete may arrive does not justify the delete: hold the session first, confirm under the hold, and delete under it.
    1. Hold it with the session's own lock, which every update, complete and cancel takes before it reads the session (a complete that finds it held is told the session is busy, and retries). The hold lasts 15 minutes:
 
       ```bash
@@ -717,7 +688,7 @@ Callers are told "in progress" for three upstream timeouts after the mark. After
       If it never answers `OK`, keep the session.
    2. Read the session again under the hold: `$R GET "$key"`. It must still be `complete_in_progress` with no `orderUuid`, `$R EXISTS "$key:order"` must be `0`, and its `updatedAt` must be more than three times `UPSTREAM_TIMEOUT` old (a resume that ran before the hold moved it, and may still be running). Note its `revision`, `id` and `cartId`.
    3. Confirm, now, that no order exists (step 2): no order was sent, or the order request ended in Django and the lookup prints `none`. A confirmation taken before the hold does not count.
-   4. Delete the session and its cart's record, only while the hold is still yours and the session is still the one you read. The cart's record (`ag:{schema}:checkoutcart:{cartId}`) names the session; left behind, it would keep the cart from every new checkout until it ended (a record whose session the gateway does not read holds the cart, section 10):
+   4. Delete the session and its cart's record, only while the hold is still yours and the session is still the one you read. The cart's record (`ag:{schema}:checkoutcart:{cartId}`) names the session; left behind, it would keep the cart from every new checkout until it ended (a record whose session the gateway does not read holds the cart, section 9):
 
       ```bash
       $R EVAL "
@@ -738,7 +709,7 @@ Callers are told "in progress" for three upstream timeouts after the mark. After
 
    When an order exists, do not delete the session to "unblock" the platform: a new checkout for the same cart would be a second order. The order is the answer, and a complete of the session, once Django answers again, records it.
 
-## 12. Sealing the stores' signing keys
+## 11. Sealing the stores' signing keys
 
 **Applies to:** the release that seals each store's UCP signing key in Redis, and every environment that ran an earlier one.
 
@@ -769,7 +740,7 @@ The release after every environment has run step 3 deletes the sealing on first 
 
 **Eviction does not happen.** The signing keys carry no TTL, and the gateway's Redis is its own instance with `maxmemory-policy noeviction` and AOF persistence, so nothing evicts them; a full Redis refuses writes instead.
 
-**Giving a store a new key on purpose** (its key leaked). Only once step 3 has run in that environment and no pod of the earlier release is left: while the store's unsealed record holds its key, a pod that finds no sealed record seals that same key again, so deleting the sealed record alone changes nothing. Delete both records, then restart the pods. `redis-cli` runs in the gateway's Redis container, as in section 10 (database 0, `REDISCLI_AUTH` already set):
+**Giving a store a new key on purpose** (its key leaked). Only once step 3 has run in that environment and no pod of the earlier release is left: while the store's unsealed record holds its key, a pod that finds no sealed record seals that same key again, so deleting the sealed record alone changes nothing. Delete both records, then restart the pods. `redis-cli` runs in the gateway's Redis container, as in section 9 (database 0, `REDISCLI_AUTH` already set):
 
 ```bash
 NS=grooveshop # grooveshop-staging for staging
@@ -780,18 +751,3 @@ kubectl --context grooveshop -n "$NS" rollout restart deploy/agent-gateway
 ```
 
 Each pod holds the key it read in memory until it restarts, and the first pod to need the key after the restart mints the new one. Platforms see a rotation: the profile publishes only the new key, so a webhook signed with the old one before the restart no longer verifies.
-
-## 13. The release that removed the webhook stream (#111)
-
-Gateway releases up to v1.47.0 answered an order event once it was queued in the Redis stream `ag:webhooks:orders`, and Django's outbox then marked the event `delivered`. The release after them delivers within the call and reads no stream: whatever the old pods leave queued is never sent, and the outbox cannot send it again (*Send again now* skips a delivered row). In each environment:
-
-```bash
-NS=grooveshop-staging   # then, for production: NS=grooveshop
-r() { kubectl --context grooveshop -n "$NS" exec redis-gateway-0 -c redis-gateway -- redis-cli "$@"; }
-```
-
-1. **Before the promote:** `r XLEN ag:webhooks:orders` and `r XPENDING ag:webhooks:orders dispatch` both say 0. A stream that is not empty is still being delivered: wait, and check again.
-2. **After the rollout** (`kubectl ... rollout status deploy/agent-gateway`): the same check. An entry left there is a webhook no pod will send. `r XRANGE ag:webhooks:orders - +` names its store, its target and its order in the `delivery` field: write them down. The platform catches up with that order's next event, since every webhook carries the whole order.
-3. **Then delete the key**, which holds the stream and its `dispatch` group: `r DEL ag:webhooks:orders`.
-
-Observed 2026-11-18, before the promote: both environments empty, 0 pending; production held no order link.
