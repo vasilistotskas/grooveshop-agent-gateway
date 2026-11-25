@@ -265,6 +265,32 @@ func TestComputePricingDropsARefusedChoice(t *testing.T) {
 	assert.Nil(t, p.PayWay, "a refused pay way is not the checkout's")
 }
 
+// A delivery that reaches the country but not the session's region (the
+// region's shipping zone has no such rate) is a refusal of the delivery,
+// as one the store does not offer at all: it is dropped, and the options
+// are listed again for the country.
+func TestComputePricingRefusesADeliveryThatSkipsTheRegion(t *testing.T) {
+	dj, asked := quoteDjango(t,
+		func(r django.QuoteRequest) (int, string) {
+			if r.ShippingKind != "" {
+				return http.StatusBadRequest, `{"detail":"Not there.",` +
+					`"reason":"shipping_region_unavailable",` +
+					`"code":"shipping_region_unavailable"}`
+			}
+			return http.StatusOK, quoteBody("null", "null", "null")
+		})
+	s := readySession()
+	s.PayWayID = 0
+
+	p, err := ComputePricing(t.Context(), dj, pricingTenant(), s)
+	require.NoError(t, err)
+	require.Len(t, *asked, 2)
+	assert.Empty(t, (*asked)[1].RegionID, "asked again without the delivery")
+	assert.Equal(t, &Refusal{Code: django.CodeShippingRegionUnavailable,
+		Detail: "Not there."}, p.DeliveryRefused)
+	assert.False(t, p.HasDelivery)
+}
+
 // A quote that cannot be read is an error, never a total without the
 // row it could not price, and so is a cart Django no longer has.
 func TestComputePricingQuoteFailures(t *testing.T) {

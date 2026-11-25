@@ -212,8 +212,10 @@ func (c *Client) BoxNowNearestLocker(
 	return &out, nil
 }
 
-// Regions lists a country's delivery regions; a country without any, or
-// one Django does not know, answers an empty list.
+// Regions lists the regions of a country the store delivers to at home
+// (`shippable=true`: its shipping zones reach them); a country without
+// any, one the store does not deliver to at home, or one Django does not
+// know, answers an empty list.
 func (c *Client) Regions(
 	ctx context.Context, host, lang, countryCode string,
 ) ([]Region, error) {
@@ -224,6 +226,7 @@ func (c *Client) Regions(
 			"/get_regions_by_country_alpha_2",
 		host:     host,
 		language: lang,
+		query:    url.Values{"shippable": {"true"}},
 		out:      &out,
 	})
 	if err != nil {

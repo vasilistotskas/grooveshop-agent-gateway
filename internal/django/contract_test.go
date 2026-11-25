@@ -273,6 +273,7 @@ var djangoContract = []contractCall{
 		fn: "Regions", method: http.MethodGet,
 		path:   "/region/{alpha}/get_regions_by_country_alpha_2",
 		status: http.StatusOK,
+		query:  []contractParam{{"shippable", true}},
 		out:    reflect.TypeFor[[]Region](),
 		names:  map[string]string{"Region": "Region"},
 	},

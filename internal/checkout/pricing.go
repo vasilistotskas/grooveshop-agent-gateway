@@ -259,8 +259,9 @@ func payWayRefusal(code string) bool {
 // delivery for a cart.
 func shippingRefusal(code string) bool {
 	switch code {
-	case django.CodeShippingUnavailable, django.CodeShippingParcelTooLarge,
-		django.CodeShippingWeightExceeded:
+	case django.CodeShippingUnavailable,
+		django.CodeShippingRegionUnavailable,
+		django.CodeShippingParcelTooLarge, django.CodeShippingWeightExceeded:
 		return true
 	}
 	return false

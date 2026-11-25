@@ -384,17 +384,18 @@ func appendStateMessages(s *checkout.Session, out *Session) {
 			"A delivery address (line_one, city, postal_code, country) "+
 				"is required.")
 	case s.DestinationRefused != nil:
-		// Django splits line_one into the street and its house number,
-		// and refused this one when the order was sent.
+		// Django refused this address when the order was sent: the street
+		// in line_one, which it splits into the street and its house
+		// number, or the region in state, which its zones do not reach.
+		param, text := destinationRefusal(s.DestinationRefused)
 		out.Messages = append(out.Messages, Message{
-			Type: "error", Code: "invalid",
-			Param:      "$.fulfillment_details.address.line_one",
+			Type: "error", Code: "invalid", Param: param,
 			Resolution: "requires_buyer_input", ContentType: "plain",
-			Content: streetRefusedText(s.DestinationRefused),
+			Content: text,
 		})
 	}
 	if choices := s.RegionChoices(); choices != "" {
-		missing("$.fulfillment_details.address.state",
+		missing(paramState,
 			"state must name a region of the country, one of: "+choices)
 	}
 	if f.ProviderCode == "" || f.Kind == "" {

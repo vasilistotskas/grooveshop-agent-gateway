@@ -78,3 +78,34 @@ func TestARefusedStreetLineIsNamedUntilItChanges(t *testing.T) {
 	applyFulfillment(s, address, nil)
 	assert.Nil(t, s.DestinationRefused)
 }
+
+// A region the store refused at completion (its shipping zones no longer
+// reach it) is named at state, not line_one.
+func TestARefusedRegionIsNamedAtState(t *testing.T) {
+	s := checkout.NewSession("public", testTenant().Domain, "acp",
+		"29eb4495-e018-45e7-b59c-6646302bd4ef")
+	applyFulfillment(s, &FulfillmentDetails{Address: &Address{
+		LineOne: "Πανεπιστημίου 12", City: "Αθήνα",
+		PostalCode: "10431", Country: "GR",
+	}}, []SelectedFulfillmentOption{{OptionID: "acs:home_delivery"}})
+	s.Buyer = checkout.Buyer{
+		FirstName: "Μαρία", LastName: "Παπαδοπούλου",
+		Email: "maria@example.test", Phone: "+306912345678",
+	}
+	s.DestinationRefused = &checkout.Refusal{
+		Code: django.CodeRegionNotServed, Detail: "Not there."}
+	s.Recompute()
+	require.Equal(t, checkout.StatusIncomplete, s.Status)
+
+	payload, err := Render(t.Context(), fixtureDjango(t),
+		testTenant(), testLinks(testTenant()), s)
+	require.NoError(t, err)
+	var params []string
+	for _, m := range payload.Messages {
+		if m.Type == "error" {
+			params = append(params, m.Code+" "+m.Param)
+		}
+	}
+	assert.Equal(t,
+		[]string{"invalid $.fulfillment_details.address.state"}, params)
+}

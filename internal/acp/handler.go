@@ -784,6 +784,24 @@ func applyFulfillment(
 	s.Deliver(f)
 }
 
+// ACP's address fields a refused destination is corrected in.
+const (
+	paramLineOne = "$.fulfillment_details.address.line_one"
+	paramState   = "$.fulfillment_details.address.state"
+)
+
+// destinationRefusal says which address field the store refused, and why,
+// by Django's code: the region in state (the store's shipping zones do not
+// reach it), else the street in line_one.
+func destinationRefusal(r *checkout.Refusal) (param, text string) {
+	if r.Code == django.CodeRegionNotServed {
+		return paramState, "The store no longer delivers to the region " +
+			"in state. Send the address again with another region of " +
+			"the country."
+	}
+	return paramLineOne, streetRefusedText(r)
+}
+
 // streetRefusedText says why the store refused line_one, by Django's code.
 func streetRefusedText(r *checkout.Refusal) string {
 	switch r.Code {
@@ -1634,13 +1652,12 @@ func (h *Handler) completeError(
 		})
 	// The session is stored not ready, and its read names the field.
 	case errors.As(err, &street):
+		param, text := destinationRefusal(&checkout.Refusal{
+			Code: street.Code, Detail: street.Message})
 		writeError(w, http.StatusBadRequest, Error{
-			Type: "invalid_request", Code: "invalid",
-			Param: "$.fulfillment_details.address.line_one",
-			Message: streetRefusedText(&checkout.Refusal{
-				Code: street.Code, Detail: street.Message}) + " No order was " +
-				"placed: update the session, then complete with a new " +
-				"Idempotency-Key.",
+			Type: "invalid_request", Code: "invalid", Param: param,
+			Message: text + " No order was placed: update the session, " +
+				"then complete with a new Idempotency-Key.",
 		})
 	// Django names no order, and neither does the answer. The session
 	// stays ready: once that order is canceled unpaid it can be completed.

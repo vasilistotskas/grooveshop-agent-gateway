@@ -220,3 +220,28 @@ func TestMissingAPickupPointIsAnErrorAtTheSelection(t *testing.T) {
 		DestinationRefusedText(django.CodePickupPointInAnotherCountry),
 		"another country")
 }
+
+// A region the store refused when the order was sent (its shipping zones
+// no longer reach it) is an error at the destination's address_region,
+// not its street.
+func TestARefusedRegionIsAnErrorAtTheRegion(t *testing.T) {
+	s := checkout.NewSession("public", "shop.example.test", "ucp", "c")
+	s.Buyer = checkout.Buyer{FirstName: "Μαρία", LastName: "Π",
+		Email: "maria@example.test", Phone: "+306912345678"}
+	s.PayWayID = 1
+	s.Deliver(checkout.Fulfillment{
+		Kind: checkout.FulfillmentHomeDelivery, ProviderCode: "acs",
+		CountryCode: "GR", RegionID: "GR-M", City: "Ηράκλειο",
+		Zipcode: "71201", Street: "Δικαιοσύνης 10",
+	})
+	s.DestinationRefused = &checkout.Refusal{Code: django.CodeRegionNotServed}
+	rendered := &Fulfillment{Methods: []FulfillmentMethod{{ID: "shipping"}}}
+
+	assert.Equal(t, []Message{{Type: "error",
+		Code: django.CodeRegionNotServed, Path: pathRegion,
+		Severity: "recoverable",
+		Text:     DestinationRefusedText(django.CodeRegionNotServed),
+	}}, missing(s, rendered))
+	assert.Contains(t, DestinationRefusedText(django.CodeRegionNotServed),
+		"address_region")
+}
