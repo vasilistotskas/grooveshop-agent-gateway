@@ -22,6 +22,7 @@ from core.celery import celery_app
 from pay_way.models import PayWay
 from shipping.models.provider import ShippingProvider
 from shipping.models.rate import ShippingRate
+from shipping.zones import zone_for
 from shipping_acs.models import AcsStation
 from shipping_boxnow.models import BoxNowLocker
 from tenant.models import Tenant
@@ -107,14 +108,18 @@ store.save(update_fields=[*placeholders, "box_now_live_mode"])
 
 with schema_context("demostore"):
     # One ACS Smartpoint and one BOX NOW locker in GR, the points the
-    # pickup tests order to, and the two carriers' pickup rates there.
+    # pickup tests order to, and the two carriers' pickup rates there, in
+    # the zone covering the whole of GR (the migrations seed it).
+    greece = zone_for("GR")
+    if greece is None:
+        raise SystemExit("no shipping zone covers GR")
     for code in ("acs", "boxnow"):
         provider = ShippingProvider.objects.get(code=code)
         provider.is_active = True
         provider.save(update_fields=["is_active"])
         ShippingRate.objects.update_or_create(
             provider=provider,
-            country_id="GR",
+            zone=greece,
             kind="pickup_point",
             defaults={"price": Money(Decimal("2.50"), "EUR"), "is_active": True},
         )
