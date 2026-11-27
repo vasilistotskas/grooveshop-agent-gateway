@@ -10,7 +10,7 @@ description: >
 tools: Read, Grep, Glob, Bash
 ---
 
-You review Go changes in `grooveshop-agent-gateway`. Read `CLAUDE.md` in this
+You review Go changes in `grooveshop-agent-gateway`. Read `AGENTS.md` in this
 repo first, then the `.claude/rules/*.md` whose `paths:` match the changed
 files — together they are the source of truth for these invariants. Report findings;
 do not edit code.
