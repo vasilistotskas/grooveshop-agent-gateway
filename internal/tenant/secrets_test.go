@@ -21,6 +21,13 @@ import (
 
 const secretsHost = "shop.example.test"
 
+func aiKey(t *Tenant) string {
+	if t == nil || t.AIProfile == nil {
+		return ""
+	}
+	return t.AIProfile.APIKey
+}
+
 // serve runs one request for secretsHost through mw and returns the
 // response and the tenant the handler saw (nil when it did not run).
 func serve(mw func(http.Handler) http.Handler) (*httptest.ResponseRecorder, *Tenant) {
@@ -63,7 +70,7 @@ func TestSecretsStayOutOfRedisAndAreToppedUp(t *testing.T) {
 	a, err := podA.Resolve(t.Context(), secretsHost)
 	require.NoError(t, err)
 	assert.True(t, a.SecretsLoaded)
-	assert.Equal(t, testChatKey, a.ChatAPIKey)
+	assert.Equal(t, testChatKey, aiKey(a))
 	assertMemoryTTL(t, podA, secretsHost, testTTL)
 
 	raw, ok := rd.raw(redisKey(secretsHost))
@@ -77,14 +84,14 @@ func TestSecretsStayOutOfRedisAndAreToppedUp(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int32(1), f.calls.Load(), "pod B must read Redis")
 	assert.False(t, b.SecretsLoaded)
-	assert.Empty(t, b.ChatAPIKey)
+	assert.Nil(t, b.AIProfile)
 	assert.Empty(t, b.ACPBearerToken)
 	assertMemoryTTL(t, podB, secretsHost, testTTL)
 
 	full, err := podB.EnsureSecrets(t.Context(), b)
 	require.NoError(t, err)
 	assert.True(t, full.SecretsLoaded)
-	assert.Equal(t, testChatKey, full.ChatAPIKey)
+	assert.Equal(t, testChatKey, aiKey(full))
 	assert.Equal(t, testACPBearer, full.ACPBearerToken)
 	assert.Equal(t, "demostore", full.SchemaName)
 	assert.Equal(t, secretsHost, full.Domain)
@@ -138,7 +145,7 @@ func TestMiddlewareWithSecretsServesTheToppedUpTenant(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 	require.NotNil(t, seen)
 	assert.True(t, seen.SecretsLoaded)
-	assert.Equal(t, testChatKey, seen.ChatAPIKey)
+	assert.Equal(t, testChatKey, aiKey(seen))
 	assert.Equal(t, testACPBearer, seen.ACPBearerToken)
 	assert.Equal(t, int32(2), f.calls.Load())
 }
@@ -179,7 +186,7 @@ func TestAFailedTopUpIsRememberedForTheNegativeTTL(t *testing.T) {
 	rec, seen = serve(MiddlewareWithSecrets(podB, testLogger()))
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 	require.NotNil(t, seen)
-	assert.Equal(t, testChatKey, seen.ChatAPIKey)
+	assert.Equal(t, testChatKey, aiKey(seen))
 }
 
 // assertTopUpTTL checks that the top-up remembered for secretsHost expires
@@ -237,7 +244,7 @@ func TestEnsureSecretsCollapsesConcurrentTopUps(t *testing.T) {
 		done.Go(func() {
 			full, err := podB.EnsureSecrets(t.Context(), b)
 			if assert.NoError(t, err) {
-				assert.Equal(t, testChatKey, full.ChatAPIKey)
+				assert.Equal(t, testChatKey, aiKey(full))
 			}
 		})
 	}
@@ -311,7 +318,7 @@ func TestADeactivatedStoreIsUnknownOnTheCredentialRoutes(t *testing.T) {
 	rec, seen := serve(MiddlewareWithSecrets(podA, testLogger()))
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 	require.NotNil(t, seen)
-	assert.Equal(t, testChatKey, seen.ChatAPIKey)
+	assert.Equal(t, testChatKey, aiKey(seen))
 	assert.Equal(t, before, f.calls.Load())
 
 	for _, mw := range []func(http.Handler) http.Handler{
@@ -429,7 +436,7 @@ func TestCredentialsOutliveARedisHitThroughAnOutage(t *testing.T) {
 	got, err := withRedis.Resolve(t.Context(), secretsHost)
 	require.NoError(t, err)
 	assert.False(t, got.SecretsLoaded)
-	assert.Empty(t, got.ChatAPIKey)
+	assert.Nil(t, got.AIProfile)
 	assert.Equal(t, int32(2), f.calls.Load())
 
 	f.goDown()
@@ -439,7 +446,7 @@ func TestCredentialsOutliveARedisHitThroughAnOutage(t *testing.T) {
 		require.NotNil(t, seen, name)
 		assert.True(t, seen.Stale, name)
 		assert.True(t, seen.SecretsLoaded, name)
-		assert.Equal(t, testChatKey, seen.ChatAPIKey, name)
+		assert.Equal(t, testChatKey, aiKey(seen), name)
 		assert.Equal(t, testACPBearer, seen.ACPBearerToken, name)
 		// Remembered for the negative TTL, as a stale config is, so a
 		// hanging Django is not asked by every request.
@@ -477,7 +484,7 @@ func TestCredentialsOutliveARedisHitThroughAnOutage(t *testing.T) {
 		require.NotNil(t, seen, name)
 		assert.Equal(t, "demostore", seen.SchemaName, name)
 		assert.False(t, seen.SecretsLoaded, name)
-		assert.Empty(t, seen.ChatAPIKey, name)
+		assert.Nil(t, seen.AIProfile, name)
 		assert.Empty(t, seen.ACPBearerToken, name)
 	}
 	assertNoCredentialInRedis(t, rd)
@@ -515,7 +522,7 @@ func TestARotatedCredentialReplacesTheHeldOne(t *testing.T) {
 		assert.Equal(t, http.StatusNoContent, rec.Code)
 		require.NotNil(t, seen)
 		assert.False(t, seen.Stale)
-		assert.Equal(t, newChat, seen.ChatAPIKey)
+		assert.Equal(t, newChat, aiKey(seen))
 		assert.Equal(t, newACP, seen.ACPBearerToken)
 	}
 
@@ -767,7 +774,7 @@ func TestATokenRotationIsBridgedByHeldCredentials(t *testing.T) {
 	require.NotNil(t, seen)
 	assert.False(t, seen.Stale)
 	assert.True(t, seen.SecretsLoaded)
-	assert.Equal(t, testChatKey, seen.ChatAPIKey)
+	assert.Equal(t, testChatKey, aiKey(seen))
 	assertNoCredentialInRedis(t, rd)
 }
 
@@ -784,7 +791,7 @@ func TestAStoreWithoutCredentialsIsLoaded(t *testing.T) {
 	require.NotNil(t, seen)
 	assert.True(t, seen.SecretsLoaded)
 	assert.False(t, seen.Stale)
-	assert.Empty(t, seen.ChatAPIKey)
+	assert.Nil(t, seen.AIProfile)
 	assert.Empty(t, seen.ACPBearerToken)
 	assert.Equal(t, int32(1), f.calls.Load())
 	assert.Empty(t, logs.String())
@@ -803,7 +810,7 @@ func TestHeldCredentialsDoNotFollowAHostToAnotherStore(t *testing.T) {
 		assert.Equal(t, http.StatusNoContent, rec.Code)
 		require.NotNil(t, seen)
 		assert.Equal(t, "acme", seen.SchemaName)
-		assert.Empty(t, seen.ChatAPIKey)
+		assert.Nil(t, seen.AIProfile)
 		assert.Empty(t, seen.ACPBearerToken)
 		pod.mu.RLock()
 		assert.Nil(t, pod.mem[secretsHost].held, "nothing is held")
@@ -1142,7 +1149,7 @@ func TestARecognisedAnswerEndsTheRememberedTopUp(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, rec.Code)
 	require.NotNil(t, seen)
 	assert.True(t, seen.Stale)
-	assert.Equal(t, newChat, seen.ChatAPIKey)
+	assert.Equal(t, newChat, aiKey(seen))
 	assert.Equal(t, newACP, seen.ACPBearerToken)
 }
 

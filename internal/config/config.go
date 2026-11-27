@@ -169,14 +169,9 @@ type Config struct {
 	FeedStaleTTL         time.Duration
 
 	// Chat (first-party shopping assistant), spoken over the
-	// OpenAI-compatible chat-completions protocol. ChatBaseURL selects
-	// the provider (default: Gemini's compatibility endpoint — its free
-	// tier has the best Greek of the zero-cost options); Groq, Mistral,
-	// OpenRouter, Z.ai or Anthropic's compat layer are config swaps.
-	// The credential is per-tenant: it arrives on tenant/resolve
-	// (chatApiKey), never from the environment.
-	ChatBaseURL       string
-	ChatModel         string
+	// OpenAI-compatible chat-completions protocol. Provider, base URL,
+	// model and API key are per-tenant: they arrive on tenant/resolve
+	// (aiProfile), never from the environment.
 	ChatEffort        string
 	ChatMaxTokens     int
 	ChatMaxTurns      int
@@ -214,9 +209,6 @@ func Load() (Config, error) {
 		MediaURLTemplate: envOr("MEDIA_IMAGE_URL_TEMPLATE",
 			"https://{assets_host}/media_stream-image/{path}"+
 				"/800/800/contain/entropy/transparent/5/80.webp"),
-		ChatBaseURL: envOr("CHAT_BASE_URL",
-			"https://generativelanguage.googleapis.com/v1beta/openai/"),
-		ChatModel:  envOr("CHAT_MODEL", "gemini-3.5-flash-lite"),
 		ChatEffort: envOr("CHAT_EFFORT", "low"),
 		FeedImageURLTemplate: envOr("FEED_IMAGE_URL_TEMPLATE",
 			"https://{assets_host}/media_stream-image/{path}"+
@@ -373,13 +365,8 @@ func Load() (Config, error) {
 				"language code such as el (got %q)",
 			cfg.StorefrontDefaultLocale)
 	}
-	for _, b := range []struct{ name, value string }{
-		{"DJANGO_BASE_URL", cfg.DjangoBaseURL},
-		{"CHAT_BASE_URL", cfg.ChatBaseURL},
-	} {
-		if err := checkBaseURL(b.name, b.value); err != nil {
-			return Config{}, err
-		}
+	if err := checkBaseURL("DJANGO_BASE_URL", cfg.DjangoBaseURL); err != nil {
+		return Config{}, err
 	}
 	if !slices.Contains(chatEfforts,
 		shared.ReasoningEffort(cfg.ChatEffort)) {

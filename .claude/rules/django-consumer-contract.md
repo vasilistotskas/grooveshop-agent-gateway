@@ -13,10 +13,10 @@ contract files. The code wins over this page.
 ## The client (`internal/django`)
 
 - `internal/django` — typed API client. `ResolveTenant` also reports
-  whether Django recognised the internal token: Django adds `chatApiKey`
-  and `acpBearerToken`, possibly empty, only then, so their presence is
-  the answer, decoded beside `TenantConfig` (`tenantResolve`), never in
-  it; one key without the other is a decode error. Every tenant-scoped
+  whether Django recognised the internal token: Django adds
+  `acpBearerToken` (possibly empty) only then, so its key presence is the
+  answer, decoded beside `TenantConfig` (`tenantResolve`), never in it;
+  `aiProfile` absent or null means the store has no AI profile. Every tenant-scoped
   call sends
   `X-Forwarded-Host: <tenant domain>` + `X-Forwarded-Proto: https` (+
   `X-Language`). A GET is retried twice on a 5xx or a lost connection
@@ -111,7 +111,7 @@ release that drops, loosens or retypes one of those properties.
   zero value as "not set"): `contract:"optional"`, `contract:"nullable"`,
   `contract:"untyped"` (Django declares a `oneOf` union),
   `contract:"undocumented"` (read but absent from Django's schema — e.g.
-  the internal-only `chatApiKey`). A sent value carries Django's declared
+  the internal-only `aiProfile`). A sent value carries Django's declared
   format with `contract:"format=email|uri|double"`, and its Go type must
   marshal to Django's JSON type (`targetPrice` is a `json.Number`, sent as
   a number). Never tag a field to silence a real break: fix the DTO or the

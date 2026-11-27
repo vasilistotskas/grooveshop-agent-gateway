@@ -73,7 +73,7 @@ go run ./cmd/gateway       # listens on :8080
 ```
 
 `.env.example` lists every setting: the required ones first (startup fails without them), then the
-optional ones with their defaults. Per-store values (ACP token, chat key, feature flags) are never
+optional ones with their defaults. Per-store values (ACP token, AI provider/model/key, feature flags) are never
 environment variables; they arrive from Django's `tenant/resolve`.
 
 ## Common commands
@@ -109,6 +109,7 @@ internal/
 ├── acp/            # ACP checkout REST
 ├── checkout/       # Checkout sessions shared by UCP and ACP
 ├── feeds/          # Product feeds
+├── ai/             # Shared OpenAI-compatible model client (per-store AIProfile)
 ├── chat/           # Chatbot handler, model loop, quotas
 ├── identity/       # Bearer verification for /mcp and /mcp/admin
 ├── storefront/     # Every link into the Nuxt storefront

@@ -91,7 +91,6 @@ func TestLoadRefusalsNeverRepeatACredential(t *testing.T) {
 	const password = "s3cr%zzet"
 	for name, value := range map[string]string{
 		"DJANGO_BASE_URL":          "http://user:" + password + "@backend/api",
-		"CHAT_BASE_URL":            "https://user:" + password + "@llm.test/v1",
 		"DJANGO_PUBLIC_HOST":       "user:" + password + "@api.example.test",
 		"ASSETS_HOST":              "user:" + password + "@assets.test",
 		"STAFF_CONNECT_HOST":       "user:" + password + "@connect.test",
@@ -344,18 +343,16 @@ func TestLoadValidatesBaseURLs(t *testing.T) {
 		"http://backend-service/api/v1#frag",
 		"http://backend service/api/v1",
 	}
-	for _, name := range []string{"DJANGO_BASE_URL", "CHAT_BASE_URL"} {
-		for _, value := range refused {
-			t.Run(name+"="+value, func(t *testing.T) {
-				setRequired(t)
-				t.Setenv(name, value)
-				_, err := Load()
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), name)
-				assert.NotContains(t, err.Error(), "pw",
-					"a credential in the URL is never echoed")
-			})
-		}
+	for _, value := range refused {
+		t.Run("DJANGO_BASE_URL="+value, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("DJANGO_BASE_URL", value)
+			_, err := Load()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "DJANGO_BASE_URL")
+			assert.NotContains(t, err.Error(), "pw",
+				"a credential in the URL is never echoed")
+		})
 	}
 	for value, want := range map[string]string{
 		"http://backend-service/api/v1/": "http://backend-service/api/v1",
@@ -369,13 +366,6 @@ func TestLoadValidatesBaseURLs(t *testing.T) {
 			assert.Equal(t, want, cfg.DjangoBaseURL)
 		})
 	}
-	t.Run("CHAT_BASE_URL=http with port", func(t *testing.T) {
-		setRequired(t)
-		t.Setenv("CHAT_BASE_URL", "http://127.0.0.1:11434/v1/")
-		cfg, err := Load()
-		require.NoError(t, err)
-		assert.Equal(t, "http://127.0.0.1:11434/v1/", cfg.ChatBaseURL)
-	})
 }
 
 // CHAT_EFFORT is sent as reasoning_effort on every model call: a value

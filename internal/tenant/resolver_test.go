@@ -54,7 +54,16 @@ func resolveBody(
 	}
 	maps.Copy(m, set)
 	if secrets {
-		m["chatApiKey"] = chatKey
+		if chatKey != "" {
+			m["aiProfile"] = map[string]any{
+				"provider": "gemini",
+				"baseUrl":  "https://generativelanguage.googleapis.com/v1beta/openai/",
+				"model":    "gemini-3.5-flash-lite",
+				"apiKey":   chatKey,
+			}
+		} else {
+			m["aiProfile"] = nil
+		}
 		m["acpBearerToken"] = acpBearer
 	}
 	out, err := json.Marshal(m)
@@ -389,22 +398,28 @@ func TestNormalizeHost(t *testing.T) {
 // bearer to any of those workloads.
 func TestPublicConfigStripsCredentials(t *testing.T) {
 	cfg := &django.TenantConfig{
-		SchemaName:     "acme",
-		StoreName:      "Acme",
-		ChatAPIKey:     "sk-live-do-not-cache",
+		SchemaName: "acme",
+		StoreName:  "Acme",
+		AIProfile: &django.AIProfile{
+			Provider: "gemini",
+			BaseURL:  "https://generativelanguage.googleapis.com/v1beta/openai/",
+			Model:    "gemini-3.5-flash-lite",
+			APIKey:   "sk-live-do-not-cache",
+		},
 		ACPBearerToken: "acp-live-do-not-cache",
 	}
 
 	public := publicConfig(cfg)
 
-	assert.Empty(t, public.ChatAPIKey)
+	assert.Nil(t, public.AIProfile)
 	assert.Empty(t, public.ACPBearerToken)
 	// Everything else still rides the cache.
 	assert.Equal(t, "acme", public.SchemaName)
 	assert.Equal(t, "Acme", public.StoreName)
 
 	// The source is untouched — the memory tier keeps the real values.
-	assert.Equal(t, "sk-live-do-not-cache", cfg.ChatAPIKey)
+	require.NotNil(t, cfg.AIProfile)
+	assert.Equal(t, "sk-live-do-not-cache", cfg.AIProfile.APIKey)
 	assert.Equal(t, "acp-live-do-not-cache", cfg.ACPBearerToken)
 
 	raw, err := json.Marshal(&public)

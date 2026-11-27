@@ -189,8 +189,6 @@ func chatGatewayHandler(
 		UpstreamTimeout:         5 * time.Second,
 		RateLimitPerMin:         6000,
 		RateLimitBurst:          1000,
-		ChatBaseURL:             modelSrv.URL,
-		ChatModel:               "gemini-3.7-flash",
 		ChatEffort:              "low",
 		ChatMaxTokens:           1024,
 		ChatMaxTurns:            chatMaxTurns,
@@ -306,10 +304,10 @@ func TestChatTextOnlyTurn(t *testing.T) {
 	assert.Equal(t, false, done["cartMutated"])
 
 	// The system prompt must scope the assistant to the tenant's store,
-	// and the configured model must reach the wire.
+	// and the store's configured model must reach the wire.
 	body := *fake.lastBody.Load()
 	assert.Contains(t, string(body), "Demo Store")
-	assert.Contains(t, string(body), "gemini-3.7-flash")
+	assert.Contains(t, string(body), "gemini-3.5-flash-lite")
 	// The store has promotions off: no coupon tools, no coupon guidance.
 	assert.NotContains(t, string(body), "apply_coupon")
 }

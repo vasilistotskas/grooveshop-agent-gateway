@@ -99,7 +99,7 @@ func (c *Client) Ping(ctx context.Context) error {
 // the only host-unscoped call: the platform API host satisfies Django's
 // ALLOWED_HOSTS check while the domain being resolved rides the query.
 // The internal secret authenticates the gateway so Django includes the
-// tenant's credential fields (chatApiKey, acpBearerToken) that public
+// tenant's credential fields (aiProfile, acpBearerToken) that public
 // callers never see. recognised reports whether it did: a secret Django
 // does not hold gets the public body, whose empty credentials are not the
 // store's.

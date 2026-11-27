@@ -8,11 +8,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ai"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/config"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/httpmw"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
@@ -23,18 +23,17 @@ type Service struct {
 	server *mcp.Server
 	store  *Store
 	quota  *Quota
-	// model holds everything but the credential, so every turn shares
-	// its connections: the API key is per-tenant (from tenant/resolve)
-	// and attached to each request.
-	model openai.Client
-	log   *slog.Logger
+	// ai shares one HTTP connection pool across tenants while configuring
+	// each call with the store's own provider base URL, model and API key
+	// from tenant/resolve.
+	ai  *ai.Client
+	log *slog.Logger
 }
 
-// New builds the chat service. The model is reached over the
-// OpenAI-compatible chat-completions protocol — CHAT_BASE_URL selects the
-// provider (Gemini's compatibility endpoint by default; Groq, Mistral,
-// OpenRouter, … are config swaps). Extra options are passed to the client
-// (tests inject option.WithBaseURL for a fake API).
+// New builds the chat service. Every model call uses the store's own
+// AIProfile from tenant/resolve through internal/ai. Extra options are
+// passed to the AI client (tests inject option.WithBaseURL or a custom
+// HTTP client).
 func New(
 	cfg config.Config, server *mcp.Server, store *Store, quota *Quota,
 	log *slog.Logger,
@@ -45,13 +44,8 @@ func New(
 		server: server,
 		store:  store,
 		quota:  quota,
-		// No retries: a throttled turn reaches the shopper at once with
-		// the provider's wait, and the widget's retry button resends it.
-		model: openai.NewClient(append([]option.RequestOption{
-			option.WithBaseURL(cfg.ChatBaseURL),
-			option.WithMaxRetries(0),
-		}, opts...)...),
-		log: log,
+		ai:     ai.New(cfg.AllowLocalWebhooks, opts...),
+		log:    log,
 	}
 }
 
@@ -65,9 +59,14 @@ func (s *Service) handle(w http.ResponseWriter, r *http.Request) {
 		httpmw.WriteJSONError(w, http.StatusNotFound, "unknown store")
 		return
 	}
-	// Chat is a per-tenant capability: no key on the tenant config means
-	// the store has not enabled the assistant.
-	if t.ChatAPIKey == "" {
+	// Chat is a per-tenant capability: no valid AI profile on the tenant
+	// config means the store has not enabled AI features (no fallback).
+	if err := ai.ValidateProfile(t.AIProfile); err != nil {
+		if t.AIProfile != nil {
+			s.log.WarnContext(r.Context(),
+				"invalid tenant AI profile; chat disabled",
+				slog.String("error", err.Error()))
+		}
 		httpmw.WriteJSONError(w, http.StatusNotFound,
 			messageFor(t.DefaultLocale, msgChatDisabled))
 		return

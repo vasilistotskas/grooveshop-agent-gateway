@@ -324,13 +324,28 @@ func TestChatEchoesEachToolCallsThoughtSignature(t *testing.T) {
 	assert.JSONEq(t, signature, string(echoed))
 }
 
-// The model credential is the store's own: every request a store's turn
-// sends the provider carries that store's key, never another store's,
-// with turns of two stores running at once on the one shared client.
+// The model credential, provider and model are the store's own: every
+// request a store's turn sends carries that store's key and model, never
+// another store's, with turns of two stores on different providers running
+// at once on the one shared client.
 func TestChatSendsEachStoresOwnModelKey(t *testing.T) {
-	stores := map[string]struct{ name, key string }{
-		"alpha.test": {"Alpha Store", "sk-alpha-key"},
-		"acme.test":  {"Acme Store", "sk-acme-key"},
+	stores := map[string]struct {
+		name, provider, baseURL, model, key string
+	}{
+		"alpha.test": {
+			name:     "Alpha Store",
+			provider: "gemini",
+			baseURL:  "https://generativelanguage.googleapis.com/v1beta/openai/",
+			model:    "gemini-3.5-flash-lite",
+			key:      "sk-alpha-key",
+		},
+		"acme.test": {
+			name:     "Acme Store",
+			provider: "openai",
+			baseURL:  "https://api.openai.com/v1/",
+			model:    "gpt-5-mini",
+			key:      "sk-acme-key",
+		},
 	}
 	fixture, err := os.ReadFile(fixturePath("tenant_resolve_demostore.json"))
 	require.NoError(t, err)
@@ -354,7 +369,13 @@ func TestChatSendsEachStoresOwnModelKey(t *testing.T) {
 			return
 		}
 		doc["schemaName"], doc["name"] = schema, schema
-		doc["storeName"], doc["chatApiKey"] = store.name, store.key
+		doc["storeName"] = store.name
+		doc["aiProfile"] = map[string]any{
+			"provider": store.provider,
+			"baseUrl":  store.baseURL,
+			"model":    store.model,
+			"apiKey":   store.key,
+		}
 		doc["primaryDomain"] = domain
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(doc)
@@ -413,6 +434,8 @@ func TestChatSendsEachStoresOwnModelKey(t *testing.T) {
 				owner = store.name
 				assert.Equal(t, "Bearer "+store.key, s.auth,
 					"a turn of %s sent another key", store.name)
+				assert.Contains(t, s.body, `"model":"`+store.model+`"`,
+					"a turn of %s sent another model", store.name)
 			}
 		}
 		require.NotEmpty(t, owner, "a model request names no store")
@@ -421,4 +444,77 @@ func TestChatSendsEachStoresOwnModelKey(t *testing.T) {
 	assert.Equal(t, map[string]int{
 		"Alpha Store": turnsPerStore, "Acme Store": turnsPerStore,
 	}, perStore)
+}
+
+// A store with no AI profile (aiProfile: null) has chat disabled with a
+// localized 404 before any model call.
+func TestChatNoAIProfileReturns404(t *testing.T) {
+	fixture, err := os.ReadFile(fixturePath("tenant_resolve_demostore.json"))
+	require.NoError(t, err)
+	base := fakeDjangoMux(t)
+	djangoH := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/tenant/resolve" {
+			base.ServeHTTP(w, r)
+			return
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(fixture, &doc); err != nil {
+			t.Error(err)
+			return
+		}
+		doc["aiProfile"] = nil
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	})
+	fake := &fakeChatAPI{}
+	gw, _ := newChatGateway(t, fake, djangoH, quietLogger())
+
+	raw, _ := json.Marshal(map[string]any{"message": "γεια"})
+	resp, err := http.Post(gw.URL+"/chat", "application/json",
+		bytes.NewReader(raw))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Zero(t, fake.calls.Load())
+}
+
+// A store configured with Mistral sends max_tokens, omits stream_options
+// and reasoning_effort, and still offers the commerce tools.
+func TestChatWithMistralProfileNormalisesRequest(t *testing.T) {
+	fixture, err := os.ReadFile(fixturePath("tenant_resolve_demostore.json"))
+	require.NoError(t, err)
+	base := fakeDjangoMux(t)
+	djangoH := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/tenant/resolve" {
+			base.ServeHTTP(w, r)
+			return
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(fixture, &doc); err != nil {
+			t.Error(err)
+			return
+		}
+		doc["aiProfile"] = map[string]any{
+			"provider": "mistral",
+			"baseUrl":  "https://api.mistral.ai/v1/",
+			"model":    "mistral-small-latest",
+			"apiKey":   "sk-mistral-test",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	})
+	fake := &fakeChatAPI{scripts: []string{textTurnSSE("Γεια σας!")}}
+	gw, _ := newChatGateway(t, fake, djangoH, quietLogger())
+
+	events := postChat(t, gw.URL, map[string]any{"message": "γεια"})
+	assert.Equal(t, "Γεια σας!", deltaText(events))
+	lastEvent(t, events, "done")
+	require.Equal(t, int32(1), fake.calls.Load())
+	sent := string(*fake.lastBody.Load())
+	assert.Contains(t, sent, `"model":"mistral-small-latest"`)
+	assert.Contains(t, sent, `"max_tokens":1024`)
+	assert.NotContains(t, sent, `"max_completion_tokens"`)
+	assert.NotContains(t, sent, `"stream_options"`)
+	assert.Contains(t, sent, `"tools"`)
+	assert.NotContains(t, sent, `"reasoning_effort"`)
 }

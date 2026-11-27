@@ -224,8 +224,8 @@ func New(d Deps) http.Handler {
 	)
 	// The chat surface pays per token — it gets its own, stricter
 	// per-(host, client) limiter on top of the global one. Whether chat is
-	// on is a per-tenant question (chatApiKey on tenant/resolve), so the route
-	// is always mounted and the handler rejects keyless tenants.
+	// on is a per-tenant question (aiProfile on tenant/resolve), so the
+	// route is always mounted and the handler rejects unconfigured tenants.
 	chatLimiter := httpmw.NewRateLimiter(
 		d.Cfg.ChatRatePerMin, d.Cfg.ChatRateBurst, d.Metrics,
 	)

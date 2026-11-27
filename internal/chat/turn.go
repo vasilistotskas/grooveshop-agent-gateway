@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ai"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -77,9 +78,6 @@ func (s *Service) runTurn(
 	}
 	messages = append(messages, openai.UserMessage(userMessage))
 
-	// The credential is the tenant's own: a request's options apply after
-	// the client's, so the shared ones can never override it.
-	apiKey := option.WithAPIKey(t.ChatAPIKey)
 	// The turn's deadline bounds its model calls and when a tool call may
 	// start. A tool call already running keeps ctx and finishes under its
 	// own Django timeout: cut midway, a cart change Django accepted would
@@ -90,10 +88,10 @@ func (s *Service) runTurn(
 	defer cancel()
 
 	var reply strings.Builder
+	var usage ai.Usage
 	for iteration := range s.cfg.ChatMaxIterations {
 		last := iteration == s.cfg.ChatMaxIterations-1
 		params := openai.ChatCompletionNewParams{
-			Model:               s.cfg.ChatModel,
 			Messages:            messages,
 			Tools:               tools,
 			MaxCompletionTokens: openai.Int(int64(s.cfg.ChatMaxTokens)),
@@ -111,10 +109,11 @@ func (s *Service) runTurn(
 		params.ReasoningEffort = shared.ReasoningEffort(s.cfg.ChatEffort)
 
 		acc, signatures, err := s.streamCompletion(
-			turnCtx, params, apiKey, &reply, sse)
+			turnCtx, t.AIProfile, params, &reply, sse)
 		if err != nil {
 			return result(""), err
 		}
+		usage = usage.Add(ai.UsageFrom(acc))
 		if len(acc.Choices) == 0 {
 			break
 		}
@@ -141,6 +140,15 @@ func (s *Service) runTurn(
 		}
 	}
 
+	if usage.TotalTokens > 0 {
+		s.log.DebugContext(ctx, "chat turn model usage",
+			slog.String("provider", t.AIProfile.Provider),
+			slog.String("model", t.AIProfile.Model),
+			slog.Int64("prompt_tokens", usage.PromptTokens),
+			slog.Int64("completion_tokens", usage.CompletionTokens),
+			slog.Int64("total_tokens", usage.TotalTokens))
+	}
+
 	// The model can exhaust the iteration budget still asking for tools, or
 	// return an empty final message — either way no prose reached the
 	// shopper. Surface a friendly nudge instead of an empty bubble.
@@ -158,13 +166,15 @@ func (s *Service) runTurn(
 // completion and the Gemini thought signatures of its tool calls.
 func (s *Service) streamCompletion(
 	ctx context.Context,
+	profile *django.AIProfile,
 	params openai.ChatCompletionNewParams,
-	apiKey option.RequestOption,
 	reply *strings.Builder,
 	sse *sseWriter,
 ) (*openai.ChatCompletionAccumulator, map[int]string, error) {
-	stream := s.model.Chat.Completions.NewStreaming(
-		ctx, params, apiKey)
+	stream, err := s.ai.NewStreaming(ctx, profile, params)
+	if err != nil {
+		return nil, nil, err
+	}
 	acc := openai.ChatCompletionAccumulator{}
 	// Gemini 3 models attach a per-tool-call
 	// ``extra_content.google.thought_signature`` that MUST be echoed

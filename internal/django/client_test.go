@@ -69,23 +69,36 @@ func TestResolveTenantDecodesFixture(t *testing.T) {
 		ProductReviews: true, ProductAlerts: true, Favourites: true,
 		Loyalty: true,
 	}, cfg.Features)
-	assert.Equal(t, "sk-test-fake", cfg.ChatAPIKey)
+	require.NotNil(t, cfg.AIProfile)
+	assert.Equal(t, AIProfile{
+		Provider: "gemini",
+		BaseURL:  "https://generativelanguage.googleapis.com/v1beta/openai/",
+		Model:    "gemini-3.5-flash-lite",
+		APIKey:   "sk-test-fake",
+	}, *cfg.AIProfile)
 	assert.Equal(t, "acp-bearer-demostore-fixture", cfg.ACPBearerToken)
 }
 
-// Django adds both credential keys, possibly empty, only for a caller whose
-// X-Internal-Token it recognises (tenant/views.py); their presence is what
-// tells the gateway it was recognised.
+// Django adds acpBearerToken (possibly empty) only for a caller whose
+// X-Internal-Token it recognises (tenant/views.py); its presence is what
+// tells the gateway it was recognised. aiProfile absent or null means the
+// store has no AI profile (chat off).
 func TestResolveTenantReportsWhetherDjangoRecognisedTheGateway(t *testing.T) {
 	cases := []struct {
 		name, body string
 		recognised bool
+		hasProfile bool
 	}{
 		{"keys with values", `{"schemaName": "demostore",
-			"chatApiKey": "sk", "acpBearerToken": "acp"}`, true},
-		{"keys present, empty", `{"schemaName": "demostore",
-			"chatApiKey": "", "acpBearerToken": ""}`, true},
-		{"no keys", `{"schemaName": "demostore"}`, false},
+			"aiProfile": {"provider": "openai", "baseUrl": "https://api.openai.com/v1/", "model": "gpt-4.1-mini", "apiKey": "sk"},
+			"acpBearerToken": "acp"}`, true, true},
+		{"keys present, null/empty", `{"schemaName": "demostore",
+			"aiProfile": null, "acpBearerToken": ""}`, true, false},
+		{"acpBearerToken alone, aiProfile absent", `{"schemaName": "demostore",
+			"acpBearerToken": ""}`, true, false},
+		{"no keys", `{"schemaName": "demostore"}`, false, false},
+		{"aiProfile without acpBearerToken", `{"schemaName": "demostore",
+			"aiProfile": null}`, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -100,28 +113,9 @@ func TestResolveTenantReportsWhetherDjangoRecognisedTheGateway(t *testing.T) {
 				ResolveTenant(t.Context(), "shop.example.test")
 			require.NoError(t, err)
 			assert.Equal(t, tc.recognised, recognised)
+			assert.Equal(t, tc.hasProfile, cfg.AIProfile != nil)
 			assert.Equal(t, "demostore", cfg.SchemaName)
 		})
-	}
-}
-
-// Django always adds the two keys together: one without the other is a
-// body the gateway cannot read, not a half-recognised caller.
-func TestResolveTenantRefusesOneCredentialKeyAlone(t *testing.T) {
-	for _, body := range []string{
-		`{"schemaName": "demostore", "chatApiKey": "sk"}`,
-		`{"schemaName": "demostore", "acpBearerToken": ""}`,
-	} {
-		srv := httptest.NewServer(http.HandlerFunc(
-			func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(body))
-			}))
-		_, _, err := newTestClient(t, srv.URL).
-			ResolveTenant(t.Context(), "shop.example.test")
-		srv.Close()
-		require.Error(t, err, body)
-		assert.Contains(t, err.Error(), "one credential key", body)
 	}
 }
 

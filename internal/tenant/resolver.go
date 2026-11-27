@@ -484,7 +484,7 @@ func (r *Resolver) storeRedis(ctx context.Context, domain string, cfg *django.Te
 // only; routes that need one go through Resolver.EnsureSecrets.
 func publicConfig(cfg *django.TenantConfig) django.TenantConfig {
 	public := *cfg
-	public.ChatAPIKey = ""
+	public.AIProfile = nil
 	public.ACPBearerToken = ""
 	return public
 }
@@ -493,7 +493,12 @@ func publicConfig(cfg *django.TenantConfig) django.TenantConfig {
 // from held: a config the pod knows now, with credentials it got before.
 // TestWithCredentialsRestoresWhatPublicConfigClears keeps the two in step.
 func withCredentials(cfg, held django.TenantConfig) django.TenantConfig {
-	cfg.ChatAPIKey = held.ChatAPIKey
+	if held.AIProfile != nil {
+		cp := *held.AIProfile
+		cfg.AIProfile = &cp
+	} else {
+		cfg.AIProfile = nil
+	}
 	cfg.ACPBearerToken = held.ACPBearerToken
 	return cfg
 }
@@ -591,7 +596,7 @@ func (r *Resolver) countAnswer(result string, t *Tenant, err error) {
 // Bump it with every change to the shape. TestCachedShapeMatchesKeyVersion
 // fails on a changed shape until the golden is updated, which prompts the
 // bump; a reviewer sees the golden's diff.
-const redisKeyVersion = "v7"
+const redisKeyVersion = "v8"
 
 func redisKey(domain string) string {
 	return "ag:tenant:" + redisKeyVersion + ":" + domain
@@ -613,7 +618,7 @@ func NormalizeHost(host string) string {
 //
 // The Redis tier deliberately stores the public config only (see
 // storeRedis), so a tenant resolved from there carries empty
-// ChatAPIKey / ACPBearerToken. Routes that authenticate against one —
+// AIProfile / ACPBearerToken. Routes that authenticate against one —
 // /chat and /acp — must call this, or a Redis-tier hit would look
 // exactly like a tenant that never configured the feature: a localized
 // 404 from chat, a 401 from ACP.
