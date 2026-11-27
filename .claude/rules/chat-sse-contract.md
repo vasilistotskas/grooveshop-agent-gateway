@@ -150,7 +150,7 @@ cross-repo change. The code wins over this page.
   tool's structured result (`internal/chat/products.go`), deduplicated
   across the turn and capped per event. Ids only, never prices: the
   storefront loads each card with the shopper's session, which is the
-  only place B2B pricing applies (see the B2B note in `CLAUDE.md`).
+  only place B2B pricing applies (see the B2B note in `AGENTS.md`).
 
 ## Spend
 

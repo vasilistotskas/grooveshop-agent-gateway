@@ -119,7 +119,7 @@ contract/           # The gateway's Django consumer contract (OpenAPI)
 testdata/           # Recorded Django responses for the decode tests
 ```
 
-[`CLAUDE.md`](CLAUDE.md) holds the architecture, the cross-repository contracts and the
+[`AGENTS.md`](AGENTS.md) holds the architecture, the cross-repository contracts and the
 conventions; `.claude/rules/` holds each area's detail, loaded with that area's files.
 
 ## Deployment and release
