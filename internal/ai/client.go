@@ -272,8 +272,8 @@ func AcceptsReasoningEffort(
 
 // SupportsStreamUsage reports whether provider accepts OpenAI's
 // stream_options.include_usage field on /chat/completions. Mistral's
-// /v1/chat/completions schema defines no stream_options field and rejects
-// unknown fields with HTTP 422 (https://docs.mistral.ai/api/endpoint/chat).
+// /v1/chat/completions request schema defines no stream_options field
+// (https://docs.mistral.ai/api/endpoint/chat).
 // Standard OpenAI-compatible endpoints — including Anthropic
 // (https://platform.claude.com/docs/en/api/openai-sdk) — support it.
 func SupportsStreamUsage(provider string) bool {
@@ -282,7 +282,7 @@ func SupportsStreamUsage(provider string) bool {
 
 // UsesMaxTokens reports whether provider expects max_tokens instead of
 // max_completion_tokens on /chat/completions. Mistral's /v1/chat/completions
-// schema defines max_tokens and rejects max_completion_tokens with HTTP 422
+// request schema defines max_tokens and no max_completion_tokens
 // (https://docs.mistral.ai/api/endpoint/chat). Anthropic's OpenAI-compatible
 // endpoint fully supports max_completion_tokens
 // (https://platform.claude.com/docs/en/api/openai-sdk).
