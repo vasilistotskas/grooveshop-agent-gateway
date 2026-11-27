@@ -15,7 +15,7 @@ Loads when working on the resolver, its caches or the tenant middleware. The cod
   up (`context.Canceled`), which logs nothing. That line is each
   request's own, under its own id; the shared resolve's lines carry the
   id of the request that started it (`.claude/rules/httpmw-obs.md`).
-  Credentials (`chatApiKey`, `acpBearerToken`) live in process memory
+  Credentials (`aiProfile`, `acpBearerToken`) live in process memory
   only: Redis holds the public config, so `/chat` and `/acp/*`
   (`MiddlewareWithSecrets`) top a Redis-tier tenant up with
   `EnsureSecrets`, which asks Django through the resolve's own path

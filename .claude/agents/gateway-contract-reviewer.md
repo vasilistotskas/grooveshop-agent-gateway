@@ -152,10 +152,11 @@ reading the whole tree.
   names a real schema outside `_test.go`/`testdata/`, and any production
   domain — domains arrive via tenant config.
 - Per-tenant gates: ACP and chat are per-tenant. `acpBearerToken` and
-  `chatApiKey` reach the gateway from `tenant/resolve` only when the resolve
+  `aiProfile` reach the gateway from `tenant/resolve` only when the resolve
   call carries `X-Internal-Token`. `/chat` sits behind the agent-commerce
-  gate (its generic 404); with agent commerce on, a tenant with no chat key
-  gets a localized 404 from the chat handler. A tenant with no ACP token has
+  gate (its generic 404); with agent commerce on, a tenant with no AI
+  profile gets a localized 404 from the chat handler. A tenant with no ACP
+  token has
   ACP disabled and every bearer gets 401 from `/acp/*`. `/mcp/admin` is
   gated by `staffAiAccess`, not by agent commerce.
 

@@ -15,7 +15,7 @@ import (
 )
 
 // goldenKeyVersion is the redisKeyVersion that goldenShape belongs to.
-const goldenKeyVersion = "v7"
+const goldenKeyVersion = "v8"
 
 // goldenShape is every field of the cached django.TenantConfig, nested
 // types included: "path type json-tag", sorted. It is the shape the
@@ -32,12 +32,18 @@ const goldenKeyVersion = "v7"
 // underlying type changes, and `,string` added to a tag.
 var goldenShape = []string{
 	`TenantConfig.ACPBearerToken string "acpBearerToken"`,
+	`TenantConfig.AIProfile *django.AIProfile "aiProfile"`,
+	`TenantConfig.AIProfile.APIKey string "apiKey"`,
+	`TenantConfig.AIProfile.BaseURL string "baseUrl"`,
+	`TenantConfig.AIProfile.Model string "model"`,
+	`TenantConfig.AIProfile.Provider string "provider"`,
+	`TenantConfig.AIProfile.SupportsStructuredOutputs bool "supportsStructuredOutputs"`,
+	`TenantConfig.AIProfile.SupportsToolCalling bool "supportsToolCalling"`,
 	`TenantConfig.AgentCommerceEnabled bool "agentCommerceEnabled"`,
 	`TenantConfig.AgentHostedPaymentEnabled bool "agentHostedPaymentEnabled"`,
 	`TenantConfig.AgentPaymentInstruments []string "agentPaymentInstruments"`,
 	`TenantConfig.AssetsDomain string "assetsDomain"`,
 	`TenantConfig.AvailableLocales []string "availableLocales"`,
-	`TenantConfig.ChatAPIKey string "chatApiKey"`,
 	`TenantConfig.DefaultCurrency string "defaultCurrency"`,
 	`TenantConfig.DefaultLocale string "defaultLocale"`,
 	`TenantConfig.FaviconURL string "faviconUrl"`,

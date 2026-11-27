@@ -147,7 +147,7 @@ func limitedGateway(t *testing.T, perMin, burst int) http.Handler {
 					`"storeName": "Demo Store", "primaryDomain": "` +
 					domain + `", "agentCommerceEnabled": ` +
 					strconv.FormatBool(domain == "shop.example.test") +
-					`, "chatApiKey": "", "acpBearerToken": ""}`))
+					`, "aiProfile": null, "acpBearerToken": ""}`))
 			case "down.example.test":
 				w.WriteHeader(http.StatusInternalServerError)
 			default:

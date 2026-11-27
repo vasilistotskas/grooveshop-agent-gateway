@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
 
+	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/ai"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/tenant"
 )
@@ -58,16 +59,20 @@ func (s *Service) runTurn(
 		return turnResult{text: text, cartID: cartID, cartMutated: mutated}
 	}
 
-	tools, err := br.tools(ctx, t.Features)
-	if err != nil {
-		return result(""), fmt.Errorf("chat: list tools: %w", err)
+	toolsEnabled := t.AIProfile.SupportsToolCalling
+	var tools []openai.ChatCompletionToolUnionParam
+	if toolsEnabled {
+		tools, err = br.tools(ctx, t.Features)
+		if err != nil {
+			return result(""), fmt.Errorf("chat: list tools: %w", err)
+		}
 	}
 
 	messages := make(
 		[]openai.ChatCompletionMessageParamUnion, 0, len(conv.Turns)+2)
 	messages = append(messages,
 		openai.SystemMessage(systemPrompt(
-			t, lang, conv.CartID, django.HasCartToken(ctx))))
+			t, lang, conv.CartID, django.HasCartToken(ctx), toolsEnabled)))
 	for _, turn := range conv.Turns {
 		if turn.Role == "assistant" {
 			messages = append(messages, openai.AssistantMessage(turn.Text))
@@ -77,9 +82,6 @@ func (s *Service) runTurn(
 	}
 	messages = append(messages, openai.UserMessage(userMessage))
 
-	// The credential is the tenant's own: a request's options apply after
-	// the client's, so the shared ones can never override it.
-	apiKey := option.WithAPIKey(t.ChatAPIKey)
 	// The turn's deadline bounds its model calls and when a tool call may
 	// start. A tool call already running keeps ctx and finishes under its
 	// own Django timeout: cut midway, a cart change Django accepted would
@@ -89,11 +91,16 @@ func (s *Service) runTurn(
 	turnCtx, cancel := context.WithTimeout(ctx, s.cfg.ChatTurnTimeout)
 	defer cancel()
 
+	maxIterations := s.cfg.ChatMaxIterations
+	if !toolsEnabled {
+		maxIterations = 1
+	}
+
 	var reply strings.Builder
-	for iteration := range s.cfg.ChatMaxIterations {
-		last := iteration == s.cfg.ChatMaxIterations-1
+	var usage ai.Usage
+	for iteration := range maxIterations {
+		last := iteration == maxIterations-1
 		params := openai.ChatCompletionNewParams{
-			Model:               s.cfg.ChatModel,
 			Messages:            messages,
 			Tools:               tools,
 			MaxCompletionTokens: openai.Int(int64(s.cfg.ChatMaxTokens)),
@@ -102,7 +109,7 @@ func (s *Service) runTurn(
 		// there would run (a cart change included) with their results
 		// never shown to the model or the shopper. A provider that
 		// returns some anyway is not obeyed (below).
-		if last {
+		if last && toolsEnabled {
 			params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
 				OfAuto: openai.String(string(
 					openai.ChatCompletionToolChoiceOptionAutoNone)),
@@ -111,10 +118,11 @@ func (s *Service) runTurn(
 		params.ReasoningEffort = shared.ReasoningEffort(s.cfg.ChatEffort)
 
 		acc, signatures, err := s.streamCompletion(
-			turnCtx, params, apiKey, &reply, sse)
+			turnCtx, t.AIProfile, params, &reply, sse)
 		if err != nil {
 			return result(""), err
 		}
+		usage = usage.Add(ai.UsageFrom(acc))
 		if len(acc.Choices) == 0 {
 			break
 		}
@@ -127,7 +135,7 @@ func (s *Service) runTurn(
 			reply.WriteString(refusal)
 			break
 		}
-		if len(msg.ToolCalls) == 0 || last {
+		if !toolsEnabled || len(msg.ToolCalls) == 0 || last {
 			break
 		}
 
@@ -139,6 +147,15 @@ func (s *Service) runTurn(
 		if err != nil {
 			return result(""), err
 		}
+	}
+
+	if usage.TotalTokens > 0 {
+		s.log.DebugContext(ctx, "chat turn model usage",
+			slog.String("provider", t.AIProfile.Provider),
+			slog.String("model", t.AIProfile.Model),
+			slog.Int64("prompt_tokens", usage.PromptTokens),
+			slog.Int64("completion_tokens", usage.CompletionTokens),
+			slog.Int64("total_tokens", usage.TotalTokens))
 	}
 
 	// The model can exhaust the iteration budget still asking for tools, or
@@ -158,13 +175,15 @@ func (s *Service) runTurn(
 // completion and the Gemini thought signatures of its tool calls.
 func (s *Service) streamCompletion(
 	ctx context.Context,
+	profile *django.AIProfile,
 	params openai.ChatCompletionNewParams,
-	apiKey option.RequestOption,
 	reply *strings.Builder,
 	sse *sseWriter,
 ) (*openai.ChatCompletionAccumulator, map[int]string, error) {
-	stream := s.model.Chat.Completions.NewStreaming(
-		ctx, params, apiKey)
+	stream, err := s.ai.NewStreaming(ctx, profile, params)
+	if err != nil {
+		return nil, nil, err
+	}
 	acc := openai.ChatCompletionAccumulator{}
 	// Gemini 3 models attach a per-tool-call
 	// ``extra_content.google.thought_signature`` that MUST be echoed

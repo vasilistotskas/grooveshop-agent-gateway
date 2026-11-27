@@ -84,9 +84,9 @@ func fakeDjangoMux(t *testing.T) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/tenant/resolve",
 		func(w http.ResponseWriter, r *http.Request) {
-			// Real Django only includes chatApiKey for internally
-			// authenticated resolves — the gateway must identify itself.
-			// The UCP suite boots its client with internalSecret, the
+			// Real Django only includes aiProfile and acpBearerToken for
+			// internally authenticated resolves — the gateway must identify
+			// itself. The UCP suite boots its client with internalSecret, the
 			// other suites with test-secret.
 			got := r.Header.Get("X-Internal-Token")
 			if got != "test-secret" && got != internalSecret {

@@ -69,22 +69,32 @@ func TestResolveTenantDecodesFixture(t *testing.T) {
 		ProductReviews: true, ProductAlerts: true, Favourites: true,
 		Loyalty: true,
 	}, cfg.Features)
-	assert.Equal(t, "sk-test-fake", cfg.ChatAPIKey)
+	require.NotNil(t, cfg.AIProfile)
+	assert.Equal(t, AIProfile{
+		Provider:                  "gemini",
+		BaseURL:                   "https://generativelanguage.googleapis.com/v1beta/openai/",
+		Model:                     "gemini-3.5-flash-lite",
+		APIKey:                    "sk-test-fake",
+		SupportsToolCalling:       true,
+		SupportsStructuredOutputs: true,
+	}, *cfg.AIProfile)
 	assert.Equal(t, "acp-bearer-demostore-fixture", cfg.ACPBearerToken)
 }
 
-// Django adds both credential keys, possibly empty, only for a caller whose
-// X-Internal-Token it recognises (tenant/views.py); their presence is what
-// tells the gateway it was recognised.
+// Django adds both credential keys (aiProfile possibly null, acpBearerToken
+// possibly empty) only for a caller whose X-Internal-Token it recognises
+// (tenant/views.py); their presence is what tells the gateway it was
+// recognised.
 func TestResolveTenantReportsWhetherDjangoRecognisedTheGateway(t *testing.T) {
 	cases := []struct {
 		name, body string
 		recognised bool
 	}{
 		{"keys with values", `{"schemaName": "demostore",
-			"chatApiKey": "sk", "acpBearerToken": "acp"}`, true},
-		{"keys present, empty", `{"schemaName": "demostore",
-			"chatApiKey": "", "acpBearerToken": ""}`, true},
+			"aiProfile": {"provider": "openai", "baseUrl": "https://api.openai.com/v1/", "model": "gpt-4.1-mini", "apiKey": "sk"},
+			"acpBearerToken": "acp"}`, true},
+		{"keys present, null/empty", `{"schemaName": "demostore",
+			"aiProfile": null, "acpBearerToken": ""}`, true},
 		{"no keys", `{"schemaName": "demostore"}`, false},
 	}
 	for _, tc := range cases {
@@ -109,7 +119,7 @@ func TestResolveTenantReportsWhetherDjangoRecognisedTheGateway(t *testing.T) {
 // body the gateway cannot read, not a half-recognised caller.
 func TestResolveTenantRefusesOneCredentialKeyAlone(t *testing.T) {
 	for _, body := range []string{
-		`{"schemaName": "demostore", "chatApiKey": "sk"}`,
+		`{"schemaName": "demostore", "aiProfile": null}`,
 		`{"schemaName": "demostore", "acpBearerToken": ""}`,
 	} {
 		srv := httptest.NewServer(http.HandlerFunc(

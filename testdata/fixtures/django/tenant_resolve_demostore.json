@@ -1,6 +1,13 @@
 {
   "schemaName": "demostore",
-  "chatApiKey": "sk-test-fake",
+  "aiProfile": {
+    "provider": "gemini",
+    "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    "model": "gemini-3.5-flash-lite",
+    "apiKey": "sk-test-fake",
+    "supportsToolCalling": true,
+    "supportsStructuredOutputs": true
+  },
   "acpBearerToken": "acp-bearer-demostore-fixture",
   "name": "demostore",
   "storeName": "Demo Store",

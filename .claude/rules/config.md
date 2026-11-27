@@ -12,7 +12,7 @@ Loads when working on the environment configuration. The code wins over this pag
   boot and then misbehave refuses to boot. Unknown `ENV`, `LOG_LEVEL`
   (parsed once, into `Config.LogLevel`) or `CHAT_EFFORT` (the API's
   `reasoning_effort` set, `shared.ReasoningEffort`); a
-  `DJANGO_BASE_URL` or `CHAT_BASE_URL` that is not an absolute http(s)
+  `DJANGO_BASE_URL` that is not an absolute http(s)
   URL with a host and no user info, query or fragment; an image URL
   template without `{assets_host}` and `{path}` or with another
   placeholder than those and `{schema}`; an `INTERNAL_EVENTS_SECRET`

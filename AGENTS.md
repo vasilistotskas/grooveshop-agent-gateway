@@ -22,7 +22,7 @@ internal endpoints and the operational routes:
 | `GET /.well-known/ucp` | UCP business profile (spec 2026-08-25), incl. the `space.grooveshop.payments` handler |
 | `/acp/*` | ACP agentic checkout REST (spec 2026-04-17) |
 | `/feeds/*` | Product feeds: google.xml, meta.xml, tiktok.xml, acp.json |
-| `POST /chat` | First-party shopping chatbot (SSE; OpenAI-compatible protocol via openai-go — Gemini free tier by default, any compatible provider via CHAT_BASE_URL) |
+| `POST /chat` | First-party shopping chatbot (SSE; OpenAI-compatible protocol via `internal/ai` — provider, model and API key per store from Django's `tenant/resolve`) |
 | `/internal/*` | Cluster-only, shared-secret header: Django's order events, sent by its outbox (`POST /internal/events/order-status`) and feed invalidation (`POST /internal/feeds/invalidate`) |
 | `GET /healthz`, `GET /readyz` | Liveness / readiness (readiness gates on Redis and the startup check of the signing keys; Django is reported, never gating) |
 | `GET /metrics` | Prometheus metrics (registry from `internal/obs`) |
@@ -82,7 +82,7 @@ detail is in the rule that loads with its files.
 ```text
 cmd/gateway    cmd/ucp-sign                  wiring and serve; sign as a platform
 internal/server                              mux assembly, /internal/* routes
-chat → mcpsrv    adminmcp    acp    feeds    the surfaces
+chat → mcpsrv, ai    adminmcp    acp    feeds    the surfaces
 ucp                                          profile, negotiation, webhooks, keys
 checkout    identity → mcptool               sessions; bearers; tool answers
 tenant                                       resolver and middleware
@@ -98,6 +98,7 @@ config  httpmw → obs  httphdr  httpsig  media  money  storefront  text
 | `internal/server` | Mux assembly; new route groups register here | `httpmw-obs.md`, `acp.md` |
 | `internal/mcpsrv` | `/mcp`: commerce, UCP and account tools, discovery, the Server Card, the platform signature check; the chat's server | `mcp-tools.md`, `store-features.md`, `ucp.md`, `checkout.md` |
 | `internal/adminmcp` | `/mcp/admin`, the store's own team, read only | `adminmcp.md` |
+| `internal/ai` | Shared OpenAI-compatible model client; calls each store's own provider, model and API key from `TenantConfig.AIProfile` | |
 | `internal/chat` | `/chat`, the storefront's chatbot (SSE) | `chat-sse-contract.md` |
 | `internal/acp` | `/acp/*` | `acp.md`, `checkout.md` |
 | `internal/ucp` | UCP profile, negotiation, order link, webhooks, signing keys | `ucp.md` |
@@ -313,12 +314,12 @@ not serve. The rule and how to split a change are in
   first-touch `attribution` the storefront relayed
   (`mcpsrv.WithShopperAttribution`), or none.
 - Config gates: ACP and chat are per-tenant. The ACP platform bearer
-  arrives as `acpBearerToken` and the chat model credential as
-  `chatApiKey` on `tenant/resolve` — Django includes both only when the
-  resolve call carries the gateway's `X-Internal-Token` (same shared
-  secret as the order-event push). `/chat` sits behind the
+  arrives as `acpBearerToken` and the store's AI provider, model, base URL
+  and key as `aiProfile` on `tenant/resolve` — Django includes both only
+  when the resolve call carries the gateway's `X-Internal-Token` (same
+  shared secret as the order-event push). `/chat` sits behind the
   agent-commerce gate (`tenant.RequireAgentCommerce`), whose 404 is the
-  generic one; a store with agent commerce on and no chat key gets a
+  generic one; a store with agent commerce on and no AI profile gets a
   localized 404 from the chat handler. A tenant without an ACP token has
   ACP disabled — every bearer gets 401 from `/acp/*`. `/mcp/admin` is
   not behind the agent-commerce gate: its own gate is the store's
