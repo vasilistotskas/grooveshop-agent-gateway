@@ -59,20 +59,16 @@ func (s *Service) runTurn(
 		return turnResult{text: text, cartID: cartID, cartMutated: mutated}
 	}
 
-	toolsEnabled := t.AIProfile.SupportsToolCalling
-	var tools []openai.ChatCompletionToolUnionParam
-	if toolsEnabled {
-		tools, err = br.tools(ctx, t.Features)
-		if err != nil {
-			return result(""), fmt.Errorf("chat: list tools: %w", err)
-		}
+	tools, err := br.tools(ctx, t.Features)
+	if err != nil {
+		return result(""), fmt.Errorf("chat: list tools: %w", err)
 	}
 
 	messages := make(
 		[]openai.ChatCompletionMessageParamUnion, 0, len(conv.Turns)+2)
 	messages = append(messages,
 		openai.SystemMessage(systemPrompt(
-			t, lang, conv.CartID, django.HasCartToken(ctx), toolsEnabled)))
+			t, lang, conv.CartID, django.HasCartToken(ctx))))
 	for _, turn := range conv.Turns {
 		if turn.Role == "assistant" {
 			messages = append(messages, openai.AssistantMessage(turn.Text))
@@ -91,15 +87,10 @@ func (s *Service) runTurn(
 	turnCtx, cancel := context.WithTimeout(ctx, s.cfg.ChatTurnTimeout)
 	defer cancel()
 
-	maxIterations := s.cfg.ChatMaxIterations
-	if !toolsEnabled {
-		maxIterations = 1
-	}
-
 	var reply strings.Builder
 	var usage ai.Usage
-	for iteration := range maxIterations {
-		last := iteration == maxIterations-1
+	for iteration := range s.cfg.ChatMaxIterations {
+		last := iteration == s.cfg.ChatMaxIterations-1
 		params := openai.ChatCompletionNewParams{
 			Messages:            messages,
 			Tools:               tools,
@@ -109,7 +100,7 @@ func (s *Service) runTurn(
 		// there would run (a cart change included) with their results
 		// never shown to the model or the shopper. A provider that
 		// returns some anyway is not obeyed (below).
-		if last && toolsEnabled {
+		if last {
 			params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
 				OfAuto: openai.String(string(
 					openai.ChatCompletionToolChoiceOptionAutoNone)),
@@ -135,7 +126,7 @@ func (s *Service) runTurn(
 			reply.WriteString(refusal)
 			break
 		}
-		if !toolsEnabled || len(msg.ToolCalls) == 0 || last {
+		if len(msg.ToolCalls) == 0 || last {
 			break
 		}
 

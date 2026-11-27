@@ -32,12 +32,10 @@ func sseResponse(body string) *http.Response {
 
 func TestValidateProfile(t *testing.T) {
 	valid := &django.AIProfile{
-		Provider:                  "openai",
-		BaseURL:                   "https://api.openai.com/v1/",
-		Model:                     "gpt-4.1-mini",
-		APIKey:                    "sk-test",
-		SupportsToolCalling:       true,
-		SupportsStructuredOutputs: true,
+		Provider: "openai",
+		BaseURL:  "https://api.openai.com/v1/",
+		Model:    "gpt-4.1-mini",
+		APIKey:   "sk-test",
 	}
 	require.NoError(t, ValidateProfile(valid))
 	assert.True(t, ProfileReady(valid))
@@ -96,7 +94,18 @@ func TestAcceptsReasoningEffort(t *testing.T) {
 	assert.False(t, AcceptsReasoningEffort("groq", "llama-3.3-70b-versatile", shared.ReasoningEffortLow))
 }
 
-func TestNewStreamingRoutesPerProfileAndGatesCapabilities(t *testing.T) {
+func TestProviderRequestShaping(t *testing.T) {
+	for _, provider := range []string{
+		"openai", "gemini", "anthropic", "groq", "openrouter",
+	} {
+		assert.True(t, SupportsStreamUsage(provider), provider)
+		assert.False(t, UsesMaxTokens(provider), provider)
+	}
+	assert.False(t, SupportsStreamUsage("mistral"))
+	assert.True(t, UsesMaxTokens("mistral"))
+}
+
+func TestNewStreamingRoutesPerProfileAndNormalisesRequest(t *testing.T) {
 	// Ambient OPENAI_* env vars must never leak into tenant requests.
 	t.Setenv("OPENAI_ORG_ID", "org-should-never-leak")
 	t.Setenv("OPENAI_PROJECT_ID", "proj-should-never-leak")
@@ -148,11 +157,10 @@ func TestNewStreamingRoutesPerProfileAndGatesCapabilities(t *testing.T) {
 	// Store A: OpenAI non-reasoning model (gpt-4.1-mini) — tools + usage,
 	// max_completion_tokens, NO reasoning_effort (OpenAI rejects it with 400).
 	pA := &django.AIProfile{
-		Provider:            "openai",
-		BaseURL:             "https://api.openai.com/v1/",
-		Model:               "gpt-4.1-mini",
-		APIKey:              "sk-store-a",
-		SupportsToolCalling: true,
+		Provider: "openai",
+		BaseURL:  "https://api.openai.com/v1/",
+		Model:    "gpt-4.1-mini",
+		APIKey:   "sk-store-a",
 	}
 	streamA, err := client.NewStreaming(t.Context(), pA, baseParams())
 	require.NoError(t, err)
@@ -165,11 +173,10 @@ func TestNewStreamingRoutesPerProfileAndGatesCapabilities(t *testing.T) {
 
 	// Store B: OpenAI reasoning model (gpt-5-mini) — keeps supported low effort.
 	pB := &django.AIProfile{
-		Provider:            "openai",
-		BaseURL:             "https://api.openai.com/v1/",
-		Model:               "gpt-5-mini",
-		APIKey:              "sk-store-b",
-		SupportsToolCalling: true,
+		Provider: "openai",
+		BaseURL:  "https://api.openai.com/v1/",
+		Model:    "gpt-5-mini",
+		APIKey:   "sk-store-b",
 	}
 	streamB, err := client.NewStreaming(t.Context(), pB, baseParams())
 	require.NoError(t, err)
@@ -188,14 +195,13 @@ func TestNewStreamingRoutesPerProfileAndGatesCapabilities(t *testing.T) {
 	}
 	require.NoError(t, streamBUnsupported.Err())
 
-	// Store C: Mistral without tool calling — max_tokens instead of
-	// max_completion_tokens, no stream_options, no tools, no reasoning_effort.
+	// Store C: Mistral — max_tokens instead of max_completion_tokens, no
+	// stream_options, tools always sent, no reasoning_effort.
 	pC := &django.AIProfile{
-		Provider:            "mistral",
-		BaseURL:             "https://api.mistral.ai/v1/",
-		Model:               "mistral-small-latest",
-		APIKey:              "sk-store-c",
-		SupportsToolCalling: false,
+		Provider: "mistral",
+		BaseURL:  "https://api.mistral.ai/v1/",
+		Model:    "mistral-small-latest",
+		APIKey:   "sk-store-c",
 	}
 	streamC, err := client.NewStreaming(t.Context(), pC, baseParams())
 	require.NoError(t, err)
@@ -204,7 +210,22 @@ func TestNewStreamingRoutesPerProfileAndGatesCapabilities(t *testing.T) {
 	}
 	require.NoError(t, streamC.Err())
 
-	require.Len(t, got, 4)
+	// Store D: Anthropic OpenAI-compatible endpoint — max_completion_tokens
+	// and stream_options are both supported, tools always sent.
+	pD := &django.AIProfile{
+		Provider: "anthropic",
+		BaseURL:  "https://api.anthropic.com/v1/",
+		Model:    "claude-sonnet-4-6",
+		APIKey:   "sk-store-d",
+	}
+	streamD, err := client.NewStreaming(t.Context(), pD, baseParams())
+	require.NoError(t, err)
+	for streamD.Next() {
+		_ = streamD.Current()
+	}
+	require.NoError(t, streamD.Err())
+
+	require.Len(t, got, 5)
 
 	// Ambient env headers must never appear on any request.
 	for _, r := range got {
@@ -236,6 +257,15 @@ func TestNewStreamingRoutesPerProfileAndGatesCapabilities(t *testing.T) {
 	assert.EqualValues(t, 512, got[3].body["max_tokens"])
 	assert.NotContains(t, got[3].body, "max_completion_tokens")
 	assert.NotContains(t, got[3].body, "stream_options")
-	assert.NotContains(t, got[3].body, "tools")
+	assert.Contains(t, got[3].body, "tools")
 	assert.NotContains(t, got[3].body, "reasoning_effort")
+
+	assert.Equal(t, "https://api.anthropic.com/v1/chat/completions", got[4].url)
+	assert.Equal(t, "Bearer sk-store-d", got[4].auth)
+	assert.Equal(t, "claude-sonnet-4-6", got[4].body["model"])
+	assert.EqualValues(t, 512, got[4].body["max_completion_tokens"])
+	assert.NotContains(t, got[4].body, "max_tokens")
+	assert.Contains(t, got[4].body, "stream_options")
+	assert.Contains(t, got[4].body, "tools")
+	assert.NotContains(t, got[4].body, "reasoning_effort")
 }

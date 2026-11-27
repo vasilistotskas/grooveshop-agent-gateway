@@ -37,8 +37,6 @@ var goldenShape = []string{
 	`TenantConfig.AIProfile.BaseURL string "baseUrl"`,
 	`TenantConfig.AIProfile.Model string "model"`,
 	`TenantConfig.AIProfile.Provider string "provider"`,
-	`TenantConfig.AIProfile.SupportsStructuredOutputs bool "supportsStructuredOutputs"`,
-	`TenantConfig.AIProfile.SupportsToolCalling bool "supportsToolCalling"`,
 	`TenantConfig.AgentCommerceEnabled bool "agentCommerceEnabled"`,
 	`TenantConfig.AgentHostedPaymentEnabled bool "agentHostedPaymentEnabled"`,
 	`TenantConfig.AgentPaymentInstruments []string "agentPaymentInstruments"`,

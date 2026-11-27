@@ -271,27 +271,23 @@ func AcceptsReasoningEffort(
 }
 
 // SupportsStreamUsage reports whether provider accepts OpenAI's
-// stream_options.include_usage field. Mistral uses strict Pydantic schema
-// validation (extra_forbidden) and rejects stream_options with HTTP 422.
+// stream_options.include_usage field on /chat/completions. Mistral's
+// /v1/chat/completions schema defines no stream_options field and rejects
+// unknown fields with HTTP 422 (https://docs.mistral.ai/api/endpoint/chat).
+// Standard OpenAI-compatible endpoints — including Anthropic
+// (https://platform.claude.com/docs/en/api/openai-sdk) — support it.
 func SupportsStreamUsage(provider string) bool {
-	switch provider {
-	case "gemini", "openai", "groq", "openrouter":
-		return true
-	default:
-		return false
-	}
+	return provider != "mistral"
 }
 
-// UsesLegacyMaxTokens reports whether provider expects max_tokens instead
-// of max_completion_tokens. Mistral rejects max_completion_tokens with 422;
-// Anthropic's compatibility layer uses max_tokens.
-func UsesLegacyMaxTokens(provider string) bool {
-	switch provider {
-	case "mistral", "anthropic":
-		return true
-	default:
-		return false
-	}
+// UsesMaxTokens reports whether provider expects max_tokens instead of
+// max_completion_tokens on /chat/completions. Mistral's /v1/chat/completions
+// schema defines max_tokens and rejects max_completion_tokens with HTTP 422
+// (https://docs.mistral.ai/api/endpoint/chat). Anthropic's OpenAI-compatible
+// endpoint fully supports max_completion_tokens
+// (https://platform.claude.com/docs/en/api/openai-sdk).
+func UsesMaxTokens(provider string) bool {
+	return provider == "mistral"
 }
 
 // RequestOptions returns the per-request openai-go options for p.
@@ -311,8 +307,8 @@ func (c *Client) RequestOptions(
 }
 
 // NewStreaming opens a streaming chat completion for the store's profile.
-// It pins params.Model from p, normalises token-limit, stream_options,
-// reasoning_effort and tool fields for the store's provider and model.
+// It pins params.Model from p and normalises token-limit, stream_options
+// and reasoning_effort fields for the store's provider and model.
 func (c *Client) NewStreaming(
 	ctx context.Context,
 	p *django.AIProfile,
@@ -330,13 +326,9 @@ func (c *Client) NewStreaming(
 	} else {
 		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{}
 	}
-	if UsesLegacyMaxTokens(p.Provider) && params.MaxCompletionTokens.Valid() {
+	if UsesMaxTokens(p.Provider) && params.MaxCompletionTokens.Valid() {
 		params.MaxTokens = params.MaxCompletionTokens
 		params.MaxCompletionTokens = param.Opt[int64]{}
-	}
-	if !p.SupportsToolCalling {
-		params.Tools = nil
-		params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{}
 	}
 	if !AcceptsReasoningEffort(p.Provider, p.Model, params.ReasoningEffort) {
 		params.ReasoningEffort = shared.ReasoningEffort("")

@@ -14,23 +14,11 @@ import (
 // content leads and the volatile cart line trails it, keeping the prompt
 // cache-friendly across turns of a conversation.
 func systemPrompt(
-	t *tenant.Tenant, lang, cartID string, signedIn, toolsEnabled bool,
+	t *tenant.Tenant, lang, cartID string, signedIn bool,
 ) string {
 	store := t.StoreName
 	if store == "" {
 		store = t.Name
-	}
-	if !toolsEnabled {
-		return fmt.Sprintf(`You are the shopping assistant of %s (%s), an online store.
-
-Scope and honesty:
-- Help ONLY with general questions about this store. Live product search, stock, cart and order tools are unavailable on this store's current AI model.
-- Never invent products, prices, stock levels or policies; direct the shopper to browse %s for live catalogue, stock and checkout.
-- Never mention or recommend a product, category or brand that no tool result in this conversation showed — not even as an example or a suggestion of what the store might sell.
-
-Language and tone:
-- Reply in the language of the shopper's latest message. When that is unclear, reply in %s (%s), the language of the page the shopper is on. Be warm, concise and practical.`,
-			store, t.Domain, t.Domain, languageName(lang), lang)
 	}
 	// Reviews are a store feature: a store that switched them off offers
 	// no review tool, so the assistant must not offer them either.

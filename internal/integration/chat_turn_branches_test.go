@@ -371,12 +371,10 @@ func TestChatSendsEachStoresOwnModelKey(t *testing.T) {
 		doc["schemaName"], doc["name"] = schema, schema
 		doc["storeName"] = store.name
 		doc["aiProfile"] = map[string]any{
-			"provider":                  store.provider,
-			"baseUrl":                   store.baseURL,
-			"model":                     store.model,
-			"apiKey":                    store.key,
-			"supportsToolCalling":       true,
-			"supportsStructuredOutputs": true,
+			"provider": store.provider,
+			"baseUrl":  store.baseURL,
+			"model":    store.model,
+			"apiKey":   store.key,
 		}
 		doc["primaryDomain"] = domain
 		w.Header().Set("Content-Type", "application/json")
@@ -480,10 +478,9 @@ func TestChatNoAIProfileReturns404(t *testing.T) {
 	assert.Zero(t, fake.calls.Load())
 }
 
-// A store whose AI provider does not support tool calling runs chat in
-// text-only mode: no tool definitions are sent, no reasoning_effort is
-// sent for non-Gemini/OpenAI providers, and the turn completes cleanly.
-func TestChatWithoutToolCallingRunsTextOnly(t *testing.T) {
+// A store configured with Mistral sends max_tokens, omits stream_options
+// and reasoning_effort, and still offers the commerce tools.
+func TestChatWithMistralProfileNormalisesRequest(t *testing.T) {
 	fixture, err := os.ReadFile(fixturePath("tenant_resolve_demostore.json"))
 	require.NoError(t, err)
 	base := fakeDjangoMux(t)
@@ -498,12 +495,10 @@ func TestChatWithoutToolCallingRunsTextOnly(t *testing.T) {
 			return
 		}
 		doc["aiProfile"] = map[string]any{
-			"provider":                  "mistral",
-			"baseUrl":                   "https://api.mistral.ai/v1/",
-			"model":                     "mistral-small-latest",
-			"apiKey":                    "sk-mistral-test",
-			"supportsToolCalling":       false,
-			"supportsStructuredOutputs": true,
+			"provider": "mistral",
+			"baseUrl":  "https://api.mistral.ai/v1/",
+			"model":    "mistral-small-latest",
+			"apiKey":   "sk-mistral-test",
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(doc)
@@ -520,6 +515,6 @@ func TestChatWithoutToolCallingRunsTextOnly(t *testing.T) {
 	assert.Contains(t, sent, `"max_tokens":1024`)
 	assert.NotContains(t, sent, `"max_completion_tokens"`)
 	assert.NotContains(t, sent, `"stream_options"`)
-	assert.NotContains(t, sent, `"tools"`)
+	assert.Contains(t, sent, `"tools"`)
 	assert.NotContains(t, sent, `"reasoning_effort"`)
 }

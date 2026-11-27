@@ -13,11 +13,10 @@ contract files. The code wins over this page.
 ## The client (`internal/django`)
 
 - `internal/django` — typed API client. `ResolveTenant` also reports
-  whether Django recognised the internal token: Django adds `aiProfile`
-  (possibly null) and `acpBearerToken` (possibly empty) only then, so
-  their key presence is the answer, decoded beside `TenantConfig`
-  (`tenantResolve`), never in it; one key without the other is a decode
-  error. Every tenant-scoped
+  whether Django recognised the internal token: Django adds
+  `acpBearerToken` (possibly empty) only then, so its key presence is the
+  answer, decoded beside `TenantConfig` (`tenantResolve`), never in it;
+  `aiProfile` absent or null means the store has no AI profile. Every tenant-scoped
   call sends
   `X-Forwarded-Host: <tenant domain>` + `X-Forwarded-Proto: https` (+
   `X-Language`). A GET is retried twice on a 5xx or a lost connection
