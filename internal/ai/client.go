@@ -215,24 +215,56 @@ func hasModelFamily(model, prefix string) bool {
 	return next == '-' || next == '.' || next == ':'
 }
 
-func isOpenAIReasoningModel(model string) bool {
-	m := strings.ToLower(model)
-	return hasModelFamily(m, "o1") ||
-		hasModelFamily(m, "o3") ||
-		hasModelFamily(m, "o4") ||
-		hasModelFamily(m, "gpt-5")
-}
-
-// SupportsReasoningEffort reports whether provider+model accepts OpenAI's
-// reasoning_effort field on chat completions without rejecting it. OpenAI
-// rejects reasoning_effort with HTTP 400 on non-reasoning models such as
-// gpt-4.1 and gpt-4o.
-func SupportsReasoningEffort(provider, model string) bool {
+// AcceptsReasoningEffort reports whether provider+model accepts the given
+// OpenAI reasoning_effort value without rejecting it. OpenAI rejects
+// reasoning_effort on non-reasoning models (gpt-4.1, gpt-4o) and restricts
+// allowed effort levels per family (gpt-5: minimal..high; o1/o3/o4:
+// low..high). Gemini's OpenAI-compatible endpoint accepts none..high.
+func AcceptsReasoningEffort(
+	provider, model string, effort shared.ReasoningEffort,
+) bool {
+	if effort == "" {
+		return false
+	}
 	switch provider {
 	case "gemini":
-		return true
+		switch effort {
+		case shared.ReasoningEffortNone,
+			shared.ReasoningEffortMinimal,
+			shared.ReasoningEffortLow,
+			shared.ReasoningEffortMedium,
+			shared.ReasoningEffortHigh:
+			return true
+		default:
+			return false
+		}
 	case "openai":
-		return isOpenAIReasoningModel(model)
+		m := strings.ToLower(model)
+		switch {
+		case hasModelFamily(m, "gpt-5"):
+			switch effort {
+			case shared.ReasoningEffortMinimal,
+				shared.ReasoningEffortLow,
+				shared.ReasoningEffortMedium,
+				shared.ReasoningEffortHigh:
+				return true
+			default:
+				return false
+			}
+		case hasModelFamily(m, "o1"),
+			hasModelFamily(m, "o3"),
+			hasModelFamily(m, "o4"):
+			switch effort {
+			case shared.ReasoningEffortLow,
+				shared.ReasoningEffortMedium,
+				shared.ReasoningEffortHigh:
+				return true
+			default:
+				return false
+			}
+		default:
+			return false
+		}
 	default:
 		return false
 	}
@@ -306,7 +338,7 @@ func (c *Client) NewStreaming(
 		params.Tools = nil
 		params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{}
 	}
-	if !SupportsReasoningEffort(p.Provider, p.Model) {
+	if !AcceptsReasoningEffort(p.Provider, p.Model, params.ReasoningEffort) {
 		params.ReasoningEffort = shared.ReasoningEffort("")
 	}
 	return c.completions.NewStreaming(ctx, params, opts...), nil

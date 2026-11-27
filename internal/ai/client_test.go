@@ -70,19 +70,30 @@ func TestValidateProfile(t *testing.T) {
 	}
 }
 
-func TestSupportsReasoningEffort(t *testing.T) {
-	assert.True(t, SupportsReasoningEffort("gemini", "gemini-3.5-flash-lite"))
-	assert.True(t, SupportsReasoningEffort("openai", "gpt-5-mini"))
-	assert.True(t, SupportsReasoningEffort("openai", "gpt-5"))
-	assert.True(t, SupportsReasoningEffort("openai", "o1"))
-	assert.True(t, SupportsReasoningEffort("openai", "o3-mini"))
-	assert.True(t, SupportsReasoningEffort("openai", "o4-mini"))
+func TestAcceptsReasoningEffort(t *testing.T) {
+	assert.True(t, AcceptsReasoningEffort("gemini", "gemini-3.5-flash-lite", shared.ReasoningEffortLow))
+	assert.True(t, AcceptsReasoningEffort("gemini", "gemini-3.5-flash-lite", shared.ReasoningEffortMinimal))
+	assert.False(t, AcceptsReasoningEffort("gemini", "gemini-3.5-flash-lite", shared.ReasoningEffortMax))
+	assert.False(t, AcceptsReasoningEffort("gemini", "gemini-3.5-flash-lite", shared.ReasoningEffortXhigh))
 
-	assert.False(t, SupportsReasoningEffort("openai", "gpt-4.1-mini"))
-	assert.False(t, SupportsReasoningEffort("openai", "gpt-4o"))
-	assert.False(t, SupportsReasoningEffort("mistral", "mistral-small-latest"))
-	assert.False(t, SupportsReasoningEffort("anthropic", "claude-sonnet-4-6"))
-	assert.False(t, SupportsReasoningEffort("groq", "llama-3.3-70b-versatile"))
+	assert.True(t, AcceptsReasoningEffort("openai", "gpt-5-mini", shared.ReasoningEffortMinimal))
+	assert.True(t, AcceptsReasoningEffort("openai", "gpt-5-mini", shared.ReasoningEffortLow))
+	assert.True(t, AcceptsReasoningEffort("openai", "gpt-5", shared.ReasoningEffortHigh))
+	assert.False(t, AcceptsReasoningEffort("openai", "gpt-5-mini", shared.ReasoningEffortNone))
+	assert.False(t, AcceptsReasoningEffort("openai", "gpt-5-mini", shared.ReasoningEffortXhigh))
+	assert.False(t, AcceptsReasoningEffort("openai", "gpt-5-mini", shared.ReasoningEffortMax))
+
+	assert.True(t, AcceptsReasoningEffort("openai", "o1", shared.ReasoningEffortLow))
+	assert.True(t, AcceptsReasoningEffort("openai", "o3-mini", shared.ReasoningEffortMedium))
+	assert.True(t, AcceptsReasoningEffort("openai", "o4-mini", shared.ReasoningEffortHigh))
+	assert.False(t, AcceptsReasoningEffort("openai", "o3-mini", shared.ReasoningEffortMinimal))
+	assert.False(t, AcceptsReasoningEffort("openai", "o3-mini", shared.ReasoningEffortNone))
+
+	assert.False(t, AcceptsReasoningEffort("openai", "gpt-4.1-mini", shared.ReasoningEffortLow))
+	assert.False(t, AcceptsReasoningEffort("openai", "gpt-4o", shared.ReasoningEffortLow))
+	assert.False(t, AcceptsReasoningEffort("mistral", "mistral-small-latest", shared.ReasoningEffortLow))
+	assert.False(t, AcceptsReasoningEffort("anthropic", "claude-sonnet-4-6", shared.ReasoningEffortLow))
+	assert.False(t, AcceptsReasoningEffort("groq", "llama-3.3-70b-versatile", shared.ReasoningEffortLow))
 }
 
 func TestNewStreamingRoutesPerProfileAndGatesCapabilities(t *testing.T) {
@@ -152,7 +163,7 @@ func TestNewStreamingRoutesPerProfileAndGatesCapabilities(t *testing.T) {
 	require.NoError(t, streamA.Err())
 	assert.Equal(t, Usage{PromptTokens: 12, CompletionTokens: 5, TotalTokens: 17}, UsageFrom(&accA))
 
-	// Store B: OpenAI reasoning model (gpt-5-mini) — keeps reasoning_effort.
+	// Store B: OpenAI reasoning model (gpt-5-mini) — keeps supported low effort.
 	pB := &django.AIProfile{
 		Provider:            "openai",
 		BaseURL:             "https://api.openai.com/v1/",
@@ -166,6 +177,16 @@ func TestNewStreamingRoutesPerProfileAndGatesCapabilities(t *testing.T) {
 		_ = streamB.Current()
 	}
 	require.NoError(t, streamB.Err())
+
+	// Store B with unsupported effort (max) — stripped so OpenAI does not 400.
+	unsupportedEffort := baseParams()
+	unsupportedEffort.ReasoningEffort = shared.ReasoningEffortMax
+	streamBUnsupported, err := client.NewStreaming(t.Context(), pB, unsupportedEffort)
+	require.NoError(t, err)
+	for streamBUnsupported.Next() {
+		_ = streamBUnsupported.Current()
+	}
+	require.NoError(t, streamBUnsupported.Err())
 
 	// Store C: Mistral without tool calling — max_tokens instead of
 	// max_completion_tokens, no stream_options, no tools, no reasoning_effort.
@@ -183,7 +204,7 @@ func TestNewStreamingRoutesPerProfileAndGatesCapabilities(t *testing.T) {
 	}
 	require.NoError(t, streamC.Err())
 
-	require.Len(t, got, 3)
+	require.Len(t, got, 4)
 
 	// Ambient env headers must never appear on any request.
 	for _, r := range got {
@@ -205,12 +226,16 @@ func TestNewStreamingRoutesPerProfileAndGatesCapabilities(t *testing.T) {
 	assert.Equal(t, "gpt-5-mini", got[1].body["model"])
 	assert.Equal(t, "low", got[1].body["reasoning_effort"])
 
-	assert.Equal(t, "https://api.mistral.ai/v1/chat/completions", got[2].url)
-	assert.Equal(t, "Bearer sk-store-c", got[2].auth)
-	assert.Equal(t, "mistral-small-latest", got[2].body["model"])
-	assert.EqualValues(t, 512, got[2].body["max_tokens"])
-	assert.NotContains(t, got[2].body, "max_completion_tokens")
-	assert.NotContains(t, got[2].body, "stream_options")
-	assert.NotContains(t, got[2].body, "tools")
+	assert.Equal(t, "https://api.openai.com/v1/chat/completions", got[2].url)
+	assert.Equal(t, "gpt-5-mini", got[2].body["model"])
 	assert.NotContains(t, got[2].body, "reasoning_effort")
+
+	assert.Equal(t, "https://api.mistral.ai/v1/chat/completions", got[3].url)
+	assert.Equal(t, "Bearer sk-store-c", got[3].auth)
+	assert.Equal(t, "mistral-small-latest", got[3].body["model"])
+	assert.EqualValues(t, 512, got[3].body["max_tokens"])
+	assert.NotContains(t, got[3].body, "max_completion_tokens")
+	assert.NotContains(t, got[3].body, "stream_options")
+	assert.NotContains(t, got[3].body, "tools")
+	assert.NotContains(t, got[3].body, "reasoning_effort")
 }

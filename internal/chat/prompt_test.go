@@ -31,6 +31,7 @@ func TestSystemPromptWithoutTools(t *testing.T) {
 	p := systemPrompt(testTenant(), "el", "cart-uuid-1", false, false)
 	assert.Contains(t, p, "Demo Store")
 	assert.Contains(t, p, "unavailable on this store's current AI model")
+	assert.Contains(t, p, "Never mention or recommend a product, category or brand that no tool result")
 	assert.NotContains(t, p, "add_to_cart")
 	assert.NotContains(t, p, "cart-uuid-1")
 }
