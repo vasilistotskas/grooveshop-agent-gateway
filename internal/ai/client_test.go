@@ -269,3 +269,20 @@ func TestNewStreamingRoutesPerProfileAndNormalisesRequest(t *testing.T) {
 	assert.Contains(t, got[4].body, "tools")
 	assert.NotContains(t, got[4].body, "reasoning_effort")
 }
+
+func TestProviderRedirectFailsTheCall(t *testing.T) {
+	client := safeHTTPClient(true)
+	client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTemporaryRedirect,
+			Header:     http.Header{"Location": []string{"https://elsewhere.example/v1/"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    r,
+		}, nil
+	})
+	resp, err := client.Get("https://api.example.com/v1/chat/completions")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.ErrorIs(t, err, ErrProviderRedirect)
+}

@@ -28,6 +28,12 @@ import (
 // ErrProfileUnavailable means the store has no usable AI profile.
 var ErrProfileUnavailable = errors.New("ai: store has no valid AI profile")
 
+// ErrProviderRedirect is a provider answering with a redirect. The call
+// fails instead of following it (the address came from the store's
+// profile, so a redirect could lead anywhere) or handing the 3xx to the SDK
+// (which reads a status below 400 as success and streams an empty reply).
+var ErrProviderRedirect = errors.New("ai: provider answered with a redirect")
+
 // Usage is the token count reported by a model call.
 type Usage struct {
 	PromptTokens     int64
@@ -130,7 +136,7 @@ func safeHTTPClient(allowLocal bool) *http.Client {
 	}
 	return &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
+			return ErrProviderRedirect
 		},
 		Transport: &http.Transport{
 			Proxy:               nil,
