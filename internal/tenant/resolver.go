@@ -596,7 +596,7 @@ func (r *Resolver) countAnswer(result string, t *Tenant, err error) {
 // Bump it with every change to the shape. TestCachedShapeMatchesKeyVersion
 // fails on a changed shape until the golden is updated, which prompts the
 // bump; a reviewer sees the golden's diff.
-const redisKeyVersion = "v8"
+const redisKeyVersion = "v9"
 
 func redisKey(domain string) string {
 	return "ag:tenant:" + redisKeyVersion + ":" + domain

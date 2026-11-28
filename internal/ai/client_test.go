@@ -68,32 +68,6 @@ func TestValidateProfile(t *testing.T) {
 	}
 }
 
-func TestAcceptsReasoningEffort(t *testing.T) {
-	assert.True(t, AcceptsReasoningEffort("gemini", "gemini-3.5-flash-lite", shared.ReasoningEffortLow))
-	assert.True(t, AcceptsReasoningEffort("gemini", "gemini-3.5-flash-lite", shared.ReasoningEffortMinimal))
-	assert.False(t, AcceptsReasoningEffort("gemini", "gemini-3.5-flash-lite", shared.ReasoningEffortMax))
-	assert.False(t, AcceptsReasoningEffort("gemini", "gemini-3.5-flash-lite", shared.ReasoningEffortXhigh))
-
-	assert.True(t, AcceptsReasoningEffort("openai", "gpt-5-mini", shared.ReasoningEffortMinimal))
-	assert.True(t, AcceptsReasoningEffort("openai", "gpt-5-mini", shared.ReasoningEffortLow))
-	assert.True(t, AcceptsReasoningEffort("openai", "gpt-5", shared.ReasoningEffortHigh))
-	assert.False(t, AcceptsReasoningEffort("openai", "gpt-5-mini", shared.ReasoningEffortNone))
-	assert.False(t, AcceptsReasoningEffort("openai", "gpt-5-mini", shared.ReasoningEffortXhigh))
-	assert.False(t, AcceptsReasoningEffort("openai", "gpt-5-mini", shared.ReasoningEffortMax))
-
-	assert.True(t, AcceptsReasoningEffort("openai", "o1", shared.ReasoningEffortLow))
-	assert.True(t, AcceptsReasoningEffort("openai", "o3-mini", shared.ReasoningEffortMedium))
-	assert.True(t, AcceptsReasoningEffort("openai", "o4-mini", shared.ReasoningEffortHigh))
-	assert.False(t, AcceptsReasoningEffort("openai", "o3-mini", shared.ReasoningEffortMinimal))
-	assert.False(t, AcceptsReasoningEffort("openai", "o3-mini", shared.ReasoningEffortNone))
-
-	assert.False(t, AcceptsReasoningEffort("openai", "gpt-4.1-mini", shared.ReasoningEffortLow))
-	assert.False(t, AcceptsReasoningEffort("openai", "gpt-4o", shared.ReasoningEffortLow))
-	assert.False(t, AcceptsReasoningEffort("mistral", "mistral-small-latest", shared.ReasoningEffortLow))
-	assert.False(t, AcceptsReasoningEffort("anthropic", "claude-sonnet-4-6", shared.ReasoningEffortLow))
-	assert.False(t, AcceptsReasoningEffort("groq", "llama-3.3-70b-versatile", shared.ReasoningEffortLow))
-}
-
 func TestProviderRequestShaping(t *testing.T) {
 	for _, provider := range []string{
 		"openai", "gemini", "anthropic", "groq", "openrouter",
@@ -150,12 +124,11 @@ func TestNewStreamingRoutesPerProfileAndNormalisesRequest(t *testing.T) {
 			Messages:            []openai.ChatCompletionMessageParamUnion{openai.UserMessage("hi")},
 			Tools:               []openai.ChatCompletionToolUnionParam{tool},
 			MaxCompletionTokens: openai.Int(512),
-			ReasoningEffort:     shared.ReasoningEffortLow,
 		}
 	}
 
-	// Store A: OpenAI non-reasoning model (gpt-4.1-mini) — tools + usage,
-	// max_completion_tokens, NO reasoning_effort (OpenAI rejects it with 400).
+	// Store A: OpenAI with empty ReasoningEffort — tools + usage,
+	// max_completion_tokens, no reasoning_effort key in the body.
 	pA := &django.AIProfile{
 		Provider: "openai",
 		BaseURL:  "https://api.openai.com/v1/",
@@ -171,32 +144,24 @@ func TestNewStreamingRoutesPerProfileAndNormalisesRequest(t *testing.T) {
 	require.NoError(t, streamA.Err())
 	assert.Equal(t, Usage{PromptTokens: 12, CompletionTokens: 5, TotalTokens: 17}, UsageFrom(&accA))
 
-	// Store B: OpenAI reasoning model (gpt-5-mini) — keeps supported low effort.
+	// Store B: OpenAI with ReasoningEffort set — forwarded unchanged.
 	pB := &django.AIProfile{
 		Provider: "openai",
 		BaseURL:  "https://api.openai.com/v1/",
 		Model:    "gpt-5-mini",
 		APIKey:   "sk-store-b",
 	}
-	streamB, err := client.NewStreaming(t.Context(), pB, baseParams())
+	withEffort := baseParams()
+	withEffort.ReasoningEffort = shared.ReasoningEffortMedium
+	streamB, err := client.NewStreaming(t.Context(), pB, withEffort)
 	require.NoError(t, err)
 	for streamB.Next() {
 		_ = streamB.Current()
 	}
 	require.NoError(t, streamB.Err())
 
-	// Store B with unsupported effort (max) — stripped so OpenAI does not 400.
-	unsupportedEffort := baseParams()
-	unsupportedEffort.ReasoningEffort = shared.ReasoningEffortMax
-	streamBUnsupported, err := client.NewStreaming(t.Context(), pB, unsupportedEffort)
-	require.NoError(t, err)
-	for streamBUnsupported.Next() {
-		_ = streamBUnsupported.Current()
-	}
-	require.NoError(t, streamBUnsupported.Err())
-
 	// Store C: Mistral — max_tokens instead of max_completion_tokens, no
-	// stream_options, tools always sent, no reasoning_effort.
+	// stream_options, tools always sent, no reasoning_effort when empty.
 	pC := &django.AIProfile{
 		Provider: "mistral",
 		BaseURL:  "https://api.mistral.ai/v1/",
@@ -211,21 +176,24 @@ func TestNewStreamingRoutesPerProfileAndNormalisesRequest(t *testing.T) {
 	require.NoError(t, streamC.Err())
 
 	// Store D: Anthropic OpenAI-compatible endpoint — max_completion_tokens
-	// and stream_options are both supported, tools always sent.
+	// and stream_options are both supported, tools always sent, and any
+	// ReasoningEffort on params is forwarded unchanged without filtering.
 	pD := &django.AIProfile{
 		Provider: "anthropic",
 		BaseURL:  "https://api.anthropic.com/v1/",
 		Model:    "claude-sonnet-4-6",
 		APIKey:   "sk-store-d",
 	}
-	streamD, err := client.NewStreaming(t.Context(), pD, baseParams())
+	anthropicParams := baseParams()
+	anthropicParams.ReasoningEffort = shared.ReasoningEffortHigh
+	streamD, err := client.NewStreaming(t.Context(), pD, anthropicParams)
 	require.NoError(t, err)
 	for streamD.Next() {
 		_ = streamD.Current()
 	}
 	require.NoError(t, streamD.Err())
 
-	require.Len(t, got, 5)
+	require.Len(t, got, 4)
 
 	// Ambient env headers must never appear on any request.
 	for _, r := range got {
@@ -245,29 +213,25 @@ func TestNewStreamingRoutesPerProfileAndNormalisesRequest(t *testing.T) {
 	assert.Equal(t, "https://api.openai.com/v1/chat/completions", got[1].url)
 	assert.Equal(t, "Bearer sk-store-b", got[1].auth)
 	assert.Equal(t, "gpt-5-mini", got[1].body["model"])
-	assert.Equal(t, "low", got[1].body["reasoning_effort"])
+	assert.Equal(t, "medium", got[1].body["reasoning_effort"])
 
-	assert.Equal(t, "https://api.openai.com/v1/chat/completions", got[2].url)
-	assert.Equal(t, "gpt-5-mini", got[2].body["model"])
+	assert.Equal(t, "https://api.mistral.ai/v1/chat/completions", got[2].url)
+	assert.Equal(t, "Bearer sk-store-c", got[2].auth)
+	assert.Equal(t, "mistral-small-latest", got[2].body["model"])
+	assert.EqualValues(t, 512, got[2].body["max_tokens"])
+	assert.NotContains(t, got[2].body, "max_completion_tokens")
+	assert.NotContains(t, got[2].body, "stream_options")
+	assert.Contains(t, got[2].body, "tools")
 	assert.NotContains(t, got[2].body, "reasoning_effort")
 
-	assert.Equal(t, "https://api.mistral.ai/v1/chat/completions", got[3].url)
-	assert.Equal(t, "Bearer sk-store-c", got[3].auth)
-	assert.Equal(t, "mistral-small-latest", got[3].body["model"])
-	assert.EqualValues(t, 512, got[3].body["max_tokens"])
-	assert.NotContains(t, got[3].body, "max_completion_tokens")
-	assert.NotContains(t, got[3].body, "stream_options")
+	assert.Equal(t, "https://api.anthropic.com/v1/chat/completions", got[3].url)
+	assert.Equal(t, "Bearer sk-store-d", got[3].auth)
+	assert.Equal(t, "claude-sonnet-4-6", got[3].body["model"])
+	assert.EqualValues(t, 512, got[3].body["max_completion_tokens"])
+	assert.NotContains(t, got[3].body, "max_tokens")
+	assert.Contains(t, got[3].body, "stream_options")
 	assert.Contains(t, got[3].body, "tools")
-	assert.NotContains(t, got[3].body, "reasoning_effort")
-
-	assert.Equal(t, "https://api.anthropic.com/v1/chat/completions", got[4].url)
-	assert.Equal(t, "Bearer sk-store-d", got[4].auth)
-	assert.Equal(t, "claude-sonnet-4-6", got[4].body["model"])
-	assert.EqualValues(t, 512, got[4].body["max_completion_tokens"])
-	assert.NotContains(t, got[4].body, "max_tokens")
-	assert.Contains(t, got[4].body, "stream_options")
-	assert.Contains(t, got[4].body, "tools")
-	assert.NotContains(t, got[4].body, "reasoning_effort")
+	assert.Equal(t, "high", got[3].body["reasoning_effort"])
 }
 
 func TestProviderRedirectFailsTheCall(t *testing.T) {

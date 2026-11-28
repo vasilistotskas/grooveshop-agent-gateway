@@ -9,11 +9,14 @@ import (
 // Django's platform provider catalog. Django includes it only on
 // internally-authenticated resolves (X-Internal-Token); nil means AI
 // features are disabled for the store (no platform fallback).
+// ReasoningEffort is the chat-completions reasoning_effort value the
+// store chose, or "" to send none.
 type AIProfile struct {
-	Provider string `json:"provider"`
-	BaseURL  string `json:"baseUrl"`
-	Model    string `json:"model"`
-	APIKey   string `json:"apiKey"`
+	Provider        string `json:"provider"`
+	BaseURL         string `json:"baseUrl"`
+	Model           string `json:"model"`
+	APIKey          string `json:"apiKey"`
+	ReasoningEffort string `json:"reasoningEffort"`
 }
 
 // TenantConfig mirrors the tenant/resolve wire shape (camelCase, produced
@@ -50,10 +53,10 @@ type TenantConfig struct {
 	// subordination, never the raw fields.
 	AgentCommerceEnabled bool `json:"agentCommerceEnabled"`
 	ProductFeedsEnabled  bool `json:"productFeedsEnabled"`
-	// AIProfile is the tenant's own model provider, model and API key.
-	// Django includes it only on internally-authenticated resolves (the
-	// X-Internal-Token header); nil means AI features are off for the
-	// tenant.
+	// AIProfile is the tenant's own model provider, model, API key and
+	// reasoning effort. Django includes it only on
+	// internally-authenticated resolves (the X-Internal-Token header);
+	// nil means AI features are off for the tenant.
 	AIProfile *AIProfile `json:"aiProfile" contract:"undocumented"`
 	// AgentPaymentInstruments lists the provider codes an agent can
 	// settle unaided, in the merchant's presentation order. Django

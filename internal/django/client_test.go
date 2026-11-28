@@ -71,10 +71,11 @@ func TestResolveTenantDecodesFixture(t *testing.T) {
 	}, cfg.Features)
 	require.NotNil(t, cfg.AIProfile)
 	assert.Equal(t, AIProfile{
-		Provider: "gemini",
-		BaseURL:  "https://generativelanguage.googleapis.com/v1beta/openai/",
-		Model:    "gemini-3.5-flash-lite",
-		APIKey:   "sk-test-fake",
+		Provider:        "gemini",
+		BaseURL:         "https://generativelanguage.googleapis.com/v1beta/openai/",
+		Model:           "gemini-3.5-flash-lite",
+		APIKey:          "sk-test-fake",
+		ReasoningEffort: "low",
 	}, *cfg.AIProfile)
 	assert.Equal(t, "acp-bearer-demostore-fixture", cfg.ACPBearerToken)
 }
@@ -90,7 +91,7 @@ func TestResolveTenantReportsWhetherDjangoRecognisedTheGateway(t *testing.T) {
 		hasProfile bool
 	}{
 		{"keys with values", `{"schemaName": "demostore",
-			"aiProfile": {"provider": "openai", "baseUrl": "https://api.openai.com/v1/", "model": "gpt-4.1-mini", "apiKey": "sk"},
+			"aiProfile": {"provider": "openai", "baseUrl": "https://api.openai.com/v1/", "model": "gpt-4.1-mini", "apiKey": "sk", "reasoningEffort": ""},
 			"acpBearerToken": "acp"}`, true, true},
 		{"keys present, null/empty", `{"schemaName": "demostore",
 			"aiProfile": null, "acpBearerToken": ""}`, true, false},

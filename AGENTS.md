@@ -21,7 +21,7 @@ internal endpoints and the operational routes:
 | `GET /.well-known/ucp` | UCP business profile (spec 2026-08-25), incl. the `space.grooveshop.payments` handler |
 | `/acp/*` | ACP agentic checkout REST (spec 2026-04-17) |
 | `/feeds/*` | Product feeds: google.xml, meta.xml, tiktok.xml, acp.json |
-| `POST /chat` | First-party shopping chatbot (SSE; OpenAI-compatible protocol via `internal/ai` — provider, model and API key per store from Django's `tenant/resolve`) |
+| `POST /chat` | First-party shopping chatbot (SSE; OpenAI-compatible protocol via `internal/ai` — provider, model, API key and reasoning effort per store from Django's `tenant/resolve`) |
 | `/internal/*` | Cluster-only, shared-secret header: Django's order events, sent by its outbox (`POST /internal/events/order-status`) and feed invalidation (`POST /internal/feeds/invalidate`) |
 | `GET /healthz`, `GET /readyz` | Liveness / readiness (readiness gates on Redis and the startup check of the signing keys; Django is reported, never gating) |
 | `GET /metrics` | Prometheus metrics (registry from `internal/obs`) |
@@ -313,8 +313,8 @@ not serve. The rule and how to split a change are in
   first-touch `attribution` the storefront relayed
   (`mcpsrv.WithShopperAttribution`), or none.
 - Config gates: ACP and chat are per-tenant. The ACP platform bearer
-  arrives as `acpBearerToken` and the store's AI provider, model, base URL
-  and key as `aiProfile` on `tenant/resolve` — Django includes both only
+  arrives as `acpBearerToken` and the store's AI provider, model, base URL,
+  key and reasoning effort as `aiProfile` on `tenant/resolve` — Django includes both only
   when the resolve call carries the gateway's `X-Internal-Token` (same
   shared secret as the order-event push). `/chat` sits behind the
   agent-commerce gate (`tenant.RequireAgentCommerce`), whose 404 is the

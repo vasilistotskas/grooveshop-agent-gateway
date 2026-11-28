@@ -371,10 +371,11 @@ func TestChatSendsEachStoresOwnModelKey(t *testing.T) {
 		doc["schemaName"], doc["name"] = schema, schema
 		doc["storeName"] = store.name
 		doc["aiProfile"] = map[string]any{
-			"provider": store.provider,
-			"baseUrl":  store.baseURL,
-			"model":    store.model,
-			"apiKey":   store.key,
+			"provider":        store.provider,
+			"baseUrl":         store.baseURL,
+			"model":           store.model,
+			"apiKey":          store.key,
+			"reasoningEffort": "",
 		}
 		doc["primaryDomain"] = domain
 		w.Header().Set("Content-Type", "application/json")
@@ -478,8 +479,9 @@ func TestChatNoAIProfileReturns404(t *testing.T) {
 	assert.Zero(t, fake.calls.Load())
 }
 
-// A store configured with Mistral sends max_tokens, omits stream_options
-// and reasoning_effort, and still offers the commerce tools.
+// A store configured with Mistral and empty reasoningEffort sends
+// max_tokens, omits stream_options and reasoning_effort, and still offers
+// the commerce tools.
 func TestChatWithMistralProfileNormalisesRequest(t *testing.T) {
 	fixture, err := os.ReadFile(fixturePath("tenant_resolve_demostore.json"))
 	require.NoError(t, err)
@@ -495,10 +497,11 @@ func TestChatWithMistralProfileNormalisesRequest(t *testing.T) {
 			return
 		}
 		doc["aiProfile"] = map[string]any{
-			"provider": "mistral",
-			"baseUrl":  "https://api.mistral.ai/v1/",
-			"model":    "mistral-small-latest",
-			"apiKey":   "sk-mistral-test",
+			"provider":        "mistral",
+			"baseUrl":         "https://api.mistral.ai/v1/",
+			"model":           "mistral-small-latest",
+			"apiKey":          "sk-mistral-test",
+			"reasoningEffort": "",
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(doc)
