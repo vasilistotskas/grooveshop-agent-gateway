@@ -189,7 +189,6 @@ func chatGatewayHandler(
 		UpstreamTimeout:         5 * time.Second,
 		RateLimitPerMin:         6000,
 		RateLimitBurst:          1000,
-		ChatEffort:              "low",
 		ChatMaxTokens:           1024,
 		ChatMaxTurns:            chatMaxTurns,
 		ChatMaxIterations:       4,

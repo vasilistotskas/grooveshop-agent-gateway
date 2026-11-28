@@ -20,7 +20,6 @@ import (
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/packages/ssestream"
-	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/vasilistotskas/grooveshop-agent-gateway/internal/django"
 )
@@ -210,72 +209,6 @@ func ProfileReady(p *django.AIProfile) bool {
 	return ValidateProfile(p) == nil
 }
 
-func hasModelFamily(model, prefix string) bool {
-	if !strings.HasPrefix(model, prefix) {
-		return false
-	}
-	if len(model) == len(prefix) {
-		return true
-	}
-	next := model[len(prefix)]
-	return next == '-' || next == '.' || next == ':'
-}
-
-// AcceptsReasoningEffort reports whether provider+model accepts the given
-// OpenAI reasoning_effort value without rejecting it. OpenAI rejects
-// reasoning_effort on non-reasoning models (gpt-4.1, gpt-4o) and restricts
-// allowed effort levels per family (gpt-5: minimal..high; o1/o3/o4:
-// low..high). Gemini's OpenAI-compatible endpoint accepts none..high.
-func AcceptsReasoningEffort(
-	provider, model string, effort shared.ReasoningEffort,
-) bool {
-	if effort == "" {
-		return false
-	}
-	switch provider {
-	case "gemini":
-		switch effort {
-		case shared.ReasoningEffortNone,
-			shared.ReasoningEffortMinimal,
-			shared.ReasoningEffortLow,
-			shared.ReasoningEffortMedium,
-			shared.ReasoningEffortHigh:
-			return true
-		default:
-			return false
-		}
-	case "openai":
-		m := strings.ToLower(model)
-		switch {
-		case hasModelFamily(m, "gpt-5"):
-			switch effort {
-			case shared.ReasoningEffortMinimal,
-				shared.ReasoningEffortLow,
-				shared.ReasoningEffortMedium,
-				shared.ReasoningEffortHigh:
-				return true
-			default:
-				return false
-			}
-		case hasModelFamily(m, "o1"),
-			hasModelFamily(m, "o3"),
-			hasModelFamily(m, "o4"):
-			switch effort {
-			case shared.ReasoningEffortLow,
-				shared.ReasoningEffortMedium,
-				shared.ReasoningEffortHigh:
-				return true
-			default:
-				return false
-			}
-		default:
-			return false
-		}
-	default:
-		return false
-	}
-}
-
 // SupportsStreamUsage reports whether provider accepts OpenAI's
 // stream_options.include_usage field on /chat/completions. Mistral's
 // /v1/chat/completions request schema defines no stream_options field
@@ -313,8 +246,8 @@ func (c *Client) RequestOptions(
 }
 
 // NewStreaming opens a streaming chat completion for the store's profile.
-// It pins params.Model from p and normalises token-limit, stream_options
-// and reasoning_effort fields for the store's provider and model.
+// It pins params.Model from p and normalises token-limit and
+// stream_options fields for the store's provider.
 func (c *Client) NewStreaming(
 	ctx context.Context,
 	p *django.AIProfile,
@@ -335,9 +268,6 @@ func (c *Client) NewStreaming(
 	if UsesMaxTokens(p.Provider) && params.MaxCompletionTokens.Valid() {
 		params.MaxTokens = params.MaxCompletionTokens
 		params.MaxCompletionTokens = param.Opt[int64]{}
-	}
-	if !AcceptsReasoningEffort(p.Provider, p.Model, params.ReasoningEffort) {
-		params.ReasoningEffort = shared.ReasoningEffort("")
 	}
 	return c.completions.NewStreaming(ctx, params, opts...), nil
 }

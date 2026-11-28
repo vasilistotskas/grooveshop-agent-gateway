@@ -368,29 +368,6 @@ func TestLoadValidatesBaseURLs(t *testing.T) {
 	}
 }
 
-// CHAT_EFFORT is sent as reasoning_effort on every model call: a value
-// outside the API's set fails every chat turn.
-func TestLoadValidatesChatEffort(t *testing.T) {
-	for value, wantErr := range map[string]bool{
-		"none": false, "minimal": false, "low": false, "medium": false,
-		"high": false, "xhigh": false, "max": false,
-		"Low": true, "lowest": true, "off": true, "auto": true,
-	} {
-		t.Run(value, func(t *testing.T) {
-			setRequired(t)
-			t.Setenv("CHAT_EFFORT", value)
-			cfg, err := Load()
-			if wantErr {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), "CHAT_EFFORT")
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, value, cfg.ChatEffort)
-		})
-	}
-}
-
 // An image template missing {path} names one image for every product;
 // one missing {assets_host} ignores a tenant's own assets host; a
 // misspelt placeholder is published verbatim. Feeds carry these URLs to

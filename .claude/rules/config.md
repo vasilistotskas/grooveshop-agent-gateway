@@ -9,9 +9,8 @@ paths:
 Loads when working on the environment configuration. The code wins over this page.
 
 - `internal/config` — env config, fail-fast `Load()`: a value that would
-  boot and then misbehave refuses to boot. Unknown `ENV`, `LOG_LEVEL`
-  (parsed once, into `Config.LogLevel`) or `CHAT_EFFORT` (the API's
-  `reasoning_effort` set, `shared.ReasoningEffort`); a
+  boot and then misbehave refuses to boot. Unknown `ENV` or `LOG_LEVEL`
+  (parsed once, into `Config.LogLevel`); a
   `DJANGO_BASE_URL` that is not an absolute http(s)
   URL with a host and no user info, query or fragment; an image URL
   template without `{assets_host}` and `{path}` or with another

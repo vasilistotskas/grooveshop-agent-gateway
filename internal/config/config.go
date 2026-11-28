@@ -8,12 +8,10 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/openai/openai-go/v3/shared"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -51,14 +49,6 @@ const maxOrderCreateAttempts = 5
 // signingKEKBytes is the length of SIGNING_KEY_ENCRYPTION_KEY once
 // decoded: an AES-256 key.
 const signingKEKBytes = 32
-
-// chatEfforts is every reasoning_effort the chat-completions API admits.
-var chatEfforts = []shared.ReasoningEffort{
-	shared.ReasoningEffortNone, shared.ReasoningEffortMinimal,
-	shared.ReasoningEffortLow, shared.ReasoningEffortMedium,
-	shared.ReasoningEffortHigh, shared.ReasoningEffortXhigh,
-	shared.ReasoningEffortMax,
-}
 
 // Config holds every per-instance setting. Per-tenant values (branding,
 // locale, feature flags, publishable keys) are served by Django's
@@ -170,9 +160,8 @@ type Config struct {
 
 	// Chat (first-party shopping assistant), spoken over the
 	// OpenAI-compatible chat-completions protocol. Provider, base URL,
-	// model and API key are per-tenant: they arrive on tenant/resolve
-	// (aiProfile), never from the environment.
-	ChatEffort        string
+	// model, API key and reasoning effort are per-tenant: they arrive on
+	// tenant/resolve (aiProfile), never from the environment.
 	ChatMaxTokens     int
 	ChatMaxTurns      int
 	ChatMaxIterations int
@@ -209,7 +198,6 @@ func Load() (Config, error) {
 		MediaURLTemplate: envOr("MEDIA_IMAGE_URL_TEMPLATE",
 			"https://{assets_host}/media_stream-image/{path}"+
 				"/800/800/contain/entropy/transparent/5/80.webp"),
-		ChatEffort: envOr("CHAT_EFFORT", "low"),
 		FeedImageURLTemplate: envOr("FEED_IMAGE_URL_TEMPLATE",
 			"https://{assets_host}/media_stream-image/{path}"+
 				"/1000/1000/contain/center/FFFFFF/5/85.jpeg"),
@@ -367,12 +355,6 @@ func Load() (Config, error) {
 	}
 	if err := checkBaseURL("DJANGO_BASE_URL", cfg.DjangoBaseURL); err != nil {
 		return Config{}, err
-	}
-	if !slices.Contains(chatEfforts,
-		shared.ReasoningEffort(cfg.ChatEffort)) {
-		return Config{}, fmt.Errorf(
-			"config: CHAT_EFFORT must be one of %v (got %q)",
-			chatEfforts, cfg.ChatEffort)
 	}
 	for _, t := range []struct{ name, value string }{
 		{"MEDIA_IMAGE_URL_TEMPLATE", cfg.MediaURLTemplate},

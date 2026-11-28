@@ -56,10 +56,11 @@ func resolveBody(
 	if secrets {
 		if chatKey != "" {
 			m["aiProfile"] = map[string]any{
-				"provider": "gemini",
-				"baseUrl":  "https://generativelanguage.googleapis.com/v1beta/openai/",
-				"model":    "gemini-3.5-flash-lite",
-				"apiKey":   chatKey,
+				"provider":        "gemini",
+				"baseUrl":         "https://generativelanguage.googleapis.com/v1beta/openai/",
+				"model":           "gemini-3.5-flash-lite",
+				"apiKey":          chatKey,
+				"reasoningEffort": "low",
 			}
 		} else {
 			m["aiProfile"] = nil
@@ -401,10 +402,11 @@ func TestPublicConfigStripsCredentials(t *testing.T) {
 		SchemaName: "acme",
 		StoreName:  "Acme",
 		AIProfile: &django.AIProfile{
-			Provider: "gemini",
-			BaseURL:  "https://generativelanguage.googleapis.com/v1beta/openai/",
-			Model:    "gemini-3.5-flash-lite",
-			APIKey:   "sk-live-do-not-cache",
+			Provider:        "gemini",
+			BaseURL:         "https://generativelanguage.googleapis.com/v1beta/openai/",
+			Model:           "gemini-3.5-flash-lite",
+			APIKey:          "sk-live-do-not-cache",
+			ReasoningEffort: "low",
 		},
 		ACPBearerToken: "acp-live-do-not-cache",
 	}

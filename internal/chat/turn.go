@@ -106,7 +106,7 @@ func (s *Service) runTurn(
 					openai.ChatCompletionToolChoiceOptionAutoNone)),
 			}
 		}
-		params.ReasoningEffort = shared.ReasoningEffort(s.cfg.ChatEffort)
+		params.ReasoningEffort = shared.ReasoningEffort(t.AIProfile.ReasoningEffort)
 
 		acc, signatures, err := s.streamCompletion(
 			turnCtx, t.AIProfile, params, &reply, sse)
