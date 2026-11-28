@@ -314,9 +314,10 @@ not serve. The rule and how to split a change are in
   (`mcpsrv.WithShopperAttribution`), or none.
 - Config gates: ACP and chat are per-tenant. The ACP platform bearer
   arrives as `acpBearerToken` and the store's AI provider, model, base URL,
-  key and reasoning effort as `aiProfile` on `tenant/resolve` — Django includes both only
-  when the resolve call carries the gateway's `X-Internal-Token` (same
-  shared secret as the order-event push). `/chat` sits behind the
+  key and reasoning effort as `aiProfile` on `tenant/resolve` — Django
+  includes both only when the resolve call carries the gateway's
+  `X-Internal-Token` (same shared secret as the order-event push).
+  `/chat` sits behind the
   agent-commerce gate (`tenant.RequireAgentCommerce`), whose 404 is the
   generic one; a store with agent commerce on and no AI profile gets a
   localized 404 from the chat handler. A tenant without an ACP token has
